@@ -55,9 +55,22 @@ public static class Engine_PostFxParams
     /// <summary>What `volumetric_shaft_scale` is when the config does not state it: 1.0.</summary>
     public const float VolumetricShaftScaleDefault = 1.0f;
 
+    /// <summary>
+    /// Calibrated baseline multiplier on volumetric light-shaft in-scattering radiance in sky-less caves and interior levels
+    /// when <c>interior_volumetric_shaft_scale = 1.0</c> (50% reduction by default).
+    /// </summary>
+    public const float InteriorVolumetricShaftBaseline = 0.50f;
+
+    /// <summary>
+    /// Calibrated baseline multiplier on volumetric light-shaft in-scattering radiance in sky-lit outdoor levels
+    /// when <c>outdoor_volumetric_shaft_scale = 1.0</c> (20% reduction by default).
+    /// </summary>
+    public const float OutdoorVolumetricShaftBaseline = 0.80f;
+
     private static float? _bloomGain;
     private static bool? _haloDistanceFade;
-    private static float? _volumetricShaftScale;
+    private static float? _interiorVolumetricShaftScale;
+    private static float? _outdoorVolumetricShaftScale;
 
     private static void CheckGeneration()
     {
@@ -71,7 +84,8 @@ public static class Engine_PostFxParams
             _darkLift = null;
             _bloomGain = null;
             _haloDistanceFade = null;
-            _volumetricShaftScale = null;
+            _interiorVolumetricShaftScale = null;
+            _outdoorVolumetricShaftScale = null;
         }
     }
 
@@ -200,22 +214,22 @@ public static class Engine_PostFxParams
     }
 
     /// <summary>
-    /// Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights
-    /// (<c>volumetric_shaft_scale</c> or <c>light_shaft_scale</c> in config, default <see cref="VolumetricShaftScaleDefault"/>).
-    /// Does not affect celestial sun/moon rays.
+    /// Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights in sky-less cave and interior levels
+    /// (<c>interior_volumetric_shaft_scale</c> in config, default <see cref="VolumetricShaftScaleDefault"/>).
     /// </summary>
-    public static float VolumetricShaftScale
+    public static float InteriorVolumetricShaftScale
     {
         get
         {
             CheckGeneration();
-            if (_volumetricShaftScale is null)
+            if (_interiorVolumetricShaftScale is null)
             {
                 float value = VolumetricShaftScaleDefault;
                 try
                 {
                     IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.Read(out _);
-                    if (config.TryGetValue("volumetric_shaft_scale", out string? s) ||
+                    if (config.TryGetValue("interior_volumetric_shaft_scale", out string? s) ||
+                        config.TryGetValue("volumetric_shaft_scale", out s) ||
                         config.TryGetValue("light_shaft_scale", out s))
                     {
                         if (float.TryParse(s, System.Globalization.NumberStyles.Float,
@@ -229,15 +243,79 @@ public static class Engine_PostFxParams
                 {
                 }
 
-                _volumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+                _interiorVolumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
             }
 
-            return _volumetricShaftScale.Value;
+            return _interiorVolumetricShaftScale.Value;
         }
         set
         {
             CheckGeneration();
-            _volumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+            _interiorVolumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+        }
+    }
+
+    /// <summary>
+    /// Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights in sky-lit outdoor levels
+    /// (<c>outdoor_volumetric_shaft_scale</c> in config, default <see cref="VolumetricShaftScaleDefault"/>).
+    /// </summary>
+    public static float OutdoorVolumetricShaftScale
+    {
+        get
+        {
+            CheckGeneration();
+            if (_outdoorVolumetricShaftScale is null)
+            {
+                float value = VolumetricShaftScaleDefault;
+                try
+                {
+                    IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.Read(out _);
+                    if (config.TryGetValue("outdoor_volumetric_shaft_scale", out string? s) ||
+                        config.TryGetValue("volumetric_shaft_scale", out s) ||
+                        config.TryGetValue("light_shaft_scale", out s))
+                    {
+                        if (float.TryParse(s, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out float parsed))
+                        {
+                            value = parsed;
+                        }
+                    }
+                }
+                catch (System.Exception)
+                {
+                }
+
+                _outdoorVolumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+            }
+
+            return _outdoorVolumetricShaftScale.Value;
+        }
+        set
+        {
+            CheckGeneration();
+            _outdoorVolumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+        }
+    }
+
+    /// <summary>
+    /// Effective multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights for the current frame/view,
+    /// selecting indoor vs outdoor scale with calibrated baselines (<see cref="InteriorVolumetricShaftBaseline"/> and <see cref="OutdoorVolumetricShaftBaseline"/>).
+    /// Does not affect celestial sun/moon rays.
+    /// </summary>
+    public static float VolumetricShaftScale
+    {
+        get
+        {
+            float baseScale = Engine_LightingFrame.CurrentInterior
+                ? InteriorVolumetricShaftScale * InteriorVolumetricShaftBaseline
+                : OutdoorVolumetricShaftScale * OutdoorVolumetricShaftBaseline;
+            return System.Math.Clamp(baseScale, 0.0f, 16.0f);
+        }
+        set
+        {
+            CheckGeneration();
+            _interiorVolumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
+            _outdoorVolumetricShaftScale = System.Math.Clamp(value, 0.0f, 16.0f);
         }
     }
 

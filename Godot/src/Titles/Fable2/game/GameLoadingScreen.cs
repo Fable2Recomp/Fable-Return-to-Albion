@@ -316,9 +316,11 @@ public partial class GameLoadingScreen : Node
 		{
 			_loaded = art.Name;
 			_layout = Fable2Bridge.GetLoadingScreenLayout();
-			// Before anything of this screen is drawn: the layout can settle frames later, and a
-			// capture taken then would be of the loading screen itself.
-			_frameAtOpen = CaptureFrame();
+			// Only an in-game fixed-art screen ("Saving content") displays `_frameAtOpen`.
+			// Skipping `GetViewport().GetTexture().GetImage()` during level loads avoids a ~480 ms
+			// synchronous GPU pipeline flush/readback on the main thread.
+			_frameAtOpen?.Dispose();
+			_frameAtOpen = ShouldCaptureFrameAtOpen(_layout) ? CaptureFrame() : null;
 
 			// RESOLVED ONCE PER NAME, MEASURED EVERY FRAME. The lookup is the expensive half
 			// and the name changes a handful of times a session; the SIZE is the half that moves
@@ -357,10 +359,12 @@ public partial class GameLoadingScreen : Node
 				(settled.Narrow ? ", 4:3 inset" : string.Empty));
 		}
 
-		// THE GUEST'S OWN FADE, applied as alpha. It runs 0..1 on the way in and back down on
-		// the way out, and following it is what makes the hand-over match the guest's rather
-		// than cutting a frame early or late.
-		float fade = Mathf.Clamp(loading.Fade, 0f, 1f);
+		// THE GUEST'S OWN FADE, applied as alpha — except while Godot's world build or streaming
+		// cover is holding over a guest that has already started fading out its loading screen,
+		// so the screen stays opaque instead of showing an incomplete world through a partial fade.
+		float fade = GameWorld.CoverHeld && GameWorld.FreezeGuestForLoad
+			? 1f
+			: Mathf.Clamp(loading.Fade, 0f, 1f);
 
 		// THE BACKDROP FADES WITH THE ART. It is part of the loading screen, not a curtain over
 		// the game: holding it opaque while the art faded out would leave a black frame after the
@@ -991,9 +995,25 @@ public partial class GameLoadingScreen : Node
 		_loaded = string.Empty;
 		// The painting goes too, or the next load's cover would show this region's art.
 		_source = null;
+		_frameAtOpen?.Dispose();
 		_frameAtOpen = null;
 		_held.Clear();
 		Report(why);
+	}
+
+	private static bool ShouldCaptureFrameAtOpen(Fable2Bridge.LoadingLayout? layout)
+	{
+		if (!GameWorld.HasActiveWorld || GameWorld.CoverHeld || !HostBridge.WorldIsReady())
+		{
+			return false;
+		}
+
+		if (layout is { } known)
+		{
+			return known.FixedArt && !known.IsSplit && !known.QuitFade;
+		}
+
+		return true;
 	}
 
 	/// <summary>The quit-without-save fade's art, `sub_82360EC0`'s first choice.</summary>

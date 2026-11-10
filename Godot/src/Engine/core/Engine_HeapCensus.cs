@@ -118,7 +118,19 @@ public static class Engine_HeapCensus
 		Add("bnk.nestedContainers", () => (
 			System.Threading.Interlocked.Read(ref Refii.Bnk.BnkFileSystem.NestedLoads),
 			System.Threading.Interlocked.Read(ref Refii.Bnk.BnkFileSystem.NestedResidentBytes)));
-		Add("bnk.mountedFiles", () => (Refii.Assets.Engine_GameAssets.Instance?.FileCount ?? 0, 0));
+		Add("bnk.mountedFiles", () =>
+		{
+			(int files, _, long bytes) = Refii.Assets.Engine_GameAssets.GetHeapCensus();
+			return (files, bytes);
+		});
+		Add("ui.presentationHost", () =>
+		{
+			(int books, int strings, long bytes) = Refii.Ui.Engine_UiPresentationHost.GetHeapCensus();
+			return (books + strings, bytes);
+		});
+		Add("ui.bitmapFonts", () => (
+			Refii.Ui.Engine_BitmapFontTexture.CachedFontCount,
+			Refii.Ui.Engine_BitmapFontTexture.CachedFontBytes));
 		Add("level.lastBuildReads", () =>
 			Refii.Level.LevelReads.LastCompleted is { } reads ? (reads.Entries, reads.HeldBytes) : (0, 0));
 		// Godot Variant arrays kept as mesh metadata: NATIVE memory, listed for scale only.

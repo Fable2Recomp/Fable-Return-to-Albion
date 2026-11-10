@@ -1211,6 +1211,9 @@ public class DecorateModeTests
                 // Collision off: nothing blocks, the room's bounds included (07258ad03).
                 AssertThat(Get<bool>("_blocked")).IsFalse();
                 AssertThat(Get<bool>("_collisionEnabled")).IsFalse();
+                Call("ToggleCollision");
+                AssertThat(Get<bool>("_blocked")).IsTrue();
+                Call("ToggleCollision");
                 Call("Back"); Call("ReconcileSelection", 0ul, 6, 0u);
             }
         }
@@ -1305,12 +1308,12 @@ public class DecorateModeTests
             Call("Choose"); AssertThat(Get<bool>("_waiting")).IsFalse();
             Set("_ghostSource", Transform3D.Identity);
             Call("CreateGhost", mesh, Transform3D.Identity, 1u);
-            // The room's bounds only block with collision on (07258ad03).
-            Call("ToggleCollision");
             Call("CarrySelection", Transform3D.Identity, new Transform3D(Basis.Identity, Vector3.Right), 0f);
             Call("UpdateGhost");
             AssertThat(Get<Vector3>("_piece")).IsEqual(Vector3.Right);
             MeshInstance3D ghost = Get<MeshInstance3D>("_ghost");
+            // The room's bounds only block with collision on (07258ad03).
+            Call("ToggleCollision");
             Call("Choose"); AssertThat(Get<bool>("_waiting")).IsFalse();
             AssertThat(Get<bool>("_blocked")).IsTrue();
             Get<Engine_DecorateInterior>("_interior").Build(RoomFaces(-10, -10, 20, 20, -1, 5), Transform3D.Identity);

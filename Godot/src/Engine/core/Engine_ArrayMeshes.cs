@@ -33,10 +33,46 @@ public static class Engine_ArrayMeshes
 	{
 		Godot.Collections.Array<Godot.Collections.Array> shapes = blendShapes ?? NoBlendShapes;
 		Godot.Collections.Dictionary levels = lods ?? NoLods;
+		long estimatedBytes = EstimateSurfaceBytes(arrays);
+		Engine_ServerSyncs.RunGpuUpload(estimatedBytes, () =>
+		{
+			mesh.AddSurfaceFromArrays(primitive, arrays, shapes, levels, flags);
+		});
+		GC.KeepAlive(mesh);
+		GC.KeepAlive(arrays);
+		GC.KeepAlive(shapes);
+		GC.KeepAlive(levels);
+	}
+
+	/// <summary>
+	/// Adds a surface directly when the caller is already inside <see cref="Engine_ServerSyncs.RunGpuUpload"/>,
+	/// keeping every argument alive across the interop call.
+	/// </summary>
+	public static void AddSurfaceDirect(
+		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
+		Godot.Collections.Array<Godot.Collections.Array>? blendShapes = null,
+		Godot.Collections.Dictionary? lods = null, Mesh.ArrayFormat flags = 0)
+	{
+		Godot.Collections.Array<Godot.Collections.Array> shapes = blendShapes ?? NoBlendShapes;
+		Godot.Collections.Dictionary levels = lods ?? NoLods;
 		mesh.AddSurfaceFromArrays(primitive, arrays, shapes, levels, flags);
 		GC.KeepAlive(mesh);
 		GC.KeepAlive(arrays);
 		GC.KeepAlive(shapes);
 		GC.KeepAlive(levels);
+	}
+
+	public static long EstimateSurfaceBytes(Godot.Collections.Array arrays)
+	{
+		if (arrays.Count <= (int)Mesh.ArrayType.Vertex)
+		{
+			return 16384L;
+		}
+
+		long vertexCount = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length;
+		long indexCount = arrays.Count > (int)Mesh.ArrayType.Index
+			? arrays[(int)Mesh.ArrayType.Index].AsInt32Array().Length
+			: 0L;
+		return System.Math.Max(4096L, vertexCount * 48L + indexCount * 4L);
 	}
 }

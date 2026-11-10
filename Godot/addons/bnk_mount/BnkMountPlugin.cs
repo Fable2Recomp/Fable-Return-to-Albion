@@ -125,6 +125,10 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
     public override void _EnterTree()
     {
         SetProcess(false);
+        if (DisplayServer.GetName() == "headless")
+        {
+            return;
+        }
         Instance = this;
         var saved = new Callable(this, MethodName.OnEditorSceneSaved);
         if (!IsConnected(SignalName.SceneSaved, saved)) Connect(SignalName.SceneSaved, saved);

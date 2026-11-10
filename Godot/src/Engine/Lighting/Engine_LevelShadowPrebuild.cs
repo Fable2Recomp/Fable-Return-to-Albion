@@ -4,12 +4,14 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime;
 using System.Threading;
 using Godot;
 using Refii.Assets;
 using Refii.Bnk;
 using Refii.Core;
 using Refii.Level;
+using Refii.Models;
 
 namespace Refii.Lighting;
 
@@ -65,6 +67,7 @@ public static class Engine_LevelShadowPrebuild
 		int lightsPerMap = Engine_LevelShadowMaps.ConfiguredLightsPerMap;
 		float placedReach = Engine_LevelLights.PlacedRange;
 		float interiorReach = Engine_LevelLights.BuildingInteriorReachScale;
+		bool bakeAo = Engine_LevelAmbientOcclusion.BakedAoEnabled;
 
 		// Clean up any legacy manifest file if present
 		try
@@ -102,19 +105,40 @@ public static class Engine_LevelShadowPrebuild
 		int upToDate = 0;
 		int failed = 0;
 
-		report?.Invoke(new Progress(0, total, 0, 0, 0, "Checking static shadows..."));
+		report?.Invoke(new Progress(0, total, 0, 0, 0, "Checking static shadows & AO..."));
 
 		// Fast check: verify every scenario file exists and matches current settings directly in its header
 		bool allExistAndValid = true;
-		foreach ((LevelEntry level, string scenario) in scenarios)
+		if (bakeAo)
 		{
-			var entry = CloneWithScenario(level, scenario);
-			Engine_LevelGdb.TryRead(entry, read, out string gdbPath);
-			string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(entry, gdbPath);
-			if (!Engine_LevelShadowMaps.IsFileValid(diskPath, resolution, lightsPerMap, placedReach, interiorReach))
+			try
+			{
+				if (!Directory.Exists(Engine_ModelSelfAo.CacheModelsAoDirectory) ||
+				    Directory.GetFiles(Engine_ModelSelfAo.CacheModelsAoDirectory, "*.selfao").Length == 0)
+				{
+					allExistAndValid = false;
+				}
+			}
+			catch (Exception)
 			{
 				allExistAndValid = false;
-				break;
+			}
+		}
+
+		if (allExistAndValid)
+		{
+			foreach ((LevelEntry level, string scenario) in scenarios)
+			{
+				var entry = CloneWithScenario(level, scenario);
+				Engine_LevelGdb.TryRead(entry, read, out string gdbPath);
+				string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(entry, gdbPath);
+				string aoDiskPath = Engine_LevelAmbientOcclusion.GetScenarioAoDiskPath(entry, gdbPath);
+				if (!Engine_LevelShadowMaps.IsFileValid(diskPath, resolution, lightsPerMap, placedReach, interiorReach) ||
+				    (bakeAo && !Engine_LevelAmbientOcclusion.IsFileValid(aoDiskPath)))
+				{
+					allExistAndValid = false;
+					break;
+				}
 			}
 		}
 
@@ -122,124 +146,259 @@ public static class Engine_LevelShadowPrebuild
 		{
 			upToDate = total;
 			done = total;
-			Progress fast = new(done, total, built, upToDate, failed, "All static shadows up to date");
+			Progress fast = new(done, total, built, upToDate, failed, "All static shadows & AO up to date");
 			report?.Invoke(fast);
 			return fast;
 		}
 
-		// Ensure cache shadows directory exists
+		// Ensure cache directories exist
 		try
 		{
 			Directory.CreateDirectory(Engine_LevelShadowMaps.CacheShadowsDirectory);
+			if (bakeAo)
+			{
+				Directory.CreateDirectory(Engine_LevelAmbientOcclusion.CacheAoDirectory);
+			}
 		}
 		catch (Exception)
 		{
 		}
 
-		var bakedGeometryCache = new ConcurrentDictionary<string, (StaticShadowMapContainer Container, int Tris)>(
-			StringComparer.OrdinalIgnoreCase);
+		var bakedShadowPathCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		var bakedAoPathCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+		string lastLevelPath = string.Empty;
 
-		for (int i = 0; i < scenarios.Count; i++)
+		try
 		{
-			if (cancel.IsCancellationRequested)
+			for (int i = 0; i < scenarios.Count; i++)
 			{
-				break;
-			}
-
-			(LevelEntry level, string scenario) = scenarios[i];
-			var scenarioEntry = CloneWithScenario(level, scenario);
-
-			if (!Engine_LevelManifest.TryResolve(
-				scenarioEntry, read, out _, out _, out string scenarioUsed))
-			{
-				done++;
-				failed++;
-				continue;
-			}
-
-			if (scenarioEntry.Scenario.Length == 0)
-			{
-				scenarioEntry.Scenario = scenarioUsed;
-			}
-
-			Engine_LevelGdb.TryRead(scenarioEntry, read, out string gdbPath);
-			string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(scenarioEntry, gdbPath);
-
-			if (Engine_LevelShadowMaps.IsFileValid(diskPath, resolution, lightsPerMap, placedReach, interiorReach))
-			{
-				done++;
-				upToDate++;
-				report?.Invoke(new Progress(done, total, built, upToDate, failed, scenarioEntry.Name));
-				continue;
-			}
-
-			report?.Invoke(new Progress(done, total, built, upToDate, failed, $"Baking {scenarioEntry.Name} ({scenario})..."));
-
-			string geoSig = $"{scenarioEntry.HeightfieldPath}|{gdbPath}|{resolution}|{lightsPerMap}";
-			StaticShadowMapContainer? container = null;
-			string bakeFailure = string.Empty;
-
-			if (gdbPath.Length != 0 && bakedGeometryCache.TryGetValue(geoSig, out var cached))
-			{
-				container = cached.Container;
-			}
-			else
-			{
-				if (Engine_LevelShadowMaps.BakeScenario(
-					scenarioEntry,
-					read,
-					resolution,
-					lightsPerMap,
-					placedReach,
-					interiorReach,
-					out StaticShadowMapContainer? baked,
-					out string resolvedGdb,
-					out int tris,
-					out bakeFailure) && baked is not null)
+				if (cancel.IsCancellationRequested)
 				{
-					container = baked;
-					if (resolvedGdb.Length != 0)
-					{
-						if (Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake) bakedGeometryCache.Clear();
+					break;
+				}
 
-						bakedGeometryCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}|{lightsPerMap}"] =
-							(container, tris);
+				(LevelEntry level, string scenario) = scenarios[i];
+				if (!string.Equals(lastLevelPath, level.LevelPath, StringComparison.OrdinalIgnoreCase))
+				{
+					lastLevelPath = level.LevelPath;
+					Engine_LevelShadowMaps.ClearBakeCaches();
+					Engine_LevelAmbientOcclusion.ClearBakeCaches();
+					Engine_ModelSelfAo.ClearMemoryCache();
+				}
+
+				var scenarioEntry = CloneWithScenario(level, scenario);
+
+				if (!Engine_LevelManifest.TryResolve(
+					scenarioEntry, read, out _, out _, out string scenarioUsed))
+				{
+					done++;
+					failed++;
+					continue;
+				}
+
+				if (scenarioEntry.Scenario.Length == 0)
+				{
+					scenarioEntry.Scenario = scenarioUsed;
+				}
+
+				Engine_LevelGdb.TryRead(scenarioEntry, read, out string gdbPath);
+				string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(scenarioEntry, gdbPath);
+				string aoDiskPath = Engine_LevelAmbientOcclusion.GetScenarioAoDiskPath(scenarioEntry, gdbPath);
+				string shadowSig = $"{scenarioEntry.HeightfieldPath}|{gdbPath}|{resolution}|{lightsPerMap}";
+				string aoSig = $"{scenarioEntry.HeightfieldPath}|{gdbPath}";
+
+				bool shadowValid = Engine_LevelShadowMaps.IsFileValid(diskPath, resolution, lightsPerMap, placedReach, interiorReach);
+				bool aoValid = !bakeAo || Engine_LevelAmbientOcclusion.IsFileValid(aoDiskPath);
+				if (shadowValid && gdbPath.Length != 0)
+				{
+					bakedShadowPathCache[shadowSig] = diskPath;
+				}
+
+				if (aoValid && bakeAo && gdbPath.Length != 0)
+				{
+					bakedAoPathCache[aoSig] = aoDiskPath;
+				}
+
+				if (shadowValid && aoValid)
+				{
+					done++;
+					upToDate++;
+					report?.Invoke(new Progress(done, total, built, upToDate, failed, scenarioEntry.Name));
+					continue;
+				}
+
+				report?.Invoke(new Progress(done, total, built, upToDate, failed, $"Baking {scenarioEntry.Name} ({scenario})..."));
+
+				if (!shadowValid && gdbPath.Length != 0 &&
+				    bakedShadowPathCache.TryGetValue(shadowSig, out string? existingShadowPath) &&
+				    !string.Equals(existingShadowPath, diskPath, StringComparison.OrdinalIgnoreCase) &&
+				    File.Exists(existingShadowPath))
+				{
+					try
+					{
+						string? dir = Path.GetDirectoryName(diskPath);
+						if (!string.IsNullOrEmpty(dir))
+						{
+							Directory.CreateDirectory(dir);
+						}
+
+						File.Copy(existingShadowPath, diskPath, overwrite: true);
+						shadowValid = true;
+					}
+					catch (Exception)
+					{
 					}
 				}
-			}
 
-			if (container is not null)
-			{
-				try
+				if (!aoValid && gdbPath.Length != 0 &&
+				    bakedAoPathCache.TryGetValue(aoSig, out string? existingAoPath) &&
+				    !string.Equals(existingAoPath, aoDiskPath, StringComparison.OrdinalIgnoreCase) &&
+				    File.Exists(existingAoPath))
 				{
-					string? dir = Path.GetDirectoryName(diskPath);
-					if (!string.IsNullOrEmpty(dir))
+					try
 					{
-						Directory.CreateDirectory(dir);
-					}
+						string? dir = Path.GetDirectoryName(aoDiskPath);
+						if (!string.IsNullOrEmpty(dir))
+						{
+							Directory.CreateDirectory(dir);
+						}
 
-					byte[] payload = Engine_LevelShadowMaps.Serialize(container);
-					File.WriteAllBytes(diskPath, payload);
+						File.Copy(existingAoPath, aoDiskPath, overwrite: true);
+						aoValid = true;
+					}
+					catch (Exception)
+					{
+					}
+				}
+
+				StaticShadowMapContainer? shadowContainer = null;
+				StaticAoContainer? aoContainer = null;
+				string resolvedGdb = gdbPath;
+
+				if (!shadowValid || !aoValid)
+				{
+					if (Engine_LevelShadowMaps.TryBuildWorldGeometry(
+						scenarioEntry,
+						read,
+						out Engine_LevelShadowMaps.BvhTree? worldBvh,
+						out List<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
+						out HashSet<uint> lightHosts,
+						out HashSet<string> fixtureModelPaths,
+						out List<Engine_LevelShadowMaps.BakeLightSpec> bakeLights,
+						out List<GhfHeights> terrainHeights,
+						out resolvedGdb,
+						out int _,
+						out string _) && worldBvh is not null)
+					{
+						if (!shadowValid)
+						{
+							shadowContainer = Engine_LevelShadowMaps.BakeFromBvh(
+								worldBvh, bakeLights, resolution, lightsPerMap, placedReach, interiorReach);
+						}
+
+						if (!aoValid)
+						{
+							GhfHeights? primaryTerrain = Engine_LevelAmbientOcclusion.SelectPrimaryTerrain(terrainHeights);
+							aoContainer = Engine_LevelAmbientOcclusion.BakeFromBvh(
+								worldBvh, propBlocks, lightHosts, fixtureModelPaths, primaryTerrain, read);
+						}
+					}
+				}
+
+				bool scenarioSucceeded = true;
+
+				if (!shadowValid)
+				{
+					if (shadowContainer is not null)
+					{
+						try
+						{
+							string? dir = Path.GetDirectoryName(diskPath);
+							if (!string.IsNullOrEmpty(dir))
+							{
+								Directory.CreateDirectory(dir);
+							}
+
+							byte[] payload = Engine_LevelShadowMaps.Serialize(shadowContainer);
+							shadowContainer.Texels = Array.Empty<ushort>();
+							File.WriteAllBytes(diskPath, payload);
+							if (resolvedGdb.Length != 0)
+							{
+								bakedShadowPathCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}|{lightsPerMap}"] = diskPath;
+							}
+						}
+						catch (Exception ex)
+						{
+							GD.PrintErr($"[shadow-prebuild] failed to write {diskPath}: {ex.Message}");
+							scenarioSucceeded = false;
+						}
+					}
+					else
+					{
+						scenarioSucceeded = false;
+					}
+				}
+
+				if (!aoValid)
+				{
+					if (aoContainer is not null)
+					{
+						try
+						{
+							string? dir = Path.GetDirectoryName(aoDiskPath);
+							if (!string.IsNullOrEmpty(dir))
+							{
+								Directory.CreateDirectory(dir);
+							}
+
+							byte[] payload = Engine_LevelAmbientOcclusion.Serialize(aoContainer);
+							aoContainer.PropAoBytes = Array.Empty<byte>();
+							aoContainer.TerrainAoBytes = Array.Empty<byte>();
+							File.WriteAllBytes(aoDiskPath, payload);
+							if (resolvedGdb.Length != 0)
+							{
+								bakedAoPathCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}"] = aoDiskPath;
+							}
+						}
+						catch (Exception ex)
+						{
+							GD.PrintErr($"[ao-prebuild] failed to write {aoDiskPath}: {ex.Message}");
+							scenarioSucceeded = false;
+						}
+					}
+					else
+					{
+						scenarioSucceeded = false;
+					}
+				}
+
+				if (scenarioSucceeded)
+				{
 					built++;
 				}
-				catch (Exception ex)
+				else
 				{
-					GD.PrintErr($"[shadow-prebuild] failed to write {diskPath}: {ex.Message}");
 					failed++;
 				}
-			}
-			else
-			{
-				GD.PrintErr($"[shadow-prebuild] {scenarioEntry.Name} ({scenario}): {bakeFailure}");
-				failed++;
-			}
 
-			Refii.AndroidRuntime.AndroidBakedShadows.AfterArea();
-			done++;
-			report?.Invoke(new Progress(done, total, built, upToDate, failed, scenarioEntry.Name));
+				Refii.AndroidRuntime.AndroidBakedShadows.AfterArea();
+				done++;
+				report?.Invoke(new Progress(done, total, built, upToDate, failed, scenarioEntry.Name));
+			}
+		}
+		finally
+		{
+			Engine_LevelShadowMaps.ClearBakeCaches();
+			Engine_LevelAmbientOcclusion.ClearBakeCaches();
+			Engine_ModelSelfAo.ClearMemoryCache();
+			if (built > 0)
+			{
+				GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+				GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+			}
 		}
 
-		Progress result = new(done, total, built, upToDate, failed, "Static shadows prebuild complete");
+		Progress result = new(done, total, built, upToDate, failed, "Static shadows & AO prebuild complete");
 		report?.Invoke(result);
 		return result;
 	}

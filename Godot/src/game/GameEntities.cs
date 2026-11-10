@@ -301,6 +301,10 @@ public partial class GameEntities : Node3D
     }
 
     private int _inFlight;
+    private List<HostBridge.GuestEntity> _lastEntities = new();
+    private uint _lastUnknown;
+    private HostBridge.UnknownPlacement[] _lastUnknownVtables = System.Array.Empty<HostBridge.UnknownPlacement>();
+    private int _postLoadScreenWalks;
 
     /// <summary>Tracks producers independently of this departing node and closes its completion channel on exit.</summary>
     private readonly Refii.Core.Engine_RegionWorkers _retirementWorkers = new();
@@ -419,7 +423,9 @@ public partial class GameEntities : Node3D
         // writes two poses per tick. Between guest frames its memory reads identically, so the
         // walk and the loop are skipped and the pairs are redrawn.
         uint feedTick = Refii.Core.Engine_TickClock.GuestGameTick;
-        if (!Refii.Core.Engine_GuestFrame.Changed && !FeedEveryFrame)
+        bool guestFrameChanged = Refii.Core.Engine_GuestFrame.Changed;
+        bool loadHoldPump = LoadHold && !ReadyForRelease;
+        if (!guestFrameChanged && !FeedEveryFrame && !loadHoldPump)
         {
             ++FeedFramesSkipped;
 
@@ -452,19 +458,38 @@ public partial class GameEntities : Node3D
         }
 
         // The walk kicked at frame start (GameWindow) is taken here; without one — the lever
-        // off, or no kick this frame — it is walked synchronously.
+        // off, or no kick this frame — it is walked synchronously. On non-guest frames pumped
+        // under LoadHold, reuse the last entity list so completed worker meshes can be turned
+        // into nodes and reconciled every frame without re-walking guest memory.
         List<HostBridge.GuestEntity> entities;
         uint unknown;
         HostBridge.UnknownPlacement[] unknownVtables;
-        if (HostEntityWalk.TryTake(out HostEntityWalk.Walk walk))
+        if (!guestFrameChanged && _lastEntities.Count > 0)
+        {
+            entities = _lastEntities;
+            unknown = _lastUnknown;
+            unknownVtables = _lastUnknownVtables;
+        }
+        else if (HostEntityWalk.TryTake(out HostEntityWalk.Walk walk))
         {
             entities = walk.Entities;
             unknown = walk.Unknown;
             unknownVtables = walk.UnknownVtables;
+            _lastEntities = entities;
+            _lastUnknown = unknown;
+            _lastUnknownVtables = unknownVtables;
         }
         else
         {
             entities = HostBridge.GetEntities(out unknown, out unknownVtables);
+            _lastEntities = entities;
+            _lastUnknown = unknown;
+            _lastUnknownVtables = unknownVtables;
+        }
+
+        if (guestFrameChanged && entities.Count > 0)
+        {
+            ++_postLoadScreenWalks;
         }
 
         Refii.Core.Engine_FramePhases.Lap("ent.walk", ref lap);
@@ -1516,7 +1541,7 @@ public partial class GameEntities : Node3D
 
                     bool inView = principal || PosedThisTick(entity.Address, measurable, rigWorld, nowMs);
 
-                    if (inView || principal)
+                    if ((inView || principal) && IsDynamicShadowEntity(entity.Address))
                     {
                         _dynamicCasterPositions.Add(rigAt);
                         _dynamicCasterAddresses.Add(entity.Address);
@@ -2814,6 +2839,12 @@ public partial class GameEntities : Node3D
     /// mesh is built but it has no node yet.
     /// </remarks>
     public bool ReadyForRelease => _ticks > 1 && _awaitingBuild == 0 && _awaitingCreate == 0 && _reconciledOnce;
+
+    /// <summary>
+    /// True once the entity feed has captured at least two guest frames after the guest's own
+    /// loading screen came down (so all initial skeletons have been posed at least once).
+    /// </summary>
+    public bool HasInitialWalk => _postLoadScreenWalks >= 2 && _lastEntities.Count > 0;
 
     /// <summary>The hero as the feed has it, for the release line: does it have a node, and is it shown.</summary>
     public string DescribeHero()
@@ -4266,37 +4297,36 @@ public partial class GameEntities : Node3D
     }
 
     /// <summary>
-    /// A model through the bank loader. TWO WORKERS MAY NOT RACE ONE FIRST LOAD: both creating the
-    /// managed wrapper of the same new resource is a FATAL in the interop (`gchandle ... !=
-    /// p_old_gchandle`, run r15: two composite builds on the region workers met one part together),
-    /// so loads of one path off the main thread serialise on its <see cref="WorkerMeshLoads"/> entry.
-    /// The main thread never takes them, so a worker's load that waits on the main thread cannot
-    /// deadlock through them — the rule Engine_MdlMaterial.LoadShared keeps for shaders.
+    /// Resolves a model directly through <see cref="Refii.Level.Engine_PropStreamer.Resolve(string, out bool)"/>
+    /// first so background entity workers share decoded meshes with the prop streamer and never hold
+    /// Godot's internal <c>ResourceLoader</c> mutex while waiting on main-thread GPU uploads, falling
+    /// back to <see cref="WorkerMeshLoads"/> when the bank loader must be queried directly.
     /// </summary>
     private static Mesh? LoadMesh(string path)
     {
-        string resource = Refii.Models.Engine_BnkMeshLoader.PathPrefix + path;
-        if (OS.GetThreadCallerId() == OS.GetMainThreadId())
+        ArrayMesh? mesh = Refii.Level.Engine_PropStreamer.Resolve(path, out bool present);
+        if (mesh is not null)
         {
-            return ResourceLoader.Load<Mesh>(resource, "Mesh");
+            if (mesh.ResourcePath.Length == 0)
+            {
+                mesh.ResourcePath = Refii.Models.Engine_BnkMeshLoader.PathPrefix + path;
+            }
+            return mesh;
         }
 
-        long asked = System.Diagnostics.Stopwatch.GetTimestamp();
-        lock (WorkerMeshLoads[(uint)path.GetHashCode() % (uint)WorkerMeshLoads.Length])
+        if (present && Refii.Level.Engine_PropStreamer.IsHeaderOnly(path))
         {
-            Refii.Entities.Engine_LoadEntityBuilds.NoteLockWait(System.Diagnostics.Stopwatch.GetTimestamp() - asked);
-            return ResourceLoader.Load<Mesh>(resource, "Mesh");
+            // Do NOT assign `ResourcePath` to transient empty stub meshes: multiple background entity
+            // workers resolving the same header-only path (e.g. ESA_Rug_Worn_Large_V2.mdl) would
+            // collide in Godot's global ResourceCache::set_path and log false cyclic-inclusion errors.
+            return new ArrayMesh
+            {
+                ResourceName = path[(path.LastIndexOf('/') + 1)..],
+            };
         }
+
+        return null;
     }
-
-    /// <summary>
-    /// A fixed set of 1024 locks by path: different models load side by side, one model once. With
-    /// ten builds in flight a load shares its lock with an unrelated one about one time in a
-    /// hundred (64 locks made it one in seven).
-    /// </summary>
-    private static readonly object[] WorkerMeshLoads =
-        System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(System.Linq.Enumerable.Range(0, 1024), _ => new object()));
-
     /// <summary>
     /// One part, blended with the targets the guest listed for it (<c>sub_82A48B90</c>).
     /// </summary>
@@ -5539,13 +5569,23 @@ public partial class GameEntities : Node3D
         return _collectedKeys.TryGetValue(entity.Address, out uint taken) ? CollectedLayers(layers, taken) : layers;
     }
 
+    /// <summary>
+    /// True when <paramref name="address"/> is a character, companion, attached item, or actively
+    /// moving/animating entity rather than a static prop with dummy bones (such as a streetlamp).
+    /// </summary>
+    private bool IsDynamicShadowEntity(uint address) =>
+        IsPrincipal(address) ||
+        _movers.Contains(address) ||
+        _animating.Contains(address) ||
+        _reblending.Contains(address) ||
+        _attachments.ParentOf(address) != 0u ||
+        _compositeParts.ContainsKey(address) ||
+        (_clipAnimators.TryGetValue(address, out Refii.Animations.Engine_ClipAnimator? anim) && anim.IsCharacterRig);
+
     /// <summary>The entity's layers from its record, its dynamic-caster standing and its light zone.</summary>
     private uint ZonedEntityLayers(HostBridge.GuestEntity entity)
     {
-        bool isDynamic = _skeletons.ContainsKey(entity.Address) ||
-            IsPrincipal(entity.Address) ||
-            _attachments.ParentOf(entity.Address) != 0u ||
-            _movers.Contains(entity.Address);
+        bool isDynamic = IsDynamicShadowEntity(entity.Address);
 
         uint layers = Refii.Lighting.Engine_LevelLights.EntityLayersOf(
             entity.RecordHash,

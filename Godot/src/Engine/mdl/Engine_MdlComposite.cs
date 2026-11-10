@@ -271,6 +271,11 @@ public static class Engine_MdlComposite
             }
         }
 
+        var readySurfaces =
+            new List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
+                string Name, Material Material, Godot.Collections.Dictionary? Lods, float[]? LevelTable)>(pending.Count);
+        long totalEstimatedBytes = 0L;
+
         foreach ((Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
                   Material material, string? bare, bool? forcedLeft, string region, int fromPart,
                   Godot.Collections.Dictionary? lods, float[]? levelTable,
@@ -284,9 +289,8 @@ public static class Engine_MdlComposite
                 continue;
             }
 
-            int added = Engine_MdlSurfaceArrays.Add(mesh, primitive, arrays, lods, levelTable);
-            mesh.SurfaceSetName(added, name);
-            mesh.SurfaceSetMaterial(added, material);
+            totalEstimatedBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
+            readySurfaces.Add((arrays, primitive, name, material, lods, levelTable));
             surfaceRegions.Add(region);
             surfaceParts.Add(fromPart);
             // Each part's own transfer header and cluster table: the title uploads a part's
@@ -298,10 +302,22 @@ public static class Engine_MdlComposite
             anyLods |= lods is not null;
         }
 
-        if (mesh.GetSurfaceCount() == 0)
+        if (readySurfaces.Count == 0)
         {
             return null;
         }
+
+        Refii.Core.Engine_ServerSyncs.RunGpuUpload(System.Math.Max(4096L, totalEstimatedBytes), () =>
+        {
+            for (int i = 0; i < readySurfaces.Count; i++)
+            {
+                (Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, string name,
+                    Material material, Godot.Collections.Dictionary? lods, float[]? levelTable) = readySurfaces[i];
+                int added = Engine_MdlSurfaceArrays.AddDirect(mesh, primitive, arrays, lods, levelTable);
+                mesh.SurfaceSetName(added, name);
+                mesh.SurfaceSetMaterial(added, material);
+            }
+        });
 
         // The rig rides as metadata, which is where Engine_MdlRig looks for it. Without this a
         // composite draws perfectly and can never be posed — it has no bone table to build a

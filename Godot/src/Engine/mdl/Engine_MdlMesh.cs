@@ -251,6 +251,17 @@ public static int SurfacesWithLods;
         }
 
         var sourceVertices = new List<int>(meshVertices);
+        bool modernStaticAo = !Engine_ClassicMaterial.Active &&
+            Refii.Lighting.Engine_LightingFrame.ModernModel &&
+            info.SkinnedCount == 0 &&
+            info.MovementMode != 2 &&
+            sourceVertexTotal > 0;
+        float[] modelSelfAo = modernStaticAo &&
+            Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, sourceVertexTotal, virtualPath, out float[] fastSelfAo)
+            ? fastSelfAo
+            : System.Array.Empty<float>();
+        var pendingSurfaces = new List<(Godot.Collections.Array Arrays, Godot.Collections.Dictionary? Lods, float[]? LevelTable, string Name, Material? Material)>(surfaces.Count);
+        long totalEstimatedBytes = 0L;
 
         foreach (MdlGeometry geo in surfaces)
         {
@@ -460,30 +471,9 @@ public static int SurfacesWithLods;
                 arrays[(int)Mesh.ArrayType.Custom2] = tb;
                 System.Threading.Interlocked.Increment(ref SurfacesWithTransfer);
             }
-
-            Engine_MdlSurfaceArrays.Add(mesh, Mesh.PrimitiveType.Triangles, arrays, lods, levels?.Packed());
-            surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
-            if (lods is not null)
+            else if (modernStaticAo && modelSelfAo.Length > 0 && !treeStreams && geo.SourceVertices.Length > 0)
             {
-                System.Threading.Interlocked.Increment(ref SurfacesWithLods);
-            }
-            else if (info.Lods.Count != 0)
-            {
-                System.Threading.Interlocked.Increment(ref SurfacesWithoutLods);
-            }
-
-            if (geo.Name.Length != 0)
-            {
-                mesh.SurfaceSetName(added, geo.Name);
-            }
-
-            if (geo.SourceVertices.Length == vertexCount)
-            {
-                sourceVertices.AddRange(geo.SourceVertices);
-            }
-            else
-            {
-                sourceVertices.AddRange(System.Linq.Enumerable.Repeat(-1, vertexCount));
+                arrays[(int)Mesh.ArrayType.Color] = Engine_ModelSelfAo.BuildColorStream(modelSelfAo, geo);
             }
 
             // Wind comes from the mesh header, not the material: the file states a movement mode
@@ -497,9 +487,26 @@ public static int SurfacesWithLods;
                 ReportFallback(virtualPath, geo.Name, geo.Material);
                 material = Engine_MdlMaterial.Fallback(geo.Material);
             }
-            if (material is not null)
+
+            totalEstimatedBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
+            pendingSurfaces.Add((arrays, lods, levels?.Packed(), geo.Name, material));
+            surfaceLods.Add(lods ?? new Godot.Collections.Dictionary());
+            if (lods is not null)
             {
-                mesh.SurfaceSetMaterial(added, material);
+                System.Threading.Interlocked.Increment(ref SurfacesWithLods);
+            }
+            else if (info.Lods.Count != 0)
+            {
+                System.Threading.Interlocked.Increment(ref SurfacesWithoutLods);
+            }
+
+            if (geo.SourceVertices.Length == vertexCount)
+            {
+                sourceVertices.AddRange(geo.SourceVertices);
+            }
+            else
+            {
+                sourceVertices.AddRange(System.Linq.Enumerable.Repeat(-1, vertexCount));
             }
 
             surfaceRegions.Add(geo.Region);
@@ -512,11 +519,27 @@ public static int SurfacesWithLods;
             return null;
         }
 
+        Refii.Core.Engine_ServerSyncs.RunGpuUpload(System.Math.Max(4096L, totalEstimatedBytes), () =>
+        {
+            for (int i = 0; i < pendingSurfaces.Count; i++)
+            {
+                (Godot.Collections.Array arrays, Godot.Collections.Dictionary? lods, float[]? levelTable, string surfaceName, Material? surfaceMaterial) = pendingSurfaces[i];
+                int surfaceIndex = Engine_MdlSurfaceArrays.AddDirect(mesh, Mesh.PrimitiveType.Triangles, arrays, lods, levelTable);
+                if (surfaceName.Length != 0)
+                {
+                    mesh.SurfaceSetName(surfaceIndex, surfaceName);
+                }
+                if (surfaceMaterial is not null)
+                {
+                    mesh.SurfaceSetMaterial(surfaceIndex, surfaceMaterial);
+                }
+            }
+        });
+
         using (Variant sourceMap = Variant.CreateFrom(CollectionsMarshal.AsSpan(sourceVertices)))
         {
             mesh.SetMeta(SourceVertexMapMeta, sourceMap);
         }
-
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
         if (info.FileBoundingSphere.Length == 4)

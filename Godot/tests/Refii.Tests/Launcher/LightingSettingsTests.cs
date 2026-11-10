@@ -115,7 +115,21 @@ public class LightingSettingsTests
         AssertThat(Refii.Core.Engine_RefiiConfig.Float(configured, "placed_shadow_range", 50.0f)).IsEqual(30.0f);
 
         AssertThat(Refii.Lighting.Engine_LightingFrame.OutdoorFogScale).IsEqual(1.0f);
-        AssertThat(Refii.Lighting.Engine_PostFxParams.VolumetricShaftScale).IsEqual(1.0f);
+        AssertThat(Refii.Lighting.Engine_PostFxParams.InteriorVolumetricShaftScale).IsEqual(1.0f);
+        AssertThat(Refii.Lighting.Engine_PostFxParams.OutdoorVolumetricShaftScale).IsEqual(1.0f);
+
+        bool prevInterior = Refii.Lighting.Engine_LightingFrame.CurrentInterior;
+        try
+        {
+            Refii.Lighting.Engine_LightingFrame.CurrentInterior = false;
+            AssertThat(Refii.Lighting.Engine_PostFxParams.VolumetricShaftScale).IsEqualApprox(0.80f, 1e-4f);
+            Refii.Lighting.Engine_LightingFrame.CurrentInterior = true;
+            AssertThat(Refii.Lighting.Engine_PostFxParams.VolumetricShaftScale).IsEqualApprox(0.50f, 1e-4f);
+        }
+        finally
+        {
+            Refii.Lighting.Engine_LightingFrame.CurrentInterior = prevInterior;
+        }
     }
 
     [TestCase]
@@ -131,10 +145,15 @@ public class LightingSettingsTests
         AssertThat(outdoorFogDef!.DefaultValue).IsEqual("1.0");
         AssertThat(outdoorFogDef.Category).IsEqual(RuntimeCVarsGodot.LightingCategory);
 
-        RuntimeCVarDefinition? shaftScaleDef = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "volumetric_shaft_scale");
-        AssertThat(shaftScaleDef).IsNotNull();
-        AssertThat(shaftScaleDef!.DefaultValue).IsEqual("1.0");
-        AssertThat(shaftScaleDef.Category).IsEqual(RuntimeCVarsGodot.LightingCategory);
+        RuntimeCVarDefinition? outdoorShaftDef = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "outdoor_volumetric_shaft_scale");
+        AssertThat(outdoorShaftDef).IsNotNull();
+        AssertThat(outdoorShaftDef!.DefaultValue).IsEqual("1.0");
+        AssertThat(outdoorShaftDef.Category).IsEqual(RuntimeCVarsGodot.LightingCategory);
+
+        RuntimeCVarDefinition? interiorShaftDef = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "interior_volumetric_shaft_scale");
+        AssertThat(interiorShaftDef).IsNotNull();
+        AssertThat(interiorShaftDef!.DefaultValue).IsEqual("1.0");
+        AssertThat(interiorShaftDef.Category).IsEqual(RuntimeCVarsGodot.LightingCategory);
 
         RuntimeCVarDefinition? volFogDef = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "volumetric_fog");
         AssertThat(volFogDef).IsNotNull();

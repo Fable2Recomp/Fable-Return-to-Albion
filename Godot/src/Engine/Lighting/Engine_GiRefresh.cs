@@ -41,8 +41,89 @@ public static class Engine_GiRefresh
 	/// <summary>Frames drawn with SDFGI off before it is handed back; one is what deletes it.</summary>
 	private const int OffFrames = 2;
 
+	/// <summary>
+	/// Frames drawn after <see cref="HoldForWorldLoad"/> releases before SDFGI is enabled, so the
+	/// main scene's opaque/shadow MultiUmaBuffers and D3D12 staging buffer fences settle first.
+	/// </summary>
+	public const int PostHoldSettleFrameCount = 2;
+
 	/// <summary>Debug lever: true holds the GI off, so its cost can be read as a difference.</summary>
 	public static bool ForcedOff;
+
+	private static bool _holdForWorldLoad;
+	private static int _postHoldSettleFrames;
+
+	/// <summary>
+	/// True while a world load is still streaming props/entities/uploads behind the cover,
+	/// deferring SDFGI allocation until settle frames.
+	/// </summary>
+	public static bool HoldForWorldLoad
+	{
+		get => _holdForWorldLoad;
+		set
+		{
+			if (_holdForWorldLoad && !value)
+			{
+				_postHoldSettleFrames = PostHoldSettleFrameCount;
+			}
+			else if (value)
+			{
+				_postHoldSettleFrames = PostHoldSettleFrameCount;
+			}
+
+			_holdForWorldLoad = value;
+		}
+	}
+
+	/// <summary>True during the post-hold settle window before SDFGI activates.</summary>
+	public static bool SettlingAfterWorldLoad => _postHoldSettleFrames > 0;
+
+	/// <summary>Resets the world-load hold and post-hold settle state for isolated unit tests.</summary>
+	internal static void ResetWorldLoadGateForTest()
+	{
+		_holdForWorldLoad = false;
+		_postHoldSettleFrames = 0;
+	}
+
+	/// <summary>
+	/// Advances the world-load hold and post-hold settle state machine by one frame and returns
+	/// whether SDFGI is permitted to be enabled on this frame.
+	/// </summary>
+	public static bool AdvanceWorldLoadGate()
+	{
+		if (ForcedOff || HoldForWorldLoad)
+		{
+			if (HoldForWorldLoad)
+			{
+				lock (_arrived)
+				{
+					_arrived.Clear();
+				}
+
+				_pending = false;
+				_quiet = 0;
+				_waiting = 0;
+			}
+
+			return false;
+		}
+
+		if (_postHoldSettleFrames > 0)
+		{
+			lock (_arrived)
+			{
+				_arrived.Clear();
+			}
+
+			_pending = false;
+			_quiet = 0;
+			_waiting = 0;
+			--_postHoldSettleFrames;
+			return false;
+		}
+
+		return true;
+	}
 
 	/// <summary>Rebuilds since boot.</summary>
 	public static int Rebuilds;
@@ -95,7 +176,7 @@ public static class Engine_GiRefresh
 			return;
 		}
 
-		if (ForcedOff)
+		if (!AdvanceWorldLoadGate())
 		{
 			environment.SdfgiEnabled = false;
 			return;
@@ -104,6 +185,7 @@ public static class Engine_GiRefresh
 		if (!HoldingOff && !environment.SdfgiEnabled && Engine_LightingFrame.ModernModel)
 		{
 			environment.SdfgiEnabled = true;
+			_sinceRebuild = 0;
 		}
 
 		if (HoldingOff)

@@ -278,6 +278,7 @@ instance uniform vec3 xr_tree_centre : instance_index(12) = vec3(0.0);
 /// the streamer delivers inside its radius dithers in instead of popping. 1 is standing.
 instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
 varying float v_tree_fade;
+varying float v_combined_ao;
 
 void vertex() {
 #ifdef FABLE_TRANSFER_VARYING
@@ -286,7 +287,7 @@ void vertex() {
     // FABLE_SPEC_NO_PRT build draws instances that state another bake mode, or a mesh without CUSTOM0.
     v_transfer = vec4(0.0);
 #else
-    v_transfer = fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX));
+    v_transfer = mix(fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX)), vec4(0.0), step(0.5, fable_unified));
 #endif
 #endif
     // GRASS1's normal gradient (VS 0453 1314-1371, PS 0487 1279-1287): w = saturate(height x
@@ -549,12 +550,16 @@ void fragment() {
 #endif
 
     // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
+    float baked_ao = fable_evaluate_prop_baked_ao(COLOR.a, fable_world);
+    float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, fable_unified));
+    v_combined_ao = combined_ao;
     if (!FABLE_IS_PBR) {
         SPECULAR = 0.0;
         METALLIC = 0.0;
         ROUGHNESS = 1.0;
+        AO_LIGHT_AFFECT = fable_unified * fable_ao_light_affect;
     } else {
-        AO = ao;
+        AO = combined_ao;
         AO_LIGHT_AFFECT = 1.0;
         SPECULAR = 0.5;
     }
@@ -582,20 +587,20 @@ void fragment() {
     // transfer, the vertex bakes, their darkening, the tether and the bake AO — so none of it is
     // compiled. amb3 (mode 4) keeps its 0.35 share, untethered and unoccluded exactly as below.
     vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
+    vec3 darken = vec3(1.0);
+    if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
+        vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
+        float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
+        vec3 bent = normalize(mix(world_normal, amb_ref, bend));
+        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+        darken = mix(fable_darkening, vec3(1.0), nb * nb);
+    }
     vec3 ambient_half = vec3(0.0);
     if (FABLE_MODE > 3.5) {
-        vec3 darken = vec3(1.0);
-        if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
-            vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
-            float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
-            vec3 bent = normalize(mix(world_normal, amb_ref, bend));
-            float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
-            darken = mix(fable_darkening, vec3(1.0), nb * nb);
-        }
         ambient_half = fable_bake_amb3(UV2) * fable_lightmap_rgb() * darken;
     }
-    EMISSION = alb.rgb * fable_ambient(ambient_half);
-    AO = ao;
+    EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
+    AO = combined_ao;
 #else
     vec3 bake;
 #ifdef FABLE_TRANSFER_VARYING
@@ -659,9 +664,9 @@ void fragment() {
         ambient_half = fable_sky_tether(ambient_half);
     }
 
-    EMISSION = alb.rgb * fable_ambient(ambient_half);
+    EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
     // Godot's ambient and GI take the AO the guest's fills took above; 1 in the fable model.
-    AO = mix(1.0, ao, fable_unified);
+    AO = mix(1.0, combined_ao, fable_unified);
 #endif
     if (FABLE_HAS_EMISSION) {
         // Linear for authored PBR mod assets (is_pbr = true) with authored physical radiance.
@@ -778,6 +783,10 @@ void fragment() {
 		// The VIEW-SPACE NORMAL as colour — the terrain-parity diagnostic.
 		EMISSION = (NORMAL * 0.5) + 0.5;
 		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 11) {
+		// 11: combined ambient occlusion (micro-cavity ORM AO * baked vertex/inter-object AO).
+		EMISSION = vec3(combined_ao);
+		ALBEDO = vec3(0.0);
 	}
     } else {
         ALBEDO = vec3(0.5);
@@ -788,6 +797,7 @@ void fragment() {
         SPECULAR = 0.0;
         v_specular = vec3(0.0);
         v_specular_power = 1.0;
+        v_combined_ao = 1.0;
     }
 #endif
 }
@@ -824,7 +834,7 @@ void light() {
         // FACING AWAY, BOTH TERMS ARE EXACTLY ZERO — the diffuse's saturate(NdotL) and the
         // specular's saturate(4 NdotL) gate scale finite factors — so the light is skipped there,
         // and wherever its attenuation is zero, without changing a bit of the sum.
-        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
+        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world) * fable_direct_ao(v_combined_ao);
         if (atten > 0.0) {
             // Plain Lambert, no specular, on foliage: every shipped tree draws the TRUNK1 pair,
             // leaves included (blob 0559 `saturate(dot(L, N))` x the shadow; the canopy wrap of

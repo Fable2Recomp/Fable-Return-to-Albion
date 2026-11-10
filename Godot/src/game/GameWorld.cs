@@ -79,11 +79,15 @@ public partial class GameWorld : Node3D
 	/// <summary>The camera timeline's own drawn transform last frame, before the mouse's outstanding turn.</summary>
 	private Transform3D _lineDrawn = Transform3D.Identity;
 
+	/// <summary>True when a 3D world region is mounted and active for rendering.</summary>
+	public static bool HasActiveWorld { get; private set; }
+
 	private Camera3D _camera = null!;
 	private GameSplitView _split = null!;
 	private bool _reported;
 	public override void _Ready()
 	{
+		HasActiveWorld = false;
 		_camera = new Camera3D
 		{
 			Name = "GuestCamera",
@@ -131,6 +135,8 @@ public partial class GameWorld : Node3D
 
 		FollowGuestIntoTheWorld();
 		ReleaseWhenPropsHaveStreamed();
+		UpdateGuestLoadFreeze();
+		Refii.Core.Engine_ServerSyncs.LoadCoverActive = CoverHeld;
 		PumpDeferredCompaction();
 		TraceEntities();
 		if (Engine_TitleGame.Active.ApplyCamera(_camera)) return;
@@ -466,9 +472,11 @@ public partial class GameWorld : Node3D
 		string classicWait = Refii.Models.Engine_ClassicLoad.Pump(!propsPending && !entitiesPending);
 		// THEN THE LIGHT-COUNT PIPELINES (`android_pipeline_warmup`, Mobile only): every surface
 		// the level holds drawn beside the camera under each light count play can give it.
-		bool worldReady = !propsPending && !entitiesPending && classicWait.Length == 0;
+		bool uploadsPending = Refii.Core.Engine_ServerSyncs.PendingUploadCount > 0;
+		bool worldReady = !propsPending && !entitiesPending && !uploadsPending && classicWait.Length == 0;
 		string pipelineWait = Refii.Models.Engine_PipelineWarmup.Pump(this, worldReady);
 		bool pending = !worldReady || pipelineWait.Length != 0;
+		Refii.Lighting.Engine_GiRefresh.HoldForWorldLoad = pending;
 		// A warm-up frame draws the whole world too, so it counts towards the settle.
 		_readyFrames = worldReady ? _readyFrames + 1 : 0;
 		if (!pending && _readyFrames < ReleaseSettleFrames)
@@ -525,6 +533,7 @@ public partial class GameWorld : Node3D
 		}
 
 		_holdingForProps = false;
+		Refii.Lighting.Engine_GiRefresh.HoldForWorldLoad = false;
 		Refii.Core.Engine_LoadTimeline.Released();
 		Refii.Models.Engine_ClassicLoad.End();
 		Refii.Models.Engine_PipelineWarmup.End();
@@ -568,6 +577,50 @@ public partial class GameWorld : Node3D
 	/// <summary>The loading cover stays up: the build holds, or classic settles the stated lights' shapes.</summary>
 	public static bool CoverHeld => WorldBuildHeld || Refii.Models.Engine_ClassicLoad.Settling;
 
+	/// <summary>
+	/// True while Godot's world build or prop/entity streaming holds the loading cover and the guest
+	/// has already activated the level's entities and settled their initial bone poses, halting
+	/// guest simulation steps so NPCs, income notices and HUD transitions do not run behind the cover.
+	/// </summary>
+	public static bool FreezeGuestForLoad { get; private set; }
+
+	private static int _activeHoldGuestSteps;
+
+	private void UpdateGuestLoadFreeze()
+	{
+		// Note: `WorldIsReady()` (`game+0x105`) is cleared in state 3 and stays false until state 9
+		// (after our hold releases), so gating on it would leave the guest running throughout the load.
+		// `WorldIsActive()` (`World+0xA8`) is set by entity activation in state 5 / save-load state 2.
+		if (!WorldBuildHeld || !HostBridge.WorldIsActive())
+		{
+			_activeHoldGuestSteps = 0;
+			FreezeGuestForLoad = false;
+			return;
+		}
+
+		if (Refii.Core.Engine_GuestFrame.Changed)
+		{
+			++_activeHoldGuestSteps;
+		}
+
+		if (!_loaded)
+		{
+			// While BuildLevelNode is running on a worker thread, allow at most one guest frame after
+			// WorldIsActive() so initial bone poses settle without letting scripts/economy timers tick.
+			FreezeGuestForLoad = _activeHoldGuestSteps >= 1;
+			return;
+		}
+
+		if (!_holdingForProps)
+		{
+			FreezeGuestForLoad = false;
+			return;
+		}
+
+		// Once mounted, allow only the initial entity walk to capture posed skeletons, then hold.
+		FreezeGuestForLoad = _entities is null || _entities.HasInitialWalk;
+	}
+
 	/// <summary>When the current hold began, for the load's wall time on the release line.</summary>
 	private static long _heldSince;
 
@@ -576,12 +629,23 @@ public partial class GameWorld : Node3D
 		if (held && !WorldBuildHeld)
 		{
 			_heldSince = System.Diagnostics.Stopwatch.GetTimestamp();
+			_activeHoldGuestSteps = 0;
+			Refii.Lighting.Engine_GiRefresh.HoldForWorldLoad = true;
 			// A compaction still owed by the last release runs under this loading screen, before
 			// the next build's buffers land on top of the old gaps.
 			RunDeferredCompaction("the next load");
 		}
 
+		if (!held)
+		{
+			_activeHoldGuestSteps = 0;
+			FreezeGuestForLoad = false;
+			Refii.Lighting.Engine_GiRefresh.HoldForWorldLoad = false;
+			HostBridge.SetTimeBaseFrozen(false);
+		}
+
 		WorldBuildHeld = held;
+		Refii.Core.Engine_ServerSyncs.LoadCoverActive = CoverHeld;
 		HostBridge.SetWorldBuildPending(held);
 	}
 
@@ -686,6 +750,8 @@ public partial class GameWorld : Node3D
 	private static void Compact(long before)
 	{
 		long started = System.Diagnostics.Stopwatch.GetTimestamp();
+		Refii.Hero.Engine_HeroTextureMorph.TrimDecodedSources();
+		Refii.Level.Engine_TerrainSplatMaterial.ClearSharedCache();
 		// The first pass only finds what the finalizers can let go of; the second compacts all of it,
 		// so moving everything in the first as well is a pause with no result of its own.
 		System.GC.Collect(2, System.GCCollectionMode.Forced, blocking: true, compacting: false);
@@ -779,7 +845,7 @@ public partial class GameWorld : Node3D
 		_cameraTracePositions.Add(position);
 	}
 
-	private const double HeldStreamMsPerFrame = 100.0;
+	private const double HeldStreamMsPerFrame = 14.0;
 
 	private static void SetStreamBudget(Node node, double milliseconds) =>
 		Refii.Level.Engine_PropStreamer.SetBudget(node, milliseconds);
@@ -1273,6 +1339,7 @@ public partial class GameWorld : Node3D
 		}
 
 		_loaded = true;
+		HasActiveWorld = true;
 		_standing = $"{start.World}/{start.Level}";
 		_standingKey = here.Key;
 		_region = region;
@@ -1424,10 +1491,12 @@ public partial class GameWorld : Node3D
 		_torndownKey = _standingKey;
 
 		_loaded = false;
+		HasActiveWorld = false;
 		_standing = string.Empty;
 		_standingKey = 0u;
 		_waitingForGuest = false;
 		_holdingForProps = false;
+		Refii.Lighting.Engine_GiRefresh.HoldForWorldLoad = false;
 		Refii.Models.Engine_ClassicLoad.End();
 		Refii.Models.Engine_PipelineWarmup.End();
 		Refii.Models.Engine_ClassicLoad.Abandon();

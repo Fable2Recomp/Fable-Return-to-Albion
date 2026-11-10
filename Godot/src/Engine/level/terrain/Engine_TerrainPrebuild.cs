@@ -28,6 +28,10 @@ public static class Engine_TerrainPrebuild
 
 	private static readonly object Gate = new();
 
+	/// <summary>Fast boot marker for the terrain layer upscale sweep, keyed by fingerprint and mounted file count.</summary>
+	public static string TerrainMarkerPath =>
+		System.IO.Path.Combine(Engine_TexCache.CacheRoot, "terrain_prebuild.txt");
+
 	public static Progress Run(
 		string gameDirectory,
 		Action<Progress>? report = null,
@@ -53,6 +57,14 @@ public static class Engine_TerrainPrebuild
 
 		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
 		BnkFileSystem banks = mount?.Value ?? owned!;
+		if (Engine_TexPrebuild.TryReadFastMarker(
+				TerrainMarkerPath, banks.FileCount, out int cachedBuilt, out int cachedTotal, out int cachedFailed))
+		{
+			Progress fast = new(cachedTotal, cachedTotal, cachedBuilt, cachedFailed, string.Empty);
+			report?.Invoke(fast);
+			return fast;
+		}
+
 		byte[]? Read(string path) =>
 			banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
@@ -117,16 +129,10 @@ public static class Engine_TerrainPrebuild
 			bool enhanced = false;
 			try
 			{
-				byte[]? bytes = Read(item.Key) ?? Read("data/" + item.Key);
-				if (bytes is not null &&
-					Engine_TexImage.TryCreateImage(bytes, out bool hasAlpha, out _) is Image image)
-				{
-					read = true;
-					enhanced = Engine_TexLibrary.EnhanceDecoded(
-						bytes, image,
-						item.Value ? TexSemantic.Normal : TexSemantic.Albedo,
-						hasAlpha, item.Key) is not null;
-				}
+				TexSemantic semantic = item.Value ? TexSemantic.Normal : TexSemantic.Albedo;
+				read = Engine_TexLibrary.PrebuildTexture(
+					item.Key, semantic, path => Read(path) ?? Read("data/" + path));
+				enhanced = read;
 			}
 			catch (Exception)
 			{
@@ -155,6 +161,10 @@ public static class Engine_TerrainPrebuild
 		});
 
 		Progress final = Snapshot(done, total, built, failed, current);
+		if (!cancel.IsCancellationRequested && total > 0 && final.Failed == 0)
+		{
+			Engine_TexPrebuild.WriteFastMarker(TerrainMarkerPath, banks.FileCount, final.Built, final.Total, final.Failed);
+		}
 		report?.Invoke(final);
 		return final;
 	}

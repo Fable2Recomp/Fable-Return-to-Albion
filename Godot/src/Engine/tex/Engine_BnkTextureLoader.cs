@@ -105,8 +105,9 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 		//
 		// Decode rather than Get: Godot's ResourceLoader is this route's memory tier and it also
 		// FREES what it caches, so the texture must not also be pinned in the library's live map.
-		using Image? image = Engine_TexLibrary.Decode(
-			path[PathPrefix.Length..], TexSemantic.Ui, read, out _);
+		string virtualPath = path[PathPrefix.Length..];
+		using Image? image = Engine_TexLibrary.DecodeUi(
+			virtualPath, read, out bool enhanced, out Vector2I baseSize);
 		if (image is null || image.IsEmpty())
 		{
 			// The library has already said why, in its own warning.
@@ -114,13 +115,27 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 		}
 
 		ImageTexture texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
+		if (!GodotObject.IsInstanceValid(texture) || !texture.GetRid().IsValid)
+		{
+			return Variant.CreateFrom((int)Error.CantCreate);
+		}
+
+		if (Engine_UiKeyGlyphs.NeedsSourceImage(virtualPath))
+		{
+			Engine_UiKeyGlyphs.RegisterSourceImage(texture, (Image)image.Duplicate());
+		}
+
 		texture.ResourcePath = path;
+		if (enhanced)
+		{
+			texture.SetMeta("base_size", baseSize);
+		}
 
 		// §7 PUTS THIS PATH FIRST. The HUD, the menus and the front end are priority 0, and they
 		// were the one route that could never be enhanced at all — the loader handed its texture
 		// to Godot and forgot it, so there was nothing left to swap. Tracked weakly, so Godot
 		// still owns the lifetime. A no-op when the player has upscaling off, and in the editor.
-		Engine_TexLibrary.TrackUi(path[PathPrefix.Length..], texture, read);
+		Engine_TexLibrary.TrackUi(virtualPath, texture, read, enhanced);
 
 		return texture;
 	}

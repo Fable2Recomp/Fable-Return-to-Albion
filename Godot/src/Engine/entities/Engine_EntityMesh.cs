@@ -135,7 +135,22 @@ public static class Engine_EntityMesh
     private static void AppendSurfaces(
         ArrayMesh target, ArrayMesh part, Vector3 offset, int anchorBone)
     {
-        for (int surface = 0; surface < part.GetSurfaceCount(); surface++)
+        int surfaceCount = part.GetSurfaceCount();
+        if (surfaceCount == 0)
+        {
+            return;
+        }
+
+        var pending = new List<(
+            Mesh.PrimitiveType Primitive,
+            Godot.Collections.Array Arrays,
+            Godot.Collections.Dictionary? Lods,
+            float[]? LevelTable,
+            string Name,
+            Material? Material)>(surfaceCount);
+        long totalBytes = 0;
+
+        for (int surface = 0; surface < surfaceCount; surface++)
         {
             Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(part, surface);
 
@@ -159,12 +174,26 @@ public static class Engine_EntityMesh
 
             AnchorUnskinned(arrays, vertexCount, anchorBone);
 
-            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(target, part.SurfaceGetPrimitiveType(surface), arrays,
+            totalBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
+            pending.Add((
+                part.SurfaceGetPrimitiveType(surface),
+                arrays,
                 Refii.Models.Engine_MdlMesh.SurfaceLods(part, surface),
-                Refii.Models.Engine_MdlSurfaceArrays.LevelTable(part, surface));
-            target.SurfaceSetName(added, part.SurfaceGetName(surface));
-            target.SurfaceSetMaterial(added, part.SurfaceGetMaterial(surface));
+                Refii.Models.Engine_MdlSurfaceArrays.LevelTable(part, surface),
+                part.SurfaceGetName(surface),
+                part.SurfaceGetMaterial(surface)));
         }
+
+        Refii.Core.Engine_ServerSyncs.RunGpuUpload(Math.Max(4096L, totalBytes), () =>
+        {
+            foreach (var item in pending)
+            {
+                int added = Refii.Models.Engine_MdlSurfaceArrays.AddDirect(
+                    target, item.Primitive, item.Arrays, item.Lods, item.LevelTable);
+                target.SurfaceSetName(added, item.Name);
+                target.SurfaceSetMaterial(added, item.Material);
+            }
+        });
     }
 
     private static void AnchorUnskinned(

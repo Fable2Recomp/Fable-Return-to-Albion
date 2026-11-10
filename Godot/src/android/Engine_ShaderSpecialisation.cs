@@ -618,7 +618,8 @@ public static class Engine_ShaderSpecialisation
     }
 
     private static bool HasTransfer(Mesh mesh, int surface) =>
-        mesh is not ArrayMesh array || (array.SurfaceGetFormat(surface) & Mesh.ArrayFormat.FormatCustom0) != 0;
+        !Refii.Lighting.Engine_LightingFrame.ModernModel &&
+        (mesh is not ArrayMesh array || (array.SurfaceGetFormat(surface) & Mesh.ArrayFormat.FormatCustom0) != 0);
 
     /// <summary>The override a surface should carry (null: none), or false to leave it as it is.</summary>
     private static bool BakeCopyFor(Material? current, Material? meshMaterial, int mode, bool transfer, out ShaderMaterial? copy)

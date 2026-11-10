@@ -29,6 +29,8 @@ namespace Refii.Ui;
 public sealed class Engine_UiTextureCache
 {
 	private readonly Dictionary<string, string> _failures = new(StringComparer.OrdinalIgnoreCase);
+	private readonly Dictionary<string, Texture2D?> _resolved = new(StringComparer.OrdinalIgnoreCase);
+	private int _mountGeneration = -1;
 
 	/// <summary>Paths that could not be loaded, and why.</summary>
 	public IReadOnlyDictionary<string, string> Failures => _failures;
@@ -73,10 +75,29 @@ public sealed class Engine_UiTextureCache
 			return null;
 		}
 
+		int currentMountGen = Refii.Assets.Engine_GameAssets.Instance is { IsMounted: true } mounted
+			? mounted.MountGeneration
+			: 0;
+		if (currentMountGen != _mountGeneration)
+		{
+			_mountGeneration = currentMountGen;
+			_resolved.Clear();
+		}
+
 		// Separators are normalised because the same texture is named with backslashes in
 		// the .fac sidecar and forward slashes in the bank index; a cache keyed on the raw
 		// string would hold both and a loader keyed on one would miss the other.
 		string virtualPath = relativePath.Replace('\\', '/');
+
+		if (_resolved.TryGetValue(virtualPath, out Texture2D? cached))
+		{
+			if (cached is null || GodotObject.IsInstanceValid(cached))
+			{
+				return cached;
+			}
+
+			_resolved.Remove(virtualPath);
+		}
 
 		// ASKED OF THE BANK BEFORE ResourceLoader, not after. A path the bank does not hold
 		// still walks Godot's whole loader chain, and ResourceFormatLoaderBinary answers it by
@@ -92,23 +113,27 @@ public sealed class Engine_UiTextureCache
 			!_banks.TryGetFile(virtualPath, out probe))
 		{
 			_failures[relativePath] = "not in the bank under this path";
+			_resolved[virtualPath] = null;
 			return null;
 		}
 
 		var texture = ResourceLoader.Load<Texture2D>(
 			Engine_BnkTextureLoader.PathPrefix + virtualPath);
-		if (texture is null)
+		if (texture is null || !GodotObject.IsInstanceValid(texture) || !texture.GetRid().IsValid)
 		{
 			// The bank HAS the bytes and the load still failed, so the fault is the loader
 			// route or the decode — not a missing asset.
 			_failures[relativePath] =
 				$"bank has it ({probe.Size} bytes) but the loader returned null";
+			_resolved[virtualPath] = null;
 			return null;
 		}
 
 		++Loaded;
 
 		// A controller button's art becomes the keycap proxy the device switch redraws.
-		return Engine_UiKeyGlyphs.Wrap(virtualPath, texture);
+		Texture2D wrapped = Engine_UiKeyGlyphs.Wrap(virtualPath, texture);
+		_resolved[virtualPath] = wrapped;
+		return wrapped;
 	}
 }

@@ -207,7 +207,7 @@ public partial class Engine_FxAdditiveLayer : Node
         // displacement pass at 1000: the published texture must be this frame's.
         ProcessPriority = 900;
         Resize();
-        _usable = LayerRd().IsValid;
+        _usable = RenderingServer.GetRenderingDevice() is not null;
         if (!_usable)
         {
             GD.Print("[fx] additive layer: the viewport texture has no render-device texture; ONE/ONE particles stay in the scene");

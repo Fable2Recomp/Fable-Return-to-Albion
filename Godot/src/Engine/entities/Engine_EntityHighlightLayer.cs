@@ -218,7 +218,7 @@ public partial class Engine_EntityHighlightLayer : Node
         // before the FX layers at 900/1000: the texture published here must be this frame's.
         ProcessPriority = 850;
         Resize();
-        _usable = LayerRd().IsValid;
+        _usable = RenderingServer.GetRenderingDevice() is not null;
         if (!_usable)
         {
             GD.Print("[highlight] layer: the viewport texture has no render-device texture; " +

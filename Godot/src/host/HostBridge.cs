@@ -3796,6 +3796,33 @@ public static partial class HostBridge
 		}
 	}
 
+	private static int _timeBaseFrozenState = -1;
+
+	/// <summary>
+	/// Freezes or unfreezes the driven guest time base during intentional host holds (pause, load cover)
+	/// so the native grant-silence watchdog does not resume real-rate simulation ticks.
+	/// </summary>
+	public static void SetTimeBaseFrozen(bool frozen)
+	{
+		int wanted = frozen ? 1 : 0;
+		if (_timeBaseFrozenState == wanted)
+		{
+			return;
+		}
+
+		try
+		{
+			RefiiHostSetTimeBaseFrozen((uint)wanted);
+			_timeBaseFrozenState = wanted;
+		}
+		catch (System.DllNotFoundException)
+		{
+		}
+		catch (System.EntryPointNotFoundException)
+		{
+		}
+	}
+
 	/// <summary>
 	/// The guest's OWN simulation clock in seconds, and its per-tick counter — or null when the
 	/// world is not up.
@@ -7917,6 +7944,9 @@ public static partial class HostBridge
 
 	[System.Runtime.InteropServices.DllImport(Library, CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
 	private static extern void RefiiHostAdvanceTimeBase(uint steps);
+
+	[System.Runtime.InteropServices.DllImport(Library, CallingConvention = System.Runtime.InteropServices.CallingConvention.Cdecl)]
+	private static extern void RefiiHostSetTimeBaseFrozen(uint frozen);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetGuestFrame();

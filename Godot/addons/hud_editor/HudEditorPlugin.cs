@@ -19,6 +19,11 @@ public partial class HudEditorPlugin : EditorPlugin
 
 	public override void _EnterTree()
 	{
+		if (DisplayServer.GetName() == "headless")
+		{
+			return;
+		}
+
 		_dock = new UiLayoutEditor { Name = "HUD Layout", Saves = true, TargetName = PlayerHudLayoutTarget.Name };
 		_dock.SaveRequested += Save;
 		_dock.ReloadRequested += Reload;

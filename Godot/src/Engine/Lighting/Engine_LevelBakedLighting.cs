@@ -131,6 +131,7 @@ public static partial class Engine_LevelBakedLighting
 	private static StringName? _probeAtMetaName;
 	private static StringName? _bakeModeMetaName;
 	private static StringName? _bakeKeyMetaName;
+	private static StringName? _instanceBakedAoMetaName;
 	private static StringName? _globalAmbientColour;
 	private static StringName? _globalDarkening;
 	private static StringName? _globalLightmapTint;
@@ -141,11 +142,15 @@ public static partial class Engine_LevelBakedLighting
 	private static StringName? _paramProbeG;
 	private static StringName? _paramProbeR;
 	private static StringName? _paramAmbientScale;
+	private static StringName? _paramInstanceBakedAo;
+
+	public const string InstanceBakedAoMeta = "instance_baked_ao";
 
 	public static StringName ProbeMetaName => _probeMetaName ??= ProbeMeta;
 	public static StringName ProbeAtMetaName => _probeAtMetaName ??= "probe_at";
 	public static StringName BakeModeMetaName => _bakeModeMetaName ??= "bake_mode";
 	public static StringName BakeKeyMetaName => _bakeKeyMetaName ??= "bake_key";
+	public static StringName InstanceBakedAoMetaName => _instanceBakedAoMetaName ??= InstanceBakedAoMeta;
 	private static readonly float[] WhiteLightmap = { 1f, 1f, 1f };
 	private static StringName Global_ambient_colour => _globalAmbientColour ??= "fable_ambient_colour";
 	private static StringName Global_darkening => _globalDarkening ??= "fable_darkening";
@@ -157,6 +162,7 @@ public static partial class Engine_LevelBakedLighting
 	private static StringName Param_probe_g => _paramProbeG ??= "probe_g";
 	private static StringName Param_probe_r => _paramProbeR ??= "probe_r";
 	public static StringName Param_ambient_scale => _paramAmbientScale ??= "fable_ambient_scale";
+	public static StringName Param_instance_baked_ao => _paramInstanceBakedAo ??= "instance_baked_ao";
 
 	/// <summary>Where a runtime entity last sampled the probe field (region-local Godot axes).</summary>
 	public const string ProbeAtMeta = "probe_at";
@@ -316,6 +322,7 @@ public static partial class Engine_LevelBakedLighting
 			_checkedGen = gen;
 			_ambientScale = null;
 			_buildingInteriorAmbientScale = null;
+			Engine_LevelAmbientOcclusion.ReloadConfig();
 			if (!Refii.Core.Engine_AppRoot.IsTestHost &&
 				Refii.Level.Engine_SkyEnvironmentNode.Current is { } sky &&
 				sky.Lighting is not null &&
@@ -331,6 +338,7 @@ public static partial class Engine_LevelBakedLighting
 		_ambientScale = null;
 		_buildingInteriorAmbientScale = null;
 		_checkedGen = Refii.Core.Engine_Switches.Generation;
+		Engine_LevelAmbientOcclusion.ReloadConfig();
 		if (!Refii.Core.Engine_AppRoot.IsTestHost &&
 			Refii.Level.Engine_SkyEnvironmentNode.Current is { } sky &&
 			sky.Lighting is not null &&
@@ -983,10 +991,11 @@ public static partial class Engine_LevelBakedLighting
 		LightProbeField? probes,
 		LightmapContainer? bakes = null,
 		System.Collections.Generic.IReadOnlyList<ulong>? bakeKeys = null,
-		System.Collections.Generic.IReadOnlyList<uint>? authoredColours = null)
+		System.Collections.Generic.IReadOnlyList<uint>? authoredColours = null,
+		System.Collections.Generic.IReadOnlyList<float>? aoFactors = null)
 	{
 		bool haveField = probes is not null && probes.HasData;
-		if (!haveField && bakes is null && authoredColours is null)
+		if (!haveField && bakes is null && authoredColours is null && aoFactors is null)
 		{
 			return false;
 		}
@@ -994,6 +1003,10 @@ public static partial class Engine_LevelBakedLighting
 		bool any = false;
 		for (int i = 0; i < instances.Count; i++)
 		{
+			float alpha = aoFactors is not null && i < aoFactors.Count
+				? Math.Clamp(aoFactors[i], Engine_LevelAmbientOcclusion.MinBakedAo, 1.0f)
+				: 1f;
+
 			// AN AUTHORED COLOUR OUTRANKS THE PROBE FIELD — the .lmp's per-instance foliage
 			// bake, same precedence the guest gives amb1 over PRT. Stored with the vertex
 			// shader's 2.2 applied so the pixel side's 1.3 completes the 2.86 compose, which
@@ -1006,7 +1019,7 @@ public static partial class Engine_LevelBakedLighting
 					Mathf.Pow(((c >> 16) & 0xFF) / 255.0f, 2.2f),
 					Mathf.Pow(((c >> 8) & 0xFF) / 255.0f, 2.2f),
 					Mathf.Pow((c & 0xFF) / 255.0f, 2.2f),
-					1f));
+					alpha));
 				any = true;
 				continue;
 			}
@@ -1030,7 +1043,7 @@ public static partial class Engine_LevelBakedLighting
 			// the whole probe-lit population, batched or not.
 			float band = ShBand0 * AmbientScale;
 			var colour = new Color(
-				sample.R.X * band, sample.G.X * band, sample.B.X * band, 1f);
+				sample.R.X * band, sample.G.X * band, sample.B.X * band, alpha);
 			if (colour.R > 0f || colour.G > 0f || colour.B > 0f)
 			{
 				any = true;
@@ -1207,6 +1220,12 @@ public static partial class Engine_LevelBakedLighting
 		bool isIndoorInstance = (node.Layers & (Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask)) != 0u;
 		float instanceAmbient = isIndoorInstance ? BuildingInteriorAmbientScale : 1.0f;
 		Refii.Core.Engine_InstanceParams.Set(node, Param_ambient_scale, instanceAmbient);
+
+		float instanceAo = node.HasMeta(InstanceBakedAoMetaName) &&
+			node.GetMeta(InstanceBakedAoMetaName) is { VariantType: Variant.Type.Float } storedAo
+				? (float)storedAo.AsDouble()
+				: 1.0f;
+		Refii.Core.Engine_InstanceParams.Set(node, Param_instance_baked_ao, instanceAo);
 		_split = _split with { Params = System.Diagnostics.Stopwatch.GetTimestamp() - transferred };
 	}
 
@@ -1477,6 +1496,8 @@ public static partial class Engine_LevelBakedLighting
 
 	public const string GlobalPropLightmapsName = "fable_prop_lightmaps";
 
+	private static ImageTexture? _boundObjectAtlas;
+
 	/// <summary>
 	/// The atlas rect for one object's texture lightmap (the amb3 path — building interiors:
 	/// 106 blobs game-wide, all 64x64). Builds the region atlas on first call and publishes it
@@ -1503,8 +1524,12 @@ public static partial class Engine_LevelBakedLighting
 			return false;
 		}
 
-		RenderingServer.GlobalShaderParameterSet(
-			GlobalPropLightmapsName, container.ObjectAtlas);
+		if (!ReferenceEquals(_boundObjectAtlas, container.ObjectAtlas))
+		{
+			_boundObjectAtlas = container.ObjectAtlas;
+			RenderingServer.GlobalShaderParameterSet(
+				GlobalPropLightmapsName, container.ObjectAtlas);
+		}
 		return true;
 	}
 
@@ -1546,6 +1571,9 @@ public static partial class Engine_LevelBakedLighting
 			}
 
 			container.ObjectAtlas = Refii.Textures.Engine_TextureUpload.CreateTexture(atlas);
+			_boundObjectAtlas = container.ObjectAtlas;
+			RenderingServer.GlobalShaderParameterSet(
+				GlobalPropLightmapsName, container.ObjectAtlas);
 		}
 	}
 
@@ -1557,6 +1585,7 @@ public static partial class Engine_LevelBakedLighting
 		// another they were most of a second).
 		KeyValuePair<ulong, byte[]>[] blobs = container.ObjectLightmapBlobs.ToArray();
 		var images = new Image?[blobs.Length];
+		Image.Format atlasFormat = container.SharedKeyTable ? Image.Format.Rgbe9995 : Image.Format.Rgba8;
 		System.Threading.Tasks.Parallel.For(0, blobs.Length, i =>
 		{
 			// Decoded to an image, never through a texture: `GetImage` on a texture is a GPU
@@ -1564,9 +1593,17 @@ public static partial class Engine_LevelBakedLighting
 			Image? image = container.SharedKeyTable
 				? ComposeObjectBake(container, blobs[i].Key, blobs[i].Value)
 				: DecodeImage(blobs[i].Value);
-			if (image is not null && image.IsCompressed())
+			if (image is not null)
 			{
-				image.Decompress();
+				if (image.IsCompressed())
+				{
+					image.Decompress();
+				}
+
+				if (image.GetFormat() != atlasFormat)
+				{
+					image.Convert(atlasFormat);
+				}
 			}
 
 			images[i] = image;
@@ -1621,7 +1658,6 @@ public static partial class Engine_LevelBakedLighting
 		}
 
 		int atlasHeight = penY + rowHeight;
-		Image.Format atlasFormat = container.SharedKeyTable ? Image.Format.Rgbe9995 : Image.Format.Rgba8;
 		Image atlas = Image.CreateEmpty(rowWidth, atlasHeight, false, atlasFormat);
 
 		float atlasW = rowWidth;
@@ -1631,11 +1667,6 @@ public static partial class Engine_LevelBakedLighting
 			Image source = order[i].Image;
 			try
 			{
-				if (source.GetFormat() != atlasFormat)
-				{
-					source.Convert(atlasFormat);
-				}
-
 				int x = places[i].X;
 				int y = places[i].Y;
 				atlas.BlitRect(source,
@@ -1837,11 +1868,19 @@ public static partial class Engine_LevelBakedLighting
 		}
 		lock (container.ObjectTextures)
 		{
+			if (container.ObjectTextures.TryGetValue(key, out ImageTexture? cached))
+			{
+				return cached;
+			}
+		}
+		ImageTexture? created = container.SharedKeyTable
+			? (ComposeObjectBake(container, key, blob) is { } composed ? Refii.Textures.Engine_TextureUpload.CreateTexture(composed) : null)
+			: DecodeTexture(blob);
+		lock (container.ObjectTextures)
+		{
 			if (!container.ObjectTextures.TryGetValue(key, out ImageTexture? texture))
 			{
-				texture = container.SharedKeyTable
-					? (ComposeObjectBake(container, key, blob) is { } composed ? ImageTexture.CreateFromImage(composed) : null)
-					: DecodeTexture(blob);
+				texture = created;
 				container.ObjectTextures[key] = texture;
 			}
 			return texture;
@@ -1860,9 +1899,17 @@ public static partial class Engine_LevelBakedLighting
 		}
 		lock (container.ObjectSecondTextures)
 		{
+			if (container.ObjectSecondTextures.TryGetValue(key, out ImageTexture? cached))
+			{
+				return cached;
+			}
+		}
+		ImageTexture? created = DecodeTexture(blob);
+		lock (container.ObjectSecondTextures)
+		{
 			if (!container.ObjectSecondTextures.TryGetValue(key, out ImageTexture? texture))
 			{
-				texture = DecodeTexture(blob);
+				texture = created;
 				container.ObjectSecondTextures[key] = texture;
 			}
 			return texture;

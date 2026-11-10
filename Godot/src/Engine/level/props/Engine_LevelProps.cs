@@ -959,6 +959,13 @@ public static partial class Engine_LevelProps
                     single, block.Instances[index].Origin, probes);
             }
 
+            if (role == PropRole.Main &&
+                Refii.Lighting.Engine_LevelAmbientOcclusion.TryGetPlacementAoFactor(
+                    block.ModelPath, block.Instances[index], out float placementAo))
+            {
+                single.SetMeta(Refii.Lighting.Engine_LevelBakedLighting.InstanceBakedAoMetaName, placementAo);
+            }
+
             if (inspect is not null && hash != 0 && role == PropRole.Main)
             {
                 Refii.Entities.Engine_EntityInspect.Annotate(single, hash, inspect);
@@ -1173,9 +1180,23 @@ public static partial class Engine_LevelProps
                         : 0);
                 }
 
+                float[]? batchedAoFactors = null;
+                if (role == PropRole.Main && Refii.Lighting.Engine_LevelAmbientOcclusion.Current is not null)
+                {
+                    batchedAoFactors = new float[spatialBatch.Count];
+                    for (int i = 0; i < spatialBatch.Count; i++)
+                    {
+                        int index = spatialBatch[i];
+                        batchedAoFactors[i] = Refii.Lighting.Engine_LevelAmbientOcclusion.TryGetPlacementAoFactor(
+                            block.ModelPath, block.Instances[index], out float aoFactor)
+                            ? aoFactor
+                            : 1.0f;
+                    }
+                }
+
                 bool coloured = Refii.Lighting.Engine_LevelBakedLighting.ApplyMultiMeshProbes(
                     slots, BatchStride, batchedTransforms, probes, bakes, batchedBakeKeys,
-                    batchedBakeColours);
+                    batchedBakeColours, batchedAoFactors);
 
                 // ONE SLOT WRITE FIRST, THEN THE BULK BUFFER, and the order is what keeps the
                 // server off the GPU. A bulk set on a multimesh with no CPU copy leaves it with

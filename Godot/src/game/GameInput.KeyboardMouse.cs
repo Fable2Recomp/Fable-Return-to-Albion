@@ -461,6 +461,18 @@ public partial class GameInput
 	/// press the pad only in play (elsewhere they are the pointer's clicks), so outside play the first
 	/// KEY is shown, and a mouse button only when the action has no key.
 	/// </summary>
+	private static readonly Dictionary<Key, string> KeycodeStrings = new();
+
+	private static string GetCachedKeycodeString(Key key)
+	{
+		if (!KeycodeStrings.TryGetValue(key, out string? label))
+		{
+			label = OS.GetKeycodeString(key);
+			KeycodeStrings[key] = label;
+		}
+		return label;
+	}
+
 	private static string Shown(string action)
 	{
 		if (!_bindings.TryGetValue(action, out List<BoundInput>? inputs) || inputs.Count == 0)
@@ -496,7 +508,7 @@ public partial class GameInput
 				Key.Bracketleft => "[",
 				Key.Bracketright => "]",
 				Key.Enter => "Enter",
-				_ => OS.GetKeycodeString(first.Key),
+				_ => GetCachedKeycodeString(first.Key),
 			},
 		};
 	}

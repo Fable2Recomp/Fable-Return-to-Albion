@@ -214,6 +214,8 @@ public partial class GameDebugServer : Node
 	/// its most recent history.
 	/// </summary>
 	private double _flightDue;
+	private string? _flightLogPath;
+	private int _flightWritesSinceSizeCheck;
 
 	private void RecordFlight(double delta)
 	{
@@ -226,11 +228,15 @@ public partial class GameDebugServer : Node
 		_flightDue = 1.0;
 		try
 		{
-			string path = ProjectSettings.GlobalizePath("user://logs/refii_flight.jsonl");
-			if (System.IO.File.Exists(path) &&
-				new System.IO.FileInfo(path).Length > 2_000_000)
+			string path = _flightLogPath ??= ProjectSettings.GlobalizePath("user://logs/refii_flight.jsonl");
+			if (++_flightWritesSinceSizeCheck >= 60)
 			{
-				System.IO.File.Move(path, path + ".1", overwrite: true);
+				_flightWritesSinceSizeCheck = 0;
+				if (System.IO.File.Exists(path) &&
+					new System.IO.FileInfo(path).Length > 2_000_000)
+				{
+					System.IO.File.Move(path, path + ".1", overwrite: true);
+				}
 			}
 
 			var line = new Dictionary<string, object?>
@@ -464,7 +470,10 @@ public partial class GameDebugServer : Node
 		{
 			SampleSimRebase();
 			ProcessBody(delta);
-			ShaderCeiling.Tick(GetTree().Root);
+			if (ShaderCeiling.IsActive)
+			{
+				ShaderCeiling.Tick(GetTree().Root);
+			}
 		}
 	}
 
@@ -1751,10 +1760,10 @@ public partial class GameDebugServer : Node
 				}
 
 				// The shader's own views of one lighting term: 1 bake, 2 direct, 3 raw albedo, 4 the
-				// normal-map darken, 5 bake mode, 8 view normal, 9 summed light on white, 10 facing; 0 is off.
+				// normal-map darken, 5 bake mode, 8 view normal, 9 summed light on white, 10 facing, 11 combined AO; 0 is off.
 				if (root.TryGetProperty("lightDebug", out JsonElement ld) && ld.ValueKind == JsonValueKind.Number)
 				{
-					_lightDebug = System.Math.Clamp(ld.GetInt32(), 0, 10);
+					_lightDebug = System.Math.Clamp(ld.GetInt32(), 0, 11);
 					RenderingServer.GlobalShaderParameterSet("fable_light_debug", _lightDebug);
 				}
 
@@ -2247,6 +2256,10 @@ public partial class GameDebugServer : Node
 					["skylightWeight"] =
 						Refii.Level.Engine_SkyEnvironmentNode.Current?.Lighting?.SkylightWeight,
 					["interiorFogScale"] = Refii.Lighting.Engine_LightingFrame.InteriorFogScale,
+					["outdoorFogScale"] = Refii.Lighting.Engine_LightingFrame.OutdoorFogScale,
+					["interiorVolumetricShaftScale"] = Refii.Lighting.Engine_PostFxParams.InteriorVolumetricShaftScale,
+					["outdoorVolumetricShaftScale"] = Refii.Lighting.Engine_PostFxParams.OutdoorVolumetricShaftScale,
+					["volumetricShaftScale"] = Refii.Lighting.Engine_PostFxParams.VolumetricShaftScale,
 					["bakeWeight"] = Refii.Lighting.Engine_LevelBakedLighting.BakeWeight,
 					["lightTable"] = Refii.Lighting.Engine_LightTable.Live,
 					["lightBudget"] = Refii.Lighting.Engine_LightShadowBudget.LightBudget,

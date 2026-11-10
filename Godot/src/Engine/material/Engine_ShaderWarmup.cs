@@ -58,6 +58,8 @@ public partial class Engine_ShaderWarmup : Node
 	private Label _label = null!;
 	private SpinnerArc? _spinner;
 	private ArrayMesh _mesh = null!;
+	private QuadMesh _quadMesh = null!;
+	private ArrayMesh _uiTextMesh = null!;
 
 	/// <summary>Fable's gold — the loading screen's lettering and seal tone.</summary>
 	private static readonly Color Gold = new(0.78f, 0.63f, 0.35f);
@@ -375,6 +377,14 @@ public partial class Engine_ShaderWarmup : Node
 
 		GD.Print($"[shader-warmup] {_paths.Count} shader(s) compiled in " +
 			$"{Time.GetTicksMsec() - _startedMs} ms");
+		if (_viewport is not null && IsInstanceValid(_viewport))
+		{
+			_viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+			_viewport.QueueFree();
+		}
+		_mesh = null!;
+		_quadMesh = null!;
+		_uiTextMesh = null!;
 		_label.Text = "Preparing Albion...";
 		Done = true;
 	}
@@ -422,6 +432,26 @@ public partial class Engine_ShaderWarmup : Node
 				MaterialOverride = material,
 				CastShadow = GeometryInstance3D.ShadowCastingSetting.On,
 			});
+
+			// 3D UI shaders (`ui_quad.gdshader`, `ui_text.gdshader`) draw on `QuadMesh` and
+			// indexed `(Vertex, Normal, Color, TexUV)` glyph meshes without tangents or UV2.
+			// Warming those exact vertex formats prevents draw-time PSO compilation spikes when
+			// `frontendmainmenu` or the title screen first renders in D3D12/Vulkan.
+			if (path.Contains("/ui/", System.StringComparison.Ordinal))
+			{
+				_spatialRoot.AddChild(new MeshInstance3D
+				{
+					Mesh = _quadMesh,
+					MaterialOverride = material,
+					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+				});
+				_spatialRoot.AddChild(new MeshInstance3D
+				{
+					Mesh = _uiTextMesh,
+					MaterialOverride = material,
+					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+				});
+			}
 		}
 	}
 
@@ -652,8 +682,42 @@ public partial class Engine_ShaderWarmup : Node
 		// lights; the same fillers here warm that pipeline instead of the lightless one.
 		Refii.Lighting.Engine_StableLightCounts.Configure(Refii.Core.Engine_RefiiConfig.Read(out _));
 		Refii.Lighting.Engine_StableLightCounts.Mount(_viewport);
+		Refii.Lighting.Engine_LevelAmbientOcclusion.EnsureFallbackTextureBound();
 
 		_mesh = FullAttributeMesh();
+		_quadMesh = new QuadMesh { Size = Vector2.One };
+		_uiTextMesh = UiTextAttributeMesh();
+	}
+
+	/// <summary>
+	/// Matches the exact vertex format emitted by <see cref="Refii.Ui.Engine_UiTextMesh"/>:
+	/// indexed triangles with Vertex, Normal, Color, and TexUV1 (no Tangent or TexUV2).
+	/// </summary>
+	private static ArrayMesh UiTextAttributeMesh()
+	{
+		var arrays = new Godot.Collections.Array();
+		arrays.Resize((int)Mesh.ArrayType.Max);
+		arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[]
+		{
+			new(-1, -1, 0), new(1, -1, 0), new(1, 1, 0), new(-1, 1, 0),
+		};
+		arrays[(int)Mesh.ArrayType.Normal] = new Vector3[]
+		{
+			new(0, 0, 1), new(0, 0, 1), new(0, 0, 1), new(0, 0, 1),
+		};
+		arrays[(int)Mesh.ArrayType.Color] = new Color[]
+		{
+			Colors.White, Colors.White, Colors.White, Colors.White,
+		};
+		arrays[(int)Mesh.ArrayType.TexUV] = new Vector2[]
+		{
+			new(0, 0), new(1, 0), new(1, 1), new(0, 1),
+		};
+		arrays[(int)Mesh.ArrayType.Index] = new int[] { 0, 1, 2, 0, 2, 3 };
+
+		var mesh = new ArrayMesh();
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
+		return mesh;
 	}
 
 	/// <summary>

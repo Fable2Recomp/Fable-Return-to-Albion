@@ -166,28 +166,46 @@ public static class GameChildProcess
 	/// <summary>Where `application/config/project_settings_override` points (project.godot).</summary>
 	private const string RendererSettingsPath = "user://renderer.cfg";
 
+	public const int DefaultStagingBufferMaxSizeMb = 128;
+	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 131072;
+	public const int DefaultD3D12MaxSamplerDescriptorsPerFrame = 4096;
+	public const int DefaultD3D12MaxMiscDescriptorsPerFrame = 4096;
+
 	/// <summary>
-	/// Project settings that differ per lighting model, read by Godot before the child's code runs.
+	/// Builds the `user://renderer.cfg` override content read by Godot before the child's code runs.
 	/// Classic turns the depth pre-pass off: its cascades then draw each caster once, and the main
 	/// world keeps its pre-pass through <c>Engine_DepthPrepassMarker</c>. Modern keeps the project
 	/// default, because its picture depends on the setting itself, not only on the pre-pass.
+	/// Staging buffer size is capped at 128 MB so permanently mapped D3D12 UPLOAD blocks do not
+	/// starve MultiUmaBuffer persistent dynamic storage buffer allocations on unified-memory GPUs.
 	/// </summary>
+	public static string BuildRendererSettingsContent(
+		IReadOnlyDictionary<string, string> config,
+		string forcedLightingModel = "")
+	{
+		bool classic = Refii.Lighting.Engine_LightingFrame.IsClassic(
+			forcedLightingModel.Length != 0
+				? forcedLightingModel
+				: Refii.Core.Engine_RefiiConfig.String(config, "lighting_model", "modern"));
+		string common =
+			"[rendering]\n\n" +
+			$"rendering_device/staging_buffer/max_size_mb={DefaultStagingBufferMaxSizeMb}\n" +
+			$"rendering_device/d3d12/max_resource_descriptors_per_frame={DefaultD3D12MaxResourceDescriptorsPerFrame}\n" +
+			$"rendering_device/d3d12/max_sampler_descriptors_per_frame={DefaultD3D12MaxSamplerDescriptorsPerFrame}\n" +
+			$"rendering_device/d3d12/max_misc_descriptors_per_frame={DefaultD3D12MaxMiscDescriptorsPerFrame}\n";
+		return classic
+			? common + "driver/depth_prepass/enable=false\n"
+			: common;
+	}
+
 	private static void WriteRendererSettings(IReadOnlyDictionary<string, string> config)
 	{
 		string forced = OS.GetEnvironment("REFII_LIGHTING_MODEL");
-		bool classic = Refii.Lighting.Engine_LightingFrame.IsClassic(
-			forced.Length != 0 ? forced : Refii.Core.Engine_RefiiConfig.String(config, "lighting_model", "modern"));
 		string path = ProjectSettings.GlobalizePath(RendererSettingsPath);
 		try
 		{
-			if (classic)
-			{
-				System.IO.File.WriteAllText(path, "[rendering]\n\ndriver/depth_prepass/enable=false\n");
-			}
-			else if (System.IO.File.Exists(path))
-			{
-				System.IO.File.Delete(path);
-			}
+			string content = BuildRendererSettingsContent(config, forced);
+			System.IO.File.WriteAllText(path, content);
 		}
 		catch (System.Exception ex) when (ex is System.IO.IOException or System.UnauthorizedAccessException)
 		{

@@ -707,12 +707,15 @@ public static partial class Engine_TerrainSplatMaterial
         // Cached per layer, by both normal slices' content: the cavity filters and the 24-pass
         // Poisson height solve are the most expensive part of a terrain build, and deterministic.
         // The entry's one flag carries "a height was solved", which is what `hasHeight` reports.
-        string recipe = $"terrain-cavity|{size}|{strength.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}|{(solveHeight ? "h" : "-")}";
+        // Encoded as BC1 (4 bpp) rather than uncompressed RGB8 (which Vulkan/D3D12 expand to 32 bpp
+        // RGBA8), reducing terrain cavity VRAM and upload staging by 8x.
+        string recipe = $"terrain-cavity-bc1|{size}|{strength.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}|{(solveHeight ? "h" : "-")}";
+        bool compressed = true;
         System.Threading.Tasks.Parallel.For(0, baseSlices.Length, i =>
         {
             string key = Refii.Textures.Engine_TexCache.DerivedKey(recipe, baseSlices[i], detailSlices[i]);
             if (temporary.Own(Refii.Textures.Engine_TexCache.TryLoad(key, out bool solved)) is { } hit &&
-                hit.GetFormat() == Image.Format.Rgb8 && hit.HasMipmaps() &&
+                hit.GetFormat() == Image.Format.Dxt1 && hit.HasMipmaps() &&
                 hit.GetWidth() == size && hit.GetHeight() == size)
             {
                 anyHeight[i] = solved;
@@ -734,19 +737,38 @@ public static partial class Engine_TerrainSplatMaterial
                 anyHeight[i] = height is not null;
             }
 
-            var rgb = new byte[size * size * 3];
+            var rgba = new byte[size * size * 4];
             for (int t = 0; t < baseCavity.Length; t++)
             {
-                rgb[t * 3] = baseCavity[t];
-                rgb[(t * 3) + 1] = detailCavity[t];
-                rgb[(t * 3) + 2] = height is null ? (byte)128 : height[t];
+                rgba[t * 4] = baseCavity[t];
+                rgba[(t * 4) + 1] = detailCavity[t];
+                rgba[(t * 4) + 2] = height is null ? (byte)128 : height[t];
+                rgba[(t * 4) + 3] = 255;
             }
 
-            Image image = temporary.Own(Image.CreateFromData(size, size, false, Image.Format.Rgb8, rgb))!;
+            Image image = temporary.Own(Image.CreateFromData(size, size, false, Image.Format.Rgba8, rgba))!;
             image.GenerateMipmaps();
             built[i] = image;
+            if (!Refii.Textures.Engine_TexImage.CompressBlocks(
+                    image, false, Refii.Textures.TexSurfaceFormat.Bc1))
+            {
+                compressed = false;
+                return;
+            }
+
             Refii.Textures.Engine_TexCache.Store(key, image, anyHeight[i], Refii.Textures.TexCacheCost.Derived);
         });
+
+        if (!compressed)
+        {
+            for (int i = 0; i < built.Length; i++)
+            {
+                if (built[i] is { } slice && slice.IsCompressed())
+                {
+                    slice.Decompress();
+                }
+            }
+        }
 
         var images = new Godot.Collections.Array<Image>();
         using Godot.Collections.Array imageStorage = (Godot.Collections.Array)images;
@@ -875,6 +897,6 @@ public static partial class Engine_TerrainSplatMaterial
 
         GD.Print($"[terrain] layer mask: {layers / (double)area:0.00} layers a texel on average, at most {widest} of {planes}");
         using Image maskImage = Image.CreateFromData(width, height, false, Image.Format.Rgba8, bytes);
-        return ImageTexture.CreateFromImage(maskImage);
+        return Refii.Textures.Engine_TextureUpload.CreateTexture(maskImage);
     }
 }

@@ -110,6 +110,8 @@ public static class Engine_TexLibrary
 
 		public EnhancementState State;
 
+		public long Version;
+
 		/// <summary>Everything needed to redo, or undo, the enhancement without a caller.</summary>
 		public required string Path { get; init; }
 
@@ -246,7 +248,7 @@ public static class Engine_TexLibrary
 
 			FailedUntil.Remove(memKey);
 			Held(texture, image);
-			Live[memKey] = new Entry
+			var createdEntry = new Entry
 			{
 				Texture = texture,
 				HasAlpha = decodedAlpha,
@@ -255,9 +257,12 @@ public static class Engine_TexLibrary
 				Read = read,
 				State = enhanced ? EnhancementState.Enhanced : EnhancementState.None,
 			};
-			// The new texture is exclusive until this publication. A racing loser remains
-			// owned by the operation and is disposed with its temporary CPU images.
-			if (texture is not null) temporary.Transfer(texture);
+			Live[memKey] = createdEntry;
+			if (texture is not null)
+			{
+				LibraryEntries.AddOrUpdate(texture, createdEntry);
+				temporary.Transfer(texture);
+			}
 		}
 
 		hasAlpha = decodedAlpha;
@@ -360,9 +365,19 @@ public static class Engine_TexLibrary
 	/// applying all of them in that frame trades a background cost for a visible hitch — which is
 	/// the exact thing §6 exists to avoid.
 	/// </remarks>
-	public static int Pump(int budget = 8)
+	private const long MaxSyncUiEnhancedBytesPerFrame = 16L * 1024 * 1024;
+	private const long MaxPumpBytesPerFrame = 16L * 1024 * 1024;
+	private static long _syncUiEnhancedBytesThisFrame;
+	private static long _pumpedBytesThisFrame;
+
+	public static int Pump(int budget = 2)
 	{
+		Interlocked.Exchange(ref _syncUiEnhancedBytesThisFrame, 0);
+		Interlocked.Exchange(ref _pumpedBytesThisFrame, 0);
 		int applied = 0;
+		long startStamp = System.Diagnostics.Stopwatch.GetTimestamp();
+		long maxTicks = (long)(1.5 * (System.Diagnostics.Stopwatch.Frequency / 1000.0));
+		bool enforceTimeBudget = budget <= 8;
 		while (applied < budget && Completions.TryDequeue(out Action? action))
 		{
 			try
@@ -375,6 +390,12 @@ public static class Engine_TexLibrary
 			}
 
 			++applied;
+			if (enforceTimeBudget && (
+				(System.Diagnostics.Stopwatch.GetTimestamp() - startStamp) >= maxTicks ||
+				Interlocked.Read(ref _pumpedBytesThisFrame) >= MaxPumpBytesPerFrame))
+			{
+				break;
+			}
 		}
 
 		return applied;
@@ -394,10 +415,12 @@ public static class Engine_TexLibrary
 			Live.Clear();
 			LiveCubes.Clear();
 			LiveOrm.Clear();
+			FailedUntil.Clear();
 			ComposedOrms.Clear();
 			ComposedOrmsOverLimit.Clear();
 		}
 
+		FlagsByPath.Clear();
 		Refii.Core.Engine_TracedMemory.FreeAll(TracedPool);
 	}
 
@@ -513,6 +536,7 @@ public static class Engine_TexLibrary
 			{
 				entry.HasAlpha = hasAlpha;
 				entry.State = EnhancementState.None;
+				Interlocked.Increment(ref entry.Version);
 			}
 
 			refreshed.Add(texture);
@@ -688,6 +712,76 @@ public static class Engine_TexLibrary
 	}
 
 	/// <summary>
+	/// Decodes a <c>game://</c> UI texture, preferring an already-cached enhanced image on disk
+	/// when running in-game so the texture is uploaded to the GPU once at its final resolution
+	/// instead of uploading 1x and immediately destroying/reallocating via <c>SetImage</c>.
+	/// </summary>
+	public static Image? DecodeUi(
+		string virtualPath, Func<string, byte[]?> read, out bool enhanced, out Vector2I baseSize)
+	{
+		enhanced = false;
+		baseSize = Vector2I.One;
+		string path = Normalise(virtualPath);
+
+		TexPolicy uiPolicy = Engine_TexSemantic.For(TexSemantic.Ui);
+		if (!Engine.IsEditorHint() && Engine_TexEnhance.Enabled &&
+			Engine_TexEnhance.Backend is { } backend &&
+			uiPolicy.Filter != TexFilterClass.None)
+		{
+			byte[]? earlySource = null;
+			try
+			{
+				earlySource = read(path);
+			}
+			catch (Exception)
+			{
+				earlySource = null;
+			}
+
+			if (earlySource is not null)
+			{
+				string baseKey = Engine_TexCache.BaseKey(earlySource);
+				if (Engine_TexCache.TryReadHeader(baseKey, out int baseW, out int baseH, out _) &&
+					baseW > 0 && baseH > 0)
+				{
+					baseSize = new Vector2I(baseW, baseH);
+					int scale = Engine_TexSemantic.TargetScale(baseW, baseH, uiPolicy);
+					if (scale > 1)
+					{
+						string enhKey = Engine_TexCache.Key(earlySource, TexSemantic.Ui, backend.Id, scale);
+						if (Engine_TexCache.TryLoad(enhKey, out _) is { } cachedEnhanced)
+						{
+							Interlocked.Add(ref _syncUiEnhancedBytesThisFrame, cachedEnhanced.GetDataSize());
+							enhanced = true;
+							return cachedEnhanced;
+						}
+					}
+				}
+			}
+		}
+
+		Image? image = Decode(path, TexSemantic.Ui, read, out bool decodedAlpha, out byte[]? source);
+		if (image is null)
+		{
+			return null;
+		}
+
+		baseSize = new Vector2I(Math.Max(image.GetWidth(), 1), Math.Max(image.GetHeight(), 1));
+		if (source is not null && !Engine.IsEditorHint() && Engine_TexEnhance.Enabled &&
+			uiPolicy.Filter != TexFilterClass.None &&
+			EnhanceDecoded(source, image, TexSemantic.Ui, decodedAlpha, path, compress: true, cacheOnly: true)
+				is { } generated)
+		{
+			Interlocked.Add(ref _syncUiEnhancedBytesThisFrame, generated.GetDataSize());
+			image.Dispose();
+			image = generated;
+			enhanced = true;
+		}
+
+		return image;
+	}
+
+	/// <summary>
 	/// Registers a <c>game://</c> texture so §7's priority-0 UI can be enhanced too.
 	/// </summary>
 	/// <remarks>
@@ -701,7 +795,7 @@ public static class Engine_TexLibrary
 	/// re-requested. That re-request is cheap — the enhanced result is already on disk.
 	/// </remarks>
 	public static void TrackUi(
-		string virtualPath, ImageTexture texture, Func<string, byte[]?> read)
+		string virtualPath, ImageTexture texture, Func<string, byte[]?> read, bool alreadyEnhanced = false)
 	{
 		if (!Engine_TexEnhance.Enabled || string.IsNullOrWhiteSpace(virtualPath))
 		{
@@ -732,6 +826,12 @@ public static class Engine_TexLibrary
 			// NEVER a strong reference on this path, even if an earlier entry had one.
 			entry.Texture = null;
 			entry.WeakTexture = new WeakReference<ImageTexture>(texture);
+
+			if (alreadyEnhanced)
+			{
+				entry.State = EnhancementState.Enhanced;
+				return;
+			}
 
 			// Enhanced means "the instance we last swapped was enhanced", and this is a different
 			// instance carrying the base image, so the state no longer describes what is on
@@ -791,7 +891,6 @@ public static class Engine_TexLibrary
 		// The base decode first, and it is the half that pays off even with enhancement off — the
 		// cache serves it to every later load whatever the player's settings say.
 		string baseKey = Engine_TexCache.BaseKey(source);
-
 		// Already built, as nearly every texture is on a boot after the first: no need for the pixels.
 		if (Engine_TexCache.TryPeek(baseKey, out int width, out int height) &&
 			EnhancementIsCached(source, width, height, semantic))
@@ -799,30 +898,39 @@ public static class Engine_TexLibrary
 			return true;
 		}
 
-		Image? original = Engine_TexCache.TryLoad(baseKey, out bool hasAlpha);
+		using Image? original = Engine_TexCache.TryLoad(baseKey, out bool hasAlpha)
+			?? TryDecodeAndStoreBase(source, baseKey, out hasAlpha);
 		if (original is null)
 		{
-			try
-			{
-				original = Engine_TexImage.TryCreateImage(source, out hasAlpha, out _);
-			}
-			catch (Exception)
-			{
-				return false;
-			}
-
-			if (original is null)
-			{
-				return false;
-			}
-
-			Engine_TexCache.Store(baseKey, original, hasAlpha);
+			return false;
 		}
 
 		// EnhanceDecoded is a no-op when the setting is off or the policy declines, and it stores
-		// its own result, so there is nothing to do with what it returns.
-		EnhanceDecoded(source, original, semantic, hasAlpha, path);
+		// its own result, so dispose whatever temporary Image it returns immediately.
+		using Image? enhanced = EnhanceDecoded(source, original, semantic, hasAlpha, path);
 		return true;
+	}
+
+	private static Image? TryDecodeAndStoreBase(byte[] source, string baseKey, out bool hasAlpha)
+	{
+		hasAlpha = false;
+		Image? original;
+		try
+		{
+			original = Engine_TexImage.TryCreateImage(source, out hasAlpha, out _);
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+
+		if (original is null)
+		{
+			return null;
+		}
+
+		Engine_TexCache.Store(baseKey, original, hasAlpha);
+		return original;
 	}
 
 	/// <summary>
@@ -853,10 +961,41 @@ public static class Engine_TexLibrary
 		string id = $"{Engine_TexOrm.CacheId(powerMin, powerMax)}-ao{aoStrength:F2}-" +
 			$"me{metallicStrength:F2}-h{(withHeight ? 1 : 0)}-{normal}";
 
-		return BuildOrmImage(
+		byte[]? source = null;
+		byte[]? normalBytes = null;
+		try
+		{
+			if (path.Length > 0)
+			{
+				source = read(path);
+			}
+
+			if ((aoStrength > 0.0f || withHeight) && normal.Length > 0)
+			{
+				normalBytes = read(normal);
+			}
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+
+		byte[]? keySource = source ?? normalBytes;
+		if (keySource is null)
+		{
+			return false;
+		}
+
+		string key = Engine_TexCache.Key(keySource, TexSemantic.Orm, id, 2);
+		if (Engine_TexCache.TryReadHeader(key, out _, out _, out _))
+		{
+			return true;
+		}
+
+		using Image? built = BuildOrmImage(
 			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight, read,
-			out _)
-			is not null;
+			out _);
+		return built is not null;
 	}
 
 
@@ -1219,6 +1358,28 @@ public static class Engine_TexLibrary
 			Engine_TexSettings.OrmHeight, out hasHeight);
 	}
 
+	/// <summary>
+	/// Packs an ORM directly from CPU <see cref="Image"/> buffers without issuing GPU readbacks.
+	/// </summary>
+	public static ImageTexture? BuildOrmFromImages(
+		Image? spec,
+		Image? norm,
+		float powerMin,
+		float powerMax,
+		out bool hasHeight)
+	{
+		hasHeight = false;
+		if (!Engine_TexSettings.OrmEnabled)
+		{
+			return null;
+		}
+
+		return PackComposedOrm(
+			spec, norm, powerMin, powerMax,
+			Engine_TexSettings.OrmAoStrength, Engine_TexSettings.OrmMetallicStrength,
+			Engine_TexSettings.OrmHeight, out hasHeight);
+	}
+
 	/// <summary>Composed ORMs kept strongly before the list starts again; matches the composites' own limit.</summary>
 	internal const int ComposedOrmLimit = Refii.Hero.Engine_HeroTextureMorph.CompositedLimit;
 
@@ -1232,7 +1393,51 @@ public static class Engine_TexLibrary
 	/// <summary>Textures whose content is fixed for their lifetime, each with an id never reused.</summary>
 	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Texture2D, object> Unchanging = new();
 
+	/// <summary>CPU images retained alongside composite textures so ORM packing never needs a GPU readback.</summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Texture2D, Image> CpuImages = new();
+
+	/// <summary>Live library entries by texture instance so mixed composite+library ORM pairs can be keyed by identity and decoded from disk cache without GPU readback.</summary>
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Texture2D, Entry> LibraryEntries = new();
+
 	private static long _unchangingIds;
+
+	/// <summary>Associates a CPU <see cref="Image"/> with <paramref name="texture"/> so <see cref="ComposedOrm"/> never reads it back from the GPU.</summary>
+	public static void RegisterCpuImage(Texture2D? texture, Image? image)
+	{
+		if (texture is not null && image is not null && !image.IsEmpty())
+		{
+			CpuImages.AddOrUpdate(texture, image);
+		}
+	}
+
+	private static Image? ResolveOrmSourceImage(Texture2D? texture, out bool dispose)
+	{
+		dispose = false;
+		if (texture is null)
+		{
+			return null;
+		}
+
+		if (CpuImages.TryGetValue(texture, out Image? cpuImage) &&
+			GodotObject.IsInstanceValid(cpuImage) &&
+			!cpuImage.IsEmpty())
+		{
+			return cpuImage;
+		}
+
+		if (LibraryEntries.TryGetValue(texture, out Entry? entry) && entry is not null)
+		{
+			Image? decoded = Decode(entry.Path, entry.Semantic, entry.Read, out _);
+			if (decoded is not null)
+			{
+				dispose = true;
+				return decoded;
+			}
+		}
+
+		dispose = true;
+		return Refii.Core.Engine_ServerSyncs.Image(texture);
+	}
 
 	/// <summary>Run totals: composed ORMs packed, answered by identity, answered by content.</summary>
 	public static (long Packed, long ByIdentity, long ByContent) ComposedOrmWork => (
@@ -1276,8 +1481,8 @@ public static class Engine_TexLibrary
 	/// <see cref="PackComposedOrm"/> is a pure function of the two read-back images (size, format,
 	/// mip flag, bytes) and the five parameters — serial, no clock, no setting read inside — so a
 	/// key over exactly those answers with the bytes a rebuild would produce. An identity key is
-	/// used only when every texture given is <see cref="MarkUnchanging"/>: an unchanging texture
-	/// reads back the same bytes every time, so its identity stands for its content.
+	/// used when every texture given is either <see cref="MarkUnchanging"/> or a version-tracked
+	/// <see cref="Engine_TexLibrary"/> entry.
 	/// </remarks>
 	internal static ImageTexture? ComposedOrm(
 		Texture2D? specular,
@@ -1305,53 +1510,68 @@ public static class Engine_TexLibrary
 		}
 
 		long from = System.Diagnostics.Stopwatch.GetTimestamp();
-		using Image? spec = Refii.Core.Engine_ServerSyncs.Image(specular);
-		using Image? norm = Refii.Core.Engine_ServerSyncs.Image(normal);
-		if (spec is null && norm is null)
+		Image? spec = ResolveOrmSourceImage(specular, out bool disposeSpec);
+		Image? norm = ResolveOrmSourceImage(normal, out bool disposeNorm);
+		try
 		{
-			return null;
-		}
+			if (spec is null && norm is null)
+			{
+				return null;
+			}
 
-		string byContent = ContentKey(spec, norm, recipe);
-		if (TryComposed(byContent, out known, out hasHeight))
+			string byContent = ContentKey(spec, norm, recipe);
+			if (TryComposed(byContent, out known, out hasHeight))
+			{
+				System.Threading.Interlocked.Increment(ref _composedByContent);
+				if (byIdentity is not null)
+				{
+					Keep(byIdentity, known, hasHeight);
+				}
+
+				Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+				return known;
+			}
+
+			ImageTexture? built = PackComposedOrm(
+				spec, norm, powerMin, powerMax, aoStrength, metallicStrength, withHeight, out bool packedHeight);
+			System.Threading.Interlocked.Increment(ref _composedPacked);
+
+			// Two workers packing the same key produced the same bytes; the first kept answers both,
+			// so every material holding this content holds one texture.
+			lock (Gate)
+			{
+				if (TryComposedLocked(byContent, out ImageTexture? raced, out bool racedHeight))
+				{
+					built = raced;
+					packedHeight = racedHeight;
+				}
+				else
+				{
+					KeepLocked(byContent, built, packedHeight);
+				}
+
+				if (byIdentity is not null)
+				{
+					KeepLocked(byIdentity, built, packedHeight);
+				}
+			}
+
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: false, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+			hasHeight = packedHeight;
+			return built;
+		}
+		finally
 		{
-			System.Threading.Interlocked.Increment(ref _composedByContent);
-			if (byIdentity is not null)
+			if (disposeSpec)
 			{
-				Keep(byIdentity, known, hasHeight);
+				spec?.Dispose();
 			}
 
-			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, System.Diagnostics.Stopwatch.GetTimestamp() - from);
-			return known;
-		}
-
-		ImageTexture? built = PackComposedOrm(
-			spec, norm, powerMin, powerMax, aoStrength, metallicStrength, withHeight, out bool packedHeight);
-		System.Threading.Interlocked.Increment(ref _composedPacked);
-
-		// Two workers packing the same key produced the same bytes; the first kept answers both,
-		// so every material holding this content holds one texture.
-		lock (Gate)
-		{
-			if (TryComposedLocked(byContent, out ImageTexture? raced, out bool racedHeight))
+			if (disposeNorm)
 			{
-				built = raced;
-				packedHeight = racedHeight;
-			}
-			else
-			{
-				KeepLocked(byContent, built, packedHeight);
-			}
-
-			if (byIdentity is not null)
-			{
-				KeepLocked(byIdentity, built, packedHeight);
+				norm?.Dispose();
 			}
 		}
-
-		Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: false, System.Diagnostics.Stopwatch.GetTimestamp() - from);
-		hasHeight = packedHeight;
-		return built;
 	}
 
 	/// <summary>The uncached pack: what <see cref="BuildOrmFromTextures"/> always did with the two read-back images.</summary>
@@ -1391,18 +1611,40 @@ public static class Engine_TexLibrary
 		$"{BitConverter.SingleToUInt32Bits(aoStrength):x8}-{BitConverter.SingleToUInt32Bits(metallicStrength):x8}-" +
 		(withHeight ? "h" : "f");
 
-	/// <summary>Null unless every texture given is unchanging.</summary>
+	private static bool TryIdentityToken(Texture2D? texture, out string token)
+	{
+		if (texture is null)
+		{
+			token = "-";
+			return true;
+		}
+
+		if (Unchanging.TryGetValue(texture, out object? unchangingId) && unchangingId is not null)
+		{
+			token = unchangingId.ToString()!;
+			return true;
+		}
+
+		if (LibraryEntries.TryGetValue(texture, out Entry? entry) && entry is not null)
+		{
+			token = $"lib:{entry.Path}:{Interlocked.Read(ref entry.Version)}";
+			return true;
+		}
+
+		token = string.Empty;
+		return false;
+	}
+
+	/// <summary>Null unless every texture given is unchanging or a tracked library entry.</summary>
 	private static string? IdentityKey(Texture2D? specular, Texture2D? normal, string recipe)
 	{
-		object? specularId = null;
-		object? normalId = null;
-		if ((specular is not null && !Unchanging.TryGetValue(specular, out specularId)) ||
-			(normal is not null && !Unchanging.TryGetValue(normal, out normalId)))
+		if (!TryIdentityToken(specular, out string specularId) ||
+			!TryIdentityToken(normal, out string normalId))
 		{
 			return null;
 		}
 
-		return $"i {specularId?.ToString() ?? "-"} {normalId?.ToString() ?? "-"} {recipe}";
+		return $"i {specularId} {normalId} {recipe}";
 	}
 
 	/// <summary>SHA-256 over each image's presence, size, format, mip flag and bytes, then the recipe.</summary>
@@ -1579,7 +1821,7 @@ public static class Engine_TexLibrary
 			return cached;
 		}
 
-		Image? specular = source is null
+		using Image? specular = source is null
 			? null
 			: Engine_TexImage.TryCreateImage(source, out _, out _);
 		if (specular is null && source is not null)
@@ -1587,7 +1829,7 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
-		Image? normal = normalBytes is null
+		using Image? normal = normalBytes is null
 			? null
 			: Engine_TexImage.TryCreateImage(normalBytes, out _, out _);
 
@@ -1863,16 +2105,40 @@ public static class Engine_TexLibrary
 					return;
 				}
 
+				// Avoid in-place dimension-changing ImageTexture.SetImage on live UI textures:
+				// in Godot 4.7 D3D12, changing an ImageTexture's width/height frees its active
+				// RD::Texture RID and allocates a new one while bound to live UiViewport shader
+				// descriptor tables, which can hang the D3D12 command queue. The enhanced image
+				// is already persisted to Engine_TexCache on disk for the next load.
+				if (entry.Semantic == TexSemantic.Ui &&
+					(target.GetWidth() != image.GetWidth() || target.GetHeight() != image.GetHeight()))
+				{
+					lock (Gate)
+					{
+						entry.State = kind == JobKind.Enhance
+							? EnhancementState.Enhanced
+							: EnhancementState.None;
+					}
+					return;
+				}
+
 				// The swap, and the reason nothing had to register a callback: every material
 				// holding this Texture2D is holding THIS object, so replacing its image updates
 				// all of them at once. SetImage rather than Update because the size changes.
+				if (entry.Semantic == TexSemantic.Ui && Refii.Ui.Engine_UiKeyGlyphs.NeedsSourceImage(entry.Path))
+				{
+					Refii.Ui.Engine_UiKeyGlyphs.RegisterSourceImage(target, (Image)image.Duplicate());
+				}
+
 				Engine_TextureUpload.SetImage(target, image, world: true);
+				Interlocked.Add(ref _pumpedBytesThisFrame, image.GetDataSize());
 				Refii.Core.Engine_TracedMemory.Resize(TracedPool, target.GetRid().Id, (ulong)image.GetDataSize());
 				lock (Gate)
 				{
 					entry.State = kind == JobKind.Enhance
 						? EnhancementState.Enhanced
 						: EnhancementState.None;
+					Interlocked.Increment(ref entry.Version);
 				}
 			}));
 		}
@@ -1900,7 +2166,7 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
-		Image? original = Engine_TexImage.TryCreateImage(source, out bool hasAlpha, out _);
+		using Image? original = Engine_TexImage.TryCreateImage(source, out bool hasAlpha, out _);
 		if (original is null)
 		{
 			return null;
@@ -1979,6 +2245,32 @@ public static class Engine_TexLibrary
 		string key = Engine_TexCache.Key(source, semantic, backendId, scale);
 
 		Image? result = Engine_TexCache.TryLoad(key, out _);
+		if (result is null && compress && scale == 2)
+		{
+			// If a 4x enhanced entry already exists on disk (e.g. from a 4K prebuild), slice its
+			// mip 1..N chain directly into the 2x key without re-running the upscaler or BC encoder.
+			string key4x = Engine_TexCache.Key(source, semantic, backendId, 4);
+			using Image? cached4x = Engine_TexCache.TryLoad(key4x, out _);
+			if (cached4x is not null && cached4x.HasMipmaps() && cached4x.GetMipmapCount() >= 2)
+			{
+				long offset = cached4x.GetMipmapOffset(1);
+				byte[] fullData = cached4x.GetData();
+				if (offset > 0 && offset < fullData.Length)
+				{
+					result = Image.CreateFromData(
+						Math.Max(1, cached4x.GetWidth() / 2),
+						Math.Max(1, cached4x.GetHeight() / 2),
+						true,
+						cached4x.GetFormat(),
+						fullData.AsSpan((int)offset));
+					if (result is not null && !result.IsEmpty())
+					{
+						Engine_TexCache.Store(key, result, hasAlpha, TexCacheCost.Enhanced);
+					}
+				}
+			}
+		}
+
 		if (result is not null || cacheOnly)
 		{
 			return result;
@@ -1987,7 +2279,7 @@ public static class Engine_TexLibrary
 		// The backend is handed a plain RGBA8 surface with no mip chain, because every backend
 		// would otherwise have to undo the block compression itself and they would each get it
 		// slightly differently.
-		var work = (Image)original.Duplicate();
+		using var work = (Image)original.Duplicate();
 		work.ClearMipmaps();
 		if (work.IsCompressed())
 		{

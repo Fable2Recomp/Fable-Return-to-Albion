@@ -116,7 +116,8 @@ public static class Engine_HiddenClusters
 		Shader = new Shader
 		{
 			Code = "shader_type spatial;\nrender_mode unshaded, shadows_disabled;\n" +
-				"void vertex() { POSITION = vec4(2.0, 2.0, 2.0, 1.0); }\n",
+				"void vertex() { POSITION = vec4(2.0, 2.0, 2.0, 1.0); }\n" +
+				"void fragment() { ALBEDO = vec3(0.0); }\n",
 		},
 	};
 

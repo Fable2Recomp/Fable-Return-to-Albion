@@ -70,6 +70,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 	private void ApplyTints()
 	{
+		if ((HostTints is null || HostTints.Count == 0) && _tinted.Count == 0)
+		{
+			return;
+		}
+
 		var want = new Dictionary<int, Color>();
 		if (HostTints is { Count: > 0 } tints)
 		{
@@ -260,6 +265,10 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		_toldOpened = Engine_UiSlideStatements.Sequence;
 	}
 
+	private System.Func<int, bool>? _playedDelegate;
+	private System.Action<long>? _timedDelegate;
+	private System.Func<int, Engine_UiSlideStatements.Told?>? _toldDelegate;
+
 	/// <summary>
 	/// THE STAND PLAYS (Engine_UiSlidePlayback): the rest slides go through the components' clocks,
 	/// which run each slide's tracks over real time, hand a completed go-next slide on, and close
@@ -270,8 +279,11 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	private int[] Play(int[] stated)
 	{
 		_playback ??= new Engine_UiSlidePlayback(Document!);
+		_playedDelegate ??= Played;
+		_timedDelegate ??= Timed;
+		_toldDelegate ??= Told;
 		int[] slides = _playback.Step(stated, _resolve?.Drawn, PlaybackNow(),
-			Played, Timed, Told, Engine_UiSlideStatements.Sequence);
+			_playedDelegate, _timedDelegate, _toldDelegate, Engine_UiSlideStatements.Sequence);
 		if (_playing is null || !SameInts(_playing, slides))
 		{
 			_playing = (int[])slides.Clone();
@@ -378,21 +390,29 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 	}
 
+	private bool[]? _toldActiveScratch;
+	private bool[]? _toldSwitchesScratch;
+
 	/// <summary>The draw bits with every told `active = false` applied.</summary>
 	private IReadOnlyList<bool>? ToldActive(IReadOnlyList<bool>? active)
 	{
 		bool?[] told = _playback!.ToldActive;
-		List<bool>? patched = null;
+		bool[]? patched = null;
 		for (int i = 0; i < told.Length; ++i)
 		{
 			if (told[i] == false)
 			{
 				if (patched is null)
 				{
-					patched = new List<bool>(told.Length);
+					if (_toldActiveScratch is null || _toldActiveScratch.Length != told.Length)
+					{
+						_toldActiveScratch = new bool[told.Length];
+					}
+
+					patched = _toldActiveScratch;
 					for (int j = 0; j < told.Length; ++j)
 					{
-						patched.Add(active is null || j >= active.Count || active[j]);
+						patched[j] = active is null || j >= active.Count || active[j];
 					}
 				}
 
@@ -407,17 +427,22 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	private IReadOnlyList<bool>? ToldSwitches(IReadOnlyList<bool>? switched)
 	{
 		bool?[] told = _playback!.ToldActive;
-		List<bool>? patched = null;
+		bool[]? patched = null;
 		for (int i = 0; i < told.Length; ++i)
 		{
 			if (told[i] == true)
 			{
 				if (patched is null)
 				{
-					patched = new List<bool>(told.Length);
+					if (_toldSwitchesScratch is null || _toldSwitchesScratch.Length != told.Length)
+					{
+						_toldSwitchesScratch = new bool[told.Length];
+					}
+
+					patched = _toldSwitchesScratch;
 					for (int j = 0; j < told.Length; ++j)
 					{
-						patched.Add(switched is not null && j < switched.Count && switched[j]);
+						patched[j] = switched is not null && j < switched.Count && switched[j];
 					}
 				}
 
@@ -429,6 +454,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	}
 
 	private uint[]? _toldTextures;
+	private uint[]? _toldTexturesBuffer;
+	private bool _toldTexturesValid;
 
 	private (ulong Generation, ulong Opened, uint Presentation) _toldTexturesFor;
 
@@ -444,25 +471,38 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 
 		var key = (Engine_UiSlideStatements.TextureGeneration, _toldOpened, PresentationAddress);
-		if (_toldTextures is not null && key == _toldTexturesFor)
+		if (_toldTexturesValid && key == _toldTexturesFor)
 		{
 			return _toldTextures;
 		}
 
 		_toldTexturesFor = key;
-		uint[] textures = new uint[Document.Nodes.Length];
-		bool any = false;
+		_toldTexturesValid = true;
+		uint[]? textures = null;
 		foreach ((int ordinal, uint hash) in Engine_UiSlideStatements.TexturesSince(
 			PresentationAddress, Document.Nodes[0].Element.NameHash, _toldOpened))
 		{
-			if (ordinal >= 0 && ordinal < textures.Length && !Untold(ordinal))
+			if (ordinal >= 0 && ordinal < Document.Nodes.Length && !Untold(ordinal))
 			{
+				if (textures is null)
+				{
+					if (_toldTexturesBuffer is null || _toldTexturesBuffer.Length != Document.Nodes.Length)
+					{
+						_toldTexturesBuffer = new uint[Document.Nodes.Length];
+					}
+					else
+					{
+						System.Array.Clear(_toldTexturesBuffer, 0, _toldTexturesBuffer.Length);
+					}
+
+					textures = _toldTexturesBuffer;
+				}
+
 				textures[ordinal] = hash;
-				any = true;
 			}
 		}
 
-		return _toldTextures = any ? textures : null;
+		return _toldTextures = textures;
 	}
 
 	/// <summary>
@@ -934,7 +974,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				continue;
 			}
 
-			Node3D? clone = Book.Art(unit, variant);
+			Node3D? clone = Book.Art(unit, variant, ownMaterials: false);
 			if (clone is null)
 			{
 				// Catalogued but will not clone: a different fault from absence.
@@ -945,16 +985,19 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			// Art() zeroes the transform; the authored one is read off the source chain.
 			clone.Transform = Engine_UiTheme.CanvasTransform(source);
 			clone.Name = unit;
-			AddChild(clone);
-			_unitAuthored[clone] = clone.Transform;
 
 			if (ordinal >= 0)
 			{
 				_cloned[ordinal] = unit;
 			}
 
-			// The unit's own root is bound too, so the guest's draw gate reaches it.
+			// Bind and prune suppressed subtrees BEFORE owning materials or entering the scene
+			// tree, so suppressed subtrees never allocate private ShaderMaterials or UBOs.
 			_binding.Bind(clone, Document, Suppressed);
+			Engine_UiTheme.OwnMaterials(clone);
+
+			AddChild(clone);
+			_unitAuthored[clone] = clone.Transform;
 
 			if (unit == Template.PageRootUnit)
 			{
@@ -1327,8 +1370,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 		// Draw gate, accumulated opacity and stated art for every node, in one pass.
 		// Host-supplied textures first (a registry key), the guest's path hashes otherwise.
-		_binding.ResolveTexture = hash =>
-			Engine_UiHostTextures.TryGet(hash) ?? ResolveTexture?.Invoke(hash);
+		_binding.ResolveTexture = _resolveTextureDelegate ??= ResolveBookTexture;
 		_binding.Apply(_resolve, Textured(textures), Positioned(transform));
 
 		// The page arranges every frame (`NeedToUpdateState` is set once in `Initialize`, page.dis
@@ -1976,6 +2018,16 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		}
 	}
 
+	private System.Func<uint, Texture2D?>? _resolveTextureDelegate;
+
+	private Texture2D? ResolveBookTexture(uint hash) =>
+		Engine_UiHostTextures.TryGet(hash) ?? ResolveTexture?.Invoke(hash);
+
+	private int[]? _slidScratch;
+	private bool[]? _activatedScratch;
+	private bool[]? _switchedOnScratch;
+	private float?[]? _opaquedScratch;
+
 	/// <summary>The guest's stated slides with the host's switches written over them, on every bearer. Copy-on-write.</summary>
 	private IReadOnlyList<int>? Slid(IReadOnlyList<int>? stated)
 	{
@@ -1984,7 +2036,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			return stated;
 		}
 
-		List<int>? patched = null;
+		int[]? patched = null;
 		foreach (var pair in HostSlides)
 		{
 			if (pair.Value <= 0)
@@ -1996,14 +2048,19 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			{
 				if (patched is null)
 				{
-					patched = new List<int>(Document.Nodes.Length);
+					if (_slidScratch is null || _slidScratch.Length != Document.Nodes.Length)
+					{
+						_slidScratch = new int[Document.Nodes.Length];
+					}
+
+					patched = _slidScratch;
 					for (int i = 0; i < Document.Nodes.Length; ++i)
 					{
-						patched.Add(stated is not null && i < stated.Count ? stated[i] : 0);
+						patched[i] = stated is not null && i < stated.Count ? stated[i] : 0;
 					}
 				}
 
-				if (ordinal >= 0 && ordinal < patched.Count)
+				if (ordinal >= 0 && ordinal < patched.Length)
 				{
 					patched[ordinal] = pair.Value;
 				}
@@ -2028,16 +2085,21 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			return stated;
 		}
 
-		List<bool>? patched = null;
+		bool[]? patched = null;
 
-		List<bool> Patched()
+		bool[] Patched()
 		{
 			if (patched is null)
 			{
-				patched = new List<bool>(Document.Nodes.Length);
+				if (_activatedScratch is null || _activatedScratch.Length != Document.Nodes.Length)
+				{
+					_activatedScratch = new bool[Document.Nodes.Length];
+				}
+
+				patched = _activatedScratch;
 				for (int i = 0; i < Document.Nodes.Length; ++i)
 				{
-					patched.Add(stated is not null && i < stated.Count && stated[i]);
+					patched[i] = stated is not null && i < stated.Count && stated[i];
 				}
 			}
 
@@ -2056,8 +2118,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 				foreach (int ordinal in OrdinalsForPath(pair.Key))
 				{
-					List<bool> lit = Patched();
-					if (ordinal >= 0 && ordinal < lit.Count)
+					bool[] lit = Patched();
+					if (ordinal >= 0 && ordinal < lit.Length)
 					{
 						lit[ordinal] = true;
 					}
@@ -2096,10 +2158,10 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 							continue;
 						}
 
-						List<bool> active = Patched();
+						bool[] active = Patched();
 						foreach (BgfSlideEntry entry in slide.Entries)
 						{
-							if (entry.ElementOrdinal >= 0 && entry.ElementOrdinal < active.Count)
+							if (entry.ElementOrdinal >= 0 && entry.ElementOrdinal < active.Length)
 							{
 								active[entry.ElementOrdinal] = entry.Active;
 							}
@@ -2134,7 +2196,7 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 				foreach (int ordinal in OrdinalsForPath(pair.Key))
 				{
-					List<bool> released = Patched();
+					bool[] released = Patched();
 					for (int i = ordinal + 1; i < Document.Nodes.Length; ++i)
 					{
 						if (IsUnder(Document.Nodes[i], ordinal))
@@ -2149,8 +2211,8 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			{
 				foreach (int ordinal in OrdinalsForPath(pair.Key))
 				{
-					List<bool> switched = Patched();
-					if (ordinal >= 0 && ordinal < switched.Count)
+					bool[] switched = Patched();
+					if (ordinal >= 0 && ordinal < switched.Length)
 					{
 						switched[ordinal] = pair.Value;
 					}
@@ -2197,7 +2259,20 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			{
 				if (ordinal >= 0 && ordinal < Document.Nodes.Length)
 				{
-					on ??= new bool[Document.Nodes.Length];
+					if (on is null)
+					{
+						if (_switchedOnScratch is null || _switchedOnScratch.Length != Document.Nodes.Length)
+						{
+							_switchedOnScratch = new bool[Document.Nodes.Length];
+						}
+						else
+						{
+							System.Array.Clear(_switchedOnScratch, 0, _switchedOnScratch.Length);
+						}
+
+						on = _switchedOnScratch;
+					}
+
 					on[ordinal] = true;
 				}
 			}
@@ -2223,20 +2298,41 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			return stated;
 		}
 
-		// A STATED OPACITY NEEDS NO GUEST MIRROR TO STAND ON. The drops below only make sense
-		// against a stated list, but a host that states a number outright must be able to do so
-		// on a book the guest never mirrored — that was the co-op screen, whose profile block
-		// stayed dark with every claim correct because `stated` was null and this returned.
-		stated ??= new List<float?>(new float?[Document.Nodes.Length]);
+		float?[]? patched = null;
 
-		List<float?>? patched = null;
+		float?[] Patched()
+		{
+			if (patched is null)
+			{
+				if (_opaquedScratch is null || _opaquedScratch.Length != Document.Nodes.Length)
+				{
+					_opaquedScratch = new float?[Document.Nodes.Length];
+				}
+
+				patched = _opaquedScratch;
+				if (stated is null)
+				{
+					System.Array.Clear(patched, 0, patched.Length);
+				}
+				else
+				{
+					for (int i = 0; i < patched.Length; ++i)
+					{
+						patched[i] = i < stated.Count ? stated[i] : null;
+					}
+				}
+			}
+
+			return patched;
+		}
 
 		void Drop(int ordinal)
 		{
-			if (ordinal >= 0 && ordinal < stated.Count && stated[ordinal] is not null)
+			int count = patched?.Length ?? stated?.Count ?? 0;
+			if (ordinal >= 0 && ordinal < count &&
+				(patched is not null ? patched[ordinal] : stated![ordinal]) is not null)
 			{
-				patched ??= new List<float?>(stated);
-				patched[ordinal] = null;
+				Patched()[ordinal] = null;
 			}
 		}
 
@@ -2337,15 +2433,14 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 						continue;
 					}
 
-					if (ordinal >= 0 && ordinal < stated.Count)
+					if (ordinal >= 0 && ordinal < Document.Nodes.Length)
 					{
 						// THE STATED CHANNEL IS 0..100, NOT 0..1. The resolve clamps it to 100 and
 						// divides (Engine_UiElementResolve, the `opacity` parameter's own contract),
 						// so a host claim of 1.0 written raw landed as ONE PERCENT — which is the
 						// `op=0.01` every claimed element showed for two runs, with the claim
 						// reaching every one of them exactly as intended.
-						patched ??= new List<float?>(stated);
-						patched[ordinal] = Mathf.Clamp(pair.Value, 0f, 1f) * 100f;
+						Patched()[ordinal] = Mathf.Clamp(pair.Value, 0f, 1f) * 100f;
 					}
 				}
 			}
@@ -2529,46 +2624,32 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// <summary>Every node's dotted path to its ordinal, built once.</summary>
 	private Dictionary<string, int>? _pathOrdinals;
 
+	private readonly Dictionary<string, int[]> _ordinalsByPath = new(System.StringComparer.Ordinal);
+	private readonly Dictionary<string, int[]> _ordinalsUnderPath = new(System.StringComparer.Ordinal);
 
 	/// <summary>The ordinal of the node a key names, matched on trailing whole segments.</summary>
 	private int? OrdinalForPath(string key)
 	{
-		if (Document is null)
+		int[] all = OrdinalsForPath(key);
+		return all.Length > 0 ? all[0] : null;
+	}
+
+	private void EnsurePathOrdinals()
+	{
+		if (_pathOrdinals is not null || Document is null)
 		{
-			return null;
+			return;
 		}
 
-		// `#n` names an element by ordinal — the one way to reach an element with no authored
-		// name, such as a file's root (the quest box's root carries its type slides).
-		if (key.Length > 1 && key[0] == '#' &&
-			int.TryParse(key.Substring(1), System.Globalization.NumberStyles.None,
-				System.Globalization.CultureInfo.InvariantCulture, out int byOrdinal))
+		_pathOrdinals = new Dictionary<string, int>(System.StringComparer.Ordinal);
+		foreach (UiNode node in Document.Nodes)
 		{
-			return byOrdinal >= 0 && byOrdinal < Document.Nodes.Length ? byOrdinal : null;
-		}
-
-		if (_pathOrdinals is null)
-		{
-			_pathOrdinals = new Dictionary<string, int>();
-			foreach (UiNode node in Document.Nodes)
+			string path = DocumentPath(node);
+			if (path.Length != 0)
 			{
-				string path = DocumentPath(node);
-				if (path.Length != 0)
-				{
-					_pathOrdinals[path] = node.Ordinal;
-				}
+				_pathOrdinals[path] = node.Ordinal;
 			}
 		}
-
-		foreach (var pair in _pathOrdinals)
-		{
-			if (PathNames(pair.Key, key))
-			{
-				return pair.Value;
-			}
-		}
-
-		return null;
 	}
 
 	/// <summary>
@@ -2582,24 +2663,36 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 	/// Every ordinal at <paramref name="key"/> OR BENEATH IT. The same trailing-segment match as
 	/// <see cref="PathNames"/>, plus anything whose path carries that run followed by a dot.
 	/// </summary>
-	private IEnumerable<int> OrdinalsUnderPath(string key)
+	private int[] OrdinalsUnderPath(string key)
 	{
-		// `_pathOrdinals` is built LAZILY by OrdinalForPath. Testing it for null here answered
-		// "nothing" on any book where no exact lookup had run first — which is exactly the case
-		// for a screen whose only host claims are opacities.
-		OrdinalForPath(key);
-		if (_pathOrdinals is null)
+		if (Document is null)
 		{
-			yield break;
+			return System.Array.Empty<int>();
 		}
 
+		if (_ordinalsUnderPath.TryGetValue(key, out int[]? cached))
+		{
+			return cached;
+		}
+
+		EnsurePathOrdinals();
+		if (_pathOrdinals is null)
+		{
+			return System.Array.Empty<int>();
+		}
+
+		var list = new List<int>();
 		foreach (var pair in _pathOrdinals)
 		{
 			if (PathNames(pair.Key, key) || PathUnder(pair.Key, key))
 			{
-				yield return pair.Value;
+				list.Add(pair.Value);
 			}
 		}
+
+		int[] result = list.Count == 0 ? System.Array.Empty<int>() : list.ToArray();
+		_ordinalsUnderPath[key] = result;
+		return result;
 	}
 
 	/// <summary>Whether <paramref name="path"/> is a DESCENDANT of <paramref name="key"/>.</summary>
@@ -2612,26 +2705,49 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			path[at + key.Length] == '.';
 	}
 
-	private IEnumerable<int> OrdinalsForPath(string key)
+	private int[] OrdinalsForPath(string key)
 	{
-		if (OrdinalForPath(key) is not { } first)
+		if (Document is null)
 		{
-			yield break;
+			return System.Array.Empty<int>();
 		}
 
-		if (key[0] == '#')
+		if (_ordinalsByPath.TryGetValue(key, out int[]? cached))
 		{
-			yield return first;
-			yield break;
+			return cached;
 		}
 
-		foreach (var pair in _pathOrdinals!)
+		// `#n` names an element by ordinal — the one way to reach an element with no authored
+		// name, such as a file's root (the quest box's root carries its type slides).
+		if (key.Length > 1 && key[0] == '#' &&
+			int.TryParse(System.MemoryExtensions.AsSpan(key, 1), System.Globalization.NumberStyles.None,
+				System.Globalization.CultureInfo.InvariantCulture, out int byOrdinal))
+		{
+			int[] single = byOrdinal >= 0 && byOrdinal < Document.Nodes.Length
+				? new[] { byOrdinal }
+				: System.Array.Empty<int>();
+			_ordinalsByPath[key] = single;
+			return single;
+		}
+
+		EnsurePathOrdinals();
+		if (_pathOrdinals is null)
+		{
+			return System.Array.Empty<int>();
+		}
+
+		var list = new List<int>();
+		foreach (var pair in _pathOrdinals)
 		{
 			if (PathNames(pair.Key, key))
 			{
-				yield return pair.Value;
+				list.Add(pair.Value);
 			}
 		}
+
+		int[] result = list.Count == 0 ? System.Array.Empty<int>() : list.ToArray();
+		_ordinalsByPath[key] = result;
+		return result;
 	}
 
 	/// <summary>The first bearer of a key, for a host driver that owns one element by path (the

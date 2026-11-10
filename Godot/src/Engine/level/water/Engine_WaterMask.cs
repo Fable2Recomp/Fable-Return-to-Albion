@@ -167,7 +167,7 @@ public static class Engine_WaterMask
         {
             return null;
         }
-        ImageTexture texture = ImageTexture.CreateFromImage(image);
+        ImageTexture texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
 
         // SAY WHAT WAS BUILT. A vanished surface, an inverted mask and wrong bounds all look
         // identical on screen; the coverage percentage separates them in one run — near 0 is a

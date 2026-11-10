@@ -62,6 +62,13 @@ file(MAKE_DIRECTORY "${_app}")
 # rebuilds the launcher a second time into the folders the publish is using, and the export
 # then finishes with no .NET assemblies in it. Running them as their own step, in the Debug
 # configuration, keeps the gate and keeps the two builds out of each other's way.
+# Prevent persistent MSBuild node-reuse and Roslyn VBCSCompiler daemons from inheriting
+# CMake's execute_process stdout/stderr pipes on Windows (which hangs the first build),
+# both for the unit test run below and for Godot's internal `dotnet publish` during --export-release.
+set(ENV{MSBUILDDISABLENODEREUSE} "1")
+set(ENV{DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER} "1")
+set(ENV{UseSharedCompilation} "false")
+
 if(EXISTS "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj")
     find_program(_refii_dotnet NAMES dotnet)
     if(NOT _refii_dotnet)
@@ -80,6 +87,7 @@ if(EXISTS "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj")
     execute_process(
         COMMAND "${_refii_dotnet}" test "${PROJECT_DIR}/tests/Refii.Tests/Refii.Tests.csproj"
                 -c Debug -p:IsTesting=true -p:REFII_NO_TESTS=1
+                -p:UseSharedCompilation=false -p:NodeReuse=false --disable-build-servers
                 --logger "console;verbosity=minimal"
         RESULT_VARIABLE _tests_result
     )
@@ -112,14 +120,25 @@ message(STATUS "Exporting '${PRESET}' -> ${_app}/${OUT_BINARY}")
 execute_process(
     COMMAND "${GODOT}" --headless --path "${PROJECT_DIR}"
             --export-release "${PRESET}" "${_app}/${OUT_BINARY}"
+    TIMEOUT 180
     RESULT_VARIABLE _export_result
 )
 
+# On Windows, Godot 4.7 Mono --headless --export-release occasionally deadlocks inside
+# post-Main::cleanup() exit teardown after [ DONE ] savepack has completely finished writing
+# the exported binary and embedded .NET assemblies. If TIMEOUT fired AFTER the binary and its
+# .NET assemblies are verified complete on disk below, allow the package to proceed.
 if(NOT _export_result EQUAL 0)
-    message(FATAL_ERROR
-        "Godot export failed (exit ${_export_result}).\n"
-        "If it reported a missing preset, the names in Godot/export_presets.cfg must match "
-        "the ones in cmake/refii_godot_export.cmake — Godot selects a preset BY NAME.")
+    if("${_export_result}" MATCHES "timeout" AND EXISTS "${_app}/${OUT_BINARY}")
+        message(WARNING
+            "Godot export timed out during post-export exit teardown after writing "
+            "${_app}/${OUT_BINARY}; verifying exported artefact and .NET assemblies.")
+    else()
+        message(FATAL_ERROR
+            "Godot export failed (exit ${_export_result}).\n"
+            "If it reported a missing preset, the names in Godot/export_presets.cfg must match "
+            "the ones in cmake/refii_godot_export.cmake — Godot selects a preset BY NAME.")
+    endif()
 endif()
 
 # Godot has returned 0 while writing nothing, so the artefact is the test, not the exit code.

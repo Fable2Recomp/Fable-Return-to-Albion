@@ -697,6 +697,53 @@ public static class Engine_LevelScene
         Func<string, byte[]?>? terrainRead = source;
         var interactionGround = new Engine_LandscapeGround();
         bool mainGridUnreadable = false;
+        var decodedGhfCache = new System.Collections.Concurrent.ConcurrentDictionary<string, (GhfHeights? Grid, string Error, bool HasBytes)>(StringComparer.OrdinalIgnoreCase);
+        var decodedEhfCache = new System.Collections.Concurrent.ConcurrentDictionary<string, (GhfHeights? Grid, string Error)>(StringComparer.OrdinalIgnoreCase);
+
+        bool TryDecodeCachedGhf(string path, out GhfHeights heights, out string ghfError, out bool hasBytes)
+        {
+            var entry = decodedGhfCache.GetOrAdd(path, p =>
+            {
+                if (terrainRead is null)
+                {
+                    return (null, "no reader", false);
+                }
+                byte[]? bytes = terrainRead(p);
+                if (bytes is null)
+                {
+                    return (null, "not in any bank", false);
+                }
+                return Engine_GhfTerrain.TryDecode(bytes, out GhfHeights g, out string err)
+                    ? (g, string.Empty, true)
+                    : (null, err, true);
+            });
+            hasBytes = entry.HasBytes;
+            ghfError = entry.Error;
+            if (entry.Grid is { } grid)
+            {
+                heights = grid;
+                return true;
+            }
+            heights = default!;
+            return false;
+        }
+
+        bool TryDecodeCachedEhf(string path, byte[] ehfBytes, out GhfHeights heights, out string ehfError)
+        {
+            var entry = decodedEhfCache.GetOrAdd(path, _ =>
+                Engine_EhfHeights.TryDecode(ehfBytes, out GhfHeights e, out string err)
+                    ? (e, string.Empty)
+                    : (null, err));
+            ehfError = entry.Error;
+            if (entry.Grid is { } grid)
+            {
+                heights = grid;
+                return true;
+            }
+            heights = default!;
+            return false;
+        }
+
         long terrainDoneAt = 0;
         List<BuiltLandscape> TerrainWork()
         {
@@ -724,11 +771,8 @@ public static class Engine_LevelScene
                 if (landscape.Ghf.Length != 0)
                 {
                     var chunks = new List<ArrayMesh>();
-                    string ghfError = terrainRead is null ? "no reader" : "not in any bank";
                     string name = main ? TerrainNodeName : $"{TerrainNodeName}_{StemOf(landscape.Ghf)}_";
-                    byte[]? ghfBytes = terrainRead?.Invoke(landscape.Ghf);
-                    if (ghfBytes is not null &&
-                        Engine_GhfTerrain.TryDecode(ghfBytes, out GhfHeights heights, out ghfError))
+                    if (TryDecodeCachedGhf(landscape.Ghf, out GhfHeights heights, out string ghfError, out bool hasGhfBytes))
                     {
                         interactionGround.Add(heights);
                         // Under the classic renderer the main landscape is the title's own
@@ -736,7 +780,7 @@ public static class Engine_LevelScene
                         string classicError = "no .ehf";
                         List<ArrayMesh>? patches = null;
                         if (Refii.Models.Engine_ClassicMaterial.Active && landscape.Ehf.Length != 0 &&
-                            terrainRead(landscape.Ehf) is { } classicEhf &&
+                            terrainRead is not null && terrainRead(landscape.Ehf) is { } classicEhf &&
                             !Refii.Level.Engine_ClassicTerrain.TryBuild(classicEhf, heights, name, out patches, out classicError))
                         {
                             patches = null;
@@ -764,7 +808,7 @@ public static class Engine_LevelScene
                     else
                     {
                         GD.Print($"[level] {level}: heightfield {landscape.Ghf} did not decode ({ghfError})");
-                        mainGridUnreadable |= main && ghfBytes is not null;
+                        mainGridUnreadable |= main && hasGhfBytes;
                     }
 
                     if (!main)
@@ -790,7 +834,8 @@ public static class Engine_LevelScene
                 // The vista's own height grid — the texture the guest's vertex shader samples —
                 // through the same mesh and chunking as a stated .ghf.
                 string pageError = "height grid did not decode";
-                if (Engine_EhfHeights.TryDecode(ehfBytes, out GhfHeights vistaHeights, out string heightError) &&
+                bool decodedVistaHeight = TryDecodeCachedEhf(landscape.Ehf, ehfBytes, out GhfHeights vistaHeights, out string heightError);
+                if (decodedVistaHeight &&
                     Engine_EhfPages.TryBuild(ehfBytes, vistaHeights, out Engine_EhfPages.Built paged, out pageError))
                 {
                     interactionGround.Add(vistaHeights);
@@ -811,7 +856,7 @@ public static class Engine_LevelScene
 
                 material = LoadTerrainMaterial(landscape.Ehf, source, findByName, vista: true);
 
-                if (Engine_EhfHeights.TryDecode(ehfBytes, out vistaHeights, out heightError))
+                if (decodedVistaHeight)
                 {
                     interactionGround.Add(vistaHeights);
                     TerrainMesh gridMesh = Engine_GhfTerrain.BuildMesh(vistaHeights);
@@ -866,7 +911,27 @@ public static class Engine_LevelScene
             driver.Owner = root;
         }
 
-        AddWater(level, stated, source, findByName, root);
+        var cachedGrids = new List<(StatedLandscape Landscape, GhfHeights? Grid)>();
+        foreach (StatedLandscape landscape in stated.Landscapes)
+        {
+            GhfHeights? grid = null;
+            if (landscape.Ghf.Length != 0)
+            {
+                if (TryDecodeCachedGhf(landscape.Ghf, out GhfHeights g, out _, out _))
+                {
+                    grid = g;
+                }
+            }
+            else if (landscape.Ehf.Length != 0 && source is not null && source(landscape.Ehf) is { } ehf &&
+                     TryDecodeCachedEhf(landscape.Ehf, ehf, out GhfHeights e, out _))
+            {
+                grid = e;
+            }
+
+            cachedGrids.Add((landscape, grid));
+        }
+
+        AddWater(level, stated, source, findByName, root, cachedGrids);
         Mark("water");
 
         bool hasMist = AddMist(level, stated, source, root);
@@ -887,10 +952,12 @@ public static class Engine_LevelScene
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
             Engine_LevelShadowMaps.LoadOrClear(level, bakedGdbPath);
+            Engine_LevelAmbientOcclusion.LoadOrClear(level, bakedGdbPath);
         }
         else
         {
             Engine_LevelShadowMaps.LoadOrClear(level, string.Empty);
+            Engine_LevelAmbientOcclusion.LoadOrClear(level, string.Empty);
         }
 
         Mark("baked-lighting");
@@ -1420,7 +1487,7 @@ public static class Engine_LevelScene
         }
 
         return Engine_LevelBakedLighting.ComposeFable3Bake(bake.IntensityBlob, bake.Blob, samplesX - 1, samplesY - 1)
-            is { } composed ? ImageTexture.CreateFromImage(composed) : null;
+            is { } composed ? Refii.Textures.Engine_TextureUpload.CreateTexture(composed) : null;
     }
 
     private static void BindTerrainLightmaps(
@@ -1859,7 +1926,8 @@ public static class Engine_LevelScene
         StatedWorld stated,
         Func<string, byte[]?>? source,
         Func<string, string?>? findByName,
-        Node3D root)
+        Node3D root,
+        List<(StatedLandscape Landscape, GhfHeights? Grid)>? predecodedGrids = null)
     {
         if (source is null)
         {
@@ -1870,7 +1938,7 @@ public static class Engine_LevelScene
         int emitted = 0;
         int tiles = 0;
         int buried = 0;
-        List<(StatedLandscape Landscape, GhfHeights? Grid)> grids = DecodeGrids(stated, source);
+        List<(StatedLandscape Landscape, GhfHeights? Grid)> grids = predecodedGrids ?? DecodeGrids(stated, source);
         Engine_LandscapeGround ground = GroundOf(grids);
         WaterBody? oceanBody = null;
         string oceanFile = string.Empty;
@@ -1904,7 +1972,7 @@ public static class Engine_LevelScene
                     heights.Width, heights.Height, false, Image.Format.Rf, data);
                 if (!image.IsEmpty())
                 {
-                    terrainTexture = ImageTexture.CreateFromImage(image);
+                    terrainTexture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
                 }
                 terrainBounds = new Vector4(
                     heights.OriginX,

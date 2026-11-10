@@ -155,6 +155,9 @@ public static class Engine_HeroMorph
 
         var result = new ArrayMesh();
         bool blended = false;
+        var pendingSurfaces = new List<(Mesh.PrimitiveType Primitive, Godot.Collections.Array Arrays,
+            Godot.Collections.Dictionary? Lods, string Name, Material? Material)>(surfaces);
+        long totalEstimatedBytes = 0L;
 
         for (int s = 0; s < surfaces; s++)
         {
@@ -243,16 +246,30 @@ public static class Engine_HeroMorph
                 blended = true;
             }
 
-            Refii.Models.Engine_MdlSurfaceArrays.Add(result, neutral.SurfaceGetPrimitiveType(s), arrays,
-                Refii.Models.Engine_MdlMesh.SurfaceLods(neutral, s));
-            result.SurfaceSetName(s, neutral.SurfaceGetName(s));
-            result.SurfaceSetMaterial(s, neutral.SurfaceGetMaterial(s));
+            totalEstimatedBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
+            pendingSurfaces.Add((
+                neutral.SurfaceGetPrimitiveType(s),
+                arrays,
+                Refii.Models.Engine_MdlMesh.SurfaceLods(neutral, s),
+                neutral.SurfaceGetName(s),
+                neutral.SurfaceGetMaterial(s)));
         }
 
         if (!blended)
         {
             return neutral;
         }
+
+        Refii.Core.Engine_ServerSyncs.RunGpuUpload(System.Math.Max(4096L, totalEstimatedBytes), () =>
+        {
+            for (int s = 0; s < pendingSurfaces.Count; s++)
+            {
+                var surf = pendingSurfaces[s];
+                int added = Refii.Models.Engine_MdlSurfaceArrays.AddDirect(result, surf.Primitive, surf.Arrays, surf.Lods);
+                result.SurfaceSetName(added, surf.Name);
+                result.SurfaceSetMaterial(added, surf.Material);
+            }
+        });
 
         foreach (StringName meta in neutral.GetMetaList())
         {

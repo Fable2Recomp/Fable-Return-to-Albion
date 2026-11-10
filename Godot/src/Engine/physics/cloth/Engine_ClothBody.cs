@@ -392,28 +392,21 @@ public partial class Engine_ClothBody : MeshInstance3D
         return list.ToArray();
     }
 
-    private static bool _hooked;
-
     public override void _Ready()
     {
         lock (Registry)
         {
             Registry.Add(new WeakReference<Engine_ClothBody>(this));
-            if (!_hooked)
-            {
-                // Every body's solve lands BEFORE the frame draws, the way the guest's render
-                // thread waited on its worker mid-frame. Collected a frame later, the pinned
-                // seam wore last frame's pose beside a top skinned with this frame's, and the
-                // skirt tore away from the coat whenever the hero moved.
-                _hooked = true;
-                RenderingServer.FramePreDraw += LandAll;
-            }
         }
 
         SetProcess(true);
     }
 
-    private static void LandAll()
+    /// <summary>
+    /// Collects and uploads all active cloth solves at the end of the main-thread <c>_Process</c>
+    /// phase (via <see cref="Refii.Core.Engine_FrameEndNode"/>) before <c>RenderingServer::draw()</c> begins.
+    /// </summary>
+    public static void LandAll()
     {
         lock (Registry)
         {

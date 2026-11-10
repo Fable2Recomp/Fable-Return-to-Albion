@@ -503,6 +503,8 @@ public static class Engine_LevelLighting
 		set => _giHalfResolution = value;
 	}
 
+	public const int DefaultSdfgiCascades = 4;
+
 	private static void ConfigureGlobalIllumination(Godot.Environment environment, bool unified, bool hasSky)
 	{
 		// A renderer-wide switch, not the environment's; written only when it changes.
@@ -515,15 +517,20 @@ public static class Engine_LevelLighting
 		}
 
 		// A rebuild in progress holds it off for a frame or two; see Engine_GiRefresh.
-		environment.SdfgiEnabled = unified && !Engine_GiRefresh.HoldingOff && !Engine_GiRefresh.ForcedOff;
+		environment.SdfgiEnabled = unified &&
+			!Engine_GiRefresh.HoldingOff &&
+			!Engine_GiRefresh.ForcedOff &&
+			!Engine_GiRefresh.HoldForWorldLoad &&
+			!Engine_GiRefresh.SettlingAfterWorldLoad;
 		if (!unified)
 		{
 			return;
 		}
 
-		// Cascade 0 is 0.2 m cells over 25.6 m and each of the six doubles it: a cellar resolves
-		// its walls, and the far cascade still spans the 800 m a vista is drawn to.
-		environment.SdfgiCascades = 6;
+		// Cascade 0 is 0.2 m cells over 25.6 m and each of the four doubles it (covering 204.8 m,
+		// matching SunFarDepth = 200 m) while avoiding culling the entire region two extra times
+		// into RENDER_LIST_SECONDARY for 409.6 m / 819.2 m cascades on Direct3D 12.
+		environment.SdfgiCascades = DefaultSdfgiCascades;
 		environment.SdfgiMinCellSize = 0.2f;
 		environment.SdfgiYScale = Godot.Environment.SdfgiyScale.Scale75Percent;
 		environment.SdfgiUseOcclusion = true;
@@ -556,6 +563,7 @@ public static class Engine_LevelLighting
 		// theme's `LightmapColour` ambient share.
 		bool unified = Engine_LightingFrame.ModernModel;
 		RenderingServer.GlobalShaderParameterSet(FableUnifiedName, unified ? 1.0f : 0.0f);
+		Engine_LevelAmbientOcclusion.PublishAoParameters();
 		ConfigureGlobalIllumination(environment, unified, frame.HasSky);
 
 		// Sky reflections are not part of this: the materials carry their own environment map.

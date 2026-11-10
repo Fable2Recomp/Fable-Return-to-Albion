@@ -93,6 +93,26 @@ public sealed class Engine_UiTheme
 		ArtSource = string.Empty;
 	}
 
+	/// <summary>
+	/// Copies the catalogued art entries and canvas metadata from <paramref name="other"/> without
+	/// re-walking the Godot <see cref="Node3D"/> tree across C#-&gt;C++ interop.
+	/// </summary>
+	public void CopyFrom(Engine_UiTheme other)
+	{
+		if (ReferenceEquals(this, other))
+		{
+			return;
+		}
+
+		_art.Clear();
+		ArtSource = other.ArtSource;
+		Canvas = other.Canvas;
+		foreach ((string key, List<Node3D> list) in other._art)
+		{
+			_art[key] = new List<Node3D>(list);
+		}
+	}
+
 	private void Walk(Node node, bool parked = false)
 	{
 		// Phase one PRUNES at a parked subtree and remembers it; phase two walks only those.
@@ -172,7 +192,7 @@ public sealed class Engine_UiTheme
 		return null;
 	}
 
-	public Node3D? Art(string name, int variant = 0, bool keepAuthoredBasis = false)
+	public Node3D? Art(string name, int variant = 0, bool keepAuthoredBasis = false, bool ownMaterials = true)
 	{
 		if (!_art.TryGetValue(name, out List<Node3D>? matches) ||
 			variant < 0 || variant >= matches.Count)
@@ -193,7 +213,10 @@ public sealed class Engine_UiTheme
 		}
 
 		clone.Visible = true;
-		OwnMaterials(clone);
+		if (ownMaterials)
+		{
+			OwnMaterials(clone);
+		}
 		return clone;
 	}
 
@@ -204,9 +227,12 @@ public sealed class Engine_UiTheme
 	/// </summary>
 	public static void OwnMaterials(Node node)
 	{
-		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial shared)
+		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial shared &&
+			!Engine_UiSceneBuilder.IsOwnedMaterial(mesh, shared))
 		{
-			mesh.MaterialOverride = Refii.Models.Engine_MaterialCopy.Shallow(shared);
+			ShaderMaterial copy = Refii.Models.Engine_MaterialCopy.Shallow(shared);
+			mesh.MaterialOverride = copy;
+			Engine_UiSceneBuilder.MarkOwnedMaterial(mesh, copy);
 		}
 
 		foreach (Node child in node.GetChildren())

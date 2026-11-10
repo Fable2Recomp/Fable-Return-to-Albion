@@ -268,11 +268,16 @@ public partial class Engine_PropStreamer : Node3D
         {
             if (instance.Visible)
             {
-                paths.Add(instance.GetMeta(ModelPathMeta).AsString());
+                string path = instance.GetMeta(ModelPathMeta).AsString();
+                if (!TryPeek(path, out _, out _))
+                {
+                    paths.Add(path);
+                }
             }
         }
 
-        _prefetch = PrefetchModels(paths, () => _prefetchStop);
+        _prefetchStop = false;
+        _prefetch = paths.Count != 0 ? PrefetchModels(paths, () => _prefetchStop) : PrefetchJob.Empty;
     }
 
     public sealed class PrefetchJob
@@ -618,7 +623,7 @@ public partial class Engine_PropStreamer : Node3D
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (string path in paths)
         {
-            if (path.Length != 0 && seen.Add(path))
+            if (path.Length != 0 && seen.Add(path) && !TryPeek(path, out _, out _))
             {
                 distinct.Add(path);
             }
@@ -634,7 +639,7 @@ public partial class Engine_PropStreamer : Node3D
 
         var job = new PrefetchJob(distinct.Count);
 
-        int workers = Math.Min(Math.Max(2, System.Environment.ProcessorCount - 1), 8);
+        int workers = Math.Min(Math.Max(1, System.Environment.ProcessorCount - 1), 2);
         workers = Math.Min(workers, distinct.Count);
 
         int cursor = -1;
@@ -659,18 +664,10 @@ public partial class Engine_PropStreamer : Node3D
 
                     try
                     {
-                        // The shadow caster is built here, not on the main thread. The step that
-                        // places a prop merges its surfaces into a cast-only mesh (the batch twin,
-                        // or a single prop's proxy) and that merge reads every surface back. The
-                        // merge is cached per mesh, so building it on this worker makes the step's
-                        // own call a lookup. A plant that sways casts nothing: skipped.
-                        // Classic casts through its own joined mesh (Engine_ClassicCasterMerge),
-                        // built on the main thread: it reads the shared materials' metadata.
-                        if (!Refii.Models.Engine_ClassicMaterial.Active &&
-                            Resolve(distinct[i]) is { } resolved && !SwaysInWind(resolved))
-                        {
-                            Refii.Entities.Engine_ShadowProxy.MergedCaster(resolved, out _);
-                        }
+                        // Resolve() builds both the mesh and its rigid shadow caster before
+                        // publishing into Cache so TryPeek on the main thread never meets an
+                        // unbuilt caster.
+                        _ = Resolve(distinct[i]);
                     }
                     catch (Exception)
                     {
@@ -775,6 +772,8 @@ public partial class Engine_PropStreamer : Node3D
         _watch.Restart();
 
         double budget = (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode) ? 16.0 : MillisecondsPerFrame;
+        int maxStepsPerTick = budget > DefaultMsPerFrame ? 140 : 48;
+        int stepsThisTick = 0;
         bool poolDone = _prefetch is null || _prefetch.IsComplete;
         int untouched = 0;
         while (_remaining.Count != 0 && untouched < _remaining.Count)
@@ -805,6 +804,7 @@ public partial class Engine_PropStreamer : Node3D
                     long stepFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                     TimeSpan stepPause = GC.GetTotalPauseDuration();
                     Step(instance, ready, knownFailure);
+                    stepsThisTick++;
                     long stepTicks = System.Diagnostics.Stopwatch.GetTimestamp() - stepFrom;
                     Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.PropStep, stepTicks);
                     double stepMs = stepTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -846,6 +846,7 @@ public partial class Engine_PropStreamer : Node3D
                     // and log slow loads by path.
                     long from = System.Diagnostics.Stopwatch.GetTimestamp();
                     Step(instance, null, false);
+                    stepsThisTick++;
                     long syncLoadTicks = System.Diagnostics.Stopwatch.GetTimestamp() - from;
                     Refii.Core.Engine_LoadTimeline.Add(Refii.Core.Engine_LoadTimeline.Category.PropSyncLoad, syncLoadTicks);
                     double ms = syncLoadTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -872,7 +873,7 @@ public partial class Engine_PropStreamer : Node3D
                 untouched++;
             }
 
-            if (_watch.Elapsed.TotalMilliseconds >= budget)
+            if (stepsThisTick >= maxStepsPerTick || _watch.Elapsed.TotalMilliseconds >= budget)
             {
                 PublishProgress();
                 return;
@@ -1662,7 +1663,8 @@ public partial class Engine_PropStreamer : Node3D
                 return cached;
             }
 
-            if (Failed.TryGetValue(virtualPath, out (bool Present, string Reason) failure))
+            if (Failed.ContainsKey(virtualPath) && !HeaderOnly.Contains(virtualPath) &&
+                Failed.TryGetValue(virtualPath, out (bool Present, string Reason) failure))
             {
                 present = failure.Present;
                 reason = failure.Reason;
@@ -1677,7 +1679,13 @@ public partial class Engine_PropStreamer : Node3D
             }
         }
 
-        lock (gate)
+        bool isMainThread = Refii.Core.Engine_ServerSyncs.OnMainThread;
+        while (!System.Threading.Monitor.TryEnter(gate, isMainThread ? 1 : System.Threading.Timeout.Infinite))
+        {
+            Refii.Core.Engine_ServerSyncs.PumpWorkerGpuUploads(2.0);
+        }
+
+        try
         {
             lock (Cache)
             {
@@ -1721,6 +1729,12 @@ public partial class Engine_PropStreamer : Node3D
                 }
 
                 mesh.ResourceName = Engine_LevelProps.LeafOf(virtualPath);
+                mesh.ResourcePath = Engine_BnkMeshLoader.PathPrefix + virtualPath;
+                if (!Refii.Models.Engine_ClassicMaterial.Active && !SwaysInWind(mesh))
+                {
+                    Refii.Entities.Engine_ShadowProxy.MergedCaster(mesh, out _);
+                }
+
                 return mesh;
             }
             finally
@@ -1731,6 +1745,8 @@ public partial class Engine_PropStreamer : Node3D
                     {
                         if (mesh is not null)
                         {
+                            Failed.Remove(virtualPath);
+                            HeaderOnly.Remove(virtualPath);
                             Cache[virtualPath] = mesh;
                         }
                         else
@@ -1746,6 +1762,10 @@ public partial class Engine_PropStreamer : Node3D
                     InFlight.Remove(virtualPath);
                 }
             }
+        }
+        finally
+        {
+            System.Threading.Monitor.Exit(gate);
         }
     }
 }

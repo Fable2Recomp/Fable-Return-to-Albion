@@ -415,7 +415,12 @@ public partial class GameSession : Node
 				var worker = new System.Threading.Thread(() =>
 				{
 					// One mount for the sweeps, opened by the first that has work.
-					var mount = new Lazy<Refii.Bnk.BnkFileSystem>(() => Refii.Bnk.BnkFileSystem.Mount(directory));
+					Refii.Bnk.BnkFileSystem? sharedBanks = null;
+					var mount = new Lazy<Refii.Bnk.BnkFileSystem>(() =>
+					{
+						sharedBanks = Engine_GameAssets.Instance?.WaitForArchives();
+						return sharedBanks ?? Refii.Bnk.BnkFileSystem.Mount(directory);
+					});
 					try
 					{
 						Refii.Textures.Engine_TexPrebuild.Progress result =
@@ -473,11 +478,14 @@ public partial class GameSession : Node
 					}
 					finally
 					{
-						if (mount.IsValueCreated)
+						if (mount.IsValueCreated && !ReferenceEquals(mount.Value, sharedBanks))
 						{
 							mount.Value.Dispose();
 						}
 
+						System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+							System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+						GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
 						_ormDone = true;
 					}
 				})
@@ -501,20 +509,33 @@ public partial class GameSession : Node
 			// Only now: the guest is initialised (or Fail said why), so the videos that follow
 			// have something real behind them instead of a grey gap.
 			Refii.Models.Engine_ShaderWarmup.ReleaseScreen();
+			System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+				System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+			GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
 			return;
 		}
 
 		if (!_driving)
 			return;
 
-		// Classic builds the light-group shapes the guest stated on activation under the cover.
-		if (Paused || Refii.Models.Engine_ClassicLoad.FreezeGuest)
+		long lap = System.Diagnostics.Stopwatch.GetTimestamp();
+
+		// Hold guest simulation steps while the world build cover or classic light-shape settle freezes the guest,
+		// while still draining enhanced texture completions so workers never pile up behind a load hold.
+		bool freezeClock = Paused || GameWorld.FreezeGuestForLoad || Refii.Models.Engine_ClassicLoad.FreezeGuest;
+		HostBridge.SetTimeBaseFrozen(freezeClock);
+		if (freezeClock)
 		{
-			// The accumulator does not advance while paused; resuming replays nothing.
+			_accumulated = 0.0;
+			if (GameWorld.WorldBuildHeld)
+			{
+				HostBridge.SetWorldBuildPending(true);
+			}
+			Engine_TexLibrary.Pump();
+			Refii.Core.Engine_FramePhases.Lap("session.tex", ref lap);
 			return;
 		}
 
-		long lap = System.Diagnostics.Stopwatch.GetTimestamp();
 		_accumulated += delta;
 
 		double period = 1.0 / StepsPerSecond;

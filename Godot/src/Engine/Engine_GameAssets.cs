@@ -14,7 +14,14 @@ public partial class Engine_GameAssets : Node
 	private static readonly object MountLock = new();
 
 	private BnkFileSystem? _filesystem;
+	private Task<BnkFileSystem?>? _mountTask;
 	private bool _mounting;
+
+	/// <summary>Monotonically increasing counter incremented each time a mount completes.</summary>
+	public int MountGeneration { get; private set; }
+
+	/// <summary>The currently mounted bank filesystem, or null before mounting completes.</summary>
+	public BnkFileSystem? Archives => Snapshot();
 
 	public static Engine_GameAssets? Instance { get; private set; }
 	private static IReadOnlyList<Refii.Mods.ModOverlay> _activeOverlays = Array.Empty<Refii.Mods.ModOverlay>();
@@ -94,6 +101,54 @@ public partial class Engine_GameAssets : Node
 		previous?.Dispose();
 	}
 
+	/// <summary>
+	/// Returns the currently mounted <see cref="BnkFileSystem"/>, or waits for an in-flight
+	/// background <see cref="Mount"/> task to finish so callers (such as UI presentation startup
+	/// and boot prebuilders) share the single mounted archive tree instead of opening duplicate
+	/// <see cref="BnkFileSystem"/> instances over the same game directory.
+	/// </summary>
+	public BnkFileSystem? WaitForArchives()
+	{
+		Task<BnkFileSystem?>? task;
+		lock (MountLock)
+		{
+			if (_filesystem is not null)
+			{
+				return _filesystem;
+			}
+
+			task = _mountTask;
+		}
+
+		if (task is not null)
+		{
+			try
+			{
+				return task.GetAwaiter().GetResult();
+			}
+			catch (Exception)
+			{
+			}
+		}
+
+		return Snapshot();
+	}
+
+	/// <summary>Heap census estimate for the mounted <see cref="BnkFileSystem"/> and asset hash index.</summary>
+	public static (int Files, int Archives, long EstimatedBytes) GetHeapCensus()
+	{
+		BnkFileSystem? fs = Instance?.Snapshot();
+		if (fs is null)
+		{
+			return (0, 0, 0);
+		}
+
+		int files = fs.FileCount;
+		int archives = fs.Archives.Count;
+		long estimated = (files * 180L) + (archives * 1024L) + BnkFileSystem.NestedResidentBytes;
+		return (files, archives, estimated);
+	}
+
 	public void Mount(string gameDirectory)
 	{
 		lock (MountLock)
@@ -104,41 +159,40 @@ public partial class Engine_GameAssets : Node
 			}
 
 			_mounting = true;
+			GameDirectory = gameDirectory ?? string.Empty;
+			_mountTask = Task.Run(() =>
+			{
+				BnkFileSystem? mounted = BuildMount(live: false, out _, out string failure);
+
+				BnkFileSystem? previous;
+				lock (MountLock)
+				{
+					previous = _filesystem;
+					_filesystem = mounted;
+					if (mounted is not null)
+					{
+						MountGeneration++;
+					}
+					_byFileName = null;
+					_levels = null;
+					_mounting = false;
+				}
+
+				previous?.Dispose();
+
+				int count = mounted?.FileCount ?? 0;
+				if (mounted is null)
+				{
+					CallDeferred(nameof(ReportFailure), failure);
+				}
+				else
+				{
+					CallDeferred(nameof(ReportMounted), count);
+				}
+
+				return mounted;
+			});
 		}
-
-		GameDirectory = gameDirectory ?? string.Empty;
-
-		Task.Run(() =>
-		{
-			BnkFileSystem? mounted = BuildMount(live: false, out _, out string failure);
-
-			BnkFileSystem? previous;
-			lock (MountLock)
-			{
-				previous = _filesystem;
-				_filesystem = mounted;
-				_byFileName = null;
-				_levels = null;
-				_mounting = false;
-			}
-
-			previous?.Dispose();
-
-			if (mounted is not null)
-			{
-				// The guest's asset reader is bound in EnsureTextureLoader (main thread, deferred).
-			}
-
-			int count = mounted?.FileCount ?? 0;
-			if (mounted is null)
-			{
-				CallDeferred(nameof(ReportFailure), failure);
-			}
-			else
-			{
-				CallDeferred(nameof(ReportMounted), count);
-			}
-		});
 	}
 
 	/// <summary>
@@ -227,6 +281,7 @@ public partial class Engine_GameAssets : Node
 				if (mounted is not null)
 				{
 					_filesystem = mounted;
+					MountGeneration++;
 					_byFileName = null;
 					_levels = null;
 				}
@@ -568,6 +623,11 @@ public partial class Engine_GameAssets : Node
 
 		// Read from the player's gamescripts bank, never transcribed into the repo.
 		Refii.Animations.Engine_LocomotionStates.SetResolver(ReadAllBytes);
+
+		if (!Engine.IsEditorHint() && !Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			Refii.Animations.Engine_AnimCatalog.BeginPrewarm();
+		}
 
 		// The game's GDB for the owned detail pages; bound here AND in addons/bnk_mount.
 		Refii.Gdb.Engine_GameGdb.SetResolver(ReadAllBytes);

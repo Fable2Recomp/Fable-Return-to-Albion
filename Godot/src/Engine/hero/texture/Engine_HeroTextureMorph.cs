@@ -143,6 +143,20 @@ public static partial class Engine_HeroTextureMorph
         Engine_TexLibrary.ForgetComposedOrms();
     }
 
+    /// <summary>
+    /// Drops cached raw RGBA layer arrays while keeping compiled GPU composite textures intact,
+    /// reclaiming LOH buffers once initial crowd composites finish building during level load.
+    /// </summary>
+    public static void TrimDecodedSources()
+    {
+        lock (MorphLock)
+        {
+            DecodedCache.Clear();
+            DecodedCache.TrimExcess();
+            _decodedBytes = 0;
+        }
+    }
+
     public static List<TextureMorphPair> Pairs()
     {
         lock (MorphLock)
@@ -395,6 +409,9 @@ public static partial class Engine_HeroTextureMorph
             }
 
             bool packedSourceChanged = false;
+            var slotReplacements = new List<(int Slot, Texture2D Texture)>(3);
+            Texture2D? morphedSpecTex = null;
+            Texture2D? morphedNormTex = null;
             for (int slot = 0;
                  slot < names.Length && slot < Refii.Models.Engine_MdlMaterial.TextureParameters.Length;
                  slot++)
@@ -423,47 +440,90 @@ public static partial class Engine_HeroTextureMorph
                     continue;
                 }
 
-                if (own is null)
+                slotReplacements.Add((slot, composited));
+                if (slot == SpecularSlot)
                 {
-                    lock (DuplicateGate)
-                    {
-                        own = material.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta)
-                            ? Refii.Models.Engine_ClassicMaterial.InstanceCopy(material)
-                            : Refii.Models.Engine_MaterialCopy.Shallow(material);
-                    }
+                    morphedSpecTex = composited;
+                }
+                else if (slot == NormalSlot)
+                {
+                    morphedNormTex = composited;
                 }
 
-                // The slot's own parameter: the classic material names its samplers as the
-                // title's shader does, and its glass pass takes the composite too.
-                Refii.Models.Engine_ClassicMaterial.SetOnPasses(own,
-                    Refii.Models.Engine_ClassicMaterial.TextureParameter(own, slot), composited);
                 packedSourceChanged |= slot == NormalSlot || slot == SpecularSlot;
             }
+
+            if (slotReplacements.Count == 0)
+            {
+                continue;
+            }
+
+            bool hasOrm = false;
+            float specPowerMin = 0f;
+            float specPowerMax = 0f;
+            Texture2D? baseSpecTex = null;
+            Texture2D? baseNormTex = null;
+            own = Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () =>
+            {
+                ShaderMaterial copy;
+                lock (DuplicateGate)
+                {
+                    copy = material.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta)
+                        ? Refii.Models.Engine_ClassicMaterial.InstanceCopy(material)
+                        : Refii.Models.Engine_MaterialCopy.Shallow(material);
+                }
+
+                for (int i = 0; i < slotReplacements.Count; i++)
+                {
+                    (int replacedSlot, Texture2D composited) = slotReplacements[i];
+                    Refii.Models.Engine_ClassicMaterial.SetOnPasses(copy,
+                        Refii.Models.Engine_ClassicMaterial.TextureParameter(copy, replacedSlot), composited);
+                }
+
+                if (packedSourceChanged && Engine_TexSettings.OrmEnabled &&
+                    copy.GetShaderParameter("has_orm").AsBool())
+                {
+                    hasOrm = true;
+                    specPowerMin = copy.GetShaderParameter("spec_power_min").AsSingle();
+                    specPowerMax = copy.GetShaderParameter("spec_power_max").AsSingle();
+                    baseSpecTex = morphedSpecTex ?? copy.GetShaderParameter("specular_tex").As<Texture2D>();
+                    baseNormTex = morphedNormTex ?? copy.GetShaderParameter("normal_tex").As<Texture2D>();
+                }
+
+                return copy;
+            });
 
             // THE ORM FOLLOWS THE MAPS IT WAS PACKED FROM. Roughness and metallic come from the
             // specular, occlusion and height from the normal (Engine_TexOrm); a material whose
             // composite replaced either would otherwise draw with the unmorphed pack beside the
             // morphed map — the rule Engine_MdlMaterial already applies to an overridden source.
-            if (own is not null && packedSourceChanged && Engine_TexSettings.OrmEnabled &&
-                own.GetShaderParameter("has_orm").AsBool())
+            ImageTexture? orm = null;
+            bool hasHeight = false;
+            if (hasOrm)
             {
-                ImageTexture? orm = Engine_TexLibrary.BuildOrmFromTextures(
-                    own.GetShaderParameter("specular_tex").As<Texture2D>(),
-                    own.GetShaderParameter("normal_tex").As<Texture2D>(),
-                    own.GetShaderParameter("spec_power_min").AsSingle(),
-                    own.GetShaderParameter("spec_power_max").AsSingle(),
-                    out bool hasHeight);
-                if (orm is not null)
-                {
-                    own.SetShaderParameter("orm_tex", orm);
-                    own.SetShaderParameter("has_height", hasHeight);
-                }
+                orm = Engine_TexLibrary.ComposedOrm(
+                    baseSpecTex,
+                    baseNormTex,
+                    specPowerMin,
+                    specPowerMax,
+                    Engine_TexSettings.OrmAoStrength,
+                    Engine_TexSettings.OrmMetallicStrength,
+                    Engine_TexSettings.OrmHeight,
+                    out hasHeight);
             }
 
-            if (own is not null)
+            int surfaceIdx = s;
+            ShaderMaterial finalMat = own;
+            Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () =>
             {
-                mesh.SurfaceSetMaterial(s, own);
-            }
+                if (orm is not null)
+                {
+                    finalMat.SetShaderParameter("orm_tex", orm);
+                    finalMat.SetShaderParameter("has_height", hasHeight);
+                }
+
+                mesh.SurfaceSetMaterial(surfaceIdx, finalMat);
+            });
         }
     }
 
@@ -757,6 +817,17 @@ public static partial class Engine_HeroTextureMorph
         }
 
         return texture;
+    }
+
+    private static Image? DecodeToImage(string path, long epoch)
+    {
+        DecodedTexture decoded = Decode(path, epoch);
+        if (!decoded.Ok || decoded.Width <= 0 || decoded.Height <= 0 || decoded.Rgba.Length < decoded.Width * decoded.Height * 4)
+        {
+            return null;
+        }
+
+        return Image.CreateFromData(decoded.Width, decoded.Height, false, Image.Format.Rgba8, decoded.Rgba);
     }
 
     private static void AppendKey(
@@ -1112,11 +1183,13 @@ public static partial class Engine_HeroTextureMorph
     /// <returns>The uploaded texture using the Android format fallback when needed.</returns>
     private static ImageTexture ToTexture(byte[] rgba, int width, int height, bool normalMap, string? stored = null)
     {
-        using Image image = Image.CreateFromData(
+        Image image = Image.CreateFromData(
             width, height, false, Image.Format.Rgba8, new ReadOnlySpan<byte>(rgba, 0, width * height * 4));
         image.GenerateMipmaps(normalMap);
         Engine_TexImage.CompressBlocks(image, normalMap);
-        return StoredUpload(image, stored) ?? Refii.Textures.Engine_TextureUpload.CreateTexture(image, world: true);
+        ImageTexture texture = StoredUpload(image, stored) ?? Refii.Textures.Engine_TextureUpload.CreateTexture(image, world: true);
+        Engine_TexLibrary.RegisterCpuImage(texture, image);
+        return texture;
     }
 
     /// <summary>Retains top-level managed RGBA while releasing the newly decoded native Image after extraction.</summary>
@@ -1228,6 +1301,8 @@ public static partial class Engine_HeroTextureMorph
     /// <summary>Bytes in the decoded sources since they were last cleared, when budgeted.</summary>
     private static long _decodedBytes;
 
+    private const int DefaultSourceBudgetMb = 64;
+
     /// <summary>Stamps each source as it is used, for <see cref="TrimDecodedTo"/>.</summary>
     private static long _decodedClock;
 
@@ -1269,7 +1344,7 @@ public static partial class Engine_HeroTextureMorph
         }
         catch (Exception)
         {
-            return 0;
+            return DefaultSourceBudgetMb * 1048576L;
         }
     }
 

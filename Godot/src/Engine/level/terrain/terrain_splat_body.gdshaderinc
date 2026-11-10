@@ -164,6 +164,7 @@ uniform vec4 material_params[32];
 varying vec3 v_local;
 varying vec3 v_local_normal;
 varying flat vec4 v_page_rect;
+varying float v_combined_ao;
 
 void vertex() {
 	v_local = VERTEX;
@@ -657,19 +658,10 @@ void fragment() {
 	// shadows linearly across the region — "the shadows don't line up". `repeat_disable` on
 	// the sampler is the guest's CLAMP; texel i owns cell span [i, i+1), corner-aligned, so
 	// bilinear at cell/dim needs no +0.5 — adding one would shift the bake half a cell.
-#ifdef FABLE_LITE_MODERN
-	// THE MODERN MODEL EMITS NONE OF IT. The ground is never amb3, so `fable_ambient` scales the
-	// whole authored term below by max(1 - fable_unified, 0) = 0: the lightmap fetch, the darkening
-	// and the tether are compiled out, and the flat floor is what reaches EMISSION. The cavity
-	// stays — under the unified model it is Godot's AO on the GI.
-	EMISSION = final * fable_ambient(vec3(0.0));
-	AO = ao;
-#else
-	vec2 lm_dim = vec2(textureSize(lightmap, 0));
-	vec2 lm_uv = (chunk_clamped * 32.0) / max(lm_dim, vec2(1.0));
-	vec3 bake = has_lightmap
-		? pow(max(texture(lightmap, lm_uv).rgb, vec3(0.0)), vec3(FABLE_LIGHTMAP_GAMMA))
-		: vec3(0.0);
+	float terrain_contact_ao = mix(1.0, fable_sample_terrain_ao(fable_world), step(0.5, fable_unified));
+	float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, fable_unified));
+	v_combined_ao = combined_ao;
+	AO_LIGHT_AFFECT = fable_unified * fable_ao_light_affect;
 
 	// darken = lerp(DarkeningColour, 1, saturate(dot(Nbent, Nmapped))^2). The square is the
 	// guest's, and the theme's darkening colour arrives through `fable_darkening` — it is the
@@ -696,6 +688,20 @@ void fragment() {
 		darken = mix(fable_darkening, vec3(1.0), nb * nb);
 	}
 #endif
+
+#ifdef FABLE_LITE_MODERN
+	// THE MODERN MODEL EMITS NONE OF IT. The ground is never amb3, so `fable_ambient` scales the
+	// whole authored term below by max(1 - fable_unified, 0) = 0: the lightmap fetch and the tether
+	// are compiled out, and the flat floor is what reaches EMISSION. The cavity and contact AO
+	// occlude both the GI and the ambient floor.
+	EMISSION = final * fable_ambient_occluded(vec3(0.0), combined_ao, darken);
+	AO = combined_ao;
+#else
+	vec2 lm_dim = vec2(textureSize(lightmap, 0));
+	vec2 lm_uv = (chunk_clamped * 32.0) / max(lm_dim, vec2(1.0));
+	vec3 bake = has_lightmap
+		? pow(max(texture(lightmap, lm_uv).rgb, vec3(0.0)), vec3(FABLE_LIGHTMAP_GAMMA))
+		: vec3(0.0);
 
 	// The theme's LightmapFactor, applied now that it has the operand the guest authored it
 	// against. `fable_ambient` adds the flat GlobalAmbient on top, so this line is the guest's
@@ -739,12 +745,12 @@ void fragment() {
 	authored = fable_sky_tether(authored);
 
 	// AO ON THE BAKE HALF ONLY, exactly where standard_material puts it: the flat GlobalAmbient
-	// floor stays unoccluded, as it does on the props beside the ground. The cavity still
-	// occludes the terrain bake itself: the lightmap is metres-per-texel and cannot carry
-	// texture-scale occlusion.
-	EMISSION = final * fable_ambient(authored * ao);
+	// floor stays unoccluded in the fable model, as it does on the props beside the ground. The
+	// cavity still occludes the terrain bake itself: the lightmap is metres-per-texel and cannot
+	// carry texture-scale occlusion.
+	EMISSION = final * fable_ambient_occluded(authored * ao, combined_ao, darken);
 	// Godot's ambient and GI take the AO the guest's fill took above; 1 in the fable model.
-	AO = mix(1.0, ao, fable_unified);
+	AO = mix(1.0, combined_ao, fable_unified);
 #endif
 
 	// LAST, because it attenuates everything above it. Exact here: the ground is
@@ -797,12 +803,17 @@ void fragment() {
 		// The VIEW-SPACE NORMAL as colour, straight from the fragment.
 		EMISSION = (NORMAL * 0.5) + 0.5;
 		ALBEDO = vec3(0.0);
+	} else if (fable_light_debug == 11) {
+		// 11: combined ambient occlusion (micro-cavity normal AO * baked terrain contact AO).
+		EMISSION = vec3(combined_ao);
+		ALBEDO = vec3(0.0);
 	}
     } else {
         ALBEDO = vec3(0.5);
         EMISSION = vec3(0.0);
         NORMAL_MAP = vec3(0.5, 0.5, 1.0);
         ROUGHNESS = 1.0;
+        v_combined_ao = 1.0;
     }
 #endif
 }
@@ -831,7 +842,7 @@ void light() {
 #endif
 	if (dot(NORMAL, LIGHT) > 0.0) {
 		// Facing away the term is exactly zero (saturate(NdotL) scales finite factors): skipped.
-		float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
+		float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world) * fable_direct_ao(v_combined_ao);
 		if (atten > 0.0) {
 			float gate = LIGHT_IS_DIRECTIONAL
 				? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)

@@ -173,18 +173,11 @@ public partial class LauncherApp : Control
 			// THE SCENE IS ALREADY BUILT BY THE TIME `_Ready` RUNS, so returning early is not
 			// enough — every launcher control in `main.tscn` still exists and still draws, and
 			// the child came up showing a second, half-configured launcher beside the game.
-			// Emptying this node leaves the main window blank.
+			// Emptying this node leaves the main window blank for GameWindow to take over.
 			foreach (Node child in GetChildren())
 			{
 				child.QueueFree();
 			}
-
-			// DEFERRED, because minimising during `_Ready` is too early: the window manager has
-			// not finished mapping the window and the request is dropped, which is why the
-			// child's window stayed on screen.
-			Callable.From(() => DisplayServer.WindowSetMode(
-				DisplayServer.WindowMode.Minimized,
-				(int)DisplayServer.MainWindowId)).CallDeferred();
 
 			Refii.Game.GameWindow.Open(this);
 			return;
@@ -366,7 +359,7 @@ public partial class LauncherApp : Control
 				continue;
 			}
 
-			Image? image = Refii.Textures.Engine_TexImage.TryCreateImage(raw, out _);
+			using Image? image = Refii.Textures.Engine_TexImage.TryCreateImage(raw, out _);
 			if (image is not null)
 			{
 				++loaded;
@@ -2094,6 +2087,13 @@ public partial class LauncherApp : Control
 		DisplayServer.WindowSetMode(
 			DisplayServer.WindowMode.Minimized, (int)DisplayServer.MainWindowId);
 		_standingDownForGame = true;
+		Engine.MaxFps = 1;
+		OS.LowProcessorUsageMode = true;
+		RenderingServer.ViewportSetActive(GetViewport().GetViewportRid(), false);
+		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
+		Refii.Game.GameElevatedLaunch.TrimProcessWorkingSet();
 		Log($"Started the game{(elevated ? " as Administrator" : string.Empty)} (pid {handle.ProcessId}); " +
 			"the launcher will return when it closes.");
 		RefreshState();
@@ -2372,17 +2372,26 @@ public partial class LauncherApp : Control
 		// THE GAME IS A SEPARATE PROCESS NOW, so its exit is the signal to come back. Polled
 		// rather than event-driven: `Process.Exited` fires on a thread pool thread and every
 		// call below it touches the scene tree.
-		if (_standingDownForGame && !_launch.GameIsRunning)
+		if (_standingDownForGame)
 		{
-			_standingDownForGame = false;
+			if (!_launch.GameIsRunning)
+			{
+				_standingDownForGame = false;
+				OS.LowProcessorUsageMode = false;
+				Engine.MaxFps = 0;
+				RenderingServer.ViewportSetActive(GetViewport().GetViewportRid(), true);
 
-			// However the game ended (quit to desktop, a window close, a crash), only the child
-			// process ends: the launcher always comes back.
-
-			DisplayServer.WindowSetMode(_launcherModeBeforePlay, (int)DisplayServer.MainWindowId);
-			DisplayServer.WindowMoveToForeground((int)DisplayServer.MainWindowId);
-			Log("The game closed; the launcher is back.");
-			RefreshState();
+				// However the game ended (quit to desktop, a window close, a crash), only the child
+				// process ends: the launcher always comes back.
+				DisplayServer.WindowSetMode(_launcherModeBeforePlay, (int)DisplayServer.MainWindowId);
+				DisplayServer.WindowMoveToForeground((int)DisplayServer.MainWindowId);
+				Log("The game closed; the launcher is back.");
+				RefreshState();
+			}
+			else
+			{
+				return;
+			}
 		}
 
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("launcherapp");

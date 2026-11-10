@@ -16,7 +16,7 @@ namespace Refii.Animations;
 /// replicated, or the rig carries a procedural layer (dog paw IK), <see cref="Apply"/> answers
 /// false and the caller keeps the pose feed for that frame — a correctness fallback, not a mode.
 /// </summary>
-public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
+public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, Engine_ClipAnimator.IPoseBatchItem
 {
 	/// <summary>The main thread's pose write (clip.publish), summed across all rigs once per entity
 	/// frame; the other three phases are not timed yet and report 0.</summary>
@@ -1412,46 +1412,166 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		return true;
 	}
 
+	internal interface IPoseBatchItem
+	{
+		bool FoldOnMain { get; }
+		uint Address { get; }
+		bool InBatch { get; set; }
+		System.Exception? FoldError { get; set; }
+		void Fold();
+		void Write();
+	}
+
+	uint IPoseBatchItem.Address => _entity;
+	bool IPoseBatchItem.InBatch { get => _inBatch; set => _inBatch = value; }
+	System.Exception? IPoseBatchItem.FoldError { get => _foldError; set => _foldError = value; }
+
 	/// <summary>
-	/// The rigs posed in one pass of the entity loop: each rig's fold starts on the thread pool as
-	/// soon as it is added, so the folds run while the loop goes on; <see cref="Finish"/> waits
-	/// for the last and writes every rig in the order added. Each pose is the one
-	/// <see cref="Apply"/> would have computed; only the thread differs. Main thread.
+	/// The rigs posed in one pass of the entity loop: each rig's fold is offered to the thread pool as
+	/// soon as it is added, while <see cref="Finish"/> actively steals any unstarted rigs on the main
+	/// thread so a busy/starved thread pool (e.g. background load workers waiting on GPU upload fences)
+	/// can never stall the main thread. Each pose is the one <see cref="Apply"/> would have computed;
+	/// only the thread differs. Main thread.
 	/// </summary>
 	public sealed class PoseBatch
 	{
-		private readonly List<Engine_ClipAnimator> _rigs = new();
-		private readonly System.Threading.ManualResetEventSlim _done = new(true);
+		private sealed class WorkerToken : System.Threading.IThreadPoolWorkItem
+		{
+			public readonly PoseBatch Batch;
+			public int Queued;
 
-		/// <summary>Folds still running, plus one held by the batch itself until Finish.</summary>
-		private int _pending;
+			public WorkerToken(PoseBatch batch) => Batch = batch;
+
+			public void Execute()
+			{
+				try
+				{
+					Batch.RunWorkerSlice();
+				}
+				finally
+				{
+					System.Threading.Volatile.Write(ref Queued, 0);
+				}
+			}
+		}
+
+		private readonly List<IPoseBatchItem> _rigs = new();
+		private readonly object _gate = new();
+		private readonly WorkerToken[] _workers;
+		private int _nextIndex;
+		private int _activeWorkers;
+		private int _epoch;
+		private bool _closed = true;
+
+		/// <summary>Test hook: when false, workers are not dispatched so <see cref="Finish"/> exercises 100% main-thread work-stealing.</summary>
+		internal bool DispatchToThreadPool { get; set; } = true;
+
+		/// <summary>Rigs stolen and folded on the main thread during the most recent <see cref="Finish"/>.</summary>
+		internal int LastStolenCount { get; private set; }
+
+		public PoseBatch()
+		{
+			int maxWorkers = System.Math.Clamp(System.Environment.ProcessorCount - 1, 1, 8);
+			_workers = new WorkerToken[maxWorkers];
+			for (int i = 0; i < maxWorkers; i++)
+			{
+				_workers[i] = new WorkerToken(this);
+			}
+		}
 
 		public void Add(Engine_ClipAnimator rig)
 		{
+			rig._batch = this;
+			AddItem(rig);
+		}
+
+		internal void AddItem(IPoseBatchItem rig)
+		{
 			if (_rigs.Count == 0)
 			{
-				_pending = 1;
-				_done.Reset();
+				lock (_gate)
+				{
+					_epoch++;
+					_nextIndex = 0;
+					_activeWorkers = 0;
+					_closed = false;
+				}
 			}
 
-			_rigs.Add(rig);
-			rig._inBatch = true;
-			if (rig.FoldOnMain)
+			rig.InBatch = true;
+			rig.FoldError = null;
+			lock (_gate)
+			{
+				_rigs.Add(rig);
+			}
+
+			if (rig.FoldOnMain || !DispatchToThreadPool)
 			{
 				return;
 			}
 
-			rig._batch = this;
-			rig._foldError = null;
-			System.Threading.Interlocked.Increment(ref _pending);
-			System.Threading.ThreadPool.UnsafeQueueUserWorkItem(rig, preferLocal: false);
+			for (int i = 0; i < _workers.Length; i++)
+			{
+				WorkerToken token = _workers[i];
+				if (System.Threading.Interlocked.CompareExchange(ref token.Queued, 1, 0) == 0)
+				{
+					System.Threading.ThreadPool.UnsafeQueueUserWorkItem(token, preferLocal: false);
+					break;
+				}
+			}
 		}
 
-		internal void Folded()
+		private void RunWorkerSlice()
 		{
-			if (System.Threading.Interlocked.Decrement(ref _pending) == 0)
+			long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
+			try
 			{
-				_done.Set();
+				while (true)
+				{
+					IPoseBatchItem? rig = null;
+					int claimedEpoch;
+					lock (_gate)
+					{
+						if (_closed || _nextIndex >= _rigs.Count)
+						{
+							return;
+						}
+
+						int index = _nextIndex++;
+						rig = _rigs[index];
+						if (rig.FoldOnMain)
+						{
+							continue;
+						}
+
+						claimedEpoch = _epoch;
+						_activeWorkers++;
+					}
+
+					try
+					{
+						rig.Fold();
+					}
+					catch (System.Exception error)
+					{
+						rig.FoldError = error;
+					}
+					finally
+					{
+						lock (_gate)
+						{
+							if (claimedEpoch == _epoch && --_activeWorkers == 0 && _closed)
+							{
+								System.Threading.Monitor.PulseAll(_gate);
+							}
+						}
+					}
+				}
+			}
+			finally
+			{
+				Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.PoseBatchBytes,
+					System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
 			}
 		}
 
@@ -1459,38 +1579,87 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 		{
 			if (_rigs.Count == 0)
 			{
+				LastStolenCount = 0;
 				return;
 			}
 
-			foreach (Engine_ClipAnimator rig in _rigs)
+			for (int i = 0; i < _rigs.Count; i++)
 			{
-				if (rig.FoldOnMain)
+				IPoseBatchItem mainRig = _rigs[i];
+				if (mainRig.FoldOnMain)
 				{
-					rig.Fold();
+					mainRig.Fold();
 				}
 			}
 
-			Folded();
-			if (!_done.IsSet)
+			// Steal any remaining unclaimed folds directly on the main thread so ThreadPool queue delays
+			// never block entity pose updates.
+			int stolen = 0;
+			while (true)
 			{
-				long waitFrom = System.Diagnostics.Stopwatch.GetTimestamp();
-				_done.Wait();
-				Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.PoseWait, waitFrom);
-			}
-			foreach (Engine_ClipAnimator rig in _rigs)
-			{
-				rig._inBatch = false;
-				if (rig._foldError is { } error)
+				IPoseBatchItem? rig = null;
+				lock (_gate)
 				{
-					rig._foldError = null;
-					GD.PushError($"[anim] fold failed for 0x{rig.Address:X8}: {error}");
+					if (_nextIndex >= _rigs.Count)
+					{
+						break;
+					}
+
+					rig = _rigs[_nextIndex++];
+				}
+
+				if (rig.FoldOnMain)
+				{
+					continue;
+				}
+
+				stolen++;
+				try
+				{
+					rig.Fold();
+				}
+				catch (System.Exception error)
+				{
+					rig.FoldError = error;
+				}
+			}
+
+			LastStolenCount = stolen;
+
+			lock (_gate)
+			{
+				_closed = true;
+				if (_activeWorkers > 0)
+				{
+					long waitFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+					while (_activeWorkers > 0)
+					{
+						System.Threading.Monitor.Wait(_gate);
+					}
+					Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.PoseWait, waitFrom);
+				}
+			}
+
+			foreach (IPoseBatchItem rig in _rigs)
+			{
+				rig.InBatch = false;
+				if (rig.FoldError is { } error)
+				{
+					rig.FoldError = null;
+					if (!Refii.Core.Engine_AppRoot.IsTestHost)
+					{
+						GD.PushError($"[anim] fold failed for 0x{rig.Address:X8}: {error}");
+					}
 					continue;
 				}
 
 				rig.Write();
 			}
 
-			_rigs.Clear();
+			lock (_gate)
+			{
+				_rigs.Clear();
+			}
 		}
 	}
 
@@ -1498,24 +1667,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem
 	private bool _inBatch;
 	private System.Exception? _foldError;
 
-	/// <summary>The thread pool's entry: this rig's fold, for its <see cref="PoseBatch"/>.</summary>
+	/// <summary>The thread pool's entry (unused directly now that <see cref="PoseBatch"/> owns worker tokens).</summary>
 	void System.Threading.IThreadPoolWorkItem.Execute()
 	{
-		long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
-		try
-		{
-			Fold();
-		}
-		catch (System.Exception error)
-		{
-			_foldError = error;
-		}
-		finally
-		{
-			Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.PoseBatchBytes,
-				System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
-			_batch!.Folded();
-		}
+		Fold();
 	}
 
 	/// <summary>Whether <see cref="Fold"/> must run on the main thread (a clip read through its resource).</summary>

@@ -18,10 +18,13 @@ render_mode unshaded, cull_disabled, blend_mix;
 // The gamma ramp is deliberately not reproduced — our texture decode already lands in the
 // calibrated space, and a second transfer would double-count it.
 
-uniform sampler2D diffuse_tex : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D diffuse_tex : source_color, filter_linear_mipmap, repeat_disable, hint_default_white;
 
 // Repeat-enabled: the detail maps tile, and the derived uv set runs outside 0..1.
-uniform sampler2D detail_tex : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D detail_tex : source_color, filter_linear_mipmap, repeat_enable, hint_default_white;
+
+// False on untextured quads (such as solid-tinted backdrops), so the shader skips sampling diffuse_tex.
+uniform bool has_diffuse = true;
 
 // The atlas rectangle, already inset to texel centres on the CPU side.
 uniform vec2 uv1_offset = vec2(0.0);
@@ -63,7 +66,7 @@ uniform vec4 clip_rect = vec4(-1e9, -1e9, 1e9, 1e9);
 // A controller button cut from a shared atlas (`abyx`) carries the keycap of the key bound to
 // it; while the keyboard and mouse are the active device the quad draws that instead of its
 // atlas cell. One global flips every glyph at once — no material is walked on a switch.
-uniform sampler2D keycap_tex : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D keycap_tex : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;
 uniform bool has_keycap = false;
 global uniform bool ui_keyboard_mode;
 
@@ -82,15 +85,16 @@ void vertex() {
 }
 
 void fragment() {
-	if (clip_world.x < clip_rect.x || clip_world.x > clip_rect.z ||
-		clip_world.y < clip_rect.y || clip_world.y > clip_rect.w) {
-		discard;
-	}
+	bool clipped = clip_world.x < clip_rect.x || clip_world.x > clip_rect.z ||
+		clip_world.y < clip_rect.y || clip_world.y > clip_rect.w;
 
 	vec2 uv = UV * uv1_scale + uv1_offset;
-	vec4 primary = has_keycap && ui_keyboard_mode
-		? texture(keycap_tex, UV)
-		: texture(diffuse_tex, uv);
+	vec4 primary = vec4(1.0);
+	if (has_keycap && ui_keyboard_mode) {
+		primary = texture(keycap_tex, UV);
+	} else if (has_diffuse) {
+		primary = texture(diffuse_tex, uv);
+	}
 
 	vec3 rgb = primary.rgb;
 	float alpha = primary.a;
@@ -107,6 +111,11 @@ void fragment() {
 		// REPLACE, not blend — the stored factor is 1.0.
 		rgb = detail.rgb;
 		alpha *= detail.a;
+	}
+
+	// Discard after all implicit-derivative texture samples so DXIL/D3D12 quad derivatives stay uniform.
+	if (clipped) {
+		discard;
 	}
 
 	if (hue_shift != 0.0) {

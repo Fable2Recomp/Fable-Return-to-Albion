@@ -45,6 +45,14 @@ public partial class GameDevMenu : CanvasLayer
 		// From startup, so the Errors tab has the whole run whenever it is opened.
 		GameDevErrorLog.Install();
 		ProcessMode = ProcessModeEnum.Always;
+	}
+
+	private void EnsureWindow()
+	{
+		if (_window is not null && GodotObject.IsInstanceValid(_window))
+		{
+			return;
+		}
 
 		Vector2I screen = (Vector2I)GetViewport().GetVisibleRect().Size;
 		_window = new Window
@@ -150,7 +158,7 @@ public partial class GameDevMenu : CanvasLayer
 
 	public override void _Input(InputEvent @event)
 	{
-		if (!IsToggle(@event) || _window is null)
+		if (!IsToggle(@event))
 		{
 			return;
 		}
@@ -162,6 +170,7 @@ public partial class GameDevMenu : CanvasLayer
 	/// <summary>Uses the same open, refresh and keyboard-release lifecycle for keyboard and touch.</summary>
 	public void Toggle()
 	{
+		EnsureWindow();
 		if (_window is null) return;
 		if (Open)
 		{

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Core;
+using Refii.Textures;
 
 namespace Refii.Ui;
 
@@ -94,6 +95,27 @@ public static partial class Engine_UiKeyGlyphs
 
 	private static readonly Dictionary<string, Proxy> _proxies = new(StringComparer.Ordinal);
 
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Texture2D, Image> _sourceImages = new();
+
+	/// <summary>
+	/// Whether <see cref="Wrap"/> wraps <paramref name="virtualPath"/> in a glyph proxy that
+	/// reads the CPU <see cref="Image"/> of the source texture.
+	/// </summary>
+	public static bool NeedsSourceImage(string virtualPath) =>
+		ArtFor(virtualPath.Replace('\\', '/').ToLowerInvariant()) is not null;
+
+	/// <summary>
+	/// Registers a CPU copy of <paramref name="texture"/>'s <see cref="Image"/> so <see cref="Wrap"/>
+	/// and <see cref="Draw"/> never need a synchronous GPU readback (<c>Texture2D.GetImage()</c>).
+	/// </summary>
+	public static void RegisterSourceImage(Texture2D texture, Image image) =>
+		_sourceImages.AddOrUpdate(texture, image);
+
+	private static Image? SourceImageOf(Texture2D texture) =>
+		_sourceImages.TryGetValue(texture, out Image? cached) && !cached.IsEmpty()
+			? cached
+			: Refii.Core.Engine_ServerSyncs.Image(texture);
+
 	private static int _drawnSignature;
 
 	private static bool _drawnOnce;
@@ -118,7 +140,7 @@ public static partial class Engine_UiKeyGlyphs
 	{
 		if (!_keycaps.TryGetValue(button, out ImageTexture? keycap))
 		{
-			keycap = ImageTexture.CreateFromImage(Keycap(button));
+			keycap = Engine_TextureUpload.CreateTexture(Keycap(button));
 			_keycaps[button] = keycap;
 		}
 
@@ -178,7 +200,7 @@ public static partial class Engine_UiKeyGlyphs
 			DrawPadCell(canvas, cell, button, arrow);
 		}
 
-		ImageTexture texture = ImageTexture.CreateFromImage(canvas.ToImage(mipmaps: true));
+		ImageTexture texture = Engine_TextureUpload.CreateTexture(canvas.ToImage(mipmaps: true));
 		_actionGlyphs[cacheKey] = texture;
 		return texture;
 	}
@@ -235,7 +257,7 @@ public static partial class Engine_UiKeyGlyphs
 			return art;
 		}
 
-		Image? image = Refii.Core.Engine_ServerSyncs.Image(art);
+		Image? image = SourceImageOf(art);
 		if (image is null || image.IsEmpty())
 		{
 			return null;
@@ -253,7 +275,7 @@ public static partial class Engine_UiKeyGlyphs
 		var canvas = new Canvas(KeycapSize, KeycapSize);
 		canvas.Blit(rgba, new Rect2I(0, 0, KeycapSize, KeycapSize));
 		Arrow(canvas, KeycapSize / 2f, KeycapSize / 2f, KeycapSize * 0.42f, KeycapSize * 0.13f, arrow, Lit);
-		return ImageTexture.CreateFromImage(canvas.ToImage(mipmaps: true));
+		return Engine_TextureUpload.CreateTexture(canvas.ToImage(mipmaps: true));
 	}
 
 	/// <summary>
@@ -377,7 +399,7 @@ public static partial class Engine_UiKeyGlyphs
 		if (!_orbs.TryGetValue(key, out var known))
 		{
 			var cell = new OrbCell(orb.X, orb.Y, orb.Radius, (vMax - vMin) / (uMax - uMin));
-			known = (cell, ImageTexture.CreateFromImage(DrawOrb(cell)));
+			known = (cell, Engine_TextureUpload.CreateTexture(DrawOrb(cell)));
 			_orbs[key] = known;
 		}
 
@@ -453,7 +475,7 @@ public static partial class Engine_UiKeyGlyphs
 			return known.Texture;
 		}
 
-		Image? image = Refii.Core.Engine_ServerSyncs.Image(original);
+		Image? image = SourceImageOf(original);
 		if (image is null || image.IsEmpty())
 		{
 			return original;
@@ -461,13 +483,14 @@ public static partial class Engine_UiKeyGlyphs
 
 		var proxy = new Proxy
 		{
-			Texture = ImageTexture.CreateFromImage(image),
+			Texture = Engine_TextureUpload.CreateTexture(image),
 			Original = original,
 			Button = button,
 			Layer = art.Layer,
 			Backed = art.Backed,
 			Arrow = ArrowFor(key),
 		};
+		RegisterSourceImage(proxy.Texture, image);
 		_proxies[key] = proxy;
 		Draw(proxy, Engine_UiInputMode.Keycaps);
 
@@ -528,12 +551,12 @@ public static partial class Engine_UiKeyGlyphs
 
 		foreach ((string button, ImageTexture keycap) in _keycaps)
 		{
-			keycap.SetImage(Keycap(button));
+			Engine_TextureUpload.SetImage(keycap, Keycap(button));
 		}
 
 		foreach ((OrbCell cell, ImageTexture orb) in _orbs.Values)
 		{
-			orb.SetImage(DrawOrb(cell));
+			Engine_TextureUpload.SetImage(orb, DrawOrb(cell));
 		}
 	}
 
@@ -703,7 +726,7 @@ public static partial class Engine_UiKeyGlyphs
 
 	private static void Draw(Proxy proxy, bool keys)
 	{
-		Image? pad = Refii.Core.Engine_ServerSyncs.Image(proxy.Original);
+		Image? pad = SourceImageOf(proxy.Original);
 		if (pad is null || pad.IsEmpty())
 		{
 			return;
@@ -711,14 +734,17 @@ public static partial class Engine_UiKeyGlyphs
 
 		if (!keys && ShowsShipped(proxy.Button))
 		{
-			proxy.Texture.SetImage(pad);
+			RegisterSourceImage(proxy.Texture, pad);
+			Engine_TextureUpload.SetImage(proxy.Texture, pad);
 			return;
 		}
 
 		if (proxy.Layer == GlyphLayer.Overlay)
 		{
 			// The orb under it carries the glyph; the letter over it would draw on top of the keycap.
-			proxy.Texture.SetImage(new Canvas(pad.GetWidth(), pad.GetHeight()).ToImage(pad.HasMipmaps()));
+			Image empty = new Canvas(pad.GetWidth(), pad.GetHeight()).ToImage(pad.HasMipmaps());
+			RegisterSourceImage(proxy.Texture, empty);
+			Engine_TextureUpload.SetImage(proxy.Texture, empty);
 			return;
 		}
 
@@ -761,7 +787,9 @@ public static partial class Engine_UiKeyGlyphs
 			}
 		}
 
-		proxy.Texture.SetImage(canvas.ToImage(pad.HasMipmaps() || scale > 1));
+		Image drawn = canvas.ToImage(pad.HasMipmaps() || scale > 1);
+		RegisterSourceImage(proxy.Texture, drawn);
+		Engine_TextureUpload.SetImage(proxy.Texture, drawn);
 	}
 
 	/// <summary>The smallest side a drawn glyph is rasterised at.</summary>

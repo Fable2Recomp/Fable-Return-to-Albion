@@ -33,7 +33,7 @@ public static partial class Engine_HeroTextureMorph
     private static ImageTexture? StoredUpload(Image image, string? stored) =>
         stored is null ? null : AndroidCompositeCache.UploadAndStore(image, stored);
 
-    /// <summary>What `hero_texture_sources_mb` 0 means: unbounded, or the low-memory tier's bound.</summary>
+    /// <summary>What `hero_texture_sources_mb` 0 means: the desktop 64 MB LRU bound, or the low-memory tier's bound.</summary>
     private static int UnsetSourceMegabytes() =>
-        Refii.Game.AndroidMemoryRelease.LowRamMode ? Refii.Game.AndroidMemoryRelease.LowRamHeroSourceMegabytes : 0;
+        Refii.Game.AndroidMemoryRelease.LowRamMode ? Refii.Game.AndroidMemoryRelease.LowRamHeroSourceMegabytes : DefaultSourceBudgetMb;
 }

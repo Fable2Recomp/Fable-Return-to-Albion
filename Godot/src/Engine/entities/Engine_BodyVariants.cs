@@ -131,9 +131,14 @@ public static class Engine_BodyVariants
 			groups.Add(new List<int> { s });
 		}
 
-		if (groups.Count == count || kept == 0)
+		if (groups.Count == count)
 		{
 			return null;
+		}
+
+		if (kept == 0)
+		{
+			return new ArrayMesh { ResourceName = source.ResourceName };
 		}
 
 		var variant = new ArrayMesh { ResourceName = source.ResourceName };
@@ -145,6 +150,13 @@ public static class Engine_BodyVariants
 			? source.GetMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta).AsGodotArray() : null;
 		var keptDescriptors = new Godot.Collections.Array();
 		var keptTables = new Godot.Collections.Array();
+		var pending = new List<(
+			Mesh.PrimitiveType Primitive,
+			Godot.Collections.Array Arrays,
+			Godot.Collections.Dictionary? Lods,
+			string Name,
+			Material? Material)>(groups.Count);
+		long totalBytes = 0;
 		foreach (List<int> group in groups)
 		{
 			int first = group[0];
@@ -154,31 +166,45 @@ public static class Engine_BodyVariants
 			Godot.Collections.Dictionary? lods = group.Count == 1
 				? Refii.Models.Engine_MdlMesh.SurfaceLods(source, first)
 				: JoinedLods(source, group);
-			int added = Refii.Models.Engine_MdlSurfaceArrays.Add(
-				variant, source.SurfaceGetPrimitiveType(first), arrays, lods);
-			variant.SurfaceSetName(added, source.SurfaceGetName(first));
-			variant.SurfaceSetMaterial(added, source.SurfaceGetMaterial(first));
+			totalBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
+			pending.Add((
+				source.SurfaceGetPrimitiveType(first),
+				arrays,
+				lods,
+				source.SurfaceGetName(first),
+				source.SurfaceGetMaterial(first)));
 			bool single = group.Count == 1;
 			keptDescriptors.Add(single && prtDescriptors is not null && first < prtDescriptors.Count ? prtDescriptors[first] : System.Array.Empty<int>());
 			keptTables.Add(single && prtTables is not null && first < prtTables.Count ? prtTables[first] : System.Array.Empty<float>());
 		}
-		if (prtDescriptors is not null && prtTables is not null)
+		Aabb sourceAabb = source.GetAabb();
+		Refii.Core.Engine_ServerSyncs.RunGpuUpload(Math.Max(4096L, totalBytes), () =>
 		{
-			variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceDescriptorsMeta, keptDescriptors);
-			variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta, keptTables);
-			GC.KeepAlive(keptDescriptors);
-			GC.KeepAlive(keptTables);
-		}
-		foreach (Godot.StringName whole in new[] { Refii.Models.Engine_MdlTransfer.DescriptorMeta, Refii.Models.Engine_MdlTransfer.TableMeta })
-		{
-			if (source.HasMeta(whole))
+			foreach (var item in pending)
 			{
-				variant.SetMeta(whole, source.GetMeta(whole));
+				int added = Refii.Models.Engine_MdlSurfaceArrays.AddDirect(
+					variant, item.Primitive, item.Arrays, item.Lods);
+				variant.SurfaceSetName(added, item.Name);
+				variant.SurfaceSetMaterial(added, item.Material);
 			}
-		}
+			if (prtDescriptors is not null && prtTables is not null)
+			{
+				variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceDescriptorsMeta, keptDescriptors);
+				variant.SetMeta(Refii.Models.Engine_MdlTransfer.SurfaceTablesMeta, keptTables);
+				GC.KeepAlive(keptDescriptors);
+				GC.KeepAlive(keptTables);
+			}
+			foreach (Godot.StringName whole in new[] { Refii.Models.Engine_MdlTransfer.DescriptorMeta, Refii.Models.Engine_MdlTransfer.TableMeta })
+			{
+				if (source.HasMeta(whole))
+				{
+					variant.SetMeta(whole, source.GetMeta(whole));
+				}
+			}
 
-		// The rig and the regions ride on the source; the variant is only ever drawn.
-		variant.CustomAabb = source.GetAabb();
+			// The rig and the regions ride on the source; the variant is only ever drawn.
+			variant.CustomAabb = sourceAabb;
+		});
 		Built++;
 		SurfacesRemoved += count - groups.Count;
 		return variant;

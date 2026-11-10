@@ -584,6 +584,15 @@ public static class RuntimeCVarsGodot
                 + "Automatically selects the optimal lights-per-slice grid for each preset (36 at 2K, 64 at 4K/8K). "
                 + "Changing this triggers a re-bake during the startup warmup screen.",
                 "2048|2048 (Default),4096|4096 (High),8192|8192 (Ultra)"),
+            new("baked_ao_enabled", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Enable pre-baked model self-AO and level inter-object/terrain contact AO in Modern mode. "
+                + "Baked offline during the startup warmup screen with zero real-time SSAO overhead."),
+            new("baked_ao_strength", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Multiplier/exponent on pre-baked ambient occlusion in Modern mode (0.0 to 2.0). "
+                + "1.0 is the calibrated baseline; 0.0 disables baked AO darkening."),
+            new("ao_light_affect", LightingCategory, RuntimeCVarType.Double, "0.25",
+                "How strongly ambient occlusion attenuates direct lights in deep crevices in Modern mode (0.0 to 1.0). "
+                + "0.25 is the subtle default; 0.0 affects indirect and ambient fill only."),
             new("lighting_model", LightingCategory, RuntimeCVarType.String, "modern",
                 "How the world is lit. 'modern' is the remaster: Godot's lighting, with the "
                 + "ambient derived live from the sky dome blended with the region's authored "
@@ -637,9 +646,12 @@ public static class RuntimeCVarsGodot
                 "Multiplier on authored fog optical depth in outdoor sky-lit levels. "
                 + "1.0 matches the base game's authored fog curve, 0 removes it, values above 1.0 "
                 + "thicken the fog exponentially. Modern model only."),
-            new("volumetric_shaft_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
-                "Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights (not celestial sun/moon rays). "
-                + "1.0 is calibrated baseline, 0 disables placed light shafts, values above 1.0 intensify shafts without changing atmosphere fog density. Modern model only."),
+            new("outdoor_volumetric_shaft_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Normalized multiplier (1.0 = calibrated outdoor baseline) on volumetric light-shaft in-scattering radiance across placed and dynamic lights in outdoor sky-lit levels (not celestial sun/moon rays). "
+                + "0 disables outdoor light shafts, values above 1.0 intensify shafts without changing atmosphere fog density. Modern model only."),
+            new("interior_volumetric_shaft_scale", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Normalized multiplier (1.0 = calibrated indoor baseline) on volumetric light-shaft in-scattering radiance across placed and dynamic lights in sky-less cave and interior levels. "
+                + "0 disables indoor light shafts, values above 1.0 intensify shafts without changing atmosphere fog density. Modern model only."),
             new("volumetric_fog", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Whether the modern model uses Godot's 3D Volumetric Fog in the near-to-mid field "
                 + "so dynamic lights, spot shadows, and sun cascades scatter through the fog and "
@@ -676,7 +688,7 @@ public static class RuntimeCVarsGodot
                 + "direct term over a white albedo and exists in the standard material only.",
                 "0|Off,1|Bake and ambient only,2|Direct light only,3|Raw albedo,"
                 + "4|Normal-map darkening,5|Bake mode,6|Sun shadow term,7|Sun NdotL (signed),"
-                + "8|View-space normal,9|Direct light on white"),
+                + "8|View-space normal,9|Direct light on white,10|Front/back facing,11|Ambient occlusion"),
             ..RuntimeCVarsAndroid.GcStress,
             new("hitch_log_ms", DeveloperCategory, RuntimeCVarType.Int, "200",
                 "Testing: a frame slower than this many milliseconds is written to the log with "

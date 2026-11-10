@@ -99,6 +99,20 @@ public static class Engine_MdlSurfaceArrays
 	}
 
 	/// <summary>
+	/// Adds a surface directly when the caller is already inside <see cref="Refii.Core.Engine_ServerSyncs.RunGpuUpload"/>,
+	/// and records its arrays.
+	/// </summary>
+	public static int AddDirect(
+		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
+		Godot.Collections.Dictionary? lods, float[]? levelTable = null)
+	{
+		Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(mesh, primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
+		int added = mesh.GetSurfaceCount() - 1;
+		Record(mesh, added, arrays.Duplicate(false), lods is null ? null : levelTable ?? LevelsOf(lods));
+		return added;
+	}
+
+	/// <summary>
 	/// A surface's coarser levels as Godot holds them — edge-length key and triangle count,
 	/// ascending by key — or null when it was built with none or not through <see cref="Add"/>.
 	/// </summary>

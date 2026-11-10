@@ -64,6 +64,10 @@ public sealed class Engine_PostFxSaturationMask
                     RenderingDevice.TextureUsageBits.CanCopyToBit,
             },
             new RDTextureView());
+        if (Texture.IsValid)
+        {
+            _rd.TextureClear(Texture, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
+        }
     }
 
     /// <summary>

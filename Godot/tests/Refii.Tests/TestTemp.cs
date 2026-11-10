@@ -16,7 +16,7 @@ public static class TestTemp
 	{
 		string? stated = Environment.GetEnvironmentVariable("TMPDIR");
 		string root = !string.IsNullOrEmpty(stated) ? stated
-			: OperatingSystem.IsWindows() ? Refii.Tests.TestTemp.Root
+			: OperatingSystem.IsWindows() ? Path.GetTempPath()
 			: Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "refii-tests");
 		Directory.CreateDirectory(root);
 		return Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;

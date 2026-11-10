@@ -441,6 +441,10 @@ public static class Engine_ShadowProxy
 			Skeleton3D shadowBones = Engine_ShadowSkeletons.Ensure(body, proxy, bones);
 			proxy.Skeleton = proxy.GetPathTo(shadowBones);
 			proxy.Skin = body.Skin;
+			if (proxy.CustomAabb.Size.LengthSquared() < 1e-4f)
+			{
+				proxy.CustomAabb = new Aabb(new Vector3(-1.5f, -0.5f, -1.5f), new Vector3(3.0f, 3.0f, 3.0f));
+			}
 		}
 		else
 		{
@@ -486,14 +490,27 @@ public static class Engine_ShadowProxy
 		{
 			long locked = System.Diagnostics.Stopwatch.GetTimestamp();
 			_mergeWaitMs += (locked - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-			if (!perMask.TryGetValue((hidden, always), out ArrayMesh? merged))
+			if (perMask.TryGetValue((hidden, always), out ArrayMesh? cached))
 			{
-				merged = Build(source, body, hidden, skinned, always);
-				perMask[(hidden, always)] = merged;
-				_mergeBuildMs += (System.Diagnostics.Stopwatch.GetTimestamp() - locked) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+				return cached;
+			}
+		}
+
+		long buildFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+		ArrayMesh? built = Build(source, body, hidden, skinned, always);
+		_mergeBuildMs += (System.Diagnostics.Stopwatch.GetTimestamp() - buildFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+
+		long storeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+		lock (perMask)
+		{
+			_mergeWaitMs += (System.Diagnostics.Stopwatch.GetTimestamp() - storeFrom) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+			if (perMask.TryGetValue((hidden, always), out ArrayMesh? raced))
+			{
+				return raced;
 			}
 
-			return merged;
+			perMask[(hidden, always)] = built;
+			return built;
 		}
 	}
 
@@ -608,9 +625,13 @@ public static class Engine_ShadowProxy
 		}
 
 		var result = new ArrayMesh();
+		Godot.Collections.Array? one = null;
+		Godot.Collections.Dictionary? mergedLods = null;
+		ShaderMaterial? casterMat = null;
+		long estBytes = 4096L;
 		if (merged != 0)
 		{
-			var one = new Godot.Collections.Array();
+			one = new Godot.Collections.Array();
 			one.Resize((int)Mesh.ArrayType.Max);
 			one[(int)Mesh.ArrayType.Vertex] = positions.ToArray();
 			if (skinned)
@@ -620,15 +641,30 @@ public static class Engine_ShadowProxy
 			}
 
 			one[(int)Mesh.ArrayType.Index] = indices.ToArray();
-			Refii.Core.Engine_ArrayMeshes.AddSurface(result, Mesh.PrimitiveType.Triangles, one, null, MergedLods(levels));
-			result.SurfaceSetMaterial(0, Caster);
+			mergedLods = MergedLods(levels);
+			casterMat = Caster;
+			estBytes = System.Math.Max(4096L, positions.Count * 24L + indices.Count * 4L);
 		}
 
-		foreach ((Godot.Collections.Array arrays, Material material, Godot.Collections.Dictionary? lods) in kept)
+		for (int i = 0; i < kept.Count; i++)
 		{
-			Refii.Core.Engine_ArrayMeshes.AddSurface(result, Mesh.PrimitiveType.Triangles, arrays, null, lods);
-			result.SurfaceSetMaterial(result.GetSurfaceCount() - 1, material);
+			estBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(kept[i].Arrays);
 		}
+
+		Refii.Core.Engine_ServerSyncs.RunGpuUpload(estBytes, () =>
+		{
+			if (one is not null && casterMat is not null)
+			{
+				Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(result, Mesh.PrimitiveType.Triangles, one, null, mergedLods);
+				result.SurfaceSetMaterial(0, casterMat);
+			}
+
+			foreach ((Godot.Collections.Array arrays, Material material, Godot.Collections.Dictionary? lods) in kept)
+			{
+				Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(result, Mesh.PrimitiveType.Triangles, arrays, null, lods);
+				result.SurfaceSetMaterial(result.GetSurfaceCount() - 1, material);
+			}
+		});
 
 		Built++;
 		SurfacesMerged += merged;

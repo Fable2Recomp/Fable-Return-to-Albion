@@ -242,6 +242,12 @@ public sealed class Engine_UiCloneBinding
 			if (Suppresses(suppressed, element))
 			{
 				spatial.Visible = false;
+				for (int c = spatial.GetChildCount() - 1; c >= 0; --c)
+				{
+					Node child = spatial.GetChild(c);
+					spatial.RemoveChild(child);
+					child.Free();
+				}
 				++SuppressedCount;
 				return;  // the subtree goes with its root
 			}

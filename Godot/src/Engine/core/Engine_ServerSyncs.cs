@@ -63,13 +63,262 @@ public static class Engine_ServerSyncs
 	private static readonly long[] MainTicks = new long[SiteCount];
 	private static readonly long[] PeakTicks = new long[SiteCount];
 
-	private static int _mainThreadId = -1;
+	private static readonly GpuUploadPacer DefaultPacer = new();
 
 	/// <summary>Names the calling thread as the main thread; called once from the frame-start node.</summary>
-	public static void MarkMainThread() => Volatile.Write(ref _mainThreadId, System.Environment.CurrentManagedThreadId);
+	public static void MarkMainThread() => DefaultPacer.MarkMainThread();
+
+	/// <summary>Clears the recorded main thread ID and drains any pending items (for isolated unit tests).</summary>
+	internal static void ResetMainThreadForTest() => DefaultPacer.Reset();
+
+	/// <summary>Records that the main thread is actively ticking its frame loop.</summary>
+	public static void NotifyMainFrameTick() => DefaultPacer.NotifyMainFrameTick();
 
 	/// <summary>Whether the caller is the main thread (false before <see cref="MarkMainThread"/>).</summary>
-	public static bool OnMainThread => System.Environment.CurrentManagedThreadId == Volatile.Read(ref _mainThreadId);
+	public static bool OnMainThread => DefaultPacer.OnMainThread;
+
+	/// <summary>
+	/// Maximum background GPU upload staging bytes per drawn frame before background workers yield
+	/// for the next frame fence (24 MB/frame in play, 48 MB/frame under load cover -> &lt;144 MB across
+	/// 3 frames in flight, keeping D3D12 and unified-memory drivers well clear of the 512 MB staging ceiling).
+	/// </summary>
+	internal const long MaxBackgroundUploadBytesPerFrame = 24L * 1024L * 1024L;
+	internal const long MaxLoadCoverUploadBytesPerFrame = 48L * 1024L * 1024L;
+
+	/// <summary>Bytes staged into the current frame's command list across both main-thread and worker uploads.</summary>
+	internal static long FrameUploadBytes => DefaultPacer.FrameUploadBytes;
+
+	/// <summary>Number of background worker GPU upload items still waiting in the queue.</summary>
+	public static int PendingUploadCount => DefaultPacer.PendingWorkerUploads;
+
+	/// <summary>True while a loading screen cover holds over the world, permitting larger GPU upload drains per frame.</summary>
+	public static bool LoadCoverActive
+	{
+		get => DefaultPacer.LoadCoverActive;
+		set => DefaultPacer.LoadCoverActive = value;
+	}
+
+	internal sealed class GpuUploadPacer : System.IDisposable
+	{
+		private sealed class GpuUploadWorkItem
+		{
+			public readonly long Bytes;
+			public readonly System.Action Action;
+			public readonly ManualResetEventSlim Done = new(false);
+			public System.Exception? Error;
+			public int State;
+
+			public GpuUploadWorkItem(long bytes, System.Action action)
+			{
+				Bytes = bytes;
+				Action = action;
+			}
+
+			public bool TryExecute(GpuUploadPacer owner)
+			{
+				if (Interlocked.CompareExchange(ref State, 1, 0) != 0)
+				{
+					return false;
+				}
+
+				try
+				{
+					lock (owner._gpuUploadGate)
+					{
+						Interlocked.Add(ref owner._frameUploadBytes, Bytes);
+						Action();
+					}
+				}
+				catch (System.Exception ex)
+				{
+					Error = ex;
+				}
+				finally
+				{
+					Volatile.Write(ref State, 2);
+					Done.Set();
+				}
+
+				return true;
+			}
+
+			public void Cancel()
+			{
+				if (Interlocked.CompareExchange(ref State, 2, 0) == 0)
+				{
+					Done.Set();
+				}
+			}
+		}
+
+		private readonly object _gpuUploadGate = new();
+		private readonly System.Collections.Concurrent.ConcurrentQueue<GpuUploadWorkItem> _workerUploads = new();
+		private int _mainThreadId = -1;
+		private long _lastMainFrameTickMs;
+		private bool _inDraw;
+		private long _drawnFrame;
+		private long _frameUploadBytes;
+
+		public bool LoadCoverActive { get; set; }
+
+		public bool OnMainThread => System.Environment.CurrentManagedThreadId == Volatile.Read(ref _mainThreadId);
+
+		public long FrameUploadBytes => Interlocked.Read(ref _frameUploadBytes);
+
+		public int PendingWorkerUploads => _workerUploads.Count;
+
+		public void MarkMainThread()
+		{
+			Volatile.Write(ref _mainThreadId, System.Environment.CurrentManagedThreadId);
+			Volatile.Write(ref _lastMainFrameTickMs, System.Environment.TickCount64);
+		}
+
+		public void NotifyMainFrameTick() =>
+			Volatile.Write(ref _lastMainFrameTickMs, System.Environment.TickCount64);
+
+		public void MarkDrawBegin()
+		{
+			lock (_gpuUploadGate)
+			{
+				Volatile.Write(ref _inDraw, true);
+			}
+		}
+
+		public void MarkDrawEnd()
+		{
+			lock (_gpuUploadGate)
+			{
+				Volatile.Write(ref _inDraw, false);
+				_drawnFrame++;
+				Interlocked.Exchange(ref _frameUploadBytes, 0L);
+				Monitor.PulseAll(_gpuUploadGate);
+			}
+		}
+
+		public void BeginMainFrameUploadBudget()
+		{
+			NotifyMainFrameTick();
+			Interlocked.Exchange(ref _frameUploadBytes, 0L);
+		}
+
+		public void PumpWorkerGpuUploads(double budgetMs)
+		{
+			NotifyMainFrameTick();
+			if (!OnMainThread && Volatile.Read(ref _mainThreadId) != -1)
+			{
+				return;
+			}
+
+			long start = Stopwatch.GetTimestamp();
+			long maxTicks = (long)(System.Math.Max(0.5, budgetMs) * (Stopwatch.Frequency / 1000.0));
+			while (_workerUploads.TryPeek(out GpuUploadWorkItem? next))
+			{
+				if (Volatile.Read(ref next.State) != 0)
+				{
+					_workerUploads.TryDequeue(out _);
+					continue;
+				}
+
+				long maxBytes = LoadCoverActive ? MaxLoadCoverUploadBytesPerFrame : MaxBackgroundUploadBytesPerFrame;
+				long currentBytes = Interlocked.Read(ref _frameUploadBytes);
+				if (currentBytes >= maxBytes && currentBytes > 0)
+				{
+					break;
+				}
+
+				if (!_workerUploads.TryDequeue(out GpuUploadWorkItem? item))
+				{
+					break;
+				}
+
+				item.TryExecute(this);
+				NotifyMainFrameTick();
+
+				if (Stopwatch.GetTimestamp() - start >= maxTicks)
+				{
+					break;
+				}
+			}
+		}
+
+		public void RunGpuUpload(long estimatedBytes, System.Action action)
+		{
+			long bytes = System.Math.Max(4096L, estimatedBytes);
+			bool isMain = OnMainThread || Volatile.Read(ref _mainThreadId) == -1;
+			if (isMain)
+			{
+				lock (_gpuUploadGate)
+				{
+					Interlocked.Add(ref _frameUploadBytes, bytes);
+					action();
+				}
+
+				return;
+			}
+
+			var item = new GpuUploadWorkItem(bytes, action);
+			_workerUploads.Enqueue(item);
+			item.Done.Wait();
+			item.Done.Dispose();
+			if (item.Error is not null)
+			{
+				System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(item.Error).Throw();
+			}
+		}
+
+		public void Reset()
+		{
+			Volatile.Write(ref _mainThreadId, -1);
+			LoadCoverActive = false;
+			Interlocked.Exchange(ref _frameUploadBytes, 0L);
+			while (_workerUploads.TryDequeue(out GpuUploadWorkItem? item))
+			{
+				item.Cancel();
+			}
+		}
+
+		public void Dispose() => Reset();
+	}
+
+	/// <summary>rendering_server FramePreDraw callback: pauses off-thread GPU resource uploads during draw().</summary>
+	public static void MarkDrawBegin() => DefaultPacer.MarkDrawBegin();
+
+	/// <summary>rendering_server FramePostDraw callback: advances the drawn-frame counter and resets the frame staging budget.</summary>
+	public static void MarkDrawEnd() => DefaultPacer.MarkDrawEnd();
+
+	/// <summary>
+	/// Resets the per-frame upload budget at the start of a new main-thread frame (covering
+	/// headless or minimized runs where <c>FramePostDraw</c> does not fire).
+	/// </summary>
+	public static void BeginMainFrameUploadBudget() => DefaultPacer.BeginMainFrameUploadBudget();
+
+	/// <summary>
+	/// Executes queued worker-thread GPU uploads on the main thread within the frame's time and
+	/// staging-byte budgets so <see cref="Godot.RenderingDevice"/> is never accessed concurrently
+	/// with main-thread <c>_Process</c> or <c>RenderingServer::draw()</c>.
+	/// </summary>
+	public static void PumpWorkerGpuUploads(double budgetMs) => DefaultPacer.PumpWorkerGpuUploads(budgetMs);
+
+	/// <summary>
+	/// Dispatches a <see cref="Godot.RenderingDevice"/> resource upload on the main thread
+	/// (or inline when already on the main thread) and paces staging buffer usage across frames.
+	/// </summary>
+	public static void RunGpuUpload(long estimatedBytes, System.Action action) =>
+		DefaultPacer.RunGpuUpload(estimatedBytes, action);
+
+	/// <summary>
+	/// Dispatches a value-returning <see cref="Godot.RenderingDevice"/> resource upload on the main
+	/// thread (or inline when already on the main thread) and paces staging buffer usage across frames.
+	/// </summary>
+	public static T RunGpuUpload<T>(long estimatedBytes, System.Func<T> func)
+	{
+		T result = default!;
+		RunGpuUpload(estimatedBytes, () =>
+		{
+			result = func();
+		});
+		return result;
+	}
 
 	/// <summary>A stamp to hand to <see cref="End"/> after the call.</summary>
 	public static long Begin() => Stopwatch.GetTimestamp();
@@ -148,16 +397,16 @@ public static class Engine_ServerSyncs
 		return colour;
 	}
 
-	/// <summary>`ArrayMesh.SurfaceGetArrays`, a GPU readback (counted).</summary>
+	/// <summary>`ArrayMesh.SurfaceGetArrays`, a GPU readback (counted; serialized onto the main thread when called from a worker).</summary>
 	public static Godot.Collections.Array SurfaceArrays(Godot.Mesh mesh, int surface)
 	{
 		long from = Begin();
-		Godot.Collections.Array arrays = mesh.SurfaceGetArrays(surface);
+		Godot.Collections.Array arrays = RunGpuUpload(4096L, () => mesh.SurfaceGetArrays(surface));
 		End(Site.SurfaceArrays, from);
 		return arrays;
 	}
 
-	/// <summary>`Texture2D.GetImage`, a GPU readback (counted); null for a null texture.</summary>
+	/// <summary>`Texture2D.GetImage`, a GPU readback (counted; serialized onto the main thread when called from a worker); null for a null texture.</summary>
 	public static Godot.Image? Image(Godot.Texture2D? texture)
 	{
 		if (texture is null)
@@ -166,7 +415,7 @@ public static class Engine_ServerSyncs
 		}
 
 		long from = Begin();
-		Godot.Image? image = texture.GetImage();
+		Godot.Image? image = RunGpuUpload(4096L, () => texture.GetImage());
 		End(Site.TextureImage, from);
 		return image;
 	}

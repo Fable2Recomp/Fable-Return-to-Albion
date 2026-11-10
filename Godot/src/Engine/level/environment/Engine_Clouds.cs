@@ -14,6 +14,9 @@ public static class Engine_Clouds
 
     public const float AlphaTestThreshold = 5f / 255f;
 
+    public static readonly StringName CloudAlphaMeta = "_refii_cloud_alpha";
+    public static readonly StringName CloudAlphaSizeMeta = "_refii_cloud_alpha_size";
+
     public delegate byte[]? ReadAsset(string virtualPath);
 
     public delegate string? FindByName(string fileName);
@@ -62,7 +65,8 @@ public static class Engine_Clouds
         {
             CloudLayerTheme layer = theme.Layers[index];
 
-            Texture2D? density = ResolveDensityMap(layer.DensityMapHash, gdbs, read, findByName);
+            Texture2D? density = ResolveDensityMap(
+                layer.DensityMapHash, gdbs, read, findByName, out byte[]? alphaBytes, out Vector2I alphaSize);
             if (density is null)
             {
                 GD.Print($"[clouds] layer {index}: density map 0x{layer.DensityMapHash:X8} unresolved");
@@ -103,6 +107,11 @@ public static class Engine_Clouds
                 MaterialOverride = material,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             };
+            if (alphaBytes is { Length: > 0 } && alphaSize.X > 0 && alphaSize.Y > 0)
+            {
+                node.SetMeta(CloudAlphaMeta, alphaBytes);
+                node.SetMeta(CloudAlphaSizeMeta, alphaSize);
+            }
 
             container.AddChild(node);
             built++;
@@ -218,8 +227,16 @@ public static class Engine_Clouds
         Engine_EnvironmentTextures.ResolvePath(hash);
 
     private static Texture2D? ResolveDensityMap(
-        uint hash, IReadOnlyList<byte[]> gdbs, ReadAsset read, FindByName? findByName)
+        uint hash,
+        IReadOnlyList<byte[]> gdbs,
+        ReadAsset read,
+        FindByName? findByName,
+        out byte[]? alphaBytes,
+        out Vector2I alphaSize)
     {
+        alphaBytes = null;
+        alphaSize = Vector2I.Zero;
+
         string? path = ResolveEnvironmentTextureHash(hash);
         if (path is null)
         {
@@ -233,13 +250,15 @@ public static class Engine_Clouds
             return null;
         }
 
-        Image? image = Engine_TexImage.TryCreateImage(bytes, out _);
+        using Image? image = Engine_TexImage.TryCreateImage(bytes, out _);
         if (image is null || image.IsEmpty())
         {
             return null;
         }
 
         (byte[] Alpha, int W, int H) alpha = AlphaOf(image);
+        alphaBytes = alpha.Alpha;
+        alphaSize = new Vector2I(alpha.W, alpha.H);
         ImageTexture texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
         lock (DensityAlpha)
         {

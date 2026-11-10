@@ -207,6 +207,91 @@ public static class Engine_TexPrebuild
 	public static string MarkerPath =>
 		System.IO.Path.Combine(Engine_TexCache.CacheRoot, "prebuild.txt");
 
+	/// <summary>Fast boot marker for the ORM-only sweep, keyed by fingerprint and mounted file count.</summary>
+	public static string OrmMarkerPath =>
+		System.IO.Path.Combine(Engine_TexCache.CacheRoot, "orm_prebuild.txt");
+
+	/// <summary>Fast boot marker for the texture upscale sweep, keyed by fingerprint and mounted file count.</summary>
+	public static string TexturesMarkerPath =>
+		System.IO.Path.Combine(Engine_TexCache.CacheRoot, "textures_prebuild.txt");
+
+	private static string BootFingerprint(int fileCount) =>
+		$"{Fingerprint()};files={fileCount}";
+
+	/// <summary>
+	/// Checks whether a boot prebuild marker matches the current settings and mounted file count,
+	/// allowing warm boots to skip re-reading and hashing thousands of <c>.mdl</c> and <c>.tex</c> files.
+	/// </summary>
+	public static bool TryReadFastMarker(
+		string markerPath,
+		int fileCount,
+		out int built,
+		out int total,
+		out int failed)
+	{
+		built = 0;
+		total = 0;
+		failed = 0;
+		if (!System.IO.File.Exists(markerPath) || !System.IO.Directory.Exists(Engine_TexCache.CacheRoot))
+		{
+			return false;
+		}
+
+		try
+		{
+			string? fp = null;
+			foreach (string line in System.IO.File.ReadAllLines(markerPath))
+			{
+				int eq = line.IndexOf('=');
+				if (eq <= 0)
+				{
+					continue;
+				}
+
+				string key = line[..eq];
+				string val = line[(eq + 1)..];
+				switch (key)
+				{
+					case "fingerprint":
+						fp = val;
+						break;
+					case "built":
+						int.TryParse(val, out built);
+						break;
+					case "total":
+						int.TryParse(val, out total);
+						break;
+					case "failed":
+						int.TryParse(val, out failed);
+						break;
+				}
+			}
+
+			return total > 0 && string.Equals(fp, BootFingerprint(fileCount), StringComparison.Ordinal);
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>Writes a fast boot marker keyed by fingerprint and mounted file count.</summary>
+	public static void WriteFastMarker(string markerPath, int fileCount, int built, int total, int failed)
+	{
+		try
+		{
+			System.IO.Directory.CreateDirectory(Engine_TexCache.CacheRoot);
+			System.IO.File.WriteAllText(markerPath,
+				$"fingerprint={BootFingerprint(fileCount)}\n" +
+				$"built={built}\ntotal={total}\nfailed={failed}\n" +
+				$"when={DateTime.Now:yyyy-MM-dd HH:mm}\n");
+		}
+		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		{
+			GD.PushWarning($"[tex] fast prebuild marker not written: {e.Message}");
+		}
+	}
+
 	/// <summary>
 	/// Records a COMPLETED sweep (not a cancelled one): the fingerprint and the counts. The
 	/// launcher's Install tab ticks the row on this, never on "something is cached" — the cache
@@ -294,6 +379,13 @@ public static class Engine_TexPrebuild
 
 		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
 		BnkFileSystem banks = mount?.Value ?? owned!;
+		if (TryReadFastMarker(TexturesMarkerPath, banks.FileCount, out int cachedBuilt, out int cachedTotal, out int cachedFailed))
+		{
+			Progress fast = new(cachedTotal, cachedTotal, cachedBuilt, cachedFailed, string.Empty);
+			report?.Invoke(fast);
+			return fast;
+		}
+
 		Func<string, byte[]?> read =
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
@@ -350,6 +442,10 @@ public static class Engine_TexPrebuild
 		});
 
 		Progress final = Snapshot(done, total, built, failed, current);
+		if (!cancel.IsCancellationRequested && total > 0)
+		{
+			WriteFastMarker(TexturesMarkerPath, banks.FileCount, final.Built, final.Total, final.Failed);
+		}
 		report?.Invoke(final);
 		return final;
 	}
@@ -388,6 +484,13 @@ public static class Engine_TexPrebuild
 
 		using BnkFileSystem? owned = mount is null ? BnkFileSystem.Mount(gameDirectory) : null;
 		BnkFileSystem banks = mount?.Value ?? owned!;
+		if (TryReadFastMarker(OrmMarkerPath, banks.FileCount, out int cachedBuilt, out int cachedTotal, out int cachedFailed))
+		{
+			Progress fast = new(cachedTotal, cachedTotal, cachedBuilt, cachedFailed, string.Empty);
+			report?.Invoke(fast);
+			return fast;
+		}
+
 		Func<string, byte[]?> read =
 			path => banks.TryGetFile(path, out BnkFile file) ? file.ReadAllBytes() : null;
 
@@ -445,11 +548,44 @@ public static class Engine_TexPrebuild
 		});
 
 		Progress final = Snapshot(done, total, built, failed, current);
+		if (!cancel.IsCancellationRequested && total > 0 && final.Failed == 0)
+		{
+			WriteFastMarker(OrmMarkerPath, banks.FileCount, final.Built, final.Total, final.Failed);
+		}
 		report?.Invoke(final);
 		return final;
 	}
 
 	private static readonly object Gate = new();
+	private static WeakReference<BnkFileSystem>? _cachedEnumBanks;
+	private static List<Item>? _cachedEnumItems;
+	private static List<OrmItem>? _cachedEnumOrms;
+
+	private static List<Item> GetOrEnumerate(BnkFileSystem banks, out List<OrmItem> orm)
+	{
+		lock (Gate)
+		{
+			if (_cachedEnumBanks is not null &&
+				_cachedEnumBanks.TryGetTarget(out BnkFileSystem? target) &&
+				ReferenceEquals(target, banks) &&
+				_cachedEnumItems is not null &&
+				_cachedEnumOrms is not null)
+			{
+				orm = _cachedEnumOrms;
+				return _cachedEnumItems;
+			}
+		}
+
+		List<Item> items = Enumerate(banks, out orm);
+		lock (Gate)
+		{
+			_cachedEnumBanks = new WeakReference<BnkFileSystem>(banks);
+			_cachedEnumItems = items;
+			_cachedEnumOrms = orm;
+		}
+
+		return items;
+	}
 
 	private static Progress Snapshot(int done, int total, int built, int failed, string current)
 	{

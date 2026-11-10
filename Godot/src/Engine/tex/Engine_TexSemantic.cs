@@ -203,18 +203,26 @@ public static class Engine_TexSemantic
 	///     512       1.20       2.40       0.80*      1.60
 	///    1024       0.74*      1.48       0.49*      0.99
 	///
-	/// (* below native.) x4 is the smallest uniform factor that clears native at both 1440p and
-	/// 4K. MaxEdge 4096 is load-bearing with it: at 2048 the clamp halves the 1024 class — the
-	/// full-screen backdrops — back to x2, which is the class furthest from native.
-	///
-	/// x4 costs no extra inference: the model is x4 and `refii_upscaler_run` downsamples for any
-	/// smaller request. The cost is cache, ~640 MB over ~147 textures.
-	///
-	/// MinEdge 16 rather than <see cref="ColourPolicy"/>'s 128: that floor means "below this a
-	/// Fable 2 texture is a function, not a picture" and applies to the ramps and lookup tables
-	/// under <c>Globals/Engine/Textures</c>. Nothing under <c>art/gui/</c> is one.
+	/// (* below native.) On 4K+ displays (> 2560x1440), MaxEdge is 4096 so 1024 backdrops scale
+	/// 4x to 4096. On 1080p / 1440p displays (<= 2560x1440), MaxEdge is 2048 so all widgets <= 512
+	/// still get 4x while 1024 backdrops cap at 2048 (5.59 MB instead of 22.37 MB).
 	/// </summary>
-	private static readonly TexPolicy UiPolicy = new()
+	public static int UiMaxEdge { get; private set; } = 2048;
+
+	public static void UpdateUiMaxEdgeForResolution(int width, int height)
+	{
+		UiMaxEdge = (width > 2560 || height > 1440) ? 4096 : 2048;
+	}
+
+	private static readonly TexPolicy UiPolicy2048 = new()
+	{
+		Filter = TexFilterClass.Perceptual,
+		Factor = 4,
+		MaxEdge = 2048,
+		MinEdge = 16,
+	};
+
+	private static readonly TexPolicy UiPolicy4096 = new()
 	{
 		Filter = TexFilterClass.Perceptual,
 		Factor = 4,
@@ -236,6 +244,18 @@ public static class Engine_TexSemantic
 		MinEdge = 128,
 	};
 
+	/// <summary>
+	/// Specular maps supply F0 tint and exponent control while packed ORM maps carry roughness,
+	/// occlusion, metallic and height; capping enhanced specular maps at 512 matches
+	/// <c>HalvePackedOrm</c> and cuts enhanced specular VRAM by 4x without softening albedo/normals.
+	/// </summary>
+	private static readonly TexPolicy SpecularPolicy = new()
+	{
+		Filter = TexFilterClass.Scalar,
+		MaxEdge = 512,
+		MinEdge = 128,
+	};
+
 	private static readonly TexPolicy NoPolicy = new()
 	{
 		Filter = TexFilterClass.None,
@@ -247,14 +267,14 @@ public static class Engine_TexSemantic
 	{
 		TexSemantic.Albedo => ColourPolicy,
 		TexSemantic.SelfIllumination => ColourPolicy,
-		TexSemantic.Ui => UiPolicy,
+		TexSemantic.Ui => UiMaxEdge >= 4096 ? UiPolicy4096 : UiPolicy2048,
 		TexSemantic.Normal => NormalPolicy,
 
 		// SCALAR, not perceptual, and the reason is the alpha channel. The specular map's alpha
 		// is the exponent selector — the shipped pixel shader builds
 		// `power = lerp(c24.x, c24.y, spec.a)` — so it is a control signal, not an image, and a
 		// model trained to invent plausible image detail has no business in it.
-		TexSemantic.Specular => ScalarPolicy,
+		TexSemantic.Specular => SpecularPolicy,
 
 		// SCALAR for the same reason as the specular it is derived from: every channel is a
 		// control signal, and a perceptual filter has no business inventing detail in one.

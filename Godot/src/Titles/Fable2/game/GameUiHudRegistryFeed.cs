@@ -14,7 +14,7 @@ public partial class GameUi
 
 	private void EnsureHudRegistryRoutes()
 	{
-		if (_hudRegistryRoutesReady || _hud is null)
+		if (_hudRegistryRoutesReady)
 		{
 			return;
 		}
@@ -22,6 +22,7 @@ public partial class GameUi
 		_hudRegistryRoutesReady = true;
 		_guiNatives.Register("@Gui.Meter", call =>
 		{
+			EnsureRebuiltHud();
 			if (_hud is { } hud && int.TryParse(call.Argument(0).Text, out int registry) &&
 				uint.TryParse(call.Argument(1).Text, out uint hash))
 			{
@@ -35,6 +36,7 @@ public partial class GameUi
 
 		_guiNatives.Register("@Gui.Text", call =>
 		{
+			EnsureRebuiltHud();
 			if (_hud is { } hud && int.TryParse(call.Argument(0).Text, out int registry) &&
 				registry == Engine_UiHudRegistryWrites.TextRegistry &&
 				uint.TryParse(call.Argument(1).Text, out uint hash) &&

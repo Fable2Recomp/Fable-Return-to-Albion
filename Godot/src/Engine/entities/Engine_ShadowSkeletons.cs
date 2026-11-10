@@ -93,6 +93,8 @@ public static class Engine_ShadowSkeletons
 		if (ByLive.TryGetValue(live, out Entry? have) && have.Shadow is not null &&
 			GodotObject.IsInstanceValid(have.Shadow) && ReferenceEquals(have.Proxy, proxy))
 		{
+			have.PlacePending = true;
+			Place(have);
 			return have.Shadow;
 		}
 

@@ -187,16 +187,19 @@ public static class AndroidCompositeCache
 
         try
         {
-            using var image = new Image();
+            var image = new Image();
             image.SetData(width, height, mipmaps, (Image.Format)format, new ReadOnlySpan<byte>(payload, 0, length));
             if (image.IsEmpty())
             {
+                image.Dispose();
                 return null;
             }
 
             // The sweep goes by this: what is used stays.
             try { File.SetLastWriteTimeUtc(path, DateTime.UtcNow); } catch (Exception) { }
-            return Engine_TextureUpload.CreateTexture(image);
+            ImageTexture texture = Engine_TextureUpload.CreateTexture(image);
+            Engine_TexLibrary.RegisterCpuImage(texture, image);
+            return texture;
         }
         finally
         {

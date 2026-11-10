@@ -88,6 +88,7 @@ refii::TracedMutex g_time_mutex{"guest clock grant"};
 /// take the lock; both are only written under `g_time_mutex`.
 std::atomic<uint64_t> g_last_grant_real{0};
 std::atomic<uint64_t> g_last_seen_real{0};
+std::atomic<bool> g_time_base_frozen{false};
 
 /// Clock reads that answered without taking the lock, and those that had to. Every guest
 /// `mftb` lands here and the guest loop spins on it (`SwitchToThread` then re-read at
@@ -122,6 +123,10 @@ constexpr uint64_t kGrantWatchdogSteps = 8u;
 
 /// Whether the watchdog is due: silence for `kGrantWatchdogSteps`, or a stated step blocked.
 bool WatchdogDue(uint64_t real, uint64_t seen_grant, uint64_t step) {
+  if (g_time_base_frozen.load(std::memory_order_relaxed)) {
+    return false;
+  }
+
   return (real > seen_grant && (real - seen_grant) > (kGrantWatchdogSteps * step)) ||
          refii::pace::StepBlocked(real, step);
 }
@@ -157,6 +162,7 @@ extern "C" void refii_bridge_rex_set_time_base_mode(int mode) {
   g_dropped_steps.store(0u, std::memory_order_relaxed);
   g_last_grant_real.store(0u, std::memory_order_relaxed);
   g_last_seen_real.store(0u, std::memory_order_relaxed);
+  g_time_base_frozen.store(false, std::memory_order_relaxed);
   g_in_lapse = false;
   g_time_base_mode.store(mode, std::memory_order_relaxed);
 }
@@ -236,6 +242,28 @@ extern "C" void refii_bridge_rex_advance_time_base(uint32_t steps) {
   g_last_grant_real.store(real, std::memory_order_relaxed);
   g_in_lapse = false;
   g_granted_steps.fetch_add(steps, std::memory_order_relaxed);
+}
+
+extern "C" void refii_bridge_rex_set_time_base_frozen(int frozen) {
+  const bool want = frozen != 0;
+  if (g_time_base_frozen.load(std::memory_order_relaxed) == want) {
+    return;
+  }
+
+  const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
+  std::lock_guard lock(g_time_mutex);
+  if (g_time_base_frozen.exchange(want, std::memory_order_relaxed) == want) {
+    return;
+  }
+
+  if (want) {
+    g_pending_steps.store(0u, std::memory_order_relaxed);
+    g_in_lapse = false;
+  } else {
+    g_last_grant_real.store(real, std::memory_order_relaxed);
+    g_last_seen_real.store(real, std::memory_order_relaxed);
+    g_in_lapse = false;
+  }
 }
 
 extern "C" void refii_bridge_rex_time_base_real_slice(int on) {

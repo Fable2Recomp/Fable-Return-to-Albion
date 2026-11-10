@@ -520,15 +520,22 @@ public sealed class Engine_UiSlidePlayback
 	/// <summary>What one slide's entries state of an element's window, over what stood before.</summary>
 	private static void WindowFrom(BgfSlide? slide, int ordinal, ref int start, ref int end)
 	{
-		foreach (BgfSlideEntry entry in slide?.Entries ?? System.Array.Empty<BgfSlideEntry>())
+		if (slide?.Entries is not { } entries)
 		{
-			if (entry.ElementOrdinal != ordinal)
+			return;
+		}
+
+		for (int i = 0; i < entries.Length; ++i)
+		{
+			BgfSlideEntry entry = entries[i];
+			if (entry.ElementOrdinal != ordinal || entry.Commands is not { } commands)
 			{
 				continue;
 			}
 
-			foreach (BgfAttribute command in entry.Commands ?? System.Array.Empty<BgfAttribute>())
+			for (int j = 0; j < commands.Length; ++j)
 			{
+				BgfAttribute command = commands[j];
 				if (command.Id == TimeOffsetId)
 				{
 					start = command.AsInt();

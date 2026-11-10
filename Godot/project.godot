@@ -71,10 +71,10 @@ renderer/rendering_method.android="forward_plus"
 rendering_device/driver.android="vulkan"
 rendering_device/staging_buffer/block_size_kb=1024
 rendering_device/pipeline_cache/save_chunk_size_mb.android=0.25
-rendering_device/staging_buffer/max_size_mb=256
+rendering_device/staging_buffer/max_size_mb=128
 rendering_device/staging_buffer/texture_upload_region_size_px=128
-rendering_device/d3d12/max_resource_descriptors=1000000
-rendering_device/d3d12/max_sampler_descriptors=2048
+rendering_device/d3d12/max_resource_descriptors=262144
+rendering_device/d3d12/max_sampler_descriptors=4096
 rendering_device/driver.windows="d3d12"
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 shader_compiler/shader_cache/strip_debug=true
@@ -82,8 +82,8 @@ viewport/hdr_2d=true
 limits/global_shader_variables/buffer_size=262144
 limits/global_shader_variables/buffer_size.android=524288
 rendering_device/d3d12/max_resource_descriptors_per_frame=131072
-rendering_device/d3d12/max_sampler_descriptors_per_frame=2048
-rendering_device/d3d12/max_misc_descriptors_per_frame=2048
+rendering_device/d3d12/max_sampler_descriptors_per_frame=4096
+rendering_device/d3d12/max_misc_descriptors_per_frame=4096
 
 [shader_globals]
 
@@ -386,4 +386,24 @@ dynamic_cloud_projection={
 fable_volumetric_fog_end={
 "type": "float",
 "value": 0.0
+}
+fable_terrain_contact_ao={
+"type": "sampler2D",
+"value": ""
+}
+fable_terrain_ao_rect={
+"type": "vec4",
+"value": Vector4(0, 0, 0, 0)
+}
+fable_terrain_ao_height={
+"type": "vec4",
+"value": Vector4(0, 1, 0, 0)
+}
+fable_ao_strength={
+"type": "float",
+"value": 1.0
+}
+fable_ao_light_affect={
+"type": "float",
+"value": 0.25
 }

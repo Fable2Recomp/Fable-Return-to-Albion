@@ -1661,10 +1661,23 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         map = (System.Array.Empty<byte>(), 0, 0);
         if (clouds.GetNodeOrNull<MeshInstance3D>($"CloudLayer{index}") is not
-                { MaterialOverride: ShaderMaterial material })
+                { MaterialOverride: ShaderMaterial material } layerNode)
         {
             _cloudAlpha[index] = map;
             return false;
+        }
+
+        if (layerNode.HasMeta(Engine_Clouds.CloudAlphaMeta) &&
+            layerNode.HasMeta(Engine_Clouds.CloudAlphaSizeMeta))
+        {
+            byte[] predecoded = layerNode.GetMeta(Engine_Clouds.CloudAlphaMeta).AsByteArray();
+            Vector2I size = layerNode.GetMeta(Engine_Clouds.CloudAlphaSizeMeta).AsVector2I();
+            if (size.X > 0 && size.Y > 0 && predecoded.Length >= size.X * size.Y)
+            {
+                map = (predecoded, size.X, size.Y);
+                _cloudAlpha[index] = map;
+                return true;
+            }
         }
 
         var texture = material.GetShaderParameter(Param_cloud_density).As<Texture2D>();

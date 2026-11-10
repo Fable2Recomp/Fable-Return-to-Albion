@@ -257,12 +257,16 @@ public static class Engine_TexCache
 		TryLoadFaces(key, out Image[] faces, out hasAlpha) && faces.Length == 1 ? faces[0] : null;
 
 	/// <summary>
-	/// The size of a cached 2D entry, from its header alone; false when it has none. For a sweep
-	/// asking what is already built, which has no use for the pixels.
+	/// Fast zero-allocation header check for prebuild sweeps: verifies that a valid cache container
+	/// exists on disk and reads its dimensions and alpha flag without inflating the multi-megabyte
+	/// payload or allocating a native <see cref="Image"/>.
 	/// </summary>
-	public static bool TryPeek(string key, out int width, out int height)
+	public static bool TryReadHeader(string key, out int width, out int height, out bool hasAlpha)
 	{
-		width = height = 0;
+		width = 0;
+		height = 0;
+		hasAlpha = false;
+
 		if (!Engine_TexSettings.CacheEnabled)
 		{
 			return false;
@@ -276,25 +280,42 @@ public static class Engine_TexCache
 				return false;
 			}
 
-			Span<byte> header = stackalloc byte[HeaderSize];
-			using Microsoft.Win32.SafeHandles.SafeFileHandle file = System.IO.File.OpenHandle(path);
-			if (System.IO.RandomAccess.Read(file, header, 0) != HeaderSize ||
+			Span<byte> header = stackalloc byte[33];
+			using Microsoft.Win32.SafeHandles.SafeFileHandle handle = System.IO.File.OpenHandle(
+				path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+			if (System.IO.RandomAccess.Read(handle, header, 0) < 33 ||
 				BinaryPrimitives.ReadUInt32LittleEndian(header) != Magic ||
-				BinaryPrimitives.ReadUInt32LittleEndian(header[4..]) != ContainerVersion ||
-				BinaryPrimitives.ReadUInt16LittleEndian(header[FacesOffset..]) != 1)
+				BinaryPrimitives.ReadUInt32LittleEndian(header[4..]) != ContainerVersion)
 			{
 				return false;
 			}
 
 			width = (int)BinaryPrimitives.ReadUInt32LittleEndian(header[8..]);
 			height = (int)BinaryPrimitives.ReadUInt32LittleEndian(header[12..]);
+			hasAlpha = header[21] != 0;
+			ushort faceCount = BinaryPrimitives.ReadUInt16LittleEndian(header[FacesOffset..]);
+			uint length = BinaryPrimitives.ReadUInt32LittleEndian(header[25..]);
+			uint deflatedLength = BinaryPrimitives.ReadUInt32LittleEndian(header[29..]);
+			if (width <= 0 || height <= 0 || faceCount != 1 || length == 0 || deflatedLength == 0)
+			{
+				return false;
+			}
+
+			Interlocked.Increment(ref _hits);
 			return true;
 		}
-		catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+		catch (Exception)
 		{
 			return false;
 		}
 	}
+
+	/// <summary>
+	/// The size of a cached 2D entry, from its header alone; false when it has none. For a sweep
+	/// asking what is already built, which has no use for the pixels.
+	/// </summary>
+	public static bool TryPeek(string key, out int width, out int height) =>
+		TryReadHeader(key, out width, out height, out _);
 
 	/// <summary>
 	/// Reads every face of a cached entry: one image for a 2D texture, six for a cube.

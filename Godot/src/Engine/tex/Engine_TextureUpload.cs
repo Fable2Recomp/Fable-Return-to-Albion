@@ -22,7 +22,9 @@ public static class Engine_TextureUpload
     /// <param name="world">A world material's texture, which the low-memory tier may upload a size
     /// down; nothing that reads its own size to place itself may set this.</param>
     public static ImageTexture CreateTexture(Image image, bool world = false) =>
-        Prepares ? AndroidTextureUpload.CreateTexture(image, world) : ImageTexture.CreateFromImage(image);
+        Engine_ServerSyncs.RunGpuUpload(
+            image.GetDataSize(),
+            () => Prepares ? AndroidTextureUpload.CreateTexture(image, world) : ImageTexture.CreateFromImage(image));
 
     /// <summary>
     /// The image in the form <see cref="CreateTexture"/> would upload it, for a worker that makes
@@ -38,8 +40,11 @@ public static class Engine_TextureUpload
     /// <param name="world">As <see cref="CreateTexture"/>.</param>
     public static void SetImage(ImageTexture texture, Image image, bool world = false)
     {
-        if (Prepares) AndroidTextureUpload.SetImage(texture, image, world);
-        else texture.SetImage(image);
+        Engine_ServerSyncs.RunGpuUpload(image.GetDataSize(), () =>
+        {
+            if (Prepares) AndroidTextureUpload.SetImage(texture, image, world);
+            else texture.SetImage(image);
+        });
     }
 
     /// <summary>Uploads cube/array layers, leaving the source images intact.</summary>
@@ -49,9 +54,21 @@ public static class Engine_TextureUpload
     /// <param name="world">As <see cref="CreateTexture"/>.</param>
     public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images, bool world = false)
     {
-        if (Prepares) return AndroidTextureUpload.CreateLayered(texture, images, world);
-        Error created = texture.CreateFromImages(images);
-        GC.KeepAlive(images);
-        return created;
+        long bytes = 0;
+        for (int i = 0; i < images.Count; i++)
+        {
+            if (images[i] is { } layer)
+            {
+                bytes += layer.GetDataSize();
+            }
+        }
+
+        return Engine_ServerSyncs.RunGpuUpload(bytes, () =>
+        {
+            if (Prepares) return AndroidTextureUpload.CreateLayered(texture, images, world);
+            Error created = texture.CreateFromImages(images);
+            GC.KeepAlive(images);
+            return created;
+        });
     }
 }

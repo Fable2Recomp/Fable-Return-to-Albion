@@ -95,6 +95,10 @@ internal sealed class Engine_ShaderCeiling
 	private readonly Func<GeometryInstance3D, bool> _isTree;
 	private readonly Mode[] _modes = new Mode[CategoryNames.Length];
 	private readonly string[]?[] _words = new string[]?[CategoryNames.Length];
+	private bool _active;
+
+	/// <summary>True when at least one shader ceiling category mode is non-Off.</summary>
+	internal bool IsActive => _active;
 
 	/// <summary>Each swapped material, its own shader and the category that claimed it.</summary>
 	private readonly Dictionary<ShaderMaterial, (Shader Original, Category Owner)> _swapped = new();
@@ -245,7 +249,8 @@ internal sealed class Engine_ShaderCeiling
 			}
 		}
 
-		if (Array.Exists(_modes, m => m != Mode.Off))
+		_active = Array.Exists(_modes, m => m != Mode.Off);
+		if (_active)
 		{
 			Queue(root);
 			Walk(int.MaxValue);
@@ -256,7 +261,7 @@ internal sealed class Engine_ShaderCeiling
 	/// <summary>Per frame: a bounded step of the walk while a mode is on; nothing at all otherwise.</summary>
 	internal void Tick(Node root)
 	{
-		if (!Array.Exists(_modes, m => m != Mode.Off))
+		if (!_active)
 		{
 			return;
 		}

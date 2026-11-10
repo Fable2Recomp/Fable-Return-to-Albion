@@ -104,9 +104,16 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
             Height = (uint)size.Y,
             Format = RenderingDevice.DataFormat.R32Sfloat,
             TextureType = RenderingDevice.TextureType.Type2D,
-            UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
+            UsageBits = RenderingDevice.TextureUsageBits.SamplingBit |
+                RenderingDevice.TextureUsageBits.StorageBit |
+                RenderingDevice.TextureUsageBits.CanUpdateBit |
+                RenderingDevice.TextureUsageBits.CanCopyToBit,
         };
         _target = _rd!.Texture(format, new RDTextureView());
+        if (_target.IsValid)
+        {
+            _rd!.TextureClear(_target, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
+        }
         _targetSize = size;
         Rid rid = _target;
         int view = View;
@@ -193,7 +200,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
         if (_rd is not null) Refii.Core.Engine_RdRetire.Pump(_rd);
-        if (!_ready || _rd is null) return;
+        if (!_ready || _rd is null || !Refii.Game.GameWorld.HasActiveWorld) return;
         if (renderData.GetRenderSceneBuffers() is not RenderSceneBuffersRD buffers) return;
         Vector2I size = buffers.GetInternalSize();
         if (size.X <= 0 || size.Y <= 0) return;

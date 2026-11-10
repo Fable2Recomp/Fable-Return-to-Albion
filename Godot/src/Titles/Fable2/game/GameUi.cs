@@ -412,6 +412,7 @@ public partial class GameUi : Node, IGameTitleUi
 			// Framing camera OFF: it would fit the geometry to the viewport and hide the
 			// placement errors the title's own camera aiming has to be checked against.
 			UseFramingCamera = false,
+			MountMirrorTree = false,
 		};
 
 		// The host's own _Ready runs on AddChild, so the screen is already standing up by the
@@ -478,7 +479,11 @@ public partial class GameUi : Node, IGameTitleUi
 		RegisterCommands();
 		_showing = Screen;
 
-		BuildRebuiltHud();
+		BuildAchievementToast();
+		if (HostBridge.IsInGame)
+		{
+			EnsureRebuiltHud();
+		}
 
 		// If Godot is STARTING on the menu, own it immediately rather than waiting to be told.
 		// FollowGuest is the other way in and the one a real boot takes; this covers a harness
@@ -702,6 +707,7 @@ public partial class GameUi : Node, IGameTitleUi
 		_books.ReleaseFrontEnd();
 
 		_presentation?.ClearScreen();
+		_presentation?.ReleasePatternBooks("frontendstartupscreen", "frontendmainmenu", "scrollingbackground", "logbookscreen");
 
 		_showing = null;
 	}
@@ -828,44 +834,76 @@ public partial class GameUi : Node, IGameTitleUi
 				$"cursor {(_menuView.CursorTemplate is null ? "stand-in" : "shipped")}");
 		}
 
-		AdoptCardChoice(theme);
-		AdoptSaveCards(theme);
-		AdoptWarning(theme);
+		// Only refresh the modal views if they have already been opened; building all three
+		// subtrees and decoding their 4x textures on the `frontendmainmenu` transition frame
+		// compounds the GPU upload spike when the menu first appears.
+		if (_cardView is not null)
+		{
+			AdoptCardChoice(theme);
+		}
+		else if (_presentation?.MirrorTree is not null &&
+			theme.ArtSourceNode(Engine_FrontEndCardChoice.GroupName) is { } cardGroup)
+		{
+			cardGroup.Visible = false;
+		}
+
+		if (_saveCardView is not null)
+		{
+			AdoptSaveCards(theme);
+		}
+		else if (_presentation?.MirrorTree is not null &&
+			theme.ArtSourceNode(Engine_FrontEndSaveCards.PageName) is { } savePage)
+		{
+			savePage.Visible = false;
+		}
+
+		if (_warningView is not null)
+		{
+			AdoptWarning(theme);
+		}
+		else if (_presentation?.MirrorTree is not null &&
+			theme.ArtSourceNode(Engine_FrontEndWarning.GroupName) is { } warningGroup)
+		{
+			warningGroup.Visible = false;
+		}
 
 		// The guest's own rows, out of the way. Hidden rather than freed: the tree is rebuilt
 		// from the file on the next state change anyway, and freeing a node the theme's
 		// catalogue still points at would leave a dangling entry behind.
-		if (group is not null)
+		if (_presentation?.MirrorTree is not null)
 		{
-			group.Visible = false;
-		}
-
-		// And its highlight: `MenuHighlight` is a SIBLING of the row group, not a child, so
-		// hiding the group leaves it painting at its authored spot. Cloned first, hidden second.
-		// EVERY instance — the screen ships its furniture twice, the authored 4:3 layout and the
-		// 16:9 copy on a marker child — and the count goes in the takeover line.
-		int highlightsHidden = 0;
-		foreach (Engine_UiTheme? catalogue in new[] { _presentation?.Templates, theme })
-		{
-			if (catalogue is null)
+			if (group is not null)
 			{
-				continue;
+				group.Visible = false;
 			}
 
-			foreach (Node3D instance in catalogue.ArtSourceNodes("MenuHighlight"))
+			// And its highlight: `MenuHighlight` is a SIBLING of the row group, not a child, so
+			// hiding the group leaves it painting at its authored spot. Cloned first, hidden second.
+			// EVERY instance — the screen ships its furniture twice, the authored 4:3 layout and the
+			// 16:9 copy on a marker child — and the count goes in the takeover line.
+			int highlightsHidden = 0;
+			foreach (Engine_UiTheme? catalogue in new[] { _presentation?.Templates, theme })
 			{
-				if (instance.Visible)
+				if (catalogue is null)
 				{
-					instance.Visible = false;
-					++highlightsHidden;
+					continue;
+				}
+
+				foreach (Node3D instance in catalogue.ArtSourceNodes("MenuHighlight"))
+				{
+					if (instance.Visible)
+					{
+						instance.Visible = false;
+						++highlightsHidden;
+					}
 				}
 			}
-		}
 
-		if (highlightsHidden != 0)
-		{
-			GD.Print($"[game-ui] hid {highlightsHidden} guest MenuHighlight instance(s) — " +
-				"our cloned cursor is the only highlight now");
+			if (highlightsHidden != 0)
+			{
+				GD.Print($"[game-ui] hid {highlightsHidden} guest MenuHighlight instance(s) — " +
+					"our cloned cursor is the only highlight now");
+			}
 		}
 
 		// Registered, so the hide survives the per-state-change rebuild: the hides above cover
@@ -899,7 +937,7 @@ public partial class GameUi : Node, IGameTitleUi
 			_cardView = Engine_FrontEndCardChoice.FromPresentation(pattern ?? group);
 			if (group is not null)
 			{
-				_cardView.Transform = group.GlobalTransform;
+				_cardView.Transform = Engine_UiTheme.CanvasTransform(group);
 			}
 
 			_presentation!.AddChild(_cardView);
@@ -912,7 +950,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 		// The LIVE group, re-hidden on every rebuild including the first: its tree is rebuilt
 		// from the file on every guest state change and comes back visible.
-		if (group is not null)
+		if (group is not null && _presentation?.MirrorTree is not null)
 		{
 			group.Visible = false;
 		}
@@ -938,7 +976,7 @@ public partial class GameUi : Node, IGameTitleUi
 			_saveCardView.Theme = theme;
 			if (page is not null)
 			{
-				_saveCardView.Transform = page.GlobalTransform;
+				_saveCardView.Transform = Engine_UiTheme.CanvasTransform(page);
 			}
 
 			_presentation!.AddChild(_saveCardView);
@@ -949,7 +987,7 @@ public partial class GameUi : Node, IGameTitleUi
 				$"{(page is null ? ", page ABSENT from this build" : string.Empty)}");
 		}
 
-		if (page is not null)
+		if (page is not null && _presentation?.MirrorTree is not null)
 		{
 			page.Visible = false;
 		}
@@ -1110,7 +1148,7 @@ public partial class GameUi : Node, IGameTitleUi
 			_warningView = Engine_FrontEndWarning.FromPresentation(pattern ?? group);
 			if (group is not null)
 			{
-				_warningView.Transform = group.GlobalTransform;
+				_warningView.Transform = Engine_UiTheme.CanvasTransform(group);
 			}
 			else if (pattern is not null)
 			{
@@ -1125,7 +1163,7 @@ public partial class GameUi : Node, IGameTitleUi
 				$"{(group is null ? ", group ABSENT from this build" : string.Empty)}");
 		}
 
-		if (group is not null)
+		if (group is not null && _presentation?.MirrorTree is not null)
 		{
 			group.Visible = false;
 		}
@@ -2379,6 +2417,56 @@ public partial class GameUi : Node, IGameTitleUi
 	/// <summary>The presentation the rebuilt HUD replaces. Never mirrored.</summary>
 	private const string HudPresentation = "hud";
 
+	private void EnsureRebuiltHud()
+	{
+		if (_hud is not null && GodotObject.IsInstanceValid(_hud))
+		{
+			return;
+		}
+
+		BuildRebuiltHud();
+	}
+
+	private void EnsureSplitScreenHud()
+	{
+		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
+		{
+			return;
+		}
+
+		if (_presentation is null || _hud is null || !GodotObject.IsInstanceValid(_hud) ||
+			_hudScreen is not { } screen)
+		{
+			return;
+		}
+
+		_hudTwo = new Engine_HudView
+		{
+			Name = "HudPlayerTwo",
+			Theme = _presentation.Theme,
+			TopBoxWrapWidth = Engine_UiHudTopBox.WrapWidth,
+			TopBoxHeightRange = Engine_UiHudTopBox.HeightRange,
+			Screen = screen,
+			Art = _hud.Art,
+			ResolveTexture = _hud.ResolveTexture,
+			Layout = _hud.Layout,
+			// Player one's feed, with player two's own numbers stated over it where the guest's
+			// one HUD states only the local player's (DrivePlayerTwoHud).
+			Values = new Engine_HudValues { Under = _hud.Values },
+			ReadsValues = false,
+			Seat = Engine_UiSeats.Seat.PlayerTwo,
+			Suppressed = true,
+			Visible = false,
+			ProcessMode = ProcessModeEnum.Disabled,
+		};
+		_presentation.AddChild(_hudTwo);
+		_hudTwo.Build();
+		if (_worldIconsTwo is not null && GodotObject.IsInstanceValid(_worldIconsTwo))
+		{
+			_worldIconsTwo.Values = _hudTwo.Values;
+		}
+	}
+
 	/// <summary>
 	/// Stands the rebuilt HUD up. Unconditional — there is no mirrored HUD to fall back to.
 	///
@@ -2459,7 +2547,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// Android that authoring pass would build and retain thousands of unused UI nodes
 		// before the world loads. Actual menu/HUD construction still requests its own book.
 		Engine_UiComponentLibrary.Result? exported = Engine_UiComponentLibrary.ExportAtStartup(
-			Engine_Platform.IsAndroid,
+			Engine_UiComponentLibrary.ShouldSkipStartupExport(Engine_Platform.IsAndroid),
 			() => Engine_UiComponentLibrary.ExportAll(name => _presentation.PatternBookFor(name)));
 		if (exported is { } result)
 			GD.Print($"[ui-components] {result} -> {Engine_UiComponentLibrary.Root}");
@@ -2487,31 +2575,11 @@ public partial class GameUi : Node, IGameTitleUi
 			(modArranged == 0 ? string.Empty : $"; {modArranged} piece(s) moved by mods") +
 			(arranged == 0 ? string.Empty : $"; {arranged} piece(s) moved by {HudLayoutPath}"));
 
-		// PLAYER TWO'S HALF, for split screen. The same view over the same layout, art and
-		// published values — `hud.bgf` is one presentation carrying both players' pieces — built
-		// with player one's pieces keyed to player two's (Engine_HudView.ForPlayerTwo) and laid
-		// out in player two's half. Down until the screen splits; see SeatPlayerUi.
-		_hudTwo = new Engine_HudView
+		if (Engine_Views.Split)
 		{
-			Name = "HudPlayerTwo",
-			Theme = _presentation.Theme,
-			TopBoxWrapWidth = Engine_UiHudTopBox.WrapWidth,
-			TopBoxHeightRange = Engine_UiHudTopBox.HeightRange,
-			Screen = screen,
-			Art = _hud.Art,
-			ResolveTexture = _hud.ResolveTexture,
-			Layout = _hud.Layout,
-			// Player one's feed, with player two's own numbers stated over it where the guest's
-			// one HUD states only the local player's (DrivePlayerTwoHud).
-			Values = new Engine_HudValues { Under = _hud.Values },
-			ReadsValues = false,
-			Seat = Engine_UiSeats.Seat.PlayerTwo,
-			Suppressed = true,
-			Visible = false,
-			ProcessMode = ProcessModeEnum.Disabled,
-		};
-		_presentation.AddChild(_hudTwo);
-		_hudTwo.Build();
+			EnsureSplitScreenHud();
+		}
+
 		ApplyHudWidgetCopies();
 
 		// THE WORLD ICONS, beside the layout-driven pieces. Their positions are the guest's —
@@ -2651,6 +2719,10 @@ public partial class GameUi : Node, IGameTitleUi
 			_hud.Seat = split ? Engine_UiSeats.Seat.PlayerOne : Engine_UiSeats.Seat.Whole;
 			_hud.HidesPartner = CoopSession.Side != CoopSession.Role.Solo && !CoopSession.LocalCoop;
 			_hud.LocalPlayerTwo = CoopSession.IsClient && !CoopSession.LocalCoop;
+			if (split)
+			{
+				EnsureSplitScreenHud();
+			}
 		}
 
 		if (_hudTwo is not null && GodotObject.IsInstanceValid(_hudTwo))
@@ -4797,7 +4869,7 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private void BuildAchievementToast()
 	{
-		if (_presentation is null)
+		if (_presentation is null || (_toast is not null && GodotObject.IsInstanceValid(_toast)))
 		{
 			return;
 		}
@@ -7181,6 +7253,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// so it was reached 30 minutes into a session, in the middle of building the gift list.
 		if (inGame && !_sawInGame)
 		{
+			EnsureRebuiltHud();
 			WarmTextBanks();
 		}
 
@@ -7824,6 +7897,11 @@ public partial class GameUi : Node, IGameTitleUi
 			bool limit = warning == Fable2FrontEndRoot.SaveLimitWarning;
 			string button = limit ? "GUI_DEVICE_REMOVED_CONTINUE" : "GUI_OK";
 
+			if (_warningView is null && _presentation?.Theme is { } warningTheme)
+			{
+				AdoptWarning(warningTheme);
+			}
+
 			if (_warningView is not null)
 			{
 				_warningView.Show(_presentation?.Theme, warning, button, twoButton: limit);
@@ -7898,6 +7976,11 @@ public partial class GameUi : Node, IGameTitleUi
 			// step whichever of them ended it.
 			CloseSaveCards();
 			return false;
+		}
+
+		if (_saveCardView is null && _presentation?.Theme is { } saveTheme)
+		{
+			AdoptSaveCards(saveTheme);
 		}
 
 		if (_saveCardView is null)
@@ -8491,6 +8574,12 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private void OpenScreen(string screen)
 	{
+		if (screen == Fable2FrontEndRoot.HeroCardScreen && _cardView is null &&
+			_presentation?.Theme is { } cardTheme)
+		{
+			AdoptCardChoice(cardTheme);
+		}
+
 		if (screen == Fable2FrontEndRoot.HeroCardScreen && _cardView is not null)
 		{
 			// Reset on the way IN, not on the way out. The guest re-enters through the same
@@ -10030,6 +10119,8 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				return;
 			}
+
+			EnsureRebuiltHud();
 
 			// The address is still taken: the world icons — the one part of the HUD the guest
 			// arranges — are sampled off this presentation without mirroring it. See

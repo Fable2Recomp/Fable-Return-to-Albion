@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using Refii.Textures;
 
@@ -14,6 +15,37 @@ namespace Refii.Ui;
 /// </summary>
 public static class Engine_BitmapFontTexture
 {
+	private static readonly object CacheLock = new();
+	private static readonly Dictionary<string, (ImageTexture Texture, long Bytes)> CachedAtlases = new(StringComparer.Ordinal);
+
+	/// <summary>Number of deduplicated font atlas + SDF texture pairs currently resident.</summary>
+	public static int CachedFontCount
+	{
+		get
+		{
+			lock (CacheLock)
+			{
+				return CachedAtlases.Count;
+			}
+		}
+	}
+
+	/// <summary>Estimated bytes held by cached font atlas + SDF textures.</summary>
+	public static long CachedFontBytes
+	{
+		get
+		{
+			lock (CacheLock)
+			{
+				long total = 0;
+				foreach ((_, long bytes) in CachedAtlases.Values)
+				{
+					total += bytes;
+				}
+				return total;
+			}
+		}
+	}
 	/// <summary>
 	/// The atlas as BC4 blocks a desktop GPU can read: byte-swapped, then untiled.
 	///
@@ -53,7 +85,7 @@ public static class Engine_BitmapFontTexture
 			Image.Format.RgtcR,
 			DecodeAtlasBlocks(font));
 
-		return image.IsEmpty() ? null! : ImageTexture.CreateFromImage(image);
+		return image.IsEmpty() ? null! : Engine_TextureUpload.CreateTexture(image);
 	}
 
 	/// <summary>
@@ -66,14 +98,18 @@ public static class Engine_BitmapFontTexture
 	/// conversion once here rather than in the shader keeps <c>ui_text.gdshader</c> to a
 	/// single coverage read, and keeps the atlas usable by anything that samples it plainly.
 	/// </summary>
+	private static StringName? _supersampleMeta;
+
 	/// <summary>Meta on the atlas texture: texture pixels per shipped atlas texel.</summary>
-	public static readonly StringName SupersampleMeta = "supersample";
+	public static StringName SupersampleMeta => _supersampleMeta ??= "supersample";
 
 	/// <summary>Texture pixels per shipped atlas texel for an atlas built here; 1 otherwise.</summary>
 	public static float SupersampleOf(Texture2D? atlas) =>
 		atlas is not null && atlas.HasMeta(SupersampleMeta)
 			? (float)atlas.GetMeta(SupersampleMeta).AsDouble()
 			: 1f;
+
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Image, Image> PreparedFields = new();
 
 	public static ImageTexture CreateAtlasTextureDecompressed(Engine_BitmapFont font) =>
 		CreateAtlasTexture(font, CreateAtlasImage(font, out int factor), factor);
@@ -84,28 +120,52 @@ public static class Engine_BitmapFontTexture
 	/// </summary>
 	public static Image CreateAtlasImage(Engine_BitmapFont font, out int factor)
 	{
-		Image image = Image.CreateFromData(
-			font.AtlasWidth, font.AtlasHeight,
+		int width = font.AtlasWidth;
+		int height = font.AtlasHeight;
+		factor = Mathf.Max(width, height) * 2 <= 2048 ? 2 : 1;
+
+		using Image image = Image.CreateFromData(
+			width, height,
 			useMipmaps: false,
 			Image.Format.RgtcR,
 			DecodeAtlasBlocks(font));
 		image.Decompress();
+		if (image.GetFormat() != Image.Format.R8)
+		{
+			image.Convert(Image.Format.R8);
+		}
 
-		int width = image.GetWidth();
-		int height = image.GetHeight();
-		var mask = Image.CreateEmpty(width, height, false, Image.Format.Rgba8);
+		byte[] red = image.GetData();
+		int pixelCount = width * height;
+		var maskBytes = new byte[pixelCount * 4];
+		for (int i = 0; i < pixelCount; i++)
+		{
+			int dst = i * 4;
+			maskBytes[dst] = 255;
+			maskBytes[dst + 1] = 255;
+			maskBytes[dst + 2] = 255;
+			maskBytes[dst + 3] = red[i];
+		}
 
-		for (int y = 0; y < height; y++)
-			for (int x = 0; x < width; x++)
-				mask.SetPixel(x, y, new Color(1f, 1f, 1f, image.GetPixel(x, y).R));
+		Image mask = Image.CreateFromData(width, height, false, Image.Format.Rgba8, maskBytes);
 
 		// SUPERSAMPLED, WITH MIPS. The shipped atlas is a 720p font; the UI's own art is
 		// enhanced x4 and the text was the one thing still magnified raw — 2x at 1440p, 3x at
 		// 2160p. A cubic upsample gives the coverage smooth contours for `ui_text.gdshader`
 		// to re-sharpen at the display's own pixel size; the mips are what its
 		// `filter_linear_mipmap` samples when a label draws smaller than authored.
-		factor = Mathf.Max(width, height) * 4 <= 4096 ? 4 : 2;
-		mask.Resize(width * factor, height * factor, Image.Interpolation.Cubic);
+		if (factor > 1)
+		{
+			mask.Resize(width * factor, height * factor, Image.Interpolation.Cubic);
+		}
+
+		// Precompute the signed distance field image here on the CPU worker before generating
+		// mipmaps on `mask` so `CreateAtlasTexture` on the main thread only uploads GPU textures.
+		if (BuildDistanceFieldImage(font, mask, factor) is { } sdfImage)
+		{
+			PreparedFields.AddOrUpdate(mask, sdfImage);
+		}
+
 		mask.GenerateMipmaps();
 		return mask;
 	}
@@ -119,22 +179,43 @@ public static class Engine_BitmapFontTexture
 			return null!;
 		}
 
-		ImageTexture? field = DistanceField(font, mask, factor);
-		ImageTexture texture = ImageTexture.CreateFromImage(mask);
+		string cacheKey = FontDigestKey(font, factor);
+		lock (CacheLock)
+		{
+			if (CachedAtlases.TryGetValue(cacheKey, out (ImageTexture Texture, long Bytes) existing) &&
+				GodotObject.IsInstanceValid(existing.Texture))
+			{
+				return existing.Texture;
+			}
+		}
+
+		Image? sdfImage = PreparedFields.TryGetValue(mask, out Image? prepared)
+			? prepared
+			: BuildDistanceFieldImage(font, mask, factor);
+		ImageTexture? field = sdfImage is not null ? Engine_TextureUpload.CreateTexture(sdfImage) : null;
+		ImageTexture texture = Engine_TextureUpload.CreateTexture(mask);
 		texture.SetMeta(SupersampleMeta, factor);
 		if (field is not null)
 		{
 			texture.SetMeta(DistanceFieldMeta, field);
 		}
 
+		long atlasBytes = mask.GetDataSize() + (sdfImage?.GetDataSize() ?? 0);
+		lock (CacheLock)
+		{
+			CachedAtlases[cacheKey] = (texture, atlasBytes);
+		}
+
 		return texture;
 	}
+
+	private static StringName? _distanceFieldMeta;
 
 	/// <summary>
 	/// Meta on a coverage atlas: its signed distance field (<see cref="Engine_SdfField"/>), the
 	/// texture `ui_text.gdshader` draws from. The coverage stays the atlas for plain 2D drawing.
 	/// </summary>
-	public static readonly StringName DistanceFieldMeta = "distance_field";
+	public static StringName DistanceFieldMeta => _distanceFieldMeta ??= "distance_field";
 
 	/// <summary>The distance field paired with a coverage atlas, or null.</summary>
 	public static Texture2D? DistanceFieldOf(Texture2D? atlas) =>
@@ -146,50 +227,52 @@ public static class Engine_BitmapFontTexture
 	private const int DistanceFieldVersion = 1;
 
 	/// <summary>
-	/// The supersampled coverage's distance field, L8 with mips. Built on the player's machine
-	/// from their own font and cached in the title's cache folder (derived game data never ships),
-	/// keyed by the atlas payload; a second start reads the cache. Spread is two shipped texels
-	/// either side of the edge, which is what an outline or a soft shadow can reach.
+	/// The supersampled coverage's distance field as an RGBA8 image (signed distance in all channels)
+	/// with mipmaps. Built on the player's machine from their own font and cached in the title's
+	/// cache folder (derived game data never ships), keyed by the atlas payload.
 	/// </summary>
-	private static ImageTexture? DistanceField(Engine_BitmapFont font, Image mask, int factor)
+	private static Image? BuildDistanceFieldImage(Engine_BitmapFont font, Image mask, int factor)
 	{
 		int width = mask.GetWidth();
 		int height = mask.GetHeight();
 		string path = DistanceFieldCachePath(font, factor);
-		Image? image = null;
+		byte[]? field = null;
 		try
 		{
 			if (System.IO.File.Exists(path))
 			{
-				Image cached = Image.LoadFromFile(path);
+				using Image cached = Image.LoadFromFile(path);
 				if (cached.GetWidth() == width && cached.GetHeight() == height)
 				{
-					cached.Convert(Image.Format.L8);
-					image = cached;
+					if (cached.GetFormat() != Image.Format.L8 && cached.GetFormat() != Image.Format.R8)
+					{
+						cached.Convert(Image.Format.R8);
+					}
+					field = cached.GetData();
 				}
 			}
 		}
 		catch (Exception)
 		{
-			image = null;
+			field = null;
 		}
 
-		if (image is null)
+		if (field is null || field.Length != width * height)
 		{
 			byte[] rgba = mask.GetData();
 			var coverage = new float[width * height];
-			for (int i = 0; i < coverage.Length; ++i)
+			for (int i = 0; i < coverage.Length && (i * 4) + 3 < rgba.Length; ++i)
 			{
 				coverage[i] = rgba[(i * 4) + 3] / 255f;
 			}
 
-			byte[] field = Engine_SdfField.FromCoverage(coverage, width, height,
+			field = Engine_SdfField.FromCoverage(coverage, width, height,
 				spread: 2f * factor, edgeWidth: factor);
-			image = Image.CreateFromData(width, height, false, Image.Format.L8, field);
 			try
 			{
+				using Image toSave = Image.CreateFromData(width, height, false, Image.Format.L8, field);
 				System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
-				image.SavePng(path);
+				toSave.SavePng(path);
 			}
 			catch (Exception exception)
 			{
@@ -197,21 +280,34 @@ public static class Engine_BitmapFontTexture
 			}
 		}
 
-		if (image.IsEmpty())
+		int count = width * height;
+		var rgbaBytes = new byte[count * 4];
+		for (int i = 0; i < count; ++i)
 		{
-			return null;
+			byte d = field[i];
+			int dst = i * 4;
+			rgbaBytes[dst] = d;
+			rgbaBytes[dst + 1] = d;
+			rgbaBytes[dst + 2] = d;
+			rgbaBytes[dst + 3] = d;
 		}
 
-		image.GenerateMipmaps();
-		return ImageTexture.CreateFromImage(image);
+		Image sdf = Image.CreateFromData(width, height, false, Image.Format.Rgba8, rgbaBytes);
+		sdf.GenerateMipmaps();
+		return sdf;
+	}
+
+	private static string FontDigestKey(Engine_BitmapFont font, int factor)
+	{
+		byte[] digest = Engine_Hash.Sha1(font.AtlasBlocks.Span);
+		string key = Convert.ToHexString(digest, 0, 8).ToLowerInvariant();
+		return $"sdf-v{DistanceFieldVersion}-{key}-x{factor}";
 	}
 
 	private static string DistanceFieldCachePath(Engine_BitmapFont font, int factor)
 	{
-		byte[] digest = Engine_Hash.Sha1(font.AtlasBlocks.Span);
-		string key = Convert.ToHexString(digest, 0, 8).ToLowerInvariant();
 		return System.IO.Path.Combine(Engine_Title.Active.CacheDirectory, "fonts",
-			$"sdf-v{DistanceFieldVersion}-{key}-x{factor}.png");
+			$"{FontDigestKey(font, factor)}.png");
 	}
 
 	/// <summary>

@@ -205,6 +205,7 @@ public sealed class Engine_UiSceneBuilder
 	private static readonly StringName ColourName = "colour";
 	private static readonly StringName ClipRectName = "clip_rect";
 	private static readonly StringName DiffuseTexName = "diffuse_tex";
+	private static readonly StringName HasDiffuseName = "has_diffuse";
 	private static readonly StringName TintRgbName = "tint_rgb";
 	private static readonly StringName TintAmountName = "tint_amount";
 	private static readonly StringName Uv1OffsetName = "uv1_offset";
@@ -672,6 +673,7 @@ public sealed class Engine_UiSceneBuilder
 	{
 		var material = new ShaderMaterial { Shader = QuadShader };
 		material.SetShaderParameter(DiffuseTexName, art);
+		material.SetShaderParameter(HasDiffuseName, art is not null);
 		material.SetShaderParameter(OpacityName, alpha);
 		return material;
 	}
@@ -692,6 +694,7 @@ public sealed class Engine_UiSceneBuilder
 		// The accumulated alpha: BuildNode has already folded n.Opacity into _inheritedOpacity.
 		mat.SetShaderParameter(OpacityName, _inheritedOpacity);
 		mat.SetShaderParameter("quad_base_size", QuadBaseSize);
+		mat.SetShaderParameter(HasDiffuseName, false);
 
 		// Colour and WEIGHT kept apart: the weight is 0 on most records, so most quads are untinted.
 		mat.SetShaderParameter(TintRgbName, new Vector3(q.R, q.G, q.B));
@@ -724,6 +727,7 @@ public sealed class Engine_UiSceneBuilder
 			if (tex is not null)
 			{
 				mat.SetShaderParameter(DiffuseTexName, tex);
+				mat.SetShaderParameter(HasDiffuseName, true);
 				TexturesResolved++;
 
 				// Inset half a texel off every edge. Frame art is CELLS of a shared atlas
@@ -735,8 +739,11 @@ public sealed class Engine_UiSceneBuilder
 				// material built at 512 over-insets by half an original texel when sampling 1024,
 				// which crops rather than bleeds. Layout is unaffected — the quad is the shared
 				// mesh scaled by the node transform.
-				float du = 0.5f / Mathf.Max(tex.GetWidth(), 1);
-				float dv = 0.5f / Mathf.Max(tex.GetHeight(), 1);
+				Vector2I baseSize = tex.HasMeta("base_size")
+					? tex.GetMeta("base_size").AsVector2I()
+					: new Vector2I(tex.GetWidth(), tex.GetHeight());
+				float du = 0.5f / Mathf.Max(baseSize.X, 1);
+				float dv = 0.5f / Mathf.Max(baseSize.Y, 1);
 
 				// Per axis: a nine-slice's edge cells are zero-extent on ONE axis only —
 				// `UpperMiddle/Rim` is authored u[0.5..0.5] v[0.25..0.5], a single atlas column
@@ -770,6 +777,14 @@ public sealed class Engine_UiSceneBuilder
 	private static ShaderMaterial? LabelMaterial(MeshInstance3D mesh) =>
 		mesh.MaterialOverride is ShaderMaterial m && m.Shader == TextShader ? m : null;
 
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, MeshInstance3D> OwnedMaterialMeshes = new();
+
+	internal static bool IsOwnedMaterial(MeshInstance3D mesh, ShaderMaterial material) =>
+		OwnedMaterialMeshes.TryGetValue(material, out MeshInstance3D? owner) && ReferenceEquals(owner, mesh);
+
+	internal static void MarkOwnedMaterial(MeshInstance3D mesh, ShaderMaterial material) =>
+		OwnedMaterialMeshes.AddOrUpdate(material, mesh);
+
 	/// <summary>Gives a cloned quad a private material, so writing it cannot leak.</summary>
 	public static bool OwnQuadMaterial(MeshInstance3D mesh)
 	{
@@ -778,9 +793,16 @@ public sealed class Engine_UiSceneBuilder
 			return false;
 		}
 
+		if (IsOwnedMaterial(mesh, shared))
+		{
+			return true;
+		}
+
 		// The Shader itself is not duplicated: Duplicate copies the parameter set and keeps
 		// pointing at the one compiled program.
-		mesh.MaterialOverride = Refii.Models.Engine_MaterialCopy.Shallow(shared);
+		ShaderMaterial copy = Refii.Models.Engine_MaterialCopy.Shallow(shared);
+		mesh.MaterialOverride = copy;
+		MarkOwnedMaterial(mesh, copy);
 		return true;
 	}
 
@@ -793,6 +815,7 @@ public sealed class Engine_UiSceneBuilder
 		}
 
 		material.SetShaderParameter(DiffuseTexName, texture);
+		material.SetShaderParameter(HasDiffuseName, texture is not null);
 		return true;
 	}
 

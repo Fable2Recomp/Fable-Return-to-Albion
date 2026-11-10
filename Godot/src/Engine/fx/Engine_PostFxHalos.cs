@@ -180,6 +180,7 @@ public partial class Engine_PostFxHalos : Node
 	private readonly HashSet<uint> _reported = new();
 	private Dictionary<uint, string>? _hashToPath;
 	private Rid _arrayRd;
+	private bool _arrayDirty;
 
 	public override void _ExitTree()
 	{
@@ -249,23 +250,39 @@ public partial class Engine_PostFxHalos : Node
 			}
 
 			float energy = light.LightEnergy;
+			if (energy <= 1e-4f)
+			{
+				continue;
+			}
+
+			Vector3 at = light.GlobalPosition;
 
 			// The guest's glow rides colour × intensity × (flicker × DISTANCE FADE) — the
 			// +0x1C0 product — so the sprite dies with its light instead of outliving the
 			// renderer's cull. Godot's distance fade happens inside the renderer where this
 			// feed cannot see it, so the same window is applied here.
-			if (eyes > 0 && light.DistanceFadeEnabled && light.IsInsideTree())
+			if (eyes > 0 && light.DistanceFadeEnabled)
 			{
-				float end = light.DistanceFadeBegin + light.DistanceFadeLength;
-				Vector3 at = light.GlobalPosition;
-				float dist = float.MaxValue;
+				float fadeBegin = light.DistanceFadeBegin;
+				float fadeLength = light.DistanceFadeLength;
+				float end = fadeBegin + fadeLength;
+				float minDistSq = float.MaxValue;
 				for (int e = 0; e < eyes; e++)
 				{
-					dist = MathF.Min(dist, _eyes[e].DistanceTo(at));
+					minDistSq = MathF.Min(minDistSq, _eyes[e].DistanceSquaredTo(at));
 				}
 
-				energy *= Math.Clamp(
-					(end - dist) / MathF.Max(light.DistanceFadeLength, 0.01f), 0f, 1f);
+				if (minDistSq >= end * end)
+				{
+					continue;
+				}
+
+				if (minDistSq > fadeBegin * fadeBegin)
+				{
+					float dist = MathF.Sqrt(minDistSq);
+					energy *= Math.Clamp(
+						(end - dist) / MathF.Max(fadeLength, 0.01f), 0f, 1f);
+				}
 			}
 
 			Color c = Refii.Lighting.Engine_LightColour.Linear(light);
@@ -279,7 +296,7 @@ public partial class Engine_PostFxHalos : Node
 				? Math.Clamp(omni.OmniRange * HalfPerRange, HalfMin, HalfMax)
 				: HalfMin;
 			_build.Add(new WorldHalo(
-				light.GlobalPosition, colour, half, LayerFor(halo.TextureHash)));
+				at, colour, half, LayerFor(halo.TextureHash)));
 		}
 
 		// Under classic, the guest's own halo list: the lights `sub_82274370` draws LIGHTHALO for
@@ -321,6 +338,12 @@ public partial class Engine_PostFxHalos : Node
 			_build.Add(new WorldHalo(
 				eye + (direction.Normalized() * halo.Distance), colour, halo.WorldHalf,
 				LayerForSprite(halo.Sprite, halo.SpriteU0, halo.SpriteU1)));
+		}
+
+		if (_arrayDirty)
+		{
+			_arrayDirty = false;
+			RebuildArray();
 		}
 
 		using (Gate.Hold())
@@ -372,7 +395,7 @@ public partial class Engine_PostFxHalos : Node
 
 			_sprites.Add(image);
 			layer = _sprites.Count - 1;
-			RebuildArray();
+			_arrayDirty = true;
 		}
 
 		_spriteLayers[id] = layer;
@@ -405,7 +428,7 @@ public partial class Engine_PostFxHalos : Node
 
 			_sprites.Add(image);
 			layer = _sprites.Count - 1;
-			RebuildArray();
+			_arrayDirty = true;
 		}
 		else if (_reported.Add(hash))
 		{
@@ -436,7 +459,31 @@ public partial class Engine_PostFxHalos : Node
 		// and rebuilds are rare (one per distinct sprite, once) — retaining them all is cheaper
 		// than a handshake with the render thread.
 		_retained.Add(array);
-		_arrayRd = RenderingServer.TextureGetRdTexture(array.GetRid());
+		Rid texRid = array.GetRid();
+		Rid rd = RenderingServer.TextureGetRdTexture(texRid);
+		if (rd.IsValid)
+		{
+			_arrayRd = rd;
+			using (Gate.Hold())
+			{
+				_publishedArray = rd;
+			}
+		}
+		else
+		{
+			RenderingServer.CallOnRenderThread(Callable.From(() =>
+			{
+				Rid resolved = RenderingServer.TextureGetRdTexture(texRid);
+				if (resolved.IsValid)
+				{
+					_arrayRd = resolved;
+					using (Gate.Hold())
+					{
+						_publishedArray = resolved;
+					}
+				}
+			}));
+		}
 	}
 
 	private string? ResolvePath(uint hash)

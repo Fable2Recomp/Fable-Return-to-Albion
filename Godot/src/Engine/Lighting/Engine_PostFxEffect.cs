@@ -593,7 +593,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 (readable ? RenderingDevice.TextureUsageBits.CanCopyFromBit : 0),
         };
 
-        return _rd!.Texture(textureFormat, new RDTextureView(), initial);
+        Rid rid = _rd!.Texture(textureFormat, new RDTextureView(), initial);
+        if (rid.IsValid && initial is null)
+        {
+            _rd!.TextureClear(rid, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
+        }
+
+        return rid;
     }
 
     private void EnsureTargets(Vector2I size)
@@ -715,42 +721,21 @@ public partial class Engine_PostFxEffect : CompositorEffect
         for (int i = 0; i < TrapRingDepth; i++)
         {
             FreeSet(ref _trapRingSets[i]);
-            Free(ref _trapRing[i]);
+            FreeTexture(ref _trapRing[i]);
         }
 
         _trapRingColour = default;
-        if (!_disposed)
+        FreeTexture(ref _staging);
+        FreeTexture(ref _quarter);
+        FreeTexture(ref _occl);
+        for (int i = 0; i < 2; i++)
         {
-            Free(ref _staging);
-            Free(ref _quarter);
-            Free(ref _occl);
-            for (int i = 0; i < 2; i++)
-            {
-                Free(ref _rays[i]);
-                Free(ref _bloom[i]);
-                Free(ref _dof[i]);
-                Free(ref _glow[i]);
-                Free(ref _shaftHalf[i]);
-                Free(ref _shaftDepthHalf[i]);
-            }
-        }
-        else
-        {
-            // During effect disposal (NotificationPredelete), the rendering device / compositor
-            // has already torn down the viewport texture allocations; clear local RIDs to avoid
-            // attempting to free already-reclaimed IDs.
-            _staging = default;
-            _quarter = default;
-            _occl = default;
-            for (int i = 0; i < 2; i++)
-            {
-                _rays[i] = default;
-                _bloom[i] = default;
-                _dof[i] = default;
-                _glow[i] = default;
-                _shaftHalf[i] = default;
-                _shaftDepthHalf[i] = default;
-            }
+            FreeTexture(ref _rays[i]);
+            FreeTexture(ref _bloom[i]);
+            FreeTexture(ref _dof[i]);
+            FreeTexture(ref _glow[i]);
+            FreeTexture(ref _shaftHalf[i]);
+            FreeTexture(ref _shaftDepthHalf[i]);
         }
 
         _shaftHistoryValid = false;
@@ -767,6 +752,16 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         set = default;
+    }
+
+    private void FreeTexture(ref Rid rid)
+    {
+        if (rid.IsValid && _rd is not null && _rd.TextureIsValid(rid))
+        {
+            _rd.FreeRid(rid);
+        }
+
+        rid = default;
     }
 
     private void Free(ref Rid rid)
@@ -834,20 +829,22 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void ReleaseDeviceObjects()
     {
-        if (_rd is null)
+        RenderingDevice? rd = RenderingServer.GetRenderingDevice();
+        if (_rd is null || rd is null)
         {
+            _rd = null;
             return;
         }
 
         FreeClassicPost();
         FreeTargets();
         FreeSet(ref _reduceSet);
-        Free(ref _exposureRd);
+        FreeTexture(ref _exposureRd);
         Free(ref _nearestSampler);
         Free(ref _linearSampler);
-        Free(ref _haloFallbackArray);
+        FreeTexture(ref _haloFallbackArray);
         Free(ref _haloBuffer);
-        Free(ref _shadowFallbackArray);
+        FreeTexture(ref _shadowFallbackArray);
         Free(ref _shaftBuffer);
         Free(ref _highlightBuffer);
         Free(ref _paramsBuffer);
@@ -914,7 +911,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
-        if (!Engine_PostFxParams.Enabled)
+        if (!Engine_PostFxParams.Enabled || !Refii.Game.GameWorld.HasActiveWorld)
         {
             WriteDisabledMaterialExposure();
             return;
@@ -1382,7 +1379,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         Rid shadowAtlas = Engine_LevelShadowMaps.ActiveAtlasRdRid;
         int atlasRes = Engine_LevelShadowMaps.ActiveAtlasSize;
-        if (!shadowAtlas.IsValid)
+        if (!shadowAtlas.IsValid || !rd.TextureIsValid(shadowAtlas))
         {
             shadowAtlas = _shadowFallbackArray;
             atlasRes = 4;

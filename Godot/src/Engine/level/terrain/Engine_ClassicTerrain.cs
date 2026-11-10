@@ -406,7 +406,7 @@ public static class Engine_ClassicTerrain
         var bytes = new byte[heights.Width * heights.Height * 4];
         Buffer.BlockCopy(heights.Values, 0, bytes, 0, Math.Min(bytes.Length, heights.Values.Length * 4));
         var image = Image.CreateFromData(heights.Width, heights.Height, false, Image.Format.Rf, bytes);
-        return ImageTexture.CreateFromImage(image);
+        return Refii.Textures.Engine_TextureUpload.CreateTexture(image);
     }
 
     /// <summary>The guest's normal map as the shader decodes it: x and y of the unit normal in (0..1), z rebuilt.</summary>
@@ -429,7 +429,7 @@ public static class Engine_ClassicTerrain
                 bytes[at + 3] = 255;
             }
         }
-        return ImageTexture.CreateFromImage(Image.CreateFromData(w, h, false, Image.Format.Rgba8, bytes));
+        return Refii.Textures.Engine_TextureUpload.CreateTexture(Image.CreateFromData(w, h, false, Image.Format.Rgba8, bytes));
     }
 
     /// <summary>A layer's paint map as a texture whose every channel is the weight byte.</summary>
@@ -468,13 +468,13 @@ public static class Engine_ClassicTerrain
             }
             GD.Print($"[classic] terrain paint {index}: {(resourceMap ? "resource" : "splat mask")} {w}x{h}, " +
                      $"mean {sum / (double)(w * h) / 255.0:0.000}, max {max}");
-            texture = ImageTexture.CreateFromImage(Image.CreateFromData(w, h, false, Image.Format.Rgba8, bytes));
+            texture = Refii.Textures.Engine_TextureUpload.CreateTexture(Image.CreateFromData(w, h, false, Image.Format.Rgba8, bytes));
         }
         else
         {
             var white = Image.CreateEmpty(1, 1, false, Image.Format.Rgba8);
             white.Fill(Colors.White);
-            texture = ImageTexture.CreateFromImage(white);
+            texture = Refii.Textures.Engine_TextureUpload.CreateTexture(white);
         }
         cache[index] = texture;
         return texture;

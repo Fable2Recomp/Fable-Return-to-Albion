@@ -241,7 +241,7 @@ public static class Engine_ClassicShaders
     /// <summary>Compiles the shader on this thread if the pool has not yet (waiting for it if it is compiling now).</summary>
     public static void Settle(Shader shader)
     {
-        shader.GetRid();
+        Refii.Core.Engine_ServerSyncs.RunGpuUpload(64L * 1024L, () => _ = shader.GetRid());
         lock (Composed)
         {
             if (Composed.TryGetValue(shader, out ComposedAt? at))
@@ -261,7 +261,7 @@ public static class Engine_ClassicShaders
         }
         if (OS.GetThreadCallerId() != OS.GetMainThreadId())
         {
-            shader.GetRid();
+            Refii.Core.Engine_ServerSyncs.RunGpuUpload(64L * 1024L, () => _ = shader.GetRid());
             at.Ready = true;
             return;
         }
@@ -271,7 +271,7 @@ public static class Engine_ClassicShaders
             await CompileSlots.WaitAsync().ConfigureAwait(false);
             try
             {
-                shader.GetRid();
+                Refii.Core.Engine_ServerSyncs.RunGpuUpload(64L * 1024L, () => _ = shader.GetRid());
             }
             finally
             {

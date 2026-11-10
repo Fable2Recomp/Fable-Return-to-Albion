@@ -183,21 +183,44 @@ public static class Engine_EntityIndex
             return;
         }
 
-        for (int surface = 0; surface < mesh.GetSurfaceCount(); surface++)
+        int surfaceCount = mesh.GetSurfaceCount();
+        var pending = new List<(
+            Mesh.PrimitiveType Primitive,
+            Godot.Collections.Array Arrays,
+            Godot.Collections.Dictionary? Lods,
+            float[]? LevelTable,
+            string Name,
+            Material? Material)>(surfaceCount);
+        long totalBytes = 0;
+
+        for (int surface = 0; surface < surfaceCount; surface++)
         {
             Godot.Collections.Array arrays = Refii.Models.Engine_MdlSurfaceArrays.Of(mesh, surface);
-            int added = Refii.Models.Engine_MdlSurfaceArrays.Add(
-                resource, mesh.SurfaceGetPrimitiveType(surface), arrays,
+            totalBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
+            pending.Add((
+                mesh.SurfaceGetPrimitiveType(surface),
+                arrays,
                 Engine_MdlComposite.SurfaceLodsOf(mesh, surface),
-                Refii.Models.Engine_MdlSurfaceArrays.LevelTable(mesh, surface));
-            resource.SurfaceSetName(added, mesh.SurfaceGetName(surface));
-            resource.SurfaceSetMaterial(added, mesh.SurfaceGetMaterial(surface));
+                Refii.Models.Engine_MdlSurfaceArrays.LevelTable(mesh, surface),
+                mesh.SurfaceGetName(surface),
+                mesh.SurfaceGetMaterial(surface)));
         }
 
-        foreach (StringName meta in mesh.GetMetaList())
+        Refii.Core.Engine_ServerSyncs.RunGpuUpload(Math.Max(4096L, totalBytes), () =>
         {
-            resource.SetMeta(meta, mesh.GetMeta(meta));
-        }
+            foreach (var item in pending)
+            {
+                int added = Refii.Models.Engine_MdlSurfaceArrays.AddDirect(
+                    resource, item.Primitive, item.Arrays, item.Lods, item.LevelTable);
+                resource.SurfaceSetName(added, item.Name);
+                resource.SurfaceSetMaterial(added, item.Material);
+            }
+
+            foreach (StringName meta in mesh.GetMetaList())
+            {
+                resource.SetMeta(meta, mesh.GetMeta(meta));
+            }
+        });
     }
 
     private static Mesh? ResolveModel(string modelPath)

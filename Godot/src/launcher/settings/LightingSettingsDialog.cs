@@ -379,17 +379,6 @@ public partial class LightingSettingsDialog : Control
 			0.25, 8.0, 0.05));
 
 		contentCol.AddChild(BuildSliderSpinRow(
-			"interior_fog_scale",
-			"Interior Fog Density",
-			"Atmospheric fog density multiplier inside caves and interiors (default: 1.0).",
-			0.0, 4.0, 0.05));
-
-		contentCol.AddChild(BuildCheckBoxRow(
-			"volumetric_fog",
-			"3D Volumetric Fog & Light Rays",
-			"Enables Godot's 3D Volumetric Fog so sun shadows and dynamic lights scatter through the atmosphere (default: on)."));
-
-		contentCol.AddChild(BuildSliderSpinRow(
 			"fx_additive_gain",
 			"Additive Particle FX Gain",
 			"Radiance multiplier on particle effects, Will spells, and magic glows (default: 1.0x).",
@@ -405,6 +394,38 @@ public partial class LightingSettingsDialog : Control
 			"prop_probe_bake_weight",
 			"Fable Static Prop Bake Weight",
 			"Applies offline vertex bake weighting to unbaked static props and clutter (default: off)."));
+
+		// ==================== SECTION E: FOG & LIGHT SHAFTS ====================
+		contentCol.AddChild(MakeSectionHeader("Fog & Light Shafts"));
+
+		contentCol.AddChild(BuildCheckBoxRow(
+			"volumetric_fog",
+			"3D Volumetric Fog & Light Rays",
+			"Enables Godot's 3D Volumetric Fog so sun shadows and dynamic lights scatter through the atmosphere (default: on)."));
+
+		contentCol.AddChild(BuildSliderSpinRow(
+			"outdoor_fog_scale",
+			"Outdoor Fog Density",
+			"Atmospheric fog density multiplier in outdoor sky-lit levels (default: 1.0; 0.0 removes atmospheric fog).",
+			0.0, 4.0, 0.05));
+
+		contentCol.AddChild(BuildSliderSpinRow(
+			"interior_fog_scale",
+			"Interior Fog Density",
+			"Atmospheric fog density multiplier inside caves and interiors (default: 1.0; 0.0 removes cave fog).",
+			0.0, 4.0, 0.05));
+
+		contentCol.AddChild(BuildSliderSpinRow(
+			"outdoor_volumetric_shaft_scale",
+			"Outdoor Light Shaft Intensity",
+			"Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights outdoors (default: 1.0x).",
+			0.0, 4.0, 0.05));
+
+		contentCol.AddChild(BuildSliderSpinRow(
+			"interior_volumetric_shaft_scale",
+			"Interior Light Shaft Intensity",
+			"Multiplier on volumetric light-shaft in-scattering radiance across placed and dynamic lights in caves and interiors (default: 1.0x).",
+			0.0, 4.0, 0.05));
 
 		// 3. FIXED FOOTER
 		var footerCol = new VBoxContainer();
@@ -793,10 +814,14 @@ public partial class LightingSettingsDialog : Control
 			"interior_ambient_scale",
 			"interior_ambient_neutral",
 			"interior_dark_lift",
-			"interior_fog_scale",
 			"fx_additive_gain",
 			"baked_light_weight",
 			"prop_probe_bake_weight",
+			"volumetric_fog",
+			"outdoor_fog_scale",
+			"interior_fog_scale",
+			"outdoor_volumetric_shaft_scale",
+			"interior_volumetric_shaft_scale",
 		};
 
 		foreach (string cvar in advancedLightingCVars)

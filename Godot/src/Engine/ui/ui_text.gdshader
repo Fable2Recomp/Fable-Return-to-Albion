@@ -12,9 +12,9 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_never;
 uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
 
 // THE GLYPH EDGE FROM A DISTANCE FIELD (Engine_SdfField): the atlas's signed distance, built on
-// the player's machine from the shipped coverage, 0.5 on the coverage's own half contour. The
-// edge is resolved per screen pixel at any magnification and any minification, so text stays
-// crisp at 1440p/2160p without the coverage's bilinear blur. Absent, the coverage path below.
+// the player's machine from the shipped coverage, 0.5 on the coverage's own half contour. The edge
+// is resolved per screen pixel at any magnification, and the mips filter the distance itself when
+// the text shrinks, so a thin stroke does not vanish between texels.
 uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable;
 uniform bool use_distance_field = false;
 
@@ -83,18 +83,22 @@ void vertex() {
 }
 
 void fragment() {
-	if (clip_world.x < clip_rect.x || clip_world.x > clip_rect.z ||
-		clip_world.y < clip_rect.y || clip_world.y > clip_rect.w) {
-		discard;
-	}
+	bool clipped = clip_world.x < clip_rect.x || clip_world.x > clip_rect.z ||
+		clip_world.y < clip_rect.y || clip_world.y > clip_rect.w;
 
 	vec4 texel = texture(atlas, UV);
 	vec2 uv_dx = dFdx(UV);
 	vec2 uv_dy = dFdy(UV);
 
 	// Screen pixels per SHIPPED atlas texel.
-	vec2 shipped = UV * vec2(textureSize(atlas, 0)) / supersample;
+	vec2 shipped = UV * vec2(textureSize(atlas, 0)) / max(supersample, 1.0);
 	float magnified = 1.0 / max(max(fwidth(shipped.x), fwidth(shipped.y)), 1e-5);
+
+	// Sample the distance field and compute its screen-space derivative unconditionally in uniform
+	// control flow across every 2x2 pixel quad (before any branch or `discard`) so DXIL/D3D12
+	// coarse derivatives stay strictly well-defined on all D3D12 drivers.
+	float distance = texture(distance_field, UV).r;
+	float df_width = max(fwidth(distance), 1e-4);
 
 	// THE FIELD ONLY WHERE THE TEXT IS MAGNIFIED. At or near the shipped size a screen pixel spans
 	// a whole shipped texel, the field is read from its mips, and the mip average erodes every
@@ -106,8 +110,7 @@ void fragment() {
 	if (from_field) {
 		// One screen pixel of anti-aliasing across the 0.5 contour: the field's own change per
 		// pixel, so the edge is as sharp at 3x as at 1.25x and never wider than a pixel.
-		float distance = texture(distance_field, UV).r;
-		field_width = max(fwidth(distance), 1e-4);
+		field_width = df_width;
 		texel.a = clamp((distance - 0.5) / field_width + 0.5, 0.0, 1.0);
 	} else if (magnified > 1.0 || (contrast_floor > 1.0 && magnified > 0.75)) {
 		// LEGIBLE AT ANY SIZE. The font is a 720p coverage mask whose edge is about one shipped
@@ -133,9 +136,6 @@ void fragment() {
 	// colour tags overwrite the element's colour and opacity with their own vector instead of
 	// multiplying. An OUTLINED run (Engine_UiTextContract.Outlined) adds 2 to x. Unmarked runs and
 	// every Fable 2 run carry (0, 0).
-	if (colour.a * opacity <= alpha_floor) {
-		discard;
-	}
 	bool outlined = UV2.x > 1.5;
 	if (UV2.x - (outlined ? 2.0 : 0.0) > 0.5) {
 		tint.rgb = COLOR.rgb;
@@ -157,8 +157,8 @@ void fragment() {
 		? ui_text_outline_cover(atlas, distance_field, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, supersample)
 		: texel.a;
 
-	// The scissor.
-	if (cover * run_alpha < 0.01) {
+	// The scissor, clip rect, and alpha floor (evaluated after all derivative and texture operations).
+	if (clipped || colour.a * opacity <= alpha_floor || cover * run_alpha < 0.01) {
 		discard;
 	}
 

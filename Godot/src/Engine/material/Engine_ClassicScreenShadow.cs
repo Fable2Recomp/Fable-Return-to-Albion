@@ -97,9 +97,16 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             Width = 1, Height = 1, Format = RenderingDevice.DataFormat.R8Unorm,
             UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
         }, new RDTextureView(), new byte[] { 255 });
-        if (!_mask!.TextureRdRid.IsValid)
+        if (!_target.IsValid && _whiteRid.IsValid)
         {
-            _mask.TextureRdRid = _whiteRid;
+            Rid white = _whiteRid;
+            Callable.From(() =>
+            {
+                if (!_target.IsValid && _mask is not null && !_mask.TextureRdRid.IsValid)
+                {
+                    _mask.TextureRdRid = white;
+                }
+            }).CallDeferred();
         }
     }
 
@@ -128,6 +135,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
 
     private void Initialise()
     {
+        BindWhite();
         _rd = RenderingServer.GetRenderingDevice();
         if (_rd is null || GD.Load<RDShaderFile>(ShaderPath) is not { } file)
         {

@@ -32,6 +32,15 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	[Export] public bool UseFramingCamera { get; set; }
 
+	/// <summary>
+	/// Whether <see cref="Show"/> builds and mounts a second hidden <see cref="Built"/> mirror tree
+	/// into the scene tree in addition to the detached <see cref="TemplateTree"/> pattern book.
+	/// In-game (<c>GameUi</c>), owned books draw every screen and the hidden mirror tree is never
+	/// made visible, so setting this to <c>false</c> avoids building and mounting a duplicate
+	/// 3,812-node 3D mesh tree into the live viewport <c>World3D</c>.
+	/// </summary>
+	public bool MountMirrorTree { get; set; } = true;
+
 	/// <summary>The shipped <c>data</c> directory to stream banks from.</summary>
 	[Export(PropertyHint.GlobalDir)] public string GameDataRoot { get; set; } = string.Empty;
 
@@ -302,13 +311,36 @@ public partial class Engine_UiPresentationHost : Node3D
 
 	/// <summary>The game's asset mount this host follows, when one was up at <c>_Ready</c>.</summary>
 	private Refii.Assets.Engine_GameAssets? _mountWatched;
+	private int _stringsMountGeneration;
+
+	/// <summary>Most recently active presentation host for heap census diagnostics.</summary>
+	public static Engine_UiPresentationHost? ActiveInstance { get; private set; }
+
+	/// <summary>Heap census estimate for UI pattern books, texture name table, and Babel strings.</summary>
+	public static (int PatternBooks, int StringsCount, long EstimatedBytes) GetHeapCensus()
+	{
+		if (ActiveInstance is not { } host || !GodotObject.IsInstanceValid(host))
+		{
+			return (0, 0, 0);
+		}
+
+		int books = host._templateTrees.Count;
+		int strings = host.Strings?.Count ?? 0;
+		int texNames = host._screens.Count * 16;
+		long estimated = (books * 262_144L) + (strings * 96L) + (texNames * 64L);
+		return (books, strings, estimated);
+	}
 
 	/// <summary>The mount was built again: the string book, the mods' presentations and textures,
 	/// and every pattern book whose file changed under it.</summary>
 	private void OnMountChanged(int fileCount)
 	{
 		FollowGameMount();
-		ReloadStrings();
+		int currentGen = Refii.Assets.Engine_GameAssets.Instance?.MountGeneration ?? 0;
+		if (Strings is null || currentGen == 0 || currentGen != _stringsMountGeneration)
+		{
+			ReloadStrings();
+		}
 		AddModLayers();
 		RefreshPatternBooks();
 	}
@@ -385,6 +417,7 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// <summary>Takes a read index on the main thread: the host can stand screens after this.</summary>
 	private void AdoptBanks(BankIndex index)
 	{
+		ActiveInstance = this;
 		BnkFileSystem banks = index.Banks;
 		if (index.OwnsBanks)
 		{
@@ -395,6 +428,10 @@ public partial class Engine_UiPresentationHost : Node3D
 		_names = index.Names;
 		Textures = new Engine_UiTextureCache(banks);
 		AdoptTextResources(index.Fonts, index.Strings, index.StringsSource);
+		if (Refii.Assets.Engine_GameAssets.Instance is { IsMounted: true } mountedAssets)
+		{
+			_stringsMountGeneration = mountedAssets.MountGeneration;
+		}
 
 		_screens.AddRange(byName.Keys.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
 		_bankScreens = byName;
@@ -441,7 +478,8 @@ public partial class Engine_UiPresentationHost : Node3D
 			BnkFileSystem? opened = null;
 			try
 			{
-				BnkFileSystem banks = given ?? (opened = BnkFileSystem.Mount(data));
+				BnkFileSystem? shared = given ?? Refii.Assets.Engine_GameAssets.Instance?.WaitForArchives();
+				BnkFileSystem banks = shared ?? (opened = BnkFileSystem.Mount(data));
 				index = IndexBanks(banks, opened is not null, data);
 				if (index is null)
 				{
@@ -729,6 +767,10 @@ public partial class Engine_UiPresentationHost : Node3D
 		dataRoot = !string.IsNullOrEmpty(dataRoot) ? dataRoot : ResolveGameDataRoot();
 		if (ReadStrings(dataRoot, diskFallback: Strings is null, out string source) is { } strings)
 		{
+			if (Refii.Assets.Engine_GameAssets.Instance is { IsMounted: true } mountedAssets)
+			{
+				_stringsMountGeneration = mountedAssets.MountGeneration;
+			}
 			AdoptStrings(strings, source);
 		}
 	}
@@ -931,14 +973,22 @@ public partial class Engine_UiPresentationHost : Node3D
 			return null;
 		}
 
-		try
+		if (keepInactiveForCatalogue && SceneSlide == 0 &&
+			_templateScreens.TryGetValue(name, out Engine_UiScreen? cachedScreen))
 		{
-			screen = _loadScreen(_screens[index]);
+			screen = cachedScreen;
 		}
-		catch (Exception ex)
+		else
 		{
-			Report($"{name}\nload failed: {ex.Message}");
-			return null;
+			try
+			{
+				screen = _loadScreen(_screens[index]);
+			}
+			catch (Exception ex)
+			{
+				Report($"{name}\nload failed: {ex.Message}");
+				return null;
+			}
 		}
 
 		var builder = new Engine_UiSceneBuilder
@@ -965,16 +1015,21 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public void ClearScreen()
 	{
-		if (Built is null)
+		if (Built is not null)
+		{
+			RemoveChild(Built);
+			Built.QueueFree();
+			Built = null;
+		}
+
+		if (CurrentScreen is null && Templates is null)
 		{
 			return;
 		}
 
-		RemoveChild(Built);
-		Built.QueueFree();
-		Built = null;
 		CurrentScreen = null;
 		Theme?.Clear();
+		Templates = null;
 	}
 
 	/// <summary>Rebuilds the current screen — after its scene slide has changed.</summary>
@@ -1042,6 +1097,23 @@ public partial class Engine_UiPresentationHost : Node3D
 			Built = null;
 		}
 
+		if (!MountMirrorTree)
+		{
+			Engine_UiTheme? book = PatternBookFor(name);
+			if (book is null || !_templateScreens.TryGetValue(name, out Engine_UiScreen? templateScreen))
+			{
+				return;
+			}
+
+			CurrentScreen = templateScreen;
+			Theme?.CopyFrom(book);
+			Templates ??= new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
+			Templates.CopyFrom(book);
+			Templates.Strings = Strings;
+			FitToViewport();
+			return;
+		}
+
 		Engine_UiScreen screen;
 		try
 		{
@@ -1105,14 +1177,14 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	private void CatalogueTemplates(string name)
 	{
-		Node3D? tree = TemplateTree(name);
-		if (tree is null)
+		if (PatternBookFor(name) is not { } book)
 		{
 			return;
 		}
 
 		Templates ??= new Engine_UiTheme { Fonts = Fonts, Strings = Strings, Textures = LoadTexture };
-		Templates.Catalogue(tree, name);
+		Templates.CopyFrom(book);
+		Templates.Strings = Strings;
 	}
 
 	/// <summary>
@@ -1167,8 +1239,42 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public Engine_UiScreen? DocumentFor(string name)
 	{
-		TemplateTree(name);
-		return _templateScreens.TryGetValue(name, out Engine_UiScreen? screen) ? screen : null;
+		if (_templateScreens.TryGetValue(name, out Engine_UiScreen? cached))
+		{
+			return cached;
+		}
+
+		if (_loadScreen is null)
+		{
+			return null;
+		}
+
+		int index = _screens.FindIndex(
+			n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase));
+		if (index < 0)
+		{
+			return null;
+		}
+
+		int sceneSlide = SceneSlide;
+		try
+		{
+			SceneSlide = 0;
+			_lastLoadSignature = 0;
+			Engine_UiScreen screen = _loadScreen(_screens[index]);
+			_templateScreens[name] = screen;
+			_templateSignatures[name] = _lastLoadSignature;
+			return screen;
+		}
+		catch (Exception ex)
+		{
+			Report($"{name}\nload failed: {ex.Message}");
+			return null;
+		}
+		finally
+		{
+			SceneSlide = sceneSlide;
+		}
 	}
 
 	private readonly Dictionary<string, Engine_UiScreen> _templateScreens =
@@ -1183,6 +1289,7 @@ public partial class Engine_UiPresentationHost : Node3D
 			// is 4125 elements), built synchronously on the frame the screen is first shown.
 			long began = System.Diagnostics.Stopwatch.GetTimestamp();
 			int sceneSlide = SceneSlide;
+			bool hadSignature = _templateSignatures.ContainsKey(name);
 
 			try
 			{
@@ -1199,7 +1306,10 @@ public partial class Engine_UiPresentationHost : Node3D
 					_templateScreens[name] = screen;
 				}
 
-				_templateSignatures[name] = _lastLoadSignature;
+				if (!hadSignature || _lastLoadSignature != 0)
+				{
+					_templateSignatures[name] = _lastLoadSignature;
+				}
 			}
 			finally
 			{
@@ -1319,13 +1429,13 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public void RefreshPatternBooks()
 	{
-		if (_templateTrees.Count == 0)
+		if (_templateTrees.Count == 0 && _templateScreens.Count == 0)
 		{
 			return;
 		}
 
 		var retired = new List<string>();
-		foreach (string name in _templateTrees.Keys.ToList())
+		foreach (string name in _templateTrees.Keys.Union(_templateScreens.Keys, StringComparer.OrdinalIgnoreCase).ToList())
 		{
 			ulong now = CurrentSignature(name);
 			if (now == 0 || (_templateSignatures.TryGetValue(name, out ulong was) && was == now))
@@ -1334,8 +1444,11 @@ public partial class Engine_UiPresentationHost : Node3D
 			}
 
 			retired.Add(name);
-			_retiredTrees.Add(_templateTrees[name]);
-			_templateTrees.Remove(name);
+			if (_templateTrees.Remove(name, out Node3D? tree))
+			{
+				_retiredTrees.Add(tree);
+			}
+
 			_templateScreens.Remove(name);
 			_templateSignatures.Remove(name);
 			_patternBooks.Remove(name);
@@ -1359,6 +1472,48 @@ public partial class Engine_UiPresentationHost : Node3D
 			$"use: {string.Join(", ", retired)}");
 		PatternBooksRetired?.Invoke(retired);
 		Callable.From(FreeRetiredTrees).CallDeferred();
+	}
+
+	/// <summary>
+	/// Releases the named pattern books and notifies <see cref="PatternBooksRetired"/> so any owned
+	/// books built from them (such as front-end menus after entering the world) are freed as well.
+	/// </summary>
+	public int ReleasePatternBooks(params string[] names)
+	{
+		if (names.Length == 0 || (_templateTrees.Count == 0 && _templateScreens.Count == 0))
+		{
+			return 0;
+		}
+
+		var retired = new List<string>();
+		foreach (string name in names)
+		{
+			bool hadTree = _templateTrees.Remove(name, out Node3D? tree);
+			bool hadScreen = _templateScreens.Remove(name);
+			if (!hadTree && !hadScreen)
+			{
+				continue;
+			}
+
+			retired.Add(name);
+			if (hadTree && tree is not null)
+			{
+				_retiredTrees.Add(tree);
+			}
+
+			_templateSignatures.Remove(name);
+			_patternBooks.Remove(name);
+			_bookGenerations[name] = BookGeneration(name) + 1;
+		}
+
+		if (retired.Count == 0)
+		{
+			return 0;
+		}
+
+		PatternBooksRetired?.Invoke(retired);
+		Callable.From(FreeRetiredTrees).CallDeferred();
+		return retired.Count;
 	}
 
 	private void FreeRetiredTrees()

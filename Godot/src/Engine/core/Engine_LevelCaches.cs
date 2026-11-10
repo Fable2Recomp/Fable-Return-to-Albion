@@ -34,6 +34,8 @@ public static partial class Engine_LevelCaches
 		Refii.Level.Engine_TerrainSplatMaterial.ClearSharedCache();
 		Refii.Lighting.Engine_LevelBakedLighting.ClearContainerCache();
 		Refii.Lighting.Engine_LevelShadowMaps.Clear();
+		Refii.Lighting.Engine_LevelAmbientOcclusion.Clear();
+		Refii.Models.Engine_ModelSelfAo.ClearMemoryCache();
 		Refii.Fx.FableFx.ClearRegionCaches();
 		Refii.Entities.Engine_EntityHighlight.Forget();
 		Refii.Entities.Engine_EntityAppearance.ForgetAll();

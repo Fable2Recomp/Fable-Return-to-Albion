@@ -784,29 +784,36 @@ public static class Engine_LevelShadowMaps
 
 	private static Texture2DArray? _boundAtlasTextureArray;
 
-	private static void ReleasePreviousBoundAtlas(Texture2DArray? replacement)
+	private static void ReleasePreviousBoundAtlas(Texture2DArray? replacement, Rid texRid, int atlasSize)
 	{
 		Texture2DArray? previous = _boundAtlasTextureArray;
 		_boundAtlasTextureArray = replacement;
-		if (previous is not null &&
-		    !ReferenceEquals(previous, replacement) &&
-		    !ReferenceEquals(previous, _fallbackTextureArray) &&
-		    GodotObject.IsInstanceValid(previous))
+		ActiveAtlasSize = atlasSize;
+		AtlasGeneration++;
+		RenderingServer.CallOnRenderThread(Callable.From(() =>
 		{
-			previous.Dispose();
-		}
+			ActiveAtlasRdRid = texRid.IsValid ? RenderingServer.TextureGetRdTexture(texRid) : default;
+			if (previous is not null &&
+			    !ReferenceEquals(previous, replacement) &&
+			    !ReferenceEquals(previous, _fallbackTextureArray))
+			{
+				Callable.From(() =>
+				{
+					if (GodotObject.IsInstanceValid(previous))
+					{
+						previous.Dispose();
+					}
+				}).CallDeferred();
+			}
+		}));
 	}
 
 	private static void BindAtlasTexture(StaticShadowMapContainer? container)
 	{
-		if (OS.GetThreadCallerId() == OS.GetMainThreadId())
-		{
-			BindAtlasTextureOnMainThread(container);
-		}
-		else
-		{
-			Callable.From(() => BindAtlasTextureOnMainThread(container)).CallDeferred();
-		}
+		long uploadBytes = container is null
+			? 4096L
+			: System.Math.Max(4096L, (long)System.Math.Max(1, container.SliceCount) * container.AtlasSize * container.AtlasSize * sizeof(ushort));
+		Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () => BindAtlasTextureOnMainThread(container));
 	}
 
 	private static void BindAtlasTextureOnMainThread(StaticShadowMapContainer? container)
@@ -827,12 +834,9 @@ public static class Engine_LevelShadowMaps
 				_fallbackTextureArray = array;
 			}
 
-			ActiveAtlasRdRid = RenderingServer.TextureGetRdTexture(_fallbackTextureArray.GetRid());
-			ActiveAtlasSize = 4;
-			AtlasGeneration++;
 			RenderingServer.GlobalShaderParameterSet(
 				Engine_LightTable.ShadowAtlasGlobalName, _fallbackTextureArray);
-			ReleasePreviousBoundAtlas(null);
+			ReleasePreviousBoundAtlas(null, _fallbackTextureArray.GetRid(), 4);
 			return;
 		}
 
@@ -849,9 +853,9 @@ public static class Engine_LevelShadowMaps
 		Error err;
 		try
 		{
+			byte[] rawBytes = new byte[sliceByteCount];
 			for (int s = 0; s < sliceCount; s++)
 			{
-				byte[] rawBytes = new byte[sliceByteCount];
 				MemoryMarshal.AsBytes(container.Texels.AsSpan(s * sliceTexelCount, sliceTexelCount)).CopyTo(rawBytes);
 				var img = Image.CreateFromData(
 					container.AtlasSize, container.AtlasSize, false, Image.Format.Rh, rawBytes);
@@ -876,11 +880,8 @@ public static class Engine_LevelShadowMaps
 		if (err == Error.Ok)
 		{
 			container.RuntimeTextureArray = textureArray;
-			ActiveAtlasRdRid = RenderingServer.TextureGetRdTexture(textureArray.GetRid());
-			ActiveAtlasSize = Math.Max(1, container.AtlasSize);
-			AtlasGeneration++;
 			RenderingServer.GlobalShaderParameterSet(Engine_LightTable.ShadowAtlasGlobalName, textureArray);
-			ReleasePreviousBoundAtlas(textureArray);
+			ReleasePreviousBoundAtlas(textureArray, textureArray.GetRid(), Math.Max(1, container.AtlasSize));
 		}
 		else
 		{
@@ -1392,6 +1393,8 @@ public static class Engine_LevelShadowMaps
 	private static readonly ConcurrentDictionary<string, Vector3[]?> ModelTriangleCache =
 		new(StringComparer.OrdinalIgnoreCase);
 
+	public static void ClearBakeCaches() => ModelTriangleCache.Clear();
+
 	/// <summary>Drops every model's triangles read so far, which a sweep otherwise holds for all its areas.</summary>
 	internal static void ClearBakeTriangles() => ModelTriangleCache.Clear();
 
@@ -1413,22 +1416,29 @@ public static class Engine_LevelShadowMaps
 	}
 
 	/// <summary>
-	/// Extracts all static world triangles (terrain + static shadow-casting props) and placed
-	/// lights for <paramref name="level"/> and bakes a <see cref="StaticShadowMapContainer"/>.
+	/// Extracts all static world triangles (terrain + static shadow-casting props), resolved
+	/// static prop blocks, terrain heightfields, and placed light specs for <paramref name="level"/>,
+	/// building a shared <see cref="BvhTree"/> that both shadow-map baking and level AO baking can use.
 	/// </summary>
-	public static bool BakeScenario(
+	public static bool TryBuildWorldGeometry(
 		LevelEntry level,
 		Func<string, byte[]?> read,
-		int atlasResolution,
-		int lightsPerMap,
-		float placedReachScale,
-		float interiorReachScale,
-		out StaticShadowMapContainer? container,
+		out BvhTree? worldBvh,
+		out List<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
+		out HashSet<uint> lightHosts,
+		out HashSet<string> fixtureModelPaths,
+		out List<BakeLightSpec> bakeLights,
+		out List<GhfHeights> terrainHeights,
 		out string gdbPath,
 		out int triangleCount,
 		out string error)
 	{
-		container = null;
+		worldBvh = null;
+		propBlocks = new List<Engine_LevelProps.StaticShadowPropBlock>();
+		lightHosts = new HashSet<uint>();
+		fixtureModelPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		bakeLights = new List<BakeLightSpec>();
+		terrainHeights = new List<GhfHeights>();
 		gdbPath = string.Empty;
 		triangleCount = 0;
 		error = string.Empty;
@@ -1443,8 +1453,8 @@ public static class Engine_LevelShadowMaps
 
 		if (!Engine_LevelProps.TryCollectStaticGeometryAndLights(
 			level, read,
-			out List<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
-			out HashSet<uint> lightHosts,
+			out propBlocks,
+			out lightHosts,
 			out HashSet<string> lightHostModels,
 			out List<Engine_LevelLights.ResolvedLightInstance> resolvedLights,
 			out gdbPath))
@@ -1456,7 +1466,7 @@ public static class Engine_LevelShadowMaps
 		// Filter to active placed lights and compute their world-space origins & ranges.
 		// In modern lighting mode (Engine_LevelLights.PlacedShadowsEnabled), all placed lights cast shadows,
 		// not just the 1-2 fixtures per region that had CastShadows=true on Xbox 360.
-		var bakeLights = new List<BakeLightSpec>(resolvedLights.Count);
+		bakeLights = new List<BakeLightSpec>(resolvedLights.Count);
 		foreach (Engine_LevelLights.ResolvedLightInstance item in resolvedLights)
 		{
 			if (item.Light.Range <= 0.05f || item.Light.Intensity <= 0.0f)
@@ -1487,7 +1497,6 @@ public static class Engine_LevelShadowMaps
 
 		// Collect model paths of any prop block that hosts a light (so .engine_level or GMD layout
 		// duplicates of streetlamps/lanterns with instanceHash == 0 are also excluded).
-		var fixtureModelPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		foreach (string hostModel in lightHostModels)
 		{
 			if (!IsStructuralLightHostModel(hostModel))
@@ -1518,7 +1527,7 @@ public static class Engine_LevelShadowMaps
 		var worldTriangles = new List<BvhTriangle>(65536);
 
 		// 1. Add main terrain triangles.
-		AppendTerrainTriangles(level, manifest, read, worldTriangles);
+		AppendTerrainTriangles(level, manifest, read, worldTriangles, terrainHeights);
 
 		// 2. Add static shadow-casting prop triangles.
 		foreach (Engine_LevelProps.StaticShadowPropBlock block in propBlocks)
@@ -1569,7 +1578,42 @@ public static class Engine_LevelShadowMaps
 		}
 
 		triangleCount = worldTriangles.Count;
-		var bvh = new BvhTree(worldTriangles);
+		worldBvh = new BvhTree(worldTriangles);
+		return true;
+	}
+
+	/// <summary>
+	/// Extracts all static world triangles (terrain + static shadow-casting props) and placed
+	/// lights for <paramref name="level"/> and bakes a <see cref="StaticShadowMapContainer"/>.
+	/// </summary>
+	public static bool BakeScenario(
+		LevelEntry level,
+		Func<string, byte[]?> read,
+		int atlasResolution,
+		int lightsPerMap,
+		float placedReachScale,
+		float interiorReachScale,
+		out StaticShadowMapContainer? container,
+		out string gdbPath,
+		out int triangleCount,
+		out string error)
+	{
+		container = null;
+		if (!TryBuildWorldGeometry(
+			level, read,
+			out BvhTree? bvh,
+			out _,
+			out _,
+			out _,
+			out List<BakeLightSpec> bakeLights,
+			out _,
+			out gdbPath,
+			out triangleCount,
+			out error) || bvh is null)
+		{
+			return false;
+		}
+
 		container = BakeFromBvh(bvh, bakeLights, atlasResolution, lightsPerMap, placedReachScale, interiorReachScale);
 		return true;
 	}
@@ -1635,13 +1679,14 @@ public static class Engine_LevelShadowMaps
 	}
 
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
-	private static Vector3 MirrorX(Vector3 v) => new(-v.X, v.Y, v.Z);
+	internal static Vector3 MirrorX(Vector3 v) => new(-v.X, v.Y, v.Z);
 
 	private static void AppendTerrainTriangles(
 		LevelEntry level,
 		ScenarioManifest? manifest,
 		Func<string, byte[]?> read,
-		List<BvhTriangle> into)
+		List<BvhTriangle> into,
+		List<GhfHeights>? decodedTerrains = null)
 	{
 		var ghfPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		if (level.HeightfieldPath.Length != 0)
@@ -1668,6 +1713,7 @@ public static class Engine_LevelShadowMaps
 				continue;
 			}
 
+			decodedTerrains?.Add(heights);
 			TerrainMesh mesh = Engine_GhfTerrain.BuildMesh(heights);
 			float[] pos = mesh.Positions;
 			int[] idx = mesh.Indices;

@@ -184,9 +184,32 @@ public static class GameElevatedLaunch
 		}
 
 		GD.Print($"[launch] elevated relay: started the game as Administrator (pid {game.ProcessId})");
+		Engine.MaxFps = 2;
+		TrimProcessWorkingSet();
 		Process process = game.Process!;
 		process.WaitForExitAsync().ContinueWith(_ =>
 			Callable.From(() => tree.Quit(process.ExitCode)).CallDeferred());
+	}
+
+	[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+	private static extern bool K32EmptyWorkingSet(IntPtr hProcess);
+
+	public static void TrimProcessWorkingSet()
+	{
+		try
+		{
+			System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
+				System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+			GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+			if (OperatingSystem.IsWindows())
+			{
+				using var current = Process.GetCurrentProcess();
+				K32EmptyWorkingSet(current.Handle);
+			}
+		}
+		catch (Exception)
+		{
+		}
 	}
 
 	private static void TryDelete(string file)

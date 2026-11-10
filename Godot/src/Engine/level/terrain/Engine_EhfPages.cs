@@ -240,28 +240,28 @@ public static class Engine_EhfPages
         {
             return null;
         }
-        Image image = Image.CreateFromData(
-            page.Width, page.Height, false, Image.Format.Rgba8,
-            Engine_EhfAtlas.Bc1ToRgba(page.Blocks, page.Width, page.Height));
-        ShaderMaterial? material = Engine_ClassicVista.PageMaterial(ImageTexture.CreateFromImage(image));
+        using Image image = CreatePageImage(page);
+        ShaderMaterial? material = Engine_ClassicVista.PageMaterial(Refii.Textures.Engine_TextureUpload.CreateTexture(image));
         material?.SetMeta(Engine_ClassicVista.GridMeta, new Vector3(heights.OriginX, heights.OriginZ, heights.Spacing));
         return material;
     }
 
     private static ShaderMaterial PageMaterial(EhfAtlasImage page, GhfHeights heights)
     {
-        Image image = Image.CreateFromData(
-            page.Width, page.Height, false, Image.Format.Rgba8,
-            Engine_EhfAtlas.Bc1ToRgba(page.Blocks, page.Width, page.Height));
+        using Image image = CreatePageImage(page);
         float chunk = 32f * heights.Spacing;
+        Shader? pageShader = Engine_TerrainSplatMaterial.PageShader();
+        ImageTexture? pageAlbedo = !image.IsEmpty()
+            ? Refii.Textures.Engine_TextureUpload.CreateTexture(image)
+            : null;
         var material = new ShaderMaterial
         {
-            Shader = Engine_TerrainSplatMaterial.PageShader(),
+            Shader = pageShader,
         };
         material.SetShaderParameter("page_mode", true);
-        if (!image.IsEmpty())
+        if (pageAlbedo is not null)
         {
-            material.SetShaderParameter("page_albedo", ImageTexture.CreateFromImage(image));
+            material.SetShaderParameter("page_albedo", pageAlbedo);
         }
         material.SetShaderParameter("chunk_origin_extent",
             new Vector4(heights.OriginX, heights.OriginZ, chunk, chunk));
@@ -271,6 +271,67 @@ public static class Engine_EhfPages
         material.SetShaderParameter("weight_size", new Vector4(1f, 1f, 1f, 1f));
         material.SetShaderParameter("splat_params", new Vector4(3f, 0.125f, 0f, 0f));
         return material;
+    }
+
+    /// <summary>
+    /// Validates whether an untiled little-endian <see cref="EhfAtlasImage"/> can be uploaded directly
+    /// as block-compressed GPU data (saving 8x VRAM and skipping software BC1->RGBA8 decode).
+    /// </summary>
+    internal static bool CanUploadPageBlocksDirectly(
+        EhfAtlasImage page, out int expectedBlockBytes)
+    {
+        expectedBlockBytes = 0;
+        if (page.Width < 4 || page.Height < 4 || (page.Width & 3) != 0 || (page.Height & 3) != 0)
+        {
+            return false;
+        }
+
+        int blockBytes = page.Format switch
+        {
+            Refii.Textures.TexSurfaceFormat.Bc1 => 8,
+            Refii.Textures.TexSurfaceFormat.Bc3 => 16,
+            Refii.Textures.TexSurfaceFormat.Bc5 => 16,
+            _ => 0,
+        };
+        if (blockBytes == 0)
+        {
+            return false;
+        }
+
+        long needed = (long)(page.Width / 4) * (page.Height / 4) * blockBytes;
+        if (needed <= 0 || needed > int.MaxValue || page.Blocks.Length != needed)
+        {
+            return false;
+        }
+
+        expectedBlockBytes = (int)needed;
+        return true;
+    }
+
+    private static Image CreatePageImage(EhfAtlasImage page)
+    {
+        if (CanUploadPageBlocksDirectly(page, out _))
+        {
+            Image compressed = Image.CreateFromData(
+                page.Width,
+                page.Height,
+                false,
+                Refii.Textures.Engine_TexImage.ToGodotFormat(page.Format),
+                page.Blocks);
+            if (!compressed.IsEmpty())
+            {
+                return compressed;
+            }
+
+            compressed.Dispose();
+        }
+
+        return Image.CreateFromData(
+            page.Width,
+            page.Height,
+            false,
+            Image.Format.Rgba8,
+            Engine_EhfAtlas.Bc1ToRgba(page.Blocks, page.Width, page.Height));
     }
 
     private static float Unorm(byte[] map, int texel) =>

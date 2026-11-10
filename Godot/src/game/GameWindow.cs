@@ -66,6 +66,8 @@ public partial class GameWindow : Node
 		// Centre on the configured monitor; an out-of-range index falls back to the primary.
 		int monitor = settings.Monitor < DisplayServer.GetScreenCount() ? settings.Monitor : 0;
 		Vector2I screen = DisplayServer.ScreenGetSize(monitor);
+		Vector2I effectiveUiSize = settings.Fullscreen && screen.X > 0 && screen.Y > 0 ? screen : settings.Size;
+		Refii.Textures.Engine_TexSemantic.UpdateUiMaxEdgeForResolution(effectiveUiSize.X, effectiveUiSize.Y);
 		DisplayServer.WindowSetPosition(
 			((screen - settings.Size) / 2) + DisplayServer.ScreenGetPosition(monitor), Main);
 
@@ -171,15 +173,28 @@ public partial class GameWindow : Node
 		ApplyHdr(root, settings);
 
 		// Vsync is a display-server setting, not a per-window one, so this is the whole
-		// application's.
-		DisplayServer.VSyncMode wanted = !settings.Vsync ? DisplayServer.VSyncMode.Disabled
+		// application's. On Vulkan + Windows 11 DWM, VSyncMode.Disabled (VK_PRESENT_MODE_IMMEDIATE_KHR)
+		// can latch a stale presentation surface across unfocused load transitions on Intel Arc drivers;
+		// Mailbox provides tear-free low-latency presentation without blocking the swapchain, falling
+		// back automatically via SettleVsync below when a driver lacks Mailbox.
+		bool isD3d12 = RenderingServer.GetCurrentRenderingDriverName()
+			.Contains("d3d12", System.StringComparison.OrdinalIgnoreCase);
+		DisplayServer.VSyncMode wanted = !settings.Vsync
+			? (isD3d12 ? DisplayServer.VSyncMode.Disabled : DisplayServer.VSyncMode.Mailbox)
 			: settings.VsyncMode switch
 			{
 				"on" => DisplayServer.VSyncMode.Enabled,
-				"adaptive" => DisplayServer.VSyncMode.Adaptive,
-				_ => DisplayServer.VSyncMode.Mailbox,
+				"adaptive" => isD3d12 ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Adaptive,
+				_ => isD3d12 ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Mailbox,
 			};
 		DisplayServer.WindowSetVsyncMode(wanted, (int)DisplayServer.MainWindowId);
+
+		// On D3D12, if V-Sync is disabled and no explicit MaxFps cap was set, apply a safe ceiling
+		// (240 FPS) so lightweight front-end menus never spin at 800+ FPS and flood the D3D12 command queue.
+		if (isD3d12 && wanted == DisplayServer.VSyncMode.Disabled && Engine.MaxFps == 0)
+		{
+			Engine.MaxFps = 240;
+		}
 
 		// A DRIVER WITHOUT MAILBOX IS HANDED PLAIN VSYNC BY GODOT ("The requested V-Sync mode Mailbox
 		// is not available. Falling back to V-Sync mode Enabled" — this machine's NVIDIA/X11 stack,
@@ -188,7 +203,7 @@ public partial class GameWindow : Node
 		// what stands in for it is ADAPTIVE — the same wait when the frame is on time, a tear
 		// instead of a held frame when it is late. The mode Godot settled on is only known once
 		// the swap chain has been rebuilt, a frame or more after the request.
-		if (wanted == DisplayServer.VSyncMode.Mailbox)
+		if (!isD3d12 && wanted == DisplayServer.VSyncMode.Mailbox)
 		{
 			GetTree().CreateTimer(1.0).Timeout += SettleVsync;
 		}

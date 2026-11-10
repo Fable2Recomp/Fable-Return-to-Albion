@@ -37,6 +37,13 @@ public static class Engine_UiComponentLibrary
 		android ? null : export();
 
 	/// <summary>
+	/// Whether startup authoring export should be skipped unless explicitly requested via
+	/// <c>REFII_EXPORT_UI_COMPONENTS=1</c>, avoiding opening and retaining all 22 pattern books in VRAM.
+	/// </summary>
+	internal static bool ShouldSkipStartupExport(bool skipPlatform) =>
+		skipPlatform || OS.GetEnvironment("REFII_EXPORT_UI_COMPONENTS") != "1";
+
+	/// <summary>
 	/// Writes every screen's chrome units out as scenes. Screens whose presentation is not in the
 	/// shipped set are skipped silently — 21 of the 52 `.bgf` are never loaded by the game either.
 	/// </summary>
@@ -91,7 +98,7 @@ public static class Engine_UiComponentLibrary
 					++failed;
 				}
 
-				art.QueueFree();
+				art.Free();
 			}
 		}
 

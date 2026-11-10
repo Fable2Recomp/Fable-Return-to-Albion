@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Collections.Generic;
 using Godot;
@@ -75,7 +75,7 @@ public partial class Engine_UiDecorate : Node3D
                 Position = new Vector3(x, 0, 9), CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
                 MaterialOverride = new StandardMaterial3D { ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
                     Transparency = BaseMaterial3D.TransparencyEnum.Alpha, AlbedoColor = new Color(0.45f, 0.3f, 0.13f, 0.15f) } });
-            _rotationValues[i] = Label("0.0�", 18, new Vector2(x, 0), 108, 1, parent: _rotationRow);
+            _rotationValues[i] = Label("0.0°", 18, new Vector2(x, 0), 108, 1, parent: _rotationRow);
             _hits[PageSize + 10 + i] = new Rect2(x - 55, 42, 110, 36);
         }
         ResizePanel(false);
@@ -136,7 +136,7 @@ public partial class Engine_UiDecorate : Node3D
         if (changed || _compact != compact || _controller == Engine_UiInputMode.KeyboardMouse) ResizePanel(compact);
         _rotationRow.Visible = placing && !HelpOpen;
         _actions[9]!.Visible = placing && !HelpOpen;
-        _headingText = HelpOpen ? "Controls" : placing ? "Preview only — confirm to place"
+        _headingText = HelpOpen ? "Controls" : placing ? "Preview only â€” confirm to place"
             : room ? target.Length > 0 ? target : _controller ? "Aim at an object and press A" : Engine_UiInputMode.Touch ? TouchHint : "Click an object to select it"
             : "Furniture inventory";
         PaintHeading();
@@ -171,7 +171,7 @@ public partial class Engine_UiDecorate : Node3D
         if (_rotationTexts[axis] == text && _rotationEditing == editing && _rotationAxis == axis) return;
         _rotationTexts[axis] = text; _rotationEditing = editing; _rotationAxis = axis;
         if (_placing) _theme.Paint(_select, editing ? "Done" : "Confirm", 16, Ink, boxWidth: 145);
-        _theme.Paint(_rotationValues[axis], text + (editing ? " |" : "�"), 18, editing ? Red : Ink, horizontalAlign: 1, boxWidth: 108);
+        _theme.Paint(_rotationValues[axis], text + (editing ? " |" : "°"), 18, editing ? Red : Ink, horizontalAlign: 1, boxWidth: 108);
     }
     public void ShowRotation(float degrees) => ShowRotation(new Vector3(0, degrees, 0));
     public void ShowRotation(Vector3 degrees)

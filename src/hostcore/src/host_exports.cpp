@@ -681,7 +681,9 @@ extern "C" {
 ///     RefiiHostUiElementCounters: every Fable 2 presentation is headless (CGameface vtable +28),
 ///     so there is no element tree to walk and nothing on the host reads one.
 /// 238 adds RefiiHostGetPlayerInventory — player 1's or 2's inventory, whoever's menus are open,
-///     each record flagged worn, from the pump's per-player snapshot (Fable 2).
+///     each record flagged worn, from the pump's per-player snapshot (Fable 2) — and
+///     RefiiHostSetTimeBaseFrozen — intentional host clock freeze (pause, load cover) so
+///     the driven-mode watchdog does not resume real-rate guest stepping behind the loading screen.
 /// 239 widens RefiiHostGetActiveFx to 27 words: [22..25] an effect's stated colour (red, green,
 ///     blue, alpha), which Fable 3's guest applies at every draw (Fable 2 writes white), and [26]
 ///     its particle flushes; flags 128 (spline points stated) and 256 (saturation mask); adds
@@ -1495,6 +1497,12 @@ REFII_HOST_ABI_EXPORT int RefiiHostSetTimeBaseMode(int mode, uint64_t* out_cappe
 /// Grants the guest `steps` high-frequency steps of time. Driven mode only; ignored otherwise.
 REFII_HOST_ABI_EXPORT void RefiiHostAdvanceTimeBase(uint32_t steps) {
     refii_bridge_rex_advance_time_base(steps);
+}
+
+/// Freezes or unfreezes the driven time base so intentional host holds (pause, load cover) do not
+/// trigger the grant-silence watchdog.
+REFII_HOST_ABI_EXPORT void RefiiHostSetTimeBaseFrozen(uint32_t frozen) {
+    refii_bridge_rex_set_time_base_frozen(frozen != 0u ? 1 : 0);
 }
 
 //----------------------------------------------------------------------------------

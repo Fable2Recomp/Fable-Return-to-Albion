@@ -571,12 +571,19 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 	{
 		ProcessPriority = int.MinValue;
 		Engine_ServerSyncs.MarkMainThread();
+		Godot.RenderingServer.Singleton.FramePreDraw += Engine_ServerSyncs.MarkDrawBegin;
+		Godot.RenderingServer.Singleton.FramePostDraw += Engine_ServerSyncs.MarkDrawEnd;
 		Godot.RenderingServer.Singleton.FramePostDraw += Engine_FramePhases.MarkDrawEnd;
 	}
 
 	public override void _Process(double delta)
 	{
+		Engine_ServerSyncs.BeginMainFrameUploadBudget();
 		Engine_FramePhases.MarkFrameStart();
+		using (Engine_FramePhases.Measure("gpu_upload_pump"))
+		{
+			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 8.0 : 4.0);
+		}
 
 		// The finished frame's GPU pass table, when the engine captures one (`--gpu-profile`),
 		// and every tracked viewport's render measurement — both read on the render thread.
@@ -625,5 +632,17 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 public sealed partial class Engine_FrameEndNode : Godot.Node
 {
 	public override void _Ready() => ProcessPriority = int.MaxValue;
-	public override void _Process(double delta) => Engine_FramePhases.MarkFrameEnd();
+	public override void _Process(double delta)
+	{
+		Engine_ServerSyncs.NotifyMainFrameTick();
+		using (Engine_FramePhases.Measure("cloth_land"))
+		{
+			Refii.Physics.Engine_ClothBody.LandAll();
+		}
+		using (Engine_FramePhases.Measure("gpu_upload_pump"))
+		{
+			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 8.0 : 6.0);
+		}
+		Engine_FramePhases.MarkFrameEnd();
+	}
 }
