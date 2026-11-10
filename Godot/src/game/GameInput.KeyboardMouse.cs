@@ -165,7 +165,7 @@ public partial class GameInput
 		new("spells_menu", "Ctrl", "Hold to choose a spell (right trigger).") { Press = KeyPress.RightTrigger },
 		new("expression_wheel", "Q", "Hold for the expression wheel.") { Press = KeyPress.Back },
 		new("camera_mode", "V", "Toggle the camera mode (right stick click).") { Press = KeyPress.RightThumb },
-		new("photo_mode", "F11", "Open or close Photo Mode (L3 + R3 on controller).") { Press = KeyPress.PhotoMode },
+		new("photo_mode", "F11", "Open or close Photo Mode (on a controller: the Back wheel's top wedge).") { Press = KeyPress.PhotoMode },
 		new("pause", "Escape,Tab", "Pause and open the book (Start). Escape is back in menus.") { Press = KeyPress.Pause },
 		new("back", "Escape,Backspace", "Back out of a menu (B). Only in menus.") { Press = KeyPress.BackOut },
 		new("item_up", "F1,Up", "Item slot up / menu up (D-pad up).") { Press = KeyPress.DpadUp },

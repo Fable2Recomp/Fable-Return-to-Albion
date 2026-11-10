@@ -10,7 +10,10 @@ using Refii.Ui;
 namespace Refii.Game;
 
 /// <summary>
-/// Photo mode: L3 + R3 or F11 holds the world and hands the camera to the player. The hold is the
+/// Photo mode: F11, or a controller's way in, holds the world and hands the camera to the player. A
+/// controller reaches it from the mod wheel's top wedge where the title has one (Fable 2: Back,
+/// <see cref="Refii.Mods.ModWheel.Top"/>) and nowhere else; a title without one keeps L3 + R3
+/// (<see cref="PadComboOpens"/>). B leaves it. The hold is the
 /// engine's own pause latch (<see cref="Engine_StatedPause.HostHold"/>) beside
 /// <see cref="GameSession.Paused"/>, so the drawn world stands exactly as it does under the guest's
 /// pause menu and everything else — the UI, the debug channel, the mods, the audio — keeps running.
@@ -29,6 +32,12 @@ public partial class GamePhotoMode : Node
 
     public static bool Active { get; private set; }
 
+    /// <summary>
+    /// Whether L3 + R3 opens and closes photo mode: only where no wheel carries it. With photo mode on
+    /// the mod wheel (<see cref="Refii.Mods.ModWheel.Top"/>) the wheel is the controller's only way in.
+    /// </summary>
+    public static bool PadComboOpens => !Refii.Mods.ModWheel.TopTaken;
+
     /// <summary>Whether a photo is being taken: every overlay must be off the screen.</summary>
     public static bool Capturing { get; private set; }
 
@@ -45,6 +54,9 @@ public partial class GamePhotoMode : Node
 
     /// <summary>Photo mode's hold on the guest, released as it closes.</summary>
     private GameGuestHold? _hold;
+
+    /// <summary>Whether the title holds the world for this photo mode (<see cref="Engine_TitleGame.HoldWorld"/>).</summary>
+    private bool _titleHolds;
     private Camera3D? _camera;
     private Transform3D _originalTransform;
     private float _originalFov;
@@ -106,7 +118,7 @@ public partial class GamePhotoMode : Node
         bool key = focused && GameInput.PhotoModeKeyHeld;
         bool left = focused && Pad(pad, JoyButton.LeftStick);
         bool right = focused && Pad(pad, JoyButton.RightStick);
-        bool toggle = _settings.TogglePressed(key, left, right);
+        bool toggle = _settings.TogglePressed(key, PadComboOpens && left, PadComboOpens && right);
         bool requested = _openRequested;
         _openRequested = false;
         if (!Active)
@@ -251,8 +263,13 @@ public partial class GamePhotoMode : Node
         try
         {
             if (HostBridge.TryGetAbiVersion() is not null) GameInput.ReleaseForPhotoMode();
-            // The session's pause on the desktop, the host's own hold elsewhere.
-            _hold = GameGuestHold.Take(HoldGuest, session) ?? throw new InvalidOperationException("no game session");
+            // The game's own world hold where the title has one (Fable 2: its pause command, with the
+            // steps still granted); otherwise the session's pause on the desktop, the host's elsewhere.
+            _titleHolds = Engine_TitleGame.Active.HoldWorld(true);
+            if (!_titleHolds)
+            {
+                _hold = GameGuestHold.Take(HoldGuest, session) ?? throw new InvalidOperationException("no game session");
+            }
             Engine_StatedPause.HostHold = true;
             HideLayers(GetTree().Root);
             BuildControls();
@@ -302,6 +319,11 @@ public partial class GamePhotoMode : Node
         Engine_StatedPause.HostHold = false;
         _hold?.Release();
         _hold = null;
+        if (_titleHolds)
+        {
+            _titleHolds = false;
+            Engine_TitleGame.Active.HoldWorld(false);
+        }
         Input.MouseMode = _mouseMode;
         if (HostBridge.TryGetAbiVersion() is not null) GameInput.ReleaseForPhotoMode();
         _session = null;

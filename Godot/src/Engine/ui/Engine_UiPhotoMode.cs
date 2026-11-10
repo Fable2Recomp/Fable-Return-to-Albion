@@ -119,7 +119,9 @@ public partial class Engine_UiPhotoMode : Node3D
                 "Enter  Take photo     R  Reset", "H  Hide UI     F11  Exit Photo Mode" }
             : new[] { "<left.img> Move      <right.img> Look", "<lefttrigger.img> Lower      <righttrigger.img> Raise",
                 "L3  Hold for faster movement", "<dpad.img> Select / adjust", "<leftbutton.img> / <rightbutton.img> Change filter",
-                "<a_img> Take photo      <x_img> Reset", "<y_img> Hide UI     L3 + R3  Exit Photo Mode" };
+                "<a_img> Take photo      <x_img> Reset", Refii.Game.GamePhotoMode.PadComboOpens
+                    ? "<y_img> Hide UI     L3 + R3  Exit Photo Mode"
+                    : "<y_img> Hide UI     <b_img> Exit Photo Mode" };
         for (int i = 0; i < _help.Length; i++)
             _theme.Paint(_help[i], help[i], 16, Ink, boxWidth: 368);
     }

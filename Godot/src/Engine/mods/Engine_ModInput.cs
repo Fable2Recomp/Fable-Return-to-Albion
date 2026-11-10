@@ -589,16 +589,19 @@ public static class ModInput
 				!ModInputClaims.PlainSuppressed(action, actions, a => PadModifierHeld(a, joypad2), keyboard: false);
 			// The touchscreen is player one's: a pill, an area, or the on-screen pad's buttons.
 			bool screen = devices && ModInputTouch.Down(action);
-			Post(action, 1, keys || pad1 || screen || _fired.Remove(action.Name));
-			Post(action, 2, pad2);
+			Post(action, 1, keys || pad1 || screen || _fired.Remove((action.Name, 1)));
+			Post(action, 2, pad2 || _fired.Remove((action.Name, 2)));
 		}
 	}
 
-	/// <summary>The actions to press for one pump, as though their buttons had been tapped (<see cref="Fire"/>).</summary>
-	private static readonly HashSet<string> _fired = new(StringComparer.Ordinal);
+	/// <summary>The actions to press for one pump, per player, as though their buttons had been tapped (<see cref="Fire"/>).</summary>
+	private static readonly HashSet<(string, int)> _fired = new();
 
-	/// <summary>Taps <paramref name="action"/> for player one: its <c>input_action</c> press now, its release on the next pump.</summary>
-	public static void Fire(Action action) => _fired.Add(action.Name);
+	/// <summary>
+	/// Taps <paramref name="action"/> for <paramref name="player"/> (1 or 2): its <c>input_action</c>
+	/// press now, its release on the next pump — the press the player's own button would have made.
+	/// </summary>
+	public static void Fire(Action action, int player = 1) => _fired.Add((action.Name, player == 2 ? 2 : 1));
 
 	/// <summary>A key chord's modifier on the keyboard; a pad chord's on player 1's joypad; a plain action's always.</summary>
 	private static bool KeyChordHeld(Action action) => action.ChordModifier switch

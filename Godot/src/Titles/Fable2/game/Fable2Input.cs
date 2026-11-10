@@ -208,8 +208,9 @@ public sealed class Fable2Input : GameTitleInput
 		{
 			wheelBits |= Back;
 		}
-		// The mods' wheel takes the face buttons and bumpers while it stands open.
-		if (pad == 0 && Refii.Mods.ModWheel.Open)
+		// The mods' wheel takes the face buttons and bumpers of the player whose wheel stands open.
+		if ((pad == 0 && Refii.Mods.ModWheel.Open) ||
+			(pad == PlayerTwoPad && PlayerTwoPad >= 1 && Refii.Mods.ModWheel.IsOpen(2)))
 		{
 			wheelBits |= ButtonA | ButtonB | ButtonX | ButtonY | LeftShoulder | RightShoulder;
 		}
@@ -636,6 +637,19 @@ public sealed class Fable2Input : GameTitleInput
 	private static void PublishWheelTwo(uint buttons, int leftX, int leftY)
 	{
 		bool wheel = (buttons & Back) != 0;
+
+		// Player two's own mods' wheel, as player one's (PublishHolds): Back opens and closes it.
+		if (Refii.Mods.ModWheel.Follow(2, wheel, Instance.WorldHasInput, out bool held))
+		{
+			wheel = held;
+		}
+
+		bool lb = (buttons & LeftShoulder) != 0;
+		bool rb = (buttons & RightShoulder) != 0;
+		WheelTwoPrevPressed = lb && !_lbTwoWasDown;
+		WheelTwoNextPressed = rb && !_rbTwoWasDown;
+		_lbTwoWasDown = lb;
+		_rbTwoWasDown = rb;
 		bool a = (buttons & ButtonA) != 0;
 		bool b = (buttons & ButtonB) != 0;
 		QuickWheelTwoPressed = wheel && !_wheelTwoWasDown;
@@ -654,6 +668,8 @@ public sealed class Fable2Input : GameTitleInput
 	}
 
 	private static bool _wheelTwoWasDown;
+	private static bool _lbTwoWasDown;
+	private static bool _rbTwoWasDown;
 	private static bool _acceptTwoWasDown;
 	private static bool _backTwoWasDown;
 	private static bool _xTwoWasDown;
@@ -667,6 +683,10 @@ public sealed class Fable2Input : GameTitleInput
 	public static bool WheelTwoAcceptPressed { get; private set; }
 	public static bool WheelTwoAcceptReleased { get; private set; }
 	public static bool WheelTwoBackPressed { get; private set; }
+
+	/// <summary>Local player two's LB / RB went down: their mods' wheel turns its page.</summary>
+	public static bool WheelTwoPrevPressed { get; private set; }
+	public static bool WheelTwoNextPressed { get; private set; }
 	public static Vector2 LeftStickTwo { get; private set; }
 
 	/// <summary>

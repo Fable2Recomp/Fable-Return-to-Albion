@@ -247,6 +247,13 @@ public abstract class Engine_TitleGame
 	/// </summary>
 	public virtual bool WheelClaimsFaceButtons => false;
 
+	/// <summary>
+	/// Holds the world still the way the game's own pause does, with no screen up (photo mode), or
+	/// lets it go. True when the title does it itself; false leaves the caller to withhold the
+	/// session's steps, which a starved guest's clock outruns at about half speed.
+	/// </summary>
+	public virtual bool HoldWorld(bool held) => false;
+
 	/// <summary>The mods' title-side declarations reach the game, once per guest and after a remount.</summary>
 	public virtual void PumpMods(bool guestUp)
 	{

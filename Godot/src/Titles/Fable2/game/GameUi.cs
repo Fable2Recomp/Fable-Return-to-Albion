@@ -291,11 +291,6 @@ public partial class GameUi : Node, IGameTitleUi
 		// The HUD's feed is its address; with it at 0 the icons and the piece gate stop, and a
 		// null gate hides every stated piece. Hidden outright as well: a piece with no ordinal
 		// is not gated and would otherwise stand. Shown again when the game names hud.bgf.
-		if (_hudAddress != 0)
-		{
-			_hudRetired.Add(_hudAddress);
-		}
-
 		_hudAddress = 0;
 		_hudStand?.Reset();
 		_cyclerAddress = 0;
@@ -347,6 +342,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// interpolated NPC body/head anchors are already placed for this frame, and right before
 		// Engine_HudWorldSprites and Engine_HudReticule (ProcessPriority = 880).
 		ProcessPriority = 875;
+		PutPhotoModeOnModWheel();
 
 		// THE MOVEMENT SOUND, for every list in one place: the guest's own slide sounds
 		// (`SE_GUI_SLIDE_MENU_UP/DOWN`) on the front end's emitter out of a game and the in-game
@@ -4670,7 +4666,11 @@ public partial class GameUi : Node, IGameTitleUi
 				}
 				else if (Fable2Input.QuickWheelTwoHeld)
 				{
-					if (Fable2Input.WheelTwoAcceptPressed)
+					if (Refii.Mods.ModWheel.IsOpen(2))
+					{
+						FollowModWheelButtonsTwo();
+					}
+					else if (Fable2Input.WheelTwoAcceptPressed)
 					{
 						HostBridge.PostFrontEndAction("QuickWheel:2:select");
 					}
@@ -9485,10 +9485,6 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private void FollowFrontEndExtras(System.Collections.Generic.List<Engine_UiModel.Presentation> live)
 	{
-		// Back at the title every HUD is gone. Not sooner: the guest's list empties for a moment during a
-		// reload, and the old HUD comes back on it beside the new one.
-		_hudRetired.Clear();
-
 		if (_presentation is null)
 		{
 			return;
@@ -9584,16 +9580,6 @@ public partial class GameUi : Node, IGameTitleUi
 
 		return any;
 	}
-
-	/// <summary>HUDs the game has left behind: an in-game reload makes a new one while the old is still listed.</summary>
-	private readonly System.Collections.Generic.HashSet<uint> _hudRetired = new();
-
-	/// <summary>
-	/// Which HUD to follow, given the one followed so far and another the guest lists. A HUD from before
-	/// a reload never takes over from a fresh one; alone, it is followed, since its address may be recycled.
-	/// </summary>
-	internal static uint ChosenHud(uint current, uint candidate, System.Collections.Generic.IReadOnlySet<uint> retired) =>
-		retired.Contains(candidate) && current != 0 && !retired.Contains(current) ? current : candidate;
 
 	private void FollowInGameUi(System.Collections.Generic.List<Engine_UiModel.Presentation> live)
 	{
@@ -10048,7 +10034,7 @@ public partial class GameUi : Node, IGameTitleUi
 			// The address is still taken: the world icons — the one part of the HUD the guest
 			// arranges — are sampled off this presentation without mirroring it. See
 			// Engine_HudWorldIcons.
-			_hudAddress = ChosenHud(_hudAddress, presentation.Address, _hudRetired);
+			_hudAddress = presentation.Address;
 			if (_hud is not null && GodotObject.IsInstanceValid(_hud) && !_hud.Visible &&
 				!_fullCutscene && !_modScreenHidHud)
 			{

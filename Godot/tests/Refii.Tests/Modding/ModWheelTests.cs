@@ -43,6 +43,74 @@ public class ModWheelTests
     }
 
     [TestCase]
+    public void TheTopWedgeIsTheCoresAndTheModsRunOnPastIt()
+    {
+        AssertThat(ModWheel.TopSector).IsEqual(3);
+        AssertThat(ModWheel.EntryAt(0, ModWheel.TopSector, 20, topTaken: true)).IsEqual(-1);
+        AssertThat(ModWheel.EntryAt(0, 1, 20, topTaken: true)).IsEqual(0);
+        AssertThat(ModWheel.EntryAt(0, 2, 20, topTaken: true)).IsEqual(1);
+        AssertThat(ModWheel.EntryAt(0, 4, 20, topTaken: true)).IsEqual(2);
+        AssertThat(ModWheel.EntryAt(0, 6, 20, topTaken: true)).IsEqual(4);
+        AssertThat(ModWheel.EntryAt(1, 1, 20, topTaken: true)).IsEqual(5);
+        AssertThat(ModWheel.EntryAt(0, ModWheel.CloseSector, 20, topTaken: true)).IsEqual(-1);
+    }
+
+    [TestCase]
+    public void EachPlayerHasTheirOwnWheel()
+    {
+        ModWheel.Fixed? before = ModWheel.Top;
+        int chosen = 0;
+        try
+        {
+            ModWheel.SetTop(new ModWheel.Fixed("Photo Mode", string.Empty, () => chosen++));
+            ModWheel.Close(1);
+            ModWheel.Close(2);
+
+            AssertThat(ModWheel.Follow(2, back: true, inWorld: true, out bool held)).IsTrue();
+            AssertThat(held).IsTrue();
+            AssertThat(ModWheel.IsOpen(2)).IsTrue();
+            AssertThat(ModWheel.IsOpen(1)).IsFalse();
+            AssertThat(ModWheel.OpenPlayer).IsEqual(2);
+
+            ModWheel.Choose(2, ModWheel.TopSector);
+            AssertThat(chosen).IsEqual(1);
+            AssertThat(ModWheel.IsOpen(2)).IsFalse();
+            AssertThat(ModWheel.OpenPlayer).IsEqual(0);
+
+            AssertThat(ModWheel.Follow(2, back: false, inWorld: true, out _)).IsFalse();
+        }
+        finally
+        {
+            ModWheel.Close(2);
+            ModWheel.SetTop(before);
+        }
+    }
+
+    [TestCase]
+    public void WithTheTopTakenAPageHoldsFive()
+    {
+        AssertThat(ModWheel.FreeSlots(topTaken: true)).IsEqual(ModWheel.Slots - 1);
+        AssertThat(ModWheel.PageCount(5, topTaken: true)).IsEqual(1);
+        AssertThat(ModWheel.PageCount(6, topTaken: true)).IsEqual(2);
+        AssertThat(ModWheel.EntryAt(1, 1, 6, topTaken: true)).IsEqual(5);
+        AssertThat(ModWheel.EntryAt(1, 2, 6, topTaken: true)).IsEqual(-1);
+    }
+
+    [TestCase]
+    public void PhotoModeIsOnTheTopWedgeWithItsIcon()
+    {
+        string? root = GodotModScripts.RepoRoot();
+        if (root == null)
+        {
+            return;
+        }
+
+        string wheel = File.ReadAllText(Path.Combine(root, "Godot", "src", "Titles", "Fable2", "game", "GameUi.ModWheel.cs"));
+        AssertThat(wheel).Contains("ModWheel.SetTop(new ModWheel.Fixed(\"Photo Mode\", PhotoModeWheelIcon, GamePhotoMode.RequestOpen))");
+        AssertThat(File.Exists(Path.Combine(root, "Godot", "assets", "ui", "wheel", "photo_mode.png"))).IsTrue();
+    }
+
+    [TestCase]
     public void PagesWrapBothWays()
     {
         AssertThat(ModWheel.Stepped(0, -1, 3)).IsEqual(2);

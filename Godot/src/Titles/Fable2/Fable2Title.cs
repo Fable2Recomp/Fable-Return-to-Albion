@@ -146,6 +146,17 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override bool WheelClaimsFaceButtons => Engine_UiSpellAssign.Secondary is not null;
 
+	/// <summary>
+	/// The game's own world hold: the pump pushes a <c>CGameModePause</c> GameFlow command, as
+	/// <c>lhGuiManager_EnterGuiMode</c> does under a screen, and pops it again (guest_tick_pump.cpp,
+	/// <c>WorldHold:</c>). The game keeps its steps, so the GUI, audio and timed waits run on.
+	/// </summary>
+	public override bool HoldWorld(bool held)
+	{
+		Refii.Host.HostBridge.PostFrontEndAction(held ? "WorldHold:on" : "WorldHold:off");
+		return true;
+	}
+
 	public override void PumpMods(bool guestUp)
 	{
 		Engine_UiModAbilities.Pump(guestUp);

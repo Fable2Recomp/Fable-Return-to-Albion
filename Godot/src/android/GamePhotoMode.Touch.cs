@@ -24,7 +24,7 @@ public partial class GamePhotoMode
     private static bool _openRequested, _showRequested;
     private static Vector2 _touchLook;
 
-    /// <summary>Opens photo mode on the next frame, where L3 + R3 or F11 would (a touch button).</summary>
+    /// <summary>Opens photo mode on the next frame, where F11 would (a touch button, the mod wheel's top wedge).</summary>
     public static void RequestOpen() => _openRequested = true;
 
     private static bool _backRequested;

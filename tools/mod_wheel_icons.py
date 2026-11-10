@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Draws the bundled mods' icons for the controller's mod wheel.
 
-    tools/mod_wheel_icons.py [mods_dir]   (default: Fable2/mods-src)
+    tools/mod_wheel_icons.py [mods_dir [core_dir]]   (defaults: Fable2/mods-src, Godot/assets/ui/wheel)
 
 A plain symbol on a transparent ground: a fill shading from a light top to a darker bottom, a dark
 outline and a soft shadow, drawn at 4x and reduced so the edges are clean at 128 px. Written to each
@@ -151,6 +151,29 @@ def satchel():
     return finished([(strap, dark), (bag, dark), (flap, GOLD), (buckle, ORANGE)])
 
 
+def camera():
+    """A camera: photo mode, the core's entry on the wheel's top wedge."""
+    body = blank()
+    draw = ImageDraw.Draw(body)
+    box(draw, 14, 38, 114, 104, 10)
+    draw.polygon([(px(42), px(40)), (px(50), px(24)), (px(78), px(24)), (px(86), px(40))], fill=255)
+    box(draw, 22, 30, 36, 40, 2)
+    centre_x, centre_y, outer, inner = 64, 71, 26, 18
+    draw.ellipse((px(centre_x - outer), px(centre_y - outer), px(centre_x + outer), px(centre_y + outer)), fill=0)
+    lens = blank()
+    lens_draw = ImageDraw.Draw(lens)
+    lens_draw.ellipse((px(centre_x - inner), px(centre_y - inner), px(centre_x + inner), px(centre_y + inner)), fill=255)
+    lens_draw.ellipse((px(centre_x - 9), px(centre_y - 13), px(centre_x - 1), px(centre_y - 5)), fill=0)
+    flash = blank()
+    ImageDraw.Draw(flash).ellipse((px(92), px(46), px(104), px(58)), fill=255)
+    return finished([(body, GOLD), (lens, BLUE), (flash, ORANGE)])
+
+
+# The core's entries, written into the Godot project (res://assets/ui/wheel/).
+CORE_ICONS = [
+    ("photo_mode", camera),
+]
+
 ICONS = [
     ("quicksave", "quicksave", disk),
     ("quicksave", "quickload", reload_arrow),
@@ -163,6 +186,11 @@ ICONS = [
 
 def main():
     mods = sys.argv[1] if len(sys.argv) > 1 else "Fable2/mods-src"
+    core = sys.argv[2] if len(sys.argv) > 2 else "Godot/assets/ui/wheel"
+    os.makedirs(core, exist_ok=True)
+    for name, draw in CORE_ICONS:
+        draw().save(os.path.join(core, name + ".png"))
+        print(os.path.join(core, name + ".png"))
     for mod, name, draw in ICONS:
         folder = os.path.join(mods, mod, "art", "gui", "wheel")
         os.makedirs(folder, exist_ok=True)

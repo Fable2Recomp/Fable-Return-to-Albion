@@ -20,6 +20,7 @@ public partial class GameUi
 	private const int ModWheelOpenGrace = 30;
 
 	private int _modWheelWaiting;
+	private int _modWheelWaitingTwo;
 	private string?[]? _modWheelTexts;
 	private Engine_UiScreen? _modWheelDoc;
 	private (int Title, int[] Icons)[]? _modWheelItems;
@@ -27,7 +28,51 @@ public partial class GameUi
 	private bool _modWheelBlanked;
 
 	/// <summary>Whether the HUD's textures must be stated afresh for the wheel: while it stands, and once after.</summary>
-	private bool ModWheelIconsStale => ModWheel.Open || _modWheelBlanked;
+	private bool ModWheelIconsStale => ModWheel.OpenPlayer != 0 || _modWheelBlanked;
+
+	/// <summary>
+	/// Local player two's buttons on their own mods' wheel, as player one's are below: A chooses for
+	/// player two, B closes, LB and RB turn the page. The cursor is theirs (<c>_wheelSectorTwo</c>).
+	/// </summary>
+	private void FollowModWheelButtonsTwo()
+	{
+		_modWheelWaitingTwo = GuestExpressionWheelOpen() ? 0 : _modWheelWaitingTwo + 1;
+		if (_modWheelWaitingTwo > ModWheelOpenGrace)
+		{
+			_modWheelWaitingTwo = 0;
+			ModWheel.Close(2);
+			return;
+		}
+
+		if (Fable2Input.WheelTwoAcceptPressed)
+		{
+			ModWheel.Choose(2, _wheelSectorTwo);
+		}
+		else if (Fable2Input.WheelTwoBackPressed)
+		{
+			ModWheel.Close(2);
+		}
+		else if (Fable2Input.WheelTwoNextPressed)
+		{
+			ModWheel.StepPage(2, 1);
+		}
+		else if (Fable2Input.WheelTwoPrevPressed)
+		{
+			ModWheel.StepPage(2, -1);
+		}
+	}
+
+	/// <summary>Photo mode's picture on the wheel: our own art (tools/mod_wheel_icons.py), nothing of the game's.</summary>
+	public const string PhotoModeWheelIcon = "res://assets/ui/wheel/photo_mode.png";
+
+	/// <summary>
+	/// Photo mode stands on the top wedge of every page, so a controller always reaches it from Back.
+	/// Choosing it asks photo mode to open on its next frame; it is a controller's only way in
+	/// (<see cref="GamePhotoMode.PadComboOpens"/>), and a refusal (co-op, a cutscene, a menu) is photo
+	/// mode's own (<see cref="GamePhotoMode.OpenRefusal"/>).
+	/// </summary>
+	private static void PutPhotoModeOnModWheel() =>
+		ModWheel.SetTop(new ModWheel.Fixed("Photo Mode", PhotoModeWheelIcon, GamePhotoMode.RequestOpen));
 
 	/// <summary>The buttons of an open mod wheel. The wheel's own select never runs: nothing here is an expression.</summary>
 	private void FollowModWheelButtons()
@@ -91,7 +136,8 @@ public partial class GameUi
 	/// <summary>The HUD's element text, with the mods' entries on the wedges while the mod wheel stands.</summary>
 	private string?[] ModWheelTexts(Engine_UiScreen doc, string?[] told)
 	{
-		if (!ModWheel.Open || ModWheelItems(doc) is not { Length: > 0 } items)
+		int player = ModWheel.OpenPlayer;
+		if (player == 0 || ModWheelItems(doc) is not { Length: > 0 } items)
 		{
 			return told;
 		}
@@ -105,7 +151,13 @@ public partial class GameUi
 		List<ModInput.Action> entries = ModWheel.Entries();
 		for (int sector = 0; sector < items.Length && sector < ModWheel.CloseSector; ++sector)
 		{
-			int entry = ModWheel.EntryAt(ModWheel.Page, sector, entries.Count);
+			if (ModWheel.Top is { } top && sector == ModWheel.TopSector)
+			{
+				_modWheelTexts[items[sector].Title] = ModText.Game(top.Label);
+				continue;
+			}
+
+			int entry = ModWheel.EntryAt(ModWheel.PageOf(player), sector, entries.Count, ModWheel.TopTaken);
 			_modWheelTexts[items[sector].Title] = entry >= 0 ? ModText.Game(entries[entry].Wheel) : string.Empty;
 		}
 
@@ -115,8 +167,9 @@ public partial class GameUi
 	/// <summary>The HUD's textures, with the expression groups' icons off the wedges while the mod wheel stands.</summary>
 	private uint[] ModWheelIcons(Engine_UiScreen doc, uint[] textures)
 	{
-		_modWheelBlanked = ModWheel.Open;
-		if (!ModWheel.Open || ModWheelItems(doc) is not { Length: > 0 } items)
+		int player = ModWheel.OpenPlayer;
+		_modWheelBlanked = player != 0;
+		if (player == 0 || ModWheelItems(doc) is not { Length: > 0 } items)
 		{
 			return textures;
 		}
@@ -130,8 +183,17 @@ public partial class GameUi
 		List<ModInput.Action> entries = ModWheel.Entries();
 		for (int sector = 0; sector < items.Length && sector < ModWheel.CloseSector; ++sector)
 		{
-			int entry = ModWheel.EntryAt(ModWheel.Page, sector, entries.Count);
-			uint shown = entry >= 0 ? ModWheelIcon(entries[entry].WheelIcon) : _modWheelBlank;
+			uint shown;
+			if (ModWheel.Top is { } top && sector == ModWheel.TopSector)
+			{
+				shown = ModWheelIcon(top.Icon);
+			}
+			else
+			{
+				int entry = ModWheel.EntryAt(ModWheel.PageOf(player), sector, entries.Count, ModWheel.TopTaken);
+				shown = entry >= 0 ? ModWheelIcon(entries[entry].WheelIcon) : _modWheelBlank;
+			}
+
 			foreach (int icon in items[sector].Icons)
 			{
 				if (icon < textures.Length && textures[icon] != 0u)

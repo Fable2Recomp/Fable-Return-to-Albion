@@ -102,6 +102,9 @@ PPC_EXTERN_FUNC(rex_lhGui_FrontendTitle_OnScreenAction);
 // the kernel dispatch thread via CompleteOverlappedDeferred. Costs 100ms, once, at New Game.
 PPC_EXTERN_FUNC(rex_lhSaveManager_SelectStorageDevice);
 PPC_EXTERN_FUNC(rex_CNetworkManager_LeaveSession);
+PPC_EXTERN_FUNC(rex_CGameModePause_ctor);
+PPC_EXTERN_FUNC(rex_GameFlow_QueueCommand);
+PPC_EXTERN_FUNC(rex_GameFlow_PopCommand);
 extern "C" int RefiiCoopShoppingPlayerTwo(void);
 extern "C" int32_t RefiiPropertyRepair(PPCContext& ctx, uint8_t* base, uint32_t hero, uint64_t uid);
 extern "C" void RefiiPropertyRepairAll(PPCContext& ctx, uint8_t* base, uint32_t hero, int32_t* repaired, int32_t* spent,
@@ -609,6 +612,97 @@ constexpr uint32_t kSaveNamesEnd = 88u;
 constexpr uint32_t kSaveRecordsBegin = 148u;
 constexpr uint32_t kSaveRecordLevelName = 12u;
 constexpr uint32_t kSaveRecordCompatible = 24u;
+
+/// THE WORLD HELD WITHOUT A SCREEN ("WorldHold:on" / "WorldHold:off"; photo mode). The game holds
+/// its world under the pause book by pushing a `CGameModePause` GameFlow command
+/// (lhGuiManager_EnterGuiMode, TU1 0x8236ed2c..0x8236ed5c: `alloc(0x14)`, `CGameModePause_ctor`,
+/// `GameFlow_QueueCommand(flow, cmd)` with flow = `*(*(*(*0x83496AB8+0xC)+0x80)+4)`) and lets it
+/// go with `sub_82318800(flow, 1)` (lhGuiManager_ExitScreen 0x8236ee58..0x8236ee70). Only the top
+/// command runs its world update; the pause's is empty, so `dword_83319650` (Timing.GetWorldFrame)
+/// stops while the engine's frame, the GUI and audio go on — which withholding the host's step
+/// grants never achieved: the clock's watchdog resumes time after eight missing steps. Pushed only
+/// when the top is not already a pause (the game's own book would not push either, 0x8236ed1c),
+/// popped only while ours is the top of the stack it was pushed on: a book opened over it pops it
+/// itself on its exit, and a level teardown takes it with the stack.
+constexpr const char* kActionWorldHoldOn = "WorldHold:on";
+constexpr const char* kActionWorldHoldOff = "WorldHold:off";
+constexpr uint32_t kGameModePauseId = 1u;
+uint32_t g_world_hold_flow = 0u;
+
+/// The GameFlow command stack, or 0 out of a game.
+uint32_t GameFlowStack(uint8_t* base) {
+  const auto step = [&](uint32_t at, uint32_t offset) -> uint32_t {
+    return LooksLikeGuestPointer(at) ? LoadGuestU32(base, at + offset) : 0u;
+  };
+  const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+  const uint32_t flow = step(step(step(root, 0xCu), 0x80u), 0x4u);
+  return LooksLikeGuestPointer(flow) ? flow : 0u;
+}
+
+/// The id of the command on top of `flow` (its vtable slot 1, as sub_82318800 asks it), or ~0u.
+/// The list's sentinel is `flow+4`, its count `flow+8`, the top the sentinel's prev, the command `+8`.
+uint32_t TopGameFlowCommand(PPCContext& ctx, uint8_t* base, uint32_t flow) {
+  if (LoadGuestU32(base, flow + 8u) == 0u) {
+    return ~0u;
+  }
+  const uint32_t sentinel = LoadGuestU32(base, flow + 4u);
+  const uint32_t node = LooksLikeGuestPointer(sentinel) ? LoadGuestU32(base, sentinel + 4u) : 0u;
+  const uint32_t command = LooksLikeGuestPointer(node) && node != sentinel ? LoadGuestU32(base, node + 8u) : 0u;
+  if (!LooksLikeGuestPointer(command)) {
+    return ~0u;
+  }
+  PPCContext call = refii::mods::Frame(ctx);
+  return refii::mods::CallVirtual(call, base, command, 1u) ? call.r3.u32 : ~0u;
+}
+
+bool WorldHold(PPCContext& ctx, uint8_t* base, bool on) {
+  const uint32_t flow = GameFlowStack(base);
+  if (flow == 0u) {
+    g_world_hold_flow = 0u;
+    REXLOG_INFO("Refii world hold: no GameFlow stack (not in a game) - '{}' dropped", on ? "on" : "off");
+    return true;
+  }
+
+  const uint32_t top = TopGameFlowCommand(ctx, base, flow);
+  if (on) {
+    if (g_world_hold_flow == flow && top == kGameModePauseId) {
+      return true;
+    }
+    if (top == kGameModePauseId) {
+      g_world_hold_flow = 0u;
+      REXLOG_INFO("Refii world hold: the game's own pause is already on top - nothing pushed");
+      return true;
+    }
+    const uint32_t command = refii::vfs::CallLhMalloc(ctx, base, 0x14u);
+    if (!LooksLikeGuestPointer(command)) {
+      REXLOG_WARN("Refii world hold: no guest memory for the pause command - the world is not held");
+      return true;
+    }
+    PPCContext work = refii::mods::Frame(ctx);
+    work.r3.u32 = command;
+    rex_CGameModePause_ctor(work, base);
+    work = refii::mods::Frame(ctx);
+    work.r3.u32 = flow;
+    work.r4.u32 = command;
+    rex_GameFlow_QueueCommand(work, base);
+    g_world_hold_flow = flow;
+    REXLOG_INFO("Refii world hold: CGameModePause pushed over command {} - the world stands", top);
+    return true;
+  }
+
+  const bool ours = g_world_hold_flow == flow;
+  g_world_hold_flow = 0u;
+  if (!ours || top != kGameModePauseId) {
+    REXLOG_INFO("Refii world hold: nothing of ours to pop (top command {}) - left as the game has it", top);
+    return true;
+  }
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u32 = flow;
+  work.r4.u32 = kGameModePauseId;
+  rex_GameFlow_PopCommand(work, base);
+  REXLOG_INFO("Refii world hold: CGameModePause popped - the world runs");
+  return true;
+}
 
 /// Loads the save at `index`, by handing the guest the two handle slots it wants.
 ///
@@ -8658,7 +8752,9 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
     // so an entry the guest never had simply never matches. The two new-game names are the
     // exception — the guest's "New Game" branch only opens the gender card, which Godot draws
     // itself, so these carry the ANSWER straight to the commit.
-    if (name == "New Game") {
+    if (name == kActionWorldHoldOn || name == kActionWorldHoldOff) {
+      ran = WorldHold(ctx, base, name == kActionWorldHoldOn);
+    } else if (name == "New Game") {
       ran = StartNewGame(ctx, base, /*female=*/false);
     } else if (name == "New Game Female") {
       ran = StartNewGame(ctx, base, /*female=*/true);

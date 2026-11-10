@@ -10739,6 +10739,9 @@
 0x825ACEA0 = { name = "rex_lhLuaBindings_RegisterGameNamespaces" }
 0x82345A40 = { name = "rex_lhEntityManager_CollectWithComponent" }
 0x82916690 = { name = "rex_CECGroupMind_AddGroupMinds" }
+0x8245C228 = { name = "rex_CGameModePause_ctor" }
+0x8233A198 = { name = "rex_GameFlow_QueueCommand" }
+0x8233A280 = { name = "rex_GameFlow_PopCommand" }
 0x825AD498 = { name = "rex_lhLuaScriptSystem_LoadStartupScripts" }
 0x825AE828 = { name = "rex_lhLuaScriptSystem_RunCameraScripts" }
 0x8273DA00 = { name = "rex_CECAbilities_PerformRequest" }

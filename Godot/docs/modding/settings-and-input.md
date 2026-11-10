@@ -154,11 +154,12 @@ not rebound; the keys and buttons under it are, as usual.
 ### The controller's mod wheel
 
 Actions with `wheel` appear on a wheel a controller opens with Back, each taking the next free wedge in
-load order. The stick points, A chooses, B or Back closes, and LB and RB turn the page. Choosing a
-wedge sends the action's `input_action` press and release for player one, so a handler needs nothing
-new. An action may have `wheel` and nothing else bound. A page has six wedges: Close and the Dog
-wedge stay the game's. On the keyboard or a touchscreen, or with no entries, Back holds the expression
-wheel as usual.
+load order. The stick points, A chooses, B or Back closes, and LB and RB turn the page. Every player
+has one: player one's pad (online, each machine's own player) and local co-op player two's pad, each
+with its own page. Choosing a wedge sends the action's `input_action` press and release for the
+player who chose it, as their own button would, so a handler needs nothing new. An action may have `wheel` and nothing else bound. Close and the Dog wedge stay the game's, and
+the top wedge is Photo Mode on every page, so a page holds five mod entries around it. On the keyboard
+or a touchscreen Back holds the expression wheel as usual.
 
 ```json
 { "toggle": { "label": "Skateboard on or off", "keys": ["K"], "wheel": "{SKATE_TOUCH_TOGGLE}", "wheel_icon": "art/gui/wheel/skateboard.png" } }
