@@ -391,8 +391,8 @@ float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
 	vec2 terrain_sample = fable_sample_terrain_ao_and_height(world_pos);
 	float height_above_ground = max(0.0, world_pos.y - terrain_sample.y);
 	float height_weight = fable_terrain_ao_height.z > 0.5
-		? (1.0 - smoothstep(0.15, 2.50, height_above_ground))
-		: 0.65;
+		? (1.0 - smoothstep(0.05, 0.55, height_above_ground))
+		: 0.0;
 	float ground_contact_ao = mix(1.0, terrain_sample.x, height_weight);
 	return vertex_ao * min(inst_ao, ground_contact_ao);
 }
@@ -528,6 +528,12 @@ float fable_sample_static_shadow_bilinear(vec2 uv, vec2 texel_size, vec2 uv_min,
 	return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
 }
 
+float fable_sample_static_shadow_tap(vec2 uv, vec2 uv_min, vec2 uv_max, float layer, float receiver, float penumbra) {
+	vec2 clamped = clamp(uv, uv_min, uv_max);
+	float d0 = textureLod(fable_static_shadow_atlas, vec3(clamped, layer), 0.0).r;
+	return smoothstep(receiver - penumbra, receiver, d0);
+}
+
 float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect, float layer) {
 	if (atlas_rect.z <= 0.0 || d <= 1e-4) {
 		return 1.0;
@@ -545,15 +551,15 @@ float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect, 
 	// Clamp filter taps inside the tile's 1-texel wrapped gutter so multi-tap PCF never bleeds into adjacent tiles.
 	vec2 uv_min = atlas_rect.xy - texel_size * 0.45;
 	vec2 uv_max = atlas_rect.xy + vec2(atlas_rect.z) + texel_size * 0.45;
-	vec2 step_uv = texel_size * 0.70;
+	vec2 step_uv = texel_size * 0.85;
 
 	float c  = fable_sample_static_shadow_bilinear(uv, texel_size, uv_min, uv_max, layer, receiver, penumbra);
-	float k0 = fable_sample_static_shadow_bilinear(uv + vec2(-step_uv.x, -step_uv.y * 0.5), texel_size, uv_min, uv_max, layer, receiver, penumbra);
-	float k1 = fable_sample_static_shadow_bilinear(uv + vec2( step_uv.x * 0.5, -step_uv.y), texel_size, uv_min, uv_max, layer, receiver, penumbra);
-	float k2 = fable_sample_static_shadow_bilinear(uv + vec2( step_uv.x,  step_uv.y * 0.5), texel_size, uv_min, uv_max, layer, receiver, penumbra);
-	float k3 = fable_sample_static_shadow_bilinear(uv + vec2(-step_uv.x * 0.5,  step_uv.y), texel_size, uv_min, uv_max, layer, receiver, penumbra);
+	float k0 = fable_sample_static_shadow_tap(uv + vec2(-step_uv.x, -step_uv.y * 0.5), uv_min, uv_max, layer, receiver, penumbra);
+	float k1 = fable_sample_static_shadow_tap(uv + vec2( step_uv.x * 0.5, -step_uv.y), uv_min, uv_max, layer, receiver, penumbra);
+	float k2 = fable_sample_static_shadow_tap(uv + vec2( step_uv.x,  step_uv.y * 0.5), uv_min, uv_max, layer, receiver, penumbra);
+	float k3 = fable_sample_static_shadow_tap(uv + vec2(-step_uv.x * 0.5,  step_uv.y), uv_min, uv_max, layer, receiver, penumbra);
 
-	return c * 0.36 + (k0 + k1 + k2 + k3) * 0.16;
+	return c * 0.44 + (k0 + k1 + k2 + k3) * 0.14;
 }
 
 float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {

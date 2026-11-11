@@ -23,18 +23,24 @@ public class LightingSettingsTests
         AssertThat(model.CurrentLightingPreset()).IsEqual("performance");
         AssertThat(model.Values["placed_light_range"]).IsEqual("45.0");
         AssertThat(model.Values["placed_shadow_range"]).IsEqual("30.0");
+        AssertThat(model.Values["terrain_ao_resolution"]).IsEqual("2048");
+        AssertThat(model.Values["static_shadow_resolution"]).IsEqual("2048");
 
         // 2. Balanced preset
         model.ApplyLightingPreset("balanced");
         AssertThat(model.CurrentLightingPreset()).IsEqual("balanced");
         AssertThat(model.Values["placed_light_range"]).IsEqual("65.0");
         AssertThat(model.Values["placed_shadow_range"]).IsEqual("50.0");
+        AssertThat(model.Values["terrain_ao_resolution"]).IsEqual("4096");
+        AssertThat(model.Values["static_shadow_resolution"]).IsEqual("2048");
 
         // 3. Quality preset
         model.ApplyLightingPreset("quality");
         AssertThat(model.CurrentLightingPreset()).IsEqual("quality");
         AssertThat(model.Values["placed_light_range"]).IsEqual("85.0");
         AssertThat(model.Values["placed_shadow_range"]).IsEqual("70.0");
+        AssertThat(model.Values["terrain_ao_resolution"]).IsEqual("8192");
+        AssertThat(model.Values["static_shadow_resolution"]).IsEqual("4096");
     }
 
     [TestCase]

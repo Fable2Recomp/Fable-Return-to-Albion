@@ -205,7 +205,8 @@ public class LightZonesAndPlacementsTests
         AssertThat(Engine_LightZones.Zoned(defaultOutdoorLayers, exteriorZone))
             .IsEqual(defaultOutdoorLayers);
 
-        // 3. Enclosed building's interior mesh keeps the building's indoor zone and trades bit 1 for IndoorMask.
+        // 3. Enclosed building's interior mesh keeps the building's indoor zone and trades bit 1 for IndoorMask
+        //    (and EntityCasterLayerMask for IndoorEntityCasterMask so indoor movers pair with indoor lights).
         Engine_LightingFrame.CurrentInterior = false;
         uint interiorZone = Engine_LightZones.ResolvePropZone(
             buildingRecord,
@@ -214,7 +215,7 @@ public class LightZonesAndPlacementsTests
             interiorMeshCount: 1);
         AssertThat(interiorZone).IsEqual(buildingRawZone);
         AssertThat(Engine_LightZones.Zoned(defaultOutdoorLayers, interiorZone))
-            .IsEqual(Engine_LightZones.IndoorMask | Engine_LevelLights.EntityCasterLayerMask);
+            .IsEqual(Engine_LightZones.IndoorMask | Engine_LevelLights.IndoorEntityCasterMask);
 
         // 3b. An indoor lamp-host fixture (e.g. tavern chandelier or wall oil lamp) trades LampHostLayerMask
         //     for IndoorLampHostMask and never receives IndoorMask, so it is lit by indoor lights without
@@ -431,17 +432,19 @@ public class LightZonesAndPlacementsTests
     {
         Engine_LightingFrame.CurrentInterior = false;
 
-        // 1. Indoor light in an outdoor level excludes outdoor Layer 1 from its ShadowCasterMask
-        //    so its 6 cube faces only draw IndoorMask (+ EntityCasterLayerMask when dynamic).
+        // 1. Indoor light in an outdoor level excludes outdoor Layer 1 and outdoor EntityCasterLayerMask from its
+        //    ShadowCasterMask so its 6 cube faces only draw IndoorMask (+ IndoorEntityCasterMask when dynamic).
         uint indoorStaticMask = Engine_LevelLights.CasterMaskOf(includeDynamicEntities: false, isIndoorLight: true);
         AssertThat((indoorStaticMask & 1u) == 0u).IsTrue();
         AssertThat((indoorStaticMask & Engine_LightZones.IndoorMask) != 0u).IsTrue();
         AssertThat((indoorStaticMask & Engine_LevelLights.EntityCasterLayerMask) == 0u).IsTrue();
+        AssertThat((indoorStaticMask & Engine_LevelLights.IndoorEntityCasterMask) == 0u).IsTrue();
 
         uint indoorDynamicMask = Engine_LevelLights.CasterMaskOf(includeDynamicEntities: true, isIndoorLight: true);
         AssertThat((indoorDynamicMask & 1u) == 0u).IsTrue();
         AssertThat((indoorDynamicMask & Engine_LightZones.IndoorMask) != 0u).IsTrue();
-        AssertThat((indoorDynamicMask & Engine_LevelLights.EntityCasterLayerMask) != 0u).IsTrue();
+        AssertThat((indoorDynamicMask & Engine_LevelLights.IndoorEntityCasterMask) != 0u).IsTrue();
+        AssertThat((indoorDynamicMask & Engine_LevelLights.EntityCasterLayerMask) == 0u).IsTrue();
 
         // 2. Live CVar tuning via Engine_RefiiConfig.TrySetGodotCvar updates building interior scales.
         AssertThat(Engine_RefiiConfig.TrySetGodotCvar("placed_light_scale", "1.5")).IsTrue();

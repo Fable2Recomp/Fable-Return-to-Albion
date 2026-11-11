@@ -150,9 +150,17 @@ public sealed partial class RuntimeSettingsModel
     {
         if (Presets.TryGetValue(presetName, out LightingPreset? preset))
         {
-            Values["lighting_preset"] = presetName.ToLowerInvariant();
+            string lower = presetName.ToLowerInvariant();
+            Values["lighting_preset"] = lower;
             Values["placed_light_range"] = preset.LightRange.ToString("0.0", CultureInfo.InvariantCulture);
             Values["placed_shadow_range"] = preset.ShadowRange.ToString("0.0", CultureInfo.InvariantCulture);
+            Values["terrain_ao_resolution"] = lower switch
+            {
+                "performance" => "2048",
+                "quality" => "8192",
+                _ => "4096",
+            };
+            Values["static_shadow_resolution"] = lower == "quality" ? "4096" : "2048";
             Save();
         }
     }

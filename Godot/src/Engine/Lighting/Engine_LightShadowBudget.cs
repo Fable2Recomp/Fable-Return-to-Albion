@@ -66,11 +66,11 @@ public partial class Engine_LightShadowBudget : Node
 	/// <summary>Max static world shadow lights at once (legacy compatibility).</summary>
 	public static int MaxStaticWorldShadowLights = 0;
 
-	/// <summary>Max dynamic entity shadow lights at once (default 6; 0 uses uncapped).</summary>
-	public static int MaxDynamicEntityShadowLights = 6;
+	/// <summary>Max dynamic entity shadow lights at once (default 8; 0 uses uncapped).</summary>
+	public static int MaxDynamicEntityShadowLights = 8;
 
-	/// <summary>Of the dynamic shadow lights, the nearest N that use Cube shadows (default 2; remainder use DualParaboloid).</summary>
-	public static int MaxCubeShadowLights = 2;
+	/// <summary>Of the dynamic shadow lights, the nearest N that use Cube shadows (default 4; remainder use DualParaboloid).</summary>
+	public static int MaxCubeShadowLights = 4;
 
 	/// <summary>Metres from the eye to a light beyond which its shadow is culled; <c>placed_shadow_range</c>.</summary>
 	public static float MaxShadowDistance = Engine_LevelLights.PlacedShadowRange();
@@ -169,6 +169,9 @@ public partial class Engine_LightShadowBudget : Node
 
 		/// <summary>Whether the cull mask marks it an indoor light (bit 0 clear).</summary>
 		public bool IndoorBit;
+
+		/// <summary>Whether the cull mask marks it an outdoor-only light (bit 0 set, IndoorMask clear).</summary>
+		public bool OutdoorBit;
 
 		/// <summary>The shadow caster mask last stated to the node.</summary>
 		public uint ShadowMask;
@@ -348,26 +351,6 @@ public partial class Engine_LightShadowBudget : Node
 		}
 
 		_viewsLast = views;
-
-		bool cameraMoved = false;
-		for (int v = 0; v < views; v++)
-		{
-			Vector3 eye = _views[v].GlobalPosition;
-			Vector3 cameraDir = -_views[v].GlobalBasis.Z;
-			cameraMoved |= eye.DistanceSquaredTo(_lastCameraPos[v]) > 0.04f ||
-				cameraDir.DistanceSquaredTo(_lastCameraDir[v]) > 0.005f;
-		}
-
-		bool dirty = _metaGeneration != Engine_LevelLights.LightMetaGeneration ||
-			_zoneGeneration != Engine_LightZones.Generation ||
-			_shaftMediumGen != Engine_VolumetricLightShafts.MediumGeneration ||
-			_shaftAtlasGen != Engine_LevelShadowMaps.AtlasGeneration;
-
-		if (!cameraMoved && !dirty && _count > 0 && _wantedCount > 0)
-		{
-			UpdateVolumetricLightShafts(camera);
-			return;
-		}
 
 		_shaftMediumGen = Engine_VolumetricLightShafts.MediumGeneration;
 		_shaftAtlasGen = Engine_LevelShadowMaps.AtlasGeneration;
@@ -586,7 +569,9 @@ public partial class Engine_LightShadowBudget : Node
 				fixture.BaseEnergy = ReadBaseEnergy(light);
 				fixture.Authored = light.HasMeta(AuthoredShadowName) && light.GetMeta(AuthoredShadowName).AsBool();
 				fixture.Zone = Engine_LightZones.ZoneOf(light);
-				fixture.IndoorBit = (light.LightCullMask & 1u) == 0u;
+				uint cullMask = light.LightCullMask;
+				fixture.IndoorBit = (cullMask & 1u) == 0u;
+				fixture.OutdoorBit = !fixture.IndoorBit && (cullMask & Engine_LightZones.IndoorMask) == 0u;
 				fixture.ShadowMask = light.ShadowCasterMask;
 				Color lin = Engine_LightColour.Linear(light);
 				fixture.LinearColor = new Vector3(lin.R, lin.G, lin.B);
@@ -747,7 +732,8 @@ public partial class Engine_LightShadowBudget : Node
 				uint desiredMask = Engine_LevelLights.CasterMaskOf(
 					includeDynamicEntities: true,
 					isIndoorLight: !classic && f.IndoorBit,
-					includeStaticWorld: classic || (!f.Omni && f.Authored));
+					includeStaticWorld: classic || (!f.Omni && f.Authored),
+					isOutdoorLight: !classic && f.OutdoorBit);
 
 				if (f.ShadowMask != desiredMask)
 				{
@@ -1267,8 +1253,10 @@ public partial class Engine_LightShadowBudget : Node
 			effectiveDist += (dy - 4.2f) * 25.0f;
 		}
 
-		float strength = Mathf.Max(baseEnergy, 0.25f) * Mathf.Max(range, 1.0f);
-		float score = effectiveDist / Mathf.Sqrt(strength);
+		float clampedEnergy = Mathf.Clamp(baseEnergy, 0.5f, 3.0f);
+		float clampedRange = Mathf.Clamp(range, 2.0f, 8.0f);
+		float weight = Mathf.Pow(clampedEnergy * clampedRange, 0.25f);
+		float score = effectiveDist / weight;
 		if (alreadyDynamic)
 		{
 			score -= 0.75f;

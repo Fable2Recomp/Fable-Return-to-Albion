@@ -951,11 +951,18 @@ public static class Engine_LevelScene
 
             GD.Print(
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
-            Engine_LevelShadowMaps.LoadOrClear(level, bakedGdbPath);
-            Engine_LevelAmbientOcclusion.LoadOrClear(level, bakedGdbPath);
+            bool shadowsReady = Engine_LevelShadowMaps.LoadOrClear(level, bakedGdbPath);
+            bool aoReady = Engine_LevelAmbientOcclusion.LoadOrClear(level, bakedGdbPath);
+            // Always record active scenario (and launch non-blocking background GPU bake on cache miss).
+            Engine_LevelShadowPrebuild.EnsureScenarioBuiltAsync(level, bakedGdbPath);
+            if (!shadowsReady || !aoReady)
+            {
+                GD.Print($"[level] {level}: static lighting cache miss (shadowsReady={shadowsReady}, aoReady={aoReady}) -> baking asynchronously on GPU");
+            }
         }
         else
         {
+            Engine_LevelShadowPrebuild.ClearActiveScenario();
             Engine_LevelShadowMaps.LoadOrClear(level, string.Empty);
             Engine_LevelAmbientOcclusion.LoadOrClear(level, string.Empty);
         }

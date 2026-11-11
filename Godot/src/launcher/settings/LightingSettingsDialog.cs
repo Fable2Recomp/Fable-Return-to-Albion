@@ -318,9 +318,16 @@ public partial class LightingSettingsDialog : Control
 		contentCol.AddChild(BuildOptionRow(
 			"static_shadow_resolution",
 			"Static Shadow Resolution",
-			"Atlas size for pre-baked static fixture shadows (2048=balanced 6x6 grid, 4096=sharp 8x8 grid, 8192=ultra 8x8 grid). Modifying will trigger a re-bake during the startup warmup screen.",
+			"Atlas size for pre-baked static fixture shadows (2048=balanced 6x6 grid, 4096=sharp 8x8 grid, 8192=ultra 8x8 grid). Baked on-demand on the GPU during level load.",
 			new[] { "2048", "4096", "8192" },
 			new[] { "2048 (Default)", "4096 (High)", "8192 (Ultra)" }));
+
+		contentCol.AddChild(BuildOptionRow(
+			"terrain_ao_resolution",
+			"Ground Contact AO Resolution",
+			"Resolution of the cropped 2D ground contact AO map (2048=Performance, 4096=Balanced, 8192=Quality). Baked on-demand on the GPU during level load.",
+			new[] { "2048", "4096", "8192" },
+			new[] { "2048 (Performance)", "4096 (Balanced)", "8192 (Quality)" }));
 
 		// ==================== SECTION D: ILLUMINATION & TONE MAPPING ====================
 		contentCol.AddChild(MakeSectionHeader("Illumination & Tone Mapping"));
@@ -805,6 +812,7 @@ public partial class LightingSettingsDialog : Control
 			"building_interior_light_scale",
 			"building_interior_reach_scale",
 			"static_shadow_resolution",
+			"terrain_ao_resolution",
 			"gi_half_resolution",
 			"ambient_light_scale",
 			"bloom_scale",

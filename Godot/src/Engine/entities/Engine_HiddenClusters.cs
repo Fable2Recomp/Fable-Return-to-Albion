@@ -32,14 +32,15 @@ public static class Engine_HiddenClusters
 	public static ShaderMaterial CollapsedMaterial => Collapsed;
 
 	/// <summary>
-	/// Per node, the source surfaces a cloth body draws instead (<see cref="Refii.Physics.Engine_ClothBody"/>).
+	/// Per node, the source surfaces a cloth body draws instead (<see cref="Refii.Physics.Engine_ClothBody"/>),
+	/// paired with whether that cloth body casts its own shadow.
 	/// They are hidden on the body exactly as a covered cluster is, so the variant leaves them
 	/// out and the collapse override covers them when the source is shown.
 	/// </summary>
-	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MeshInstance3D, System.Runtime.CompilerServices.StrongBox<UInt128>> _clothSurfaces = new();
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<MeshInstance3D, System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>> _clothSurfaces = new();
 
 	/// <summary>Sets, or with zero clears, the cloth-drawn surfaces of <paramref name="node"/> and re-presents it.</summary>
-	public static void SetClothSurfaces(MeshInstance3D node, UInt128 mask)
+	public static void SetClothSurfaces(MeshInstance3D node, UInt128 mask, bool castsShadow = false)
 	{
 		if (mask == UInt128.Zero)
 		{
@@ -47,7 +48,7 @@ public static class Engine_HiddenClusters
 		}
 		else
 		{
-			_clothSurfaces.AddOrUpdate(node, new System.Runtime.CompilerServices.StrongBox<UInt128>(mask));
+			_clothSurfaces.AddOrUpdate(node, new System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>((mask, castsShadow)));
 		}
 
 		if (Engine_BodyVariants.SourceMesh(node) is not ArrayMesh source)
@@ -103,8 +104,8 @@ public static class Engine_HiddenClusters
 
 	/// <summary>The surfaces a cloth body draws for <paramref name="node"/>; zero when none.</summary>
 	public static UInt128 ClothMask(MeshInstance3D node) =>
-		_clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? mask)
-			? mask.Value
+		_clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>? entry)
+			? entry.Value.Mask
 			: UInt128.Zero;
 
 	/// <summary>The surfaces the clusters alone hide on <paramref name="node"/>, cloth aside.</summary>
@@ -254,6 +255,41 @@ public static class Engine_HiddenClusters
 		}
 
 		return MaskOf(state) | cloth;
+	}
+
+	/// <summary>
+	/// Pure managed mask composition for <see cref="ShadowCollapsedMask"/>: folds covered body clusters
+	/// and displacement surfaces unconditionally, and includes <paramref name="clothMask"/> ONLY when
+	/// <paramref name="clothCastsOwnShadow"/> is true.
+	/// </summary>
+	public static UInt128 ComposeShadowCollapsedMask(
+		UInt128 clusterMask,
+		UInt128 displacedMask,
+		UInt128 clothMask,
+		bool clothCastsOwnShadow) =>
+		clusterMask | displacedMask | (clothCastsOwnShadow ? clothMask : UInt128.Zero);
+
+	/// <summary>
+	/// The surfaces hidden on <paramref name="node"/>'s shadow caster proxy: covered body clusters
+	/// and displacement surfaces, plus cloth-driven surfaces ONLY when the cloth body casts its own
+	/// shadow. Rigged character cloth bodies have <c>CastShadow = Off</c>, so keeping their GPU-skinned
+	/// garment surfaces in the shadow proxy preserves coats, skirts, dresses, and capes in character
+	/// shadows without any engine call on the reconcile path.
+	/// </summary>
+	public static UInt128 ShadowCollapsedMask(MeshInstance3D node)
+	{
+		UInt128 displacedMask = _displacedSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? displaced)
+			? displaced.Value
+			: UInt128.Zero;
+		UInt128 clusterMask = _collapsedSurfaces.TryGetValue(node, out SurfaceState? state)
+			? MaskOf(state)
+			: UInt128.Zero;
+		bool hasCloth = _clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>? cloth);
+		return ComposeShadowCollapsedMask(
+			clusterMask,
+			displacedMask,
+			hasCloth ? cloth!.Value.Mask : UInt128.Zero,
+			hasCloth && cloth!.Value.CastsShadow);
 	}
 
 	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes);

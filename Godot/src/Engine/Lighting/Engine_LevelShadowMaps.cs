@@ -658,22 +658,42 @@ public static class Engine_LevelShadowMaps
 			Engine_LevelLights.BuildingInteriorReachScale,
 			expectedVersion);
 
+	private static readonly object ActiveScenarioGate = new();
+	private static string _activeScenarioKey = string.Empty;
+
 	/// <summary>
 	/// Loads and binds the scenario's <c>.shadows</c> file if present on disk, or binds a neutral
 	/// unoccluded fallback atlas when absent. Safe to call from any thread (defers GPU upload if
 	/// called off the main thread).
+	/// Returns <c>true</c> when no background bake is needed (disabled or an up-to-date cache hit was bound).
 	/// </summary>
-	public static void LoadOrClear(LevelEntry level, string gdbPath)
+	public static bool LoadOrClear(LevelEntry level, string gdbPath)
 	{
 		if (Refii.Core.Engine_AppRoot.IsTestHost)
 		{
-			return;
+			return true;
 		}
 
-		if (Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes) { Clear(); return; }
+		if (Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes)
+		{
+			Clear();
+			return true;
+		}
 
 		// 1. Try cache directory first (<app>/cache/shadows/...)
 		string diskPath = GetShadowMapDiskPath(level, gdbPath);
+		bool upToDate = IsFileValid(
+			diskPath,
+			ConfiguredAtlasResolution,
+			ConfiguredLightsPerMap,
+			Engine_LevelLights.PlacedRange,
+			Engine_LevelLights.BuildingInteriorReachScale);
+
+		lock (ActiveScenarioGate)
+		{
+			_activeScenarioKey = diskPath;
+		}
+
 		byte[]? raw = File.Exists(diskPath) ? File.ReadAllBytes(diskPath) : null;
 		string resolvedLocation = diskPath;
 
@@ -710,15 +730,51 @@ public static class Engine_LevelShadowMaps
 
 		if (raw is null)
 		{
-			Clear();
-			GD.Print($"[shadow-map] {level}: no baked static shadow map at {resolvedLocation}");
-			return;
+			Clear(preserveActiveScenario: true);
+			GD.Print($"[shadow-map] {level}: no baked static shadow map at {resolvedLocation} (queuing background GPU bake)");
+			return false;
 		}
 
 		if (!TryDeserialize(raw, out StaticShadowMapContainer container, out string error))
 		{
-			Clear();
+			Clear(preserveActiveScenario: true);
 			GD.Print($"[shadow-map] {level}: failed to read {resolvedLocation} ({error})");
+			return false;
+		}
+
+		StaticShadowMapContainer? previous = Current;
+		Current = container;
+		if (previous is not null && !ReferenceEquals(previous, container))
+		{
+			previous.Texels = Array.Empty<ushort>();
+			previous.RuntimeTextureArray = null;
+		}
+
+		BindAtlasTexture(container);
+		Engine_LightTable.RebindShadowMap(container);
+		GD.Print(
+			$"[shadow-map] {level}: loaded {container.AtlasSize}x{container.AtlasSize} static shadow atlas " +
+			$"({container.LightRects.Count} lights) from {resolvedLocation}");
+		return upToDate;
+	}
+
+	/// <summary>
+	/// Hot-binds a freshly baked <paramref name="container"/> into the live scene if <paramref name="level"/>
+	/// and <paramref name="gdbPath"/> are still the active loaded scenario.
+	/// </summary>
+	public static void HotBindIfActive(LevelEntry level, string gdbPath, StaticShadowMapContainer container)
+	{
+		string expectedKey = GetShadowMapDiskPath(level, gdbPath);
+		bool stillActive;
+		lock (ActiveScenarioGate)
+		{
+			stillActive = !Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes &&
+				string.Equals(_activeScenarioKey, expectedKey, StringComparison.OrdinalIgnoreCase);
+		}
+
+		if (!stillActive || Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			container.Texels = Array.Empty<ushort>();
 			return;
 		}
 
@@ -730,19 +786,29 @@ public static class Engine_LevelShadowMaps
 			previous.RuntimeTextureArray = null;
 		}
 
-		Engine_LightTable.RebindShadowMap(container);
+		int atlasSize = container.AtlasSize;
+		int lightCount = container.LightRects.Count;
 		BindAtlasTexture(container);
-		GD.Print(
-			$"[shadow-map] {level}: loaded {container.AtlasSize}x{container.AtlasSize} static shadow atlas " +
-			$"({container.LightRects.Count} lights) from {resolvedLocation}");
+		Engine_LightTable.RebindShadowMap(container);
+		GD.Print($"[shadow-map] {level}: hot-bound background GPU static shadow atlas ({atlasSize}x{atlasSize}, {lightCount} lights)");
 	}
 
 	/// <summary>
 	/// Releases the active static shadow map container, unbinds its GPU texture array in favour of
 	/// the 4x4 fallback atlas, and clears cached model triangles.
 	/// </summary>
-	public static void Clear()
+	public static void Clear() => Clear(preserveActiveScenario: false);
+
+	private static void Clear(bool preserveActiveScenario)
 	{
+		if (!preserveActiveScenario)
+		{
+			lock (ActiveScenarioGate)
+			{
+				_activeScenarioKey = string.Empty;
+			}
+		}
+
 		ModelTriangleCache.Clear();
 		StaticShadowMapContainer? previous = Current;
 		Current = null;
@@ -948,6 +1014,60 @@ public static class Engine_LevelShadowMaps
 		private int _nodeCount;
 
 		public int TriangleCount => _triangles.Length;
+		public int NodeCount => _nodeCount;
+		public Vector3 RootMin => _nodeCount > 0 ? _nodes[0].Min : Vector3.Zero;
+		public Vector3 RootMax => _nodeCount > 0 ? _nodes[0].Max : Vector3.Zero;
+
+		public void ExportGpuBuffers(out byte[] nodeBytes, out byte[] triBytes)
+		{
+			if (_nodeCount <= 0 || _triangles.Length == 0)
+			{
+				nodeBytes = new byte[32];
+				triBytes = new byte[64];
+				return;
+			}
+
+			nodeBytes = new byte[_nodeCount * 32];
+			Span<float> nFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(nodeBytes.AsSpan());
+			Span<int> nInts = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, int>(nodeBytes.AsSpan());
+			for (int i = 0; i < _nodeCount; i++)
+			{
+				ref readonly Node n = ref _nodes[i];
+				int o = i * 8;
+				nFloats[o] = n.Min.X;
+				nFloats[o + 1] = n.Min.Y;
+				nFloats[o + 2] = n.Min.Z;
+				nInts[o + 3] = n.LeftOrFirst;
+				nFloats[o + 4] = n.Max.X;
+				nFloats[o + 5] = n.Max.Y;
+				nFloats[o + 6] = n.Max.Z;
+				nInts[o + 7] = n.Count;
+			}
+
+			triBytes = new byte[_triangles.Length * 64];
+			Span<float> tFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(triBytes.AsSpan());
+			for (int i = 0; i < _triangles.Length; i++)
+			{
+				ref readonly BvhTriangle t = ref _triangles[i];
+				int o = i * 16;
+				tFloats[o] = t.V0.X;
+				tFloats[o + 1] = t.V0.Y;
+				tFloats[o + 2] = t.V0.Z;
+				tFloats[o + 3] = 0.0f;
+				tFloats[o + 4] = t.Edge1.X;
+				tFloats[o + 5] = t.Edge1.Y;
+				tFloats[o + 6] = t.Edge1.Z;
+				tFloats[o + 7] = 0.0f;
+				tFloats[o + 8] = t.Edge2.X;
+				tFloats[o + 9] = t.Edge2.Y;
+				tFloats[o + 10] = t.Edge2.Z;
+				tFloats[o + 11] = 0.0f;
+				tFloats[o + 12] = t.Normal.X;
+				tFloats[o + 13] = t.Normal.Y;
+				tFloats[o + 14] = t.Normal.Z;
+				tFloats[o + 15] = 0.0f;
+			}
+		}
 
 		public BvhTree(List<BvhTriangle> sourceTriangles)
 		{
@@ -1241,7 +1361,8 @@ public static class Engine_LevelShadowMaps
 		int atlasResolution,
 		int lightsPerMap,
 		float placedReachScale,
-		float interiorReachScale)
+		float interiorReachScale,
+		Func<bool>? isCancelled = null)
 	{
 		atlasResolution = Math.Clamp(atlasResolution, 64, 16384);
 		lightsPerMap = Math.Clamp(lightsPerMap, 1, 256);
@@ -1288,6 +1409,47 @@ public static class Engine_LevelShadowMaps
 		}
 
 		float texelAngle = 2.0f / Math.Max(1, innerSize);
+
+		if (!Refii.Core.Engine_AppRoot.IsTestHost &&
+		    worldBvh.TriangleCount > 0 &&
+		    Engine_GpuBvhBaker.TryBakeShadowAtlasGpu(
+		        worldBvh,
+		        lights,
+		        atlasResolution,
+		        lightsPerMap,
+		        tilesPerRow,
+		        tileTotalSize,
+		        innerSize,
+		        sliceTexelCount,
+		        texelAngle,
+		        texels,
+		        isCancelled))
+		{
+			return new StaticShadowMapContainer
+			{
+				AtlasSize = atlasResolution,
+				SliceCount = sliceCount,
+				LightsPerMap = lightsPerMap,
+				PlacedReachScale = placedReachScale,
+				BuildingInteriorReachScale = interiorReachScale,
+				LightRects = rects,
+				Texels = texels,
+			};
+		}
+
+		if (isCancelled?.Invoke() == true)
+		{
+			return new StaticShadowMapContainer
+			{
+				AtlasSize = atlasResolution,
+				SliceCount = sliceCount,
+				LightsPerMap = lightsPerMap,
+				PlacedReachScale = placedReachScale,
+				BuildingInteriorReachScale = interiorReachScale,
+				LightRects = rects,
+				Texels = texels,
+			};
+		}
 
 		Parallel.For(0, lights.Count, i =>
 		{

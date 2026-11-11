@@ -722,6 +722,12 @@ public static partial class Engine_LevelBakedLighting
 			return null;
 		}
 
+		float[] selfAo = mesh.HasMeta(Refii.Models.Engine_MdlMesh.SelfAoMeta) &&
+			mesh.GetMeta(Refii.Models.Engine_MdlMesh.SelfAoMeta) is
+			{ VariantType: Variant.Type.PackedFloat32Array } selfAoMeta
+			? selfAoMeta.AsFloat32Array()
+			: Array.Empty<float>();
+
 		int cursor = 0;
 		SourceSurfaces source = SurfacesOf(mesh);
 		var baked = new Color[source.Arrays.Length][];
@@ -743,6 +749,10 @@ public static partial class Engine_LevelBakedLighting
 				if (from >= 0 && from < colours.Length)
 				{
 					Color c = FromD3DColour(colours[from]);
+					if ((uint)from < (uint)selfAo.Length)
+					{
+						c.A = selfAo[from];
+					}
 					vertexColours[v] = c;
 					sourced[v] = true;
 					float lum = 0.2125f * c.R + 0.7154f * c.G + 0.0721f * c.B;

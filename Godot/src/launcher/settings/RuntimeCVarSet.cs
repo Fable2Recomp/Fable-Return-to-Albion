@@ -582,11 +582,14 @@ public static class RuntimeCVarsGodot
             new("static_shadow_resolution", LightingCategory, RuntimeCVarType.Int, "2048",
                 "Atlas resolution for pre-baked static fixture shadow maps (2048, 4096, 8192). "
                 + "Automatically selects the optimal lights-per-slice grid for each preset (36 at 2K, 64 at 4K/8K). "
-                + "Changing this triggers a re-bake during the startup warmup screen.",
+                + "Baked on-demand on the GPU when entering a level.",
                 "2048|2048 (Default),4096|4096 (High),8192|8192 (Ultra)"),
+            new("terrain_ao_resolution", LightingCategory, RuntimeCVarType.Int, "4096",
+                "Resolution of the cropped 2D ground contact ambient occlusion map (2048 Performance, 4096 Balanced, 8192 Quality). "
+                + "Baked on-demand on the GPU when entering a level.",
+                "2048|2048 (Performance),4096|4096 (Balanced),8192|8192 (Quality)"),
             new("baked_ao_enabled", LightingCategory, RuntimeCVarType.Bool, "true",
-                "Enable pre-baked model self-AO and level inter-object/terrain contact AO in Modern mode. "
-                + "Baked offline during the startup warmup screen with zero real-time SSAO overhead."),
+                "Enable pre-baked model self-AO, cropped GPU ground contact AO, and screen-space crevice AO in Modern mode."),
             new("baked_ao_strength", LightingCategory, RuntimeCVarType.Double, "1.0",
                 "Multiplier/exponent on pre-baked ambient occlusion in Modern mode (0.0 to 2.0). "
                 + "1.0 is the calibrated baseline; 0.0 disables baked AO darkening."),

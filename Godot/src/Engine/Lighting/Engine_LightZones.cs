@@ -36,17 +36,22 @@ public static class Engine_LightZones
 
     /// <summary>What an outdoor light lights: everything but interiors and indoor lamp hosts.</summary>
     private const uint OutdoorOnly = ~(IndoorMask | IndoorLampHostMask | Refii.Level.Engine_ReflectionLayer.Mask |
-        Engine_LevelLights.EntityCasterLayerMask | Refii.Models.Engine_ClassicViews.IndoorViewLayers);
+        Engine_LevelLights.EntityCasterLayerMask | Engine_LevelLights.IndoorEntityCasterMask |
+        Refii.Models.Engine_ClassicViews.IndoorViewLayers);
 
     /// <summary>
     /// What an indoor light lights: interiors (including characters zoned to the interior via Zoned()),
     /// indoor lamp-host fixtures, and the guest's particles, which carry no zone.
-    /// Does not include EntityCasterLayerMask or LampHostLayerMask so indoor lights do not leak
+    /// Does not include EntityCasterLayerMask, IndoorEntityCasterMask, or LampHostLayerMask so indoor lights do not leak
     /// through walls onto outdoor NPCs or outdoor street-lamp fixtures. An interior drawn in one
     /// split view alone carries that view's indoor layer instead (Engine_ClassicViews.OnlyIn).
     /// </summary>
     private const uint IndoorOnly = IndoorMask | IndoorLampHostMask | Refii.Models.Engine_ClassicParticles.Layer |
         Refii.Models.Engine_ClassicViews.IndoorViewLayers;
+
+    public static uint OutdoorCullMask => OutdoorOnly;
+
+    public static uint IndoorCullMask => IndoorOnly;
 
     private const uint All = uint.MaxValue;
 
@@ -111,12 +116,18 @@ public static class Engine_LightZones
 
         if ((layers & Engine_LevelLights.LampHostLayerMask) != 0u)
         {
-            return (layers & ~(1u | Engine_LevelLights.LampHostLayerMask | Engine_LevelLights.EntityCasterLayerMask)) | IndoorLampHostMask;
+            return (layers & ~(1u | Engine_LevelLights.LampHostLayerMask | Engine_LevelLights.EntityCasterLayerMask | Engine_LevelLights.IndoorEntityCasterMask)) | IndoorLampHostMask;
         }
 
         if ((layers & 1u) != 0u)
         {
-            return (layers & ~1u) | IndoorMask;
+            uint next = (layers & ~1u) | IndoorMask;
+            if ((next & Engine_LevelLights.EntityCasterLayerMask) != 0u)
+            {
+                next = (next & ~Engine_LevelLights.EntityCasterLayerMask) | Engine_LevelLights.IndoorEntityCasterMask;
+            }
+
+            return next;
         }
 
         return layers;

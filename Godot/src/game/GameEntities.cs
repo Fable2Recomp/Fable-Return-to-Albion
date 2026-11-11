@@ -1055,6 +1055,7 @@ public partial class GameEntities : Node3D
                     GD.Print($"[game-entities] hero {heroAddress:X8} node created on tick {_ticks}" +
                         (LoadHold ? " (under the load hold)" : " (AFTER the load hold)"));
                 }
+                _nodeMesh[entity.Address] = mesh;
                 uint layers = EntityLayers(entity);
                 _entityLayers[entity.Address] = layers;
                 node = new MeshInstance3D
@@ -1067,7 +1068,6 @@ public partial class GameEntities : Node3D
                     // It moves: it takes the GI from the probes and is never voxelised into it.
                     GIMode = GeometryInstance3D.GIModeEnum.Dynamic,
                 };
-                _nodeMesh[entity.Address] = mesh;
                 node.SetMeta(MetaEntityAddress, entity.Address);
                 node.SetMeta(MetaEntityUniqueId, entity.UniqueId);
                 node.SetMeta(MetaEntityRecord, entity.RecordHash);
@@ -1388,7 +1388,8 @@ public partial class GameEntities : Node3D
 
                 bool dueReconcile = Due(entity.Address, ReconcileTicks);
                 bool zoneChanged = false;
-                if (entity.Changed || created || IsPrincipal(entity.Address) || dueReconcile)
+                if (entity.Changed || created || IsPrincipal(entity.Address) ||
+                    (attachedChild && IsPrincipal(_attachments.ParentOf(entity.Address))) || dueReconcile)
                 {
                     uint prevZone = _entityLightZone.TryGetValue(entity.Address, out uint z) ? z : 0u;
                     uint newZone = EntityLightZoneOf(entity.Address, refresh: true);
@@ -1620,6 +1621,23 @@ public partial class GameEntities : Node3D
                     // The pose's readers run once the queued poses are written (after the loop).
                     _afterPose.Add((entity.Address, node, rig));
                 }
+            }
+            else if (!adopted && IsDynamicShadowEntity(entity.Address))
+            {
+                bool principal = IsPrincipal(entity.Address) || IsPrincipal(parentAddress);
+                bool wasWritten = _written.TryGetValue(entity.Address, out (MeshInstance3D Node, Transform3D Drawn) written);
+                bool measurable = haveEye && (wasWritten || node.IsInsideTree());
+                Transform3D rigWorld = measurable
+                    ? toWorld * (wasWritten ? written.Drawn : node.Transform)
+                    : Transform3D.Identity;
+                bool inView = principal || PosedThisTick(entity.Address, measurable, rigWorld, nowMs);
+                if (inView && measurable)
+                {
+                    _dynamicCasterPositions.Add(rigWorld.Origin);
+                    _dynamicCasterAddresses.Add(entity.Address);
+                }
+                Refii.Entities.Engine_ShadowSkeletons.SetFollowerEveryFrame(
+                    node, principal || _movers.Contains(entity.Address));
             }
 
             long afterPoseEntity = SectionClock();
@@ -2243,7 +2261,24 @@ public partial class GameEntities : Node3D
             // below, so a proxy built on this frame is placed by it; the holder's principal
             // status decides every-frame placement, as it does for the holder's own body.
             bool principalHolder = IsPrincipal(parent);
-            if (Refii.Entities.Engine_ShadowProxy.MarkFollower(node, true, principalHolder))
+            bool syncProxy = Refii.Entities.Engine_ShadowProxy.MarkFollower(node, true, principalHolder);
+            if (_entityLayers.TryGetValue(parent, out uint parentLayers))
+            {
+                bool parentIndoor = (parentLayers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
+                bool childIndoor = (node.Layers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
+                if (parentIndoor != childIndoor && !Refii.Models.Engine_ClassicMaterial.Active && !Refii.Lighting.Engine_LightingFrame.CurrentInterior)
+                {
+                    uint updatedLayers = parentIndoor
+                        ? ((node.Layers & ~(1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask)) |
+                           Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)
+                        : ((node.Layers & ~(Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)) |
+                           1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask);
+                    _entityLayers[child] = updatedLayers;
+                    node.Layers = updatedLayers;
+                    syncProxy = true;
+                }
+            }
+            if (syncProxy)
             {
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
             }
@@ -5300,12 +5335,26 @@ public partial class GameEntities : Node3D
 
     private uint EntityLightZoneOf(uint address, bool refresh = false)
     {
-        if (!refresh && _entityLightZone.TryGetValue(address, out uint cached))
+        uint root = address;
+        for (int hops = 0; hops < 4; hops++)
         {
+            uint parent = _attachments.ParentOf(root);
+            if (parent == 0u || parent == root)
+            {
+                break;
+            }
+
+            root = parent;
+        }
+
+        if (!refresh && _entityLightZone.TryGetValue(root, out uint cached))
+        {
+            _entityLightZone[address] = cached;
             return cached;
         }
 
-        uint zone = HostBridge.GetEntityLightZone(address);
+        uint zone = HostBridge.GetEntityLightZone(root);
+        _entityLightZone[root] = zone;
         _entityLightZone[address] = zone;
         return zone;
     }
@@ -5578,9 +5627,12 @@ public partial class GameEntities : Node3D
         _movers.Contains(address) ||
         _animating.Contains(address) ||
         _reblending.Contains(address) ||
+        _awaitingRig.Contains(address) ||
         _attachments.ParentOf(address) != 0u ||
         _compositeParts.ContainsKey(address) ||
-        (_clipAnimators.TryGetValue(address, out Refii.Animations.Engine_ClipAnimator? anim) && anim.IsCharacterRig);
+        (_clipAnimators.TryGetValue(address, out Refii.Animations.Engine_ClipAnimator? anim) && anim.IsCharacterRig) ||
+        (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? skel) && skel.Mapped > 8) ||
+        (_nodeMesh.TryGetValue(address, out Mesh? m) && Refii.Models.Engine_MdlRig.TryFrom(m) is { } mdlRig && mdlRig.BoneCount > 8);
 
     /// <summary>The entity's layers from its record, its dynamic-caster standing and its light zone.</summary>
     private uint ZonedEntityLayers(HostBridge.GuestEntity entity)

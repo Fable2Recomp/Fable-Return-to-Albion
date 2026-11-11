@@ -39,25 +39,34 @@ public static class Engine_LevelLighting
 
 	public const float CascadeSplitNear = 35.0f;
 
+	public const float CascadeSplitFour1 = 18.0f;
+
+	public const float CascadeSplitFour2 = 50.0f;
+
+	public const float CascadeSplitFour3 = 110.0f;
+
 	public const float CascadeSplitMid = 110.0f;
 
 	public const float CascadeSplitFar = 240.0f;
 
 	public const float NearSlopeBias = 2.0f;
 
-	/// <summary>`sun_shadow_splits`: cascades by day, 2 or 4.</summary>
-	public static readonly int SunSplits = ReadSunSplits();
+	/// <summary>`sun_shadow_splits`: cascades by day, 2 or 4 (defaults to 4 on desktop, 2 on mobile).</summary>
+	public static int SunSplits => _sunSplits ??= ReadSunSplits();
+
+	private static int? _sunSplits;
 
 	private static int ReadSunSplits()
 	{
+		int defaultSplits = Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake ? 2 : 4;
 		try
 		{
 			return Refii.Core.Engine_RefiiConfig.Int(
-				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_splits", 2) >= 4 ? 4 : 2;
+				Refii.Core.Engine_RefiiConfig.Read(out _), "sun_shadow_splits", defaultSplits) >= 4 ? 4 : 2;
 		}
 		catch (System.Exception)
 		{
-			return 2;
+			return defaultSplits;
 		}
 	}
 
@@ -134,8 +143,10 @@ public static class Engine_LevelLighting
 	public static void ReloadConfig()
 	{
 		_sunFarDepth = null;
+		_sunSplits = null;
 		_sunScale = null;
 		_giHalfResolution = null;
+		SunShadowMap = ReadSunShadowMap();
 	}
 
 	public static void ApplyWeatherSun(DirectionalLight3D light, LightingFrame frame)
@@ -236,7 +247,7 @@ public static class Engine_LevelLighting
 		var mode = splits <= 1 ? DirectionalLight3D.ShadowMode.Orthogonal
 			: splits == 2 ? DirectionalLight3D.ShadowMode.Parallel2Splits
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
-		bool blend = SunBlendOverride ?? false;
+		bool blend = SunBlendOverride ?? (splits >= 4);
 		if (light.DirectionalShadowBlendSplits != blend) light.DirectionalShadowBlendSplits = blend;
 		float distance = isNight ? Mathf.Min(NightFarDepth, CascadeDepth) : CascadeDepth;
 		if (light.DirectionalShadowMode != mode) light.DirectionalShadowMode = mode;
@@ -245,15 +256,16 @@ public static class Engine_LevelLighting
 
 		if (distance > 0f)
 		{
-			float split1 = Mathf.Clamp(CascadeSplitNear / distance, 0.05f, 0.5f);
+			float nearMetres = splits > 2 ? CascadeSplitFour1 : CascadeSplitNear;
+			float split1 = Mathf.Clamp(nearMetres / distance, 0.05f, 0.5f);
 			if (Mathf.Abs(light.DirectionalShadowSplit1 - split1) > 0.001f)
 			{
 				light.DirectionalShadowSplit1 = split1;
 			}
 			if (splits > 2)
 			{
-				float split2 = Mathf.Clamp(CascadeSplitMid / distance, split1 + 0.05f, 0.8f);
-				float split3 = Mathf.Clamp(Mathf.Min(CascadeSplitFar, distance * 0.8f) / distance, split2 + 0.05f, 0.95f);
+				float split2 = Mathf.Clamp(CascadeSplitFour2 / distance, split1 + 0.05f, 0.8f);
+				float split3 = Mathf.Clamp(Mathf.Min(CascadeSplitFour3, distance * 0.8f) / distance, split2 + 0.05f, 0.95f);
 				if (Mathf.Abs(light.DirectionalShadowSplit2 - split2) > 0.001f) light.DirectionalShadowSplit2 = split2;
 				if (Mathf.Abs(light.DirectionalShadowSplit3 - split3) > 0.001f) light.DirectionalShadowSplit3 = split3;
 			}
@@ -273,7 +285,11 @@ public static class Engine_LevelLighting
 			: SunBasis(frame.LightDirection);
 		var aimed = new Transform3D(basis, Vector3.Zero);
 		bool inTree = light.IsInsideTree();
-		if (!(inTree ? light.GlobalTransform : light.Transform).IsEqualApprox(aimed))
+		Transform3D currentTransform = inTree ? light.GlobalTransform : light.Transform;
+		// Angular hysteresis (~0.085 deg): prevents sub-arcminute per-frame time-of-day float drift
+		// from rotating the orthographic cascade boxes and shimmering distant shadow edges every frame.
+		if ((currentTransform.Basis.Z - aimed.Basis.Z).LengthSquared() > 2.25e-6f ||
+		    (currentTransform.Basis.Y - aimed.Basis.Y).LengthSquared() > 2.25e-6f)
 		{
 			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
 			if (inTree) light.GlobalTransform = aimed;
@@ -539,6 +555,46 @@ public static class Engine_LevelLighting
 		environment.SdfgiEnergy = 1.0f;
 	}
 
+	private static int _lastSsaoQualityTier = -1;
+
+	private static void ConfigureScreenSpaceAo(Godot.Environment environment, bool unified)
+	{
+		bool enableSsao = unified &&
+			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
+			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f &&
+			!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake;
+		environment.SsaoEnabled = enableSsao;
+		if (!enableSsao)
+		{
+			return;
+		}
+
+		int aoRes = Engine_LevelAmbientOcclusion.TerrainAoResolution;
+		int tier = aoRes <= 2048 ? 1 : (aoRes <= 4096 ? 2 : 3);
+		if (_lastSsaoQualityTier != tier)
+		{
+			_lastSsaoQualityTier = tier;
+			var quality = tier == 1 ? RenderingServer.EnvironmentSsaoQuality.Low
+				: tier == 2 ? RenderingServer.EnvironmentSsaoQuality.Medium
+				: RenderingServer.EnvironmentSsaoQuality.High;
+			RenderingServer.EnvironmentSetSsaoQuality(
+				quality,
+				tier <= 2,
+				0.5f,
+				2,
+				35.0f,
+				55.0f);
+		}
+
+		environment.SsaoRadius = 0.65f;
+		environment.SsaoIntensity = 1.15f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
+		environment.SsaoPower = 1.35f;
+		environment.SsaoDetail = 0.50f;
+		environment.SsaoHorizon = 0.06f;
+		environment.SsaoSharpness = 0.98f;
+		environment.SsaoLightAffect = 0.15f;
+	}
+
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
 	{
 		if (environment is null)
@@ -565,6 +621,7 @@ public static class Engine_LevelLighting
 		RenderingServer.GlobalShaderParameterSet(FableUnifiedName, unified ? 1.0f : 0.0f);
 		Engine_LevelAmbientOcclusion.PublishAoParameters();
 		ConfigureGlobalIllumination(environment, unified, frame.HasSky);
+		ConfigureScreenSpaceAo(environment, unified);
 
 		// Sky reflections are not part of this: the materials carry their own environment map.
 		environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;

@@ -219,6 +219,30 @@ public static class Engine_ShadowProxy
 		Proxies.TryGetValue(body, out MeshInstance3D? proxy) && GodotObject.IsInstanceValid(proxy) ? proxy : null;
 
 
+	private static UInt128 EffectiveCollapsedMask(MeshInstance3D body) =>
+		Refii.Models.Engine_ClassicMaterial.Active
+			? Engine_HiddenClusters.CollapsedMask(body)
+			: Engine_HiddenClusters.ShadowCollapsedMask(body);
+
+	/// <summary>
+	/// Computes the render layer mask for <paramref name="body"/>'s shadow proxy so <c>RendererSceneCull</c>
+	/// pairs dynamic character/weapon proxies with placed lights in the same indoor/outdoor zone (dirtying
+	/// their shadow maps whenever the character moves) without leaking shadows across building walls.
+	/// </summary>
+	public static uint ComputeProxyLayers(uint bodyLayers, bool follows)
+	{
+		if (!follows)
+		{
+			return bodyLayers & ~(Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask |
+				Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask);
+		}
+
+		bool indoor = (bodyLayers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
+		return indoor
+			? (Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)
+			: (1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask);
+	}
+
 	/// <summary>
 	/// The reconcile cadence's call: <see cref="Sync"/> only when the hidden set moved since the
 	/// proxy was built. No engine call otherwise — this runs for every entity, every second.
@@ -226,7 +250,7 @@ public static class Engine_ShadowProxy
 	public static void SyncHidden(MeshInstance3D body)
 	{
 		if (!BuiltFor.TryGetValue(body, out StrongBox<(UInt128 Hidden, bool Enabled)>? built) ||
-			built.Value != (Engine_HiddenClusters.CollapsedMask(body), Enabled))
+			built.Value != (EffectiveCollapsedMask(body), Enabled))
 		{
 			Sync(body);
 		}
@@ -269,7 +293,7 @@ public static class Engine_ShadowProxy
 			return;
 		}
 
-		UInt128 collapsed = Engine_HiddenClusters.CollapsedMask(body);
+		UInt128 collapsed = Engine_HiddenClusters.ShadowCollapsedMask(body);
 		BuiltFor.GetOrCreateValue(body).Value = (collapsed, Enabled);
 
 		// The source's surfaces: the hidden set is indexed by them, whatever the body shows.
@@ -334,9 +358,9 @@ public static class Engine_ShadowProxy
 				body.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
 				Refii.Lighting.Engine_ShadowReach.Exclude(body);
 			}
-			else if (!follows && (body.Layers & Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask) != 0u)
+			else if (!follows && (body.Layers & (Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)) != 0u)
 			{
-				body.Layers &= ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask;
+				body.Layers &= ~(Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask);
 			}
 
 			return;
@@ -412,9 +436,12 @@ public static class Engine_ShadowProxy
 		}
 
 		proxy.Mesh = merged;
-		proxy.Layers = follows
-			? Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask
-			: (body.Layers & ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask);
+		uint targetLayers = ComputeProxyLayers(body.Layers, follows);
+		bool layersChanged = proxy.Layers != targetLayers;
+		if (layersChanged)
+		{
+			proxy.Layers = targetLayers;
+		}
 
 		// The body's screen-size cull is the caster's too: a range is per instance, not inherited.
 		// For skinned proxies (NPCs, doors, chests, tables) whose body has no explicit draw cutoff,
@@ -434,6 +461,11 @@ public static class Engine_ShadowProxy
 		// Same mesh space as the body (a sibling placed with its transform, or a child at
 		// identity), so the body's stated box bounds the caster; an unset box copies as none.
 		proxy.CustomAabb = body.CustomAabb;
+		if (skinned && proxy.CustomAabb.Size.LengthSquared() < 1e-4f)
+		{
+			proxy.CustomAabb = new Aabb(new Vector3(-1.5f, -0.5f, -1.5f), new Vector3(3.0f, 3.0f, 3.0f));
+		}
+
 		if (!body.Skeleton.IsEmpty && body.GetNodeOrNull(body.Skeleton) is Skeleton3D bones)
 		{
 			// Not the body's skeleton: the proxy's own, under the proxy, posed at the guest's rate
@@ -441,24 +473,25 @@ public static class Engine_ShadowProxy
 			Skeleton3D shadowBones = Engine_ShadowSkeletons.Ensure(body, proxy, bones);
 			proxy.Skeleton = proxy.GetPathTo(shadowBones);
 			proxy.Skin = body.Skin;
-			if (proxy.CustomAabb.Size.LengthSquared() < 1e-4f)
-			{
-				proxy.CustomAabb = new Aabb(new Vector3(-1.5f, -0.5f, -1.5f), new Vector3(3.0f, 3.0f, 3.0f));
-			}
 		}
 		else
 		{
 			proxy.Skeleton = new NodePath();
 			proxy.Skin = null;
-			if (follower)
+			if (beside || follower)
 			{
-				// No bones: the cadence entry only places the proxy and mirrors its visibility.
+				// No bones (or awaiting rig): the cadence entry places the sibling proxy and mirrors its visibility.
 				Engine_ShadowSkeletons.Follow(body, proxy, principalHolder);
 			}
 			else
 			{
 				Engine_ShadowSkeletons.Forget(body);
 			}
+		}
+
+		if (layersChanged && follows)
+		{
+			Engine_ShadowSkeletons.Placed(body);
 		}
 
 		body.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;

@@ -133,19 +133,27 @@ public class StaticShadowMapTests
 	[TestCase]
 	public void TestModernCasterMaskExcludesStaticWorld()
 	{
-		uint dynamicOnlyMask = Engine_LevelLights.CasterMaskOf(
+		uint unzonedDynamicOnlyMask = Engine_LevelLights.CasterMaskOf(
 			includeDynamicEntities: true,
 			isIndoorLight: false,
 			includeStaticWorld: false);
+		uint outdoorDynamicOnlyMask = Engine_LevelLights.CasterMaskOf(
+			includeDynamicEntities: true,
+			isIndoorLight: false,
+			includeStaticWorld: false,
+			isOutdoorLight: true);
 
 		uint classicMask = Engine_LevelLights.CasterMaskOf(
 			includeDynamicEntities: true,
 			isIndoorLight: false,
 			includeStaticWorld: true);
 
-		AssertThat(dynamicOnlyMask).IsEqual(Engine_LevelLights.EntityCasterLayerMask);
+		AssertThat(outdoorDynamicOnlyMask).IsEqual(Engine_LevelLights.EntityCasterLayerMask);
+		AssertThat(unzonedDynamicOnlyMask).IsEqual(
+			Engine_LevelLights.EntityCasterLayerMask | Engine_LevelLights.IndoorEntityCasterMask);
 		AssertThat((classicMask & 1u) != 0u).IsTrue();
-		AssertThat((dynamicOnlyMask & 1u) == 0u).IsTrue();
+		AssertThat((unzonedDynamicOnlyMask & 1u) == 0u).IsTrue();
+		AssertThat((unzonedDynamicOnlyMask & Engine_LightZones.IndoorMask) == 0u).IsTrue();
 	}
 
 	[TestCase]

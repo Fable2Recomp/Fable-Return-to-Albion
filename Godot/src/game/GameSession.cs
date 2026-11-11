@@ -432,17 +432,9 @@ public partial class GameSession : Node
 						GD.Print($"[game] orm sweep: {result.Built} built, " +
 							$"{result.Failed} failed of {result.Total}");
 
-						// THE STATIC SHADOW SWEEP: verifies the persistent manifest and bakes static shadow
-						// maps into <app>/cache/shadows if resolution or light reach CVars changed.
-						Refii.Lighting.Engine_LevelShadowPrebuild.Progress shadowProg =
-							Refii.Lighting.Engine_LevelShadowPrebuild.Run(directory, progress =>
-								_ormStatus = progress.Total == 0
-									? "Checking static shadows..."
-									: progress.Built == 0 && progress.UpToDate > 0
-										? "Checking static shadows..."
-										: $"Baking static shadows... {progress.Done:N0} of {progress.Total:N0}", mount: mount);
-						GD.Print($"[game] shadow sweep: {shadowProg.Built} built, " +
-							$"{shadowProg.UpToDate} up-to-date, {shadowProg.Failed} failed of {shadowProg.Total}");
+						// Static shadow maps (.shadows) and cropped ground contact AO (.ao) now bake
+						// on-demand on the GPU via Engine_LevelShadowPrebuild.EnsureScenarioBuilt when
+						// entering a level, eliminating the multi-minute upfront 78-scenario sweep.
 
 						// THE UPSCALE SWEEPS, when `texture_upscaling_when` says boot: every
 						// material texture, then every terrain layer, into the shared cache

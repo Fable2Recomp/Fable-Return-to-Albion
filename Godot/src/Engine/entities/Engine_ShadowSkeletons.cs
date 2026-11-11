@@ -98,6 +98,7 @@ public static class Engine_ShadowSkeletons
 			return have.Shadow;
 		}
 
+		bool wasEveryFrame = ByBody.TryGetValue(body, out Entry? prev) && prev.EveryFrame;
 		Forget(body);
 
 		// Manual modifier processing, for the reason Engine_EntitySkeleton.Build gives.
@@ -126,7 +127,7 @@ public static class Engine_ShadowSkeletons
 
 		shadow.MotionScale = live.MotionScale;
 		proxy.AddChild(shadow);
-		var entry = new Entry { Shadow = shadow, Body = body, Proxy = proxy, PlacePending = true };
+		var entry = new Entry { Shadow = shadow, Body = body, Proxy = proxy, EveryFrame = wasEveryFrame, PlacePending = true };
 		ByLive[live] = entry;
 		ByBody[body] = entry;
 		return shadow;
@@ -273,6 +274,7 @@ public static class Engine_ShadowSkeletons
 	{
 		if (!entry.Body.IsInsideTree() || !entry.Proxy.IsInsideTree())
 		{
+			entry.PlacePending = true;
 			return;
 		}
 

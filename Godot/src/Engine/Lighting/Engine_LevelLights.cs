@@ -544,6 +544,7 @@ public static class Engine_LevelLights
 		Engine_LevelBakedLighting.ReloadConfig();
 		Engine_LevelLighting.ReloadConfig();
 		Engine_LevelShadowMaps.ReloadConfig();
+		Engine_LevelShadowPrebuild.OnLightingConfigReloaded();
 		RefreshAllLightScales();
 		Refii.Models.Engine_ShaderSpecialisation.SettingsChanged();
 	}
@@ -1571,6 +1572,16 @@ public static class Engine_LevelLights
 
 	public const uint EntityCasterLayerMask = 1u << (EntityCasterLayer - 1);
 
+	/// <summary>
+	/// Render layer 11: indoor dynamic character shadow-caster stand-in for <see cref="EntityCasterLayerMask"/>.
+	/// Paired with <see cref="Engine_LightZones.IndoorMask"/> on indoor character shadow proxies and excluded from
+	/// outdoor light cull masks so <c>RendererSceneCull</c> pairs indoor movers with indoor lights (dirtying their
+	/// shadow maps on every step) without leaking character shadows through building walls in either direction.
+	/// </summary>
+	public const int IndoorEntityCasterLayer = 11;
+
+	public const uint IndoorEntityCasterMask = 1u << (IndoorEntityCasterLayer - 1);
+
 	public const string BaseEnergyMeta = "base_energy";
 
 	/// <summary>
@@ -1600,7 +1611,8 @@ public static class Engine_LevelLights
 	public static uint CasterMaskOf(
 		bool includeDynamicEntities = true,
 		bool isIndoorLight = false,
-		bool includeStaticWorld = true)
+		bool includeStaticWorld = true,
+		bool isOutdoorLight = false)
 	{
 		uint mask = 0u;
 		if (includeStaticWorld)
@@ -1612,7 +1624,18 @@ public static class Engine_LevelLights
 
 		if (includeDynamicEntities)
 		{
-			mask |= EntityCasterLayerMask;
+			if (isIndoorLight && !Engine_LightingFrame.CurrentInterior)
+			{
+				mask |= IndoorEntityCasterMask;
+			}
+			else if (isOutdoorLight && !Engine_LightingFrame.CurrentInterior)
+			{
+				mask |= EntityCasterLayerMask;
+			}
+			else
+			{
+				mask |= EntityCasterLayerMask | IndoorEntityCasterMask;
+			}
 		}
 
 		return Refii.Level.Engine_ReflectionLayer.CasterMask(mask);

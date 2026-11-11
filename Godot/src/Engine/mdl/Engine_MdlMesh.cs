@@ -41,6 +41,12 @@ public static class Engine_MdlMesh
     public const string FurMeta = "mdl_fur";
 
     /// <summary>
+    /// Canonical per-source-vertex self-AO values (<c>[0..sourceVertexTotal-1]</c>) so authored
+    /// <c>.lmp</c> vertex bakes preserve <c>.selfao</c> in <c>COLOR.a</c>.
+    /// </summary>
+    public const string SelfAoMeta = "fable_self_ao";
+
+    /// <summary>
     /// Cached per mesh: the names are fixed when the mesh is built, and the cluster pass asks
     /// per entity on every reconcile. Callers only read the result.
     /// </summary>
@@ -253,13 +259,21 @@ public static int SurfacesWithLods;
         var sourceVertices = new List<int>(meshVertices);
         bool modernStaticAo = !Engine_ClassicMaterial.Active &&
             Refii.Lighting.Engine_LightingFrame.ModernModel &&
-            info.SkinnedCount == 0 &&
+            info.SkinnedCount <= 8 &&
             info.MovementMode != 2 &&
             sourceVertexTotal > 0;
-        float[] modelSelfAo = modernStaticAo &&
-            Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, sourceVertexTotal, virtualPath, out float[] fastSelfAo)
-            ? fastSelfAo
-            : System.Array.Empty<float>();
+        float[] modelSelfAo = System.Array.Empty<float>();
+        if (modernStaticAo)
+        {
+            if (Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, sourceVertexTotal, virtualPath, out float[] fastSelfAo))
+            {
+                modelSelfAo = fastSelfAo;
+            }
+            else if (sourceVertexTotal <= 2048)
+            {
+                modelSelfAo = Engine_ModelSelfAo.GetOrComputeModelSelfAo(data, info, surfaces, sourceVertexTotal, virtualPath);
+            }
+        }
         var pendingSurfaces = new List<(Godot.Collections.Array Arrays, Godot.Collections.Dictionary? Lods, float[]? LevelTable, string Name, Material? Material)>(surfaces.Count);
         long totalEstimatedBytes = 0L;
 
@@ -541,6 +555,10 @@ public static int SurfacesWithLods;
             mesh.SetMeta(SourceVertexMapMeta, sourceMap);
         }
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
+        if (modelSelfAo.Length > 0)
+        {
+            mesh.SetMeta(SelfAoMeta, modelSelfAo);
+        }
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
         if (info.FileBoundingSphere.Length == 4)
         {

@@ -132,6 +132,9 @@ public partial class Engine_ClothBody : MeshInstance3D
     /// <summary>Whether the guest states this body's pose (<see cref="Refii.Host.HostBridge.ClothStated"/>).</summary>
     private bool _stated;
 
+    /// <summary>Whether this cloth body casts its own shadow rather than delegating garment shadows to the parent's shadow proxy.</summary>
+    private bool _castsOwnShadow;
+
     /// <summary>Per piece, the guest's stated pose as last read, in the stated mode.</summary>
     private readonly List<StatedPose> _statedPoses = new();
 
@@ -254,11 +257,13 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
 
         bool rigged = Refii.Models.Engine_MdlRig.TryFrom(source) is not null;
+        bool castsOwnShadow = !rigged && node.CastShadow != GeometryInstance3D.ShadowCastingSetting.Off;
         var body = new Engine_ClothBody
         {
             Name = NodeName,
             Layers = node.Layers,
             CastShadow = rigged ? GeometryInstance3D.ShadowCastingSetting.Off : node.CastShadow,
+            _castsOwnShadow = castsOwnShadow,
             GIMode = node.GIMode,
             VisibilityRangeBegin = node.VisibilityRangeBegin,
             VisibilityRangeEnd = node.VisibilityRangeEnd,
@@ -280,7 +285,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         Refii.Models.Engine_ClassicCasters.Register(body, dynamic: true);
 
         // A stated body drives no surface until the guest draws a piece as cloth.
-        Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, stated ? UInt128.Zero : patch.DrivenMask);
+        Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(node, stated ? UInt128.Zero : patch.DrivenMask, castsOwnShadow);
         return body;
     }
 
@@ -695,7 +700,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         if (drawn != _statedDrawn)
         {
             _statedDrawn = drawn;
-            Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(parent, drawn);
+            Refii.Entities.Engine_HiddenClusters.SetClothSurfaces(parent, drawn, _castsOwnShadow);
         }
 
         if (packed)
