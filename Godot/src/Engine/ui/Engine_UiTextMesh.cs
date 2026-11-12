@@ -251,10 +251,9 @@ public static class Engine_UiTextMesh
 		arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
 		arrays[(int)Mesh.ArrayType.Normal] = normals.ToArray();
 		arrays[(int)Mesh.ArrayType.Color] = colours.ToArray();
-		if (modes is not null)
-		{
-			arrays[(int)Mesh.ArrayType.TexUV2] = modes.ToArray();
-		}
+		// Always populate TexUV2 so D3D12 PSOs compiled with `#define UV2_USED` (from `ui_text.gdshader`)
+		// bind a valid vertex attribute stream on both Fable 2 and Fable 3 without dummy-slot driver quirks.
+		arrays[(int)Mesh.ArrayType.TexUV2] = modes is not null ? modes.ToArray() : new Vector2[vertices.Count];
 
 		arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
 

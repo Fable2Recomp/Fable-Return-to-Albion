@@ -23,6 +23,7 @@
 #include <rex/logging.h>
 
 #include "core/payload_bridge.h"
+#include "core/rex_payload_bridge.h"
 #include "core/traced_mutex.h"
 
 namespace refii::vfs {
@@ -203,6 +204,7 @@ uint32_t refii_bridge_guest_frame(void) {
 
 void refii_bridge_note_guest_frame(void) {
   g_guest_frame.fetch_add(1, std::memory_order_release);
+  refii_bridge_rex_note_guest_step();
 }
 
 namespace {

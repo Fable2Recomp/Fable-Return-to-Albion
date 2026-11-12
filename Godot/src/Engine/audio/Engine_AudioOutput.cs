@@ -56,6 +56,23 @@ public partial class Engine_AudioOutput : Node
 
 	private AudioStreamPlayer? _keepAlive;
 	private int _bus = -1;
+	private bool _muted;
+
+	/// <summary>
+	/// Silences or restores the <see cref="BusName"/> output bus without stopping
+	/// <c>RefiiGuestAudioEffect</c>, so the guest's 48 kHz XAudio2 clock keeps being credited
+	/// while leaked world audio is muted behind a loading cover.
+	/// </summary>
+	public void SetMuted(bool muted)
+	{
+		if (_muted == muted || !IsReady || _bus < 0 || _bus >= AudioServer.BusCount || AudioServer.GetBusName(_bus) != BusName)
+		{
+			return;
+		}
+
+		_muted = muted;
+		AudioServer.SetBusVolumeDb(_bus, muted ? -80f : 0f);
+	}
 
 	public override void _Ready()
 	{

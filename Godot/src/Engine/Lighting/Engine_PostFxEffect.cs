@@ -1108,11 +1108,12 @@ public partial class Engine_PostFxEffect : CompositorEffect
                     Radial(1, beamsUv);
                 }
             }
-            else if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.Texture.IsValid)
+            else if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.TextureRid.IsValid &&
+                RenderingServer.TextureGetRdTexture(sun.Disc.TextureRid) is var discRd && discRd.IsValid)
             {
                 _raysZeroCleared = false;
                 BeginBatch();
-                SunLayer(depth, sunUv, sun.Disc, projection);
+                SunLayer(depth, sunUv, sun.Disc, discRd, projection);
                 Radial(0, sunUv);
                 Radial(1, sunUv);
             }
@@ -1946,15 +1947,15 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// chain reads NOTHING else — not the scene, not a beams billboard.
     /// </summary>
     private void SunLayer(
-        Rid depth, Vector2 sunUv, in Engine_PostFxSunSources.Source disc, Projection projection)
+        Rid depth, Vector2 sunUv, in Engine_PostFxSunSources.Source disc, Rid discTexture, Projection projection)
     {
         RenderingDevice rd = _rd!;
-        if (!_sunlayerSet.Matches(rd, depth, disc.Texture))
+        if (!_sunlayerSet.Matches(rd, depth, discTexture))
         {
-            _sunlayerSet.Replace(rd, depth, disc.Texture, _sunlayerShader, new RDUniform[]
+            _sunlayerSet.Replace(rd, depth, discTexture, _sunlayerShader, new RDUniform[]
             {
                 Sampler(_nearestSampler, depth, 0),
-                Sampler(_linearSampler, disc.Texture, 1),
+                Sampler(_linearSampler, discTexture, 1),
                 Image(_rays[0], 2),
             });
         }

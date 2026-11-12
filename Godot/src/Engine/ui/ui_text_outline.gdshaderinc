@@ -5,16 +5,16 @@
 
 // The outlined coverage: `centre` (the pixel's own) maxed with its eight neighbours one shipped
 // texel apart (`texel_step` in UV units, precomputed in uniform control flow).
-// `from_field` is hoisted outside the 8-tap loop so each loop body samples a single static
-// sampler via explicit gradients (`textureGrad`), avoiding per-pixel dual-sampler loop divergence in DXIL.
-float ui_text_outline_cover(sampler2D glyph_atlas, sampler2D glyph_field, vec2 uv, float centre,
+// Both coverage (`.a`) and signed distance (`.g`) live in the single `glyph_atlas` texture so UI text
+// binds one sampler per material on D3D12 while keeping `from_field` hoisted outside the 8-tap loop.
+float ui_text_outline_cover(sampler2D glyph_atlas, vec2 uv, float centre,
 		vec2 uv_dx, vec2 uv_dy, bool from_field, float field_width, float contrast, vec2 texel_step) {
 	float cover = centre;
 	if (from_field) {
 		for (int y = -1; y <= 1; y++) {
 			for (int x = -1; x <= 1; x++) {
 				if (x != 0 || y != 0) {
-					float d = textureGrad(glyph_field, uv + vec2(float(x), float(y)) * texel_step, uv_dx, uv_dy).r;
+					float d = textureGrad(glyph_atlas, uv + vec2(float(x), float(y)) * texel_step, uv_dx, uv_dy).g;
 					cover = max(cover, clamp((d - 0.5) / field_width + 0.5, 0.0, 1.0));
 				}
 			}

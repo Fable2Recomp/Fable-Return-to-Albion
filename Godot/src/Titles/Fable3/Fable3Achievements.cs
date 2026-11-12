@@ -49,5 +49,8 @@ public partial class Fable3Achievements : Fable3Canvas
 			_mount.Scale = new Vector3(unitsPerPixel, unitsPerPixel, 1f);
 			_toast.Canvas = window;
 		}
+
+		// Idle the full-window 3D toast SubViewport whenever no achievement toast is visible.
+		Engine_UiSceneBuilder.SetViewportActive(CanvasViewport, _toast.Visible && !Refii.Game.GameWorld.CoverHeld);
 	}
 }

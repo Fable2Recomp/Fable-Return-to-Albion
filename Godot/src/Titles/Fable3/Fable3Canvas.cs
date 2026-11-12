@@ -37,15 +37,7 @@ public abstract partial class Fable3Canvas : SubViewportContainer
 		MouseFilter = MouseFilterEnum.Ignore;
 		Stretch = true;
 
-		CanvasViewport = new SubViewport
-		{
-			Name = "Canvas",
-			TransparentBg = true,
-			OwnWorld3D = true,
-			HandleInputLocally = false,
-			RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
-			Msaa3D = Viewport.Msaa.Disabled,
-		};
+		CanvasViewport = Engine_UiSceneBuilder.CreateCanvasViewport("Canvas", SubViewport.UpdateMode.Always);
 		AddChild(CanvasViewport);
 
 		Root = new Node3D { Name = "Root" };

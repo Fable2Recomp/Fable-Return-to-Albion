@@ -9528,7 +9528,7 @@ void MaybeFinishInGameLoadingScreen(PPCContext& ctx, uint8_t* base) {
   }
 
   static const bool enabled = ReadEnvFlag("REFII_FINISH_INGAME_LOADSCREEN", true);
-  if (!enabled || !InGameWorldActive(base)) {
+  if (!enabled || !InGameWorldActive(base) || refii_bridge_world_build_pending() != 0) {
     return;
   }
 

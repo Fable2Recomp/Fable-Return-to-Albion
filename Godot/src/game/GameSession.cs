@@ -34,22 +34,21 @@ public partial class GameSession : Node
 	/// <summary>High-frequency steps granted to the guest — the host's own simulation position.</summary>
 	private long _granted;
 
-	/// <summary>The guest's counter and our granted count when the loop was closed, so the two
-	/// are compared as DIFFERENCES: they start from unrelated origins and the guest's own resets
-	/// on world teardown.</summary>
+	/// <summary>The guest's 30 Hz HF frame counter and our granted count when the loop was closed, so the two
+	/// are compared at identical 30 Hz resolution as DIFFERENCES.</summary>
+	private uint _guestHfBase;
 	private uint _guestTickBase;
 	private long _grantedBase;
 
 	/// <summary>
-	/// How far the host may lead the guest, in game ticks, before it stops granting.
+	/// How far the host may lead the guest, in game ticks (2.0 game ticks = 4 HF steps, matching native
+	/// <c>kMaxLeadSteps = 4</c> in <c>rex_bridge_host.cpp</c> where steps are released strictly one at a time
+	/// upon each completed guest HF pass so <c>sub_82276D10</c> never sees <c>owed &gt; 1</c>).
 	/// </summary>
-	/// <remarks>
-	/// Half a tick, i.e. one HF step: the guest re-bases the moment it is owed more than one
-	/// step (`82276fa4 cmpwi cr6, r30, 1`) and a game tick is two steps. Any steady lead is time
-	/// granted and not run. With the cap the world advances at the rate the guest can actually
-	/// run, rather than at real time with a lurch to make up the difference.
-	/// </remarks>
-	private const double MaxLeadGameTicks = 0.5;
+	private const double MaxLeadGameTicks = 2.0;
+
+	/// <summary>Maximum host lead in 30 Hz HF steps before backpressure withholds further grants.</summary>
+	private const long MaxLeadHfSteps = 4;
 
 	/// <summary>
 	/// A lead beyond this, in either direction, is a broken base rather than a real lead.
@@ -545,28 +544,50 @@ public partial class GameSession : Node
 				}
 			}
 
-			if (_guestTickBase == 0u)
+			uint guestHf = Refii.Core.Engine_GuestFrame.Frame;
+			double lead;
+			if (guestHf != 0u)
 			{
-				_guestTickBase = guestTick;
-				_grantedBase = _granted;
+				if (_guestHfBase == 0u)
+				{
+					_guestHfBase = guestHf;
+					_grantedBase = _granted;
+				}
+
+				long hostHfSteps = _granted - _grantedBase;
+				long guestHfSteps = (long)guestHf - _guestHfBase;
+				long leadHfSteps = hostHfSteps - guestHfSteps;
+				if (leadHfSteps > (long)(ReBaseGameTicks * 2.0) || leadHfSteps < -(long)(ReBaseGameTicks * 2.0))
+				{
+					_guestHfBase = guestHf;
+					_grantedBase = _granted;
+					leadHfSteps = 0;
+				}
+
+				lead = leadHfSteps * 0.5;
+				withholdGrant = leadHfSteps >= MaxLeadHfSteps;
+			}
+			else
+			{
+				if (_guestTickBase == 0u)
+				{
+					_guestTickBase = guestTick;
+					_grantedBase = _granted;
+				}
+
+				double hostGameTicks = (_granted - _grantedBase) * 0.5;
+				double guestGameTicks = (double)guestTick - _guestTickBase;
+				lead = hostGameTicks - guestGameTicks;
+				if (lead > ReBaseGameTicks || lead < -ReBaseGameTicks)
+				{
+					_guestTickBase = guestTick;
+					_grantedBase = _granted;
+					lead = 0.0;
+				}
+
+				withholdGrant = lead >= MaxLeadGameTicks;
 			}
 
-			double hostGameTicks = (_granted - _grantedBase) * 0.5;
-			double guestGameTicks = (double)guestTick - _guestTickBase;
-			double lead = hostGameTicks - guestGameTicks;
-
-			// Re-base on an implausible lead. The counts are compared as differences from a
-			// captured base, and the guest's counter is not stable across a world coming up or
-			// going down. A hugely negative lead would silently disable the cap below; re-basing
-			// costs one frame of pacing.
-			if (lead > ReBaseGameTicks || lead < -ReBaseGameTicks)
-			{
-				_guestTickBase = guestTick;
-				_grantedBase = _granted;
-				lead = 0.0;
-			}
-
-			withholdGrant = lead > MaxLeadGameTicks;
 			Refii.Core.Engine_TickClock.HostGrantLead = lead;
 			Refii.Core.Engine_TickClock.HostGrantWithheld = withholdGrant;
 		}

@@ -2274,7 +2274,10 @@ public partial class LauncherApp : Control
 		_standingDownForGame = true;
 		Engine.MaxFps = 1;
 		OS.LowProcessorUsageMode = true;
+		_backgrounds.Suspend();
 		RenderingServer.ViewportSetActive(GetViewport().GetViewportRid(), false);
+		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: false);
+		System.GC.WaitForPendingFinalizers();
 		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
 			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
 		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
@@ -2567,6 +2570,7 @@ public partial class LauncherApp : Control
 				_standingDownForGame = false;
 				OS.LowProcessorUsageMode = false;
 				Engine.MaxFps = 0;
+				_backgrounds.Resume();
 				RenderingServer.ViewportSetActive(GetViewport().GetViewportRid(), true);
 
 				// However the game ended (quit to desktop, a window close, a crash), only the child

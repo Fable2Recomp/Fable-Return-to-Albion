@@ -256,4 +256,24 @@ public sealed class BackgroundManager
 			CurrentCreditAlpha = 0.0f;
 		}
 	}
+
+	/// <summary>Releases GPU background slideshow textures while the launcher stands down for the running game.</summary>
+	public void Suspend()
+	{
+		_current.Texture = null;
+		_next.Texture = null;
+		_textures.Clear();
+		_credits.Clear();
+		CurrentCredit = string.Empty;
+		CurrentCreditAlpha = 0.0f;
+	}
+
+	/// <summary>Reloads background slideshow textures when the launcher returns to the foreground.</summary>
+	public void Resume()
+	{
+		if (_textures.Count == 0)
+		{
+			Initialize();
+		}
+	}
 }

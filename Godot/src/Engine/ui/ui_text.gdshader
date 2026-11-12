@@ -9,13 +9,10 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_never;
 // because the atlas is padded with transparent black — without the cut, the bilinear tail of
 // the neighbouring cell haloes every character.
 
-uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;
-
-// THE GLYPH EDGE FROM A DISTANCE FIELD (Engine_SdfField): the atlas's signed distance, built on
-// the player's machine from the shipped coverage, 0.5 on the coverage's own half contour. The edge
-// is resolved per screen pixel at any magnification, and the mips filter the distance itself when
-// the text shrinks, so a thin stroke does not vanish between texels.
-uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable, hint_default_black;
+// Linear UNORM view (no `source_color`): `atlas.a` carries shipped glyph coverage and `atlas.g`
+// carries the precomputed signed distance field (0.5 on the half-coverage contour), keeping both
+// channels linear and halving per-material D3D12 shader-visible sampler descriptors and font VRAM.
+uniform sampler2D atlas : filter_linear_mipmap, repeat_disable, hint_default_transparent;
 uniform bool use_distance_field = false;
 
 // Texture pixels per SHIPPED atlas texel — the atlas is supersampled at load.
@@ -100,10 +97,10 @@ void fragment() {
 	vec2 texel_step = safe_supersample / atlas_size;
 	float magnified = 1.0 / max(max(fwidth(shipped.x), fwidth(shipped.y)), 1e-5);
 
-	// Sample the distance field and compute its screen-space derivative unconditionally in uniform
-	// control flow across every 2x2 pixel quad (before any branch or `discard`) so DXIL/D3D12
-	// coarse derivatives stay strictly well-defined on all D3D12 drivers.
-	float distance = texture(distance_field, UV).r;
+	// Read the packed signed distance channel (`.g`) and compute its screen-space derivative
+	// unconditionally in uniform control flow across every 2x2 pixel quad (before any branch or `discard`)
+	// so DXIL/D3D12 coarse derivatives stay strictly well-defined on all D3D12 drivers.
+	float distance = texel.g;
 	float df_width = max(fwidth(distance), 1e-4);
 
 	// THE FIELD ONLY WHERE THE TEXT IS MAGNIFIED. At or near the shipped size a screen pixel spans
@@ -168,7 +165,7 @@ void fragment() {
 	// THE OUTLINE (ui_text_outline.gdshaderinc), gated by uniform `outline` so non-outlined titles skip it statically.
 	float cover = texel.a;
 	if (outline && outlined) {
-		cover = ui_text_outline_cover(atlas, distance_field, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, texel_step);
+		cover = ui_text_outline_cover(atlas, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, texel_step);
 	}
 
 	// The scissor, clip rect, and alpha floor (evaluated after all derivative and texture operations).

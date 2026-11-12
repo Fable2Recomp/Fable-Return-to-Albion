@@ -157,6 +157,7 @@ public static class Engine_LoadTimeline
 			snapshot = Totals(now, _syncsAtRelease);
 			_releasedAt = now;
 			_atRelease = snapshot;
+			Volatile.Write(ref _open, false);
 			foreach ((string name, long at) in Marks)
 			{
 				stages.Append($" {name} {(at - _openedAt) / (double)Stopwatch.Frequency:0.00}");
@@ -241,12 +242,14 @@ public static class Engine_LoadTimeline
 		long now = Stopwatch.GetTimestamp();
 		lock (Gate)
 		{
-			if (!_open)
+			if (!_open && _atRelease is null)
 			{
 				return null;
 			}
 
-			Dictionary<string, object?> report = Totals(now, Engine_ServerSyncs.Take());
+			Dictionary<string, object?> report = _open
+				? Totals(now, Engine_ServerSyncs.Take())
+				: new Dictionary<string, object?>(_atRelease!);
 			report["what"] = _what;
 			var marks = new Dictionary<string, object?>();
 			foreach ((string name, long at) in Marks)

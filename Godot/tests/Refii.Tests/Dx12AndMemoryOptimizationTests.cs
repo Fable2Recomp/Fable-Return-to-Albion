@@ -218,8 +218,8 @@ public sealed class Dx12AndMemoryOptimizationTests
 		string uiDir = Path.Combine(godotRoot, "src", "Engine", "ui");
 
 		string uiText = File.ReadAllText(Path.Combine(uiDir, "ui_text.gdshader"));
-		AssertThat(uiText.Contains("uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;", StringComparison.Ordinal)).IsTrue();
-		AssertThat(uiText.Contains("uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable, hint_default_black;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("uniform sampler2D atlas : filter_linear_mipmap, repeat_disable, hint_default_transparent;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("uniform sampler2D distance_field", StringComparison.Ordinal)).IsFalse();
 		AssertThat(uiText.Contains("uniform bool has_uv2_modes = false;", StringComparison.Ordinal)).IsTrue();
 		AssertThat(uiText.Contains("uniform bool outline = false;", StringComparison.Ordinal)).IsTrue();
 		AssertThat(uiText.Contains("if (has_uv2_modes)", StringComparison.Ordinal)).IsTrue();
@@ -229,6 +229,7 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(uiWorldMarker.Contains("uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;", StringComparison.Ordinal)).IsTrue();
 
 		string uiOutlineInc = File.ReadAllText(Path.Combine(uiDir, "ui_text_outline.gdshaderinc"));
+		AssertThat(uiOutlineInc.Contains("float ui_text_outline_cover(sampler2D glyph_atlas,", StringComparison.Ordinal)).IsTrue();
 		AssertThat(uiOutlineInc.Contains("textureSize(", StringComparison.Ordinal)).IsFalse();
 		int fromFieldIdx = uiOutlineInc.IndexOf("if (from_field)", StringComparison.Ordinal);
 		int firstForIdx = uiOutlineInc.IndexOf("for (int y = -1;", StringComparison.Ordinal);
@@ -239,5 +240,33 @@ public sealed class Dx12AndMemoryOptimizationTests
 		string projectGodot = File.ReadAllText(Path.Combine(godotRoot, "project.godot"));
 		AssertThat(projectGodot.Contains("config/icon=\"res://assets/launcher/fable.png\"", StringComparison.Ordinal)).IsTrue();
 		AssertThat(File.Exists(Path.Combine(godotRoot, "assets", "launcher", "fable.png"))).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies pure storage-layout matching used by <see cref="Engine_TextureUpload"/> to update
+	/// textures in-place on D3D12 without live <c>RS::texture_replace</c> descriptor churn, and
+	/// verifies load-time UI book prebuild restricts eager builds to core screens.
+	/// </summary>
+	[TestCase]
+	public void TextureUploadStorageLayoutAndCoreBookPrebuildInvariants()
+	{
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			512, 512, Godot.Image.Format.Dxt5, true,
+			512, 512, Godot.Image.Format.Dxt5, true)).IsTrue();
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			512, 512, Godot.Image.Format.Dxt5, true,
+			256, 512, Godot.Image.Format.Dxt5, true)).IsFalse();
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			512, 512, Godot.Image.Format.Dxt5, true,
+			512, 512, Godot.Image.Format.Rgba8, true)).IsFalse();
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			512, 512, Godot.Image.Format.Dxt5, true,
+			512, 512, Godot.Image.Format.Dxt5, false)).IsFalse();
+
+		AssertThat(Engine_UiBookPrebuild.Wants("pause")).IsTrue();
+		AssertThat(Engine_UiBookPrebuild.Wants("items")).IsTrue();
+		AssertThat(Engine_UiBookPrebuild.Wants("abilities")).IsFalse();
+		AssertThat(Engine_UiBookPrebuild.Wants("quests")).IsFalse();
+		AssertThat(Engine_UiBookPrebuild.Wants("logbook")).IsFalse();
 	}
 }

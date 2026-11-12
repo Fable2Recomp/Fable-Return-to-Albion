@@ -114,7 +114,7 @@ void fragment() {
 	}
 
 	// Discard after all implicit-derivative texture samples so DXIL/D3D12 quad derivatives stay uniform.
-	if (clipped) {
+	if (clipped || opacity <= 0.001) {
 		discard;
 	}
 

@@ -1729,7 +1729,12 @@ public partial class Engine_PropStreamer : Node3D
                 }
 
                 mesh.ResourceName = Engine_LevelProps.LeafOf(virtualPath);
-                mesh.ResourcePath = Engine_BnkMeshLoader.PathPrefix + virtualPath;
+                mesh.SetMeta(Refii.Models.Engine_MdlComposite.PartPathsMeta, new[] { virtualPath });
+                string fullPath = Engine_BnkMeshLoader.PathPrefix + virtualPath;
+                if (!ResourceLoader.HasCached(fullPath))
+                {
+                    mesh.ResourcePath = fullPath;
+                }
                 if (!Refii.Models.Engine_ClassicMaterial.Active && !SwaysInWind(mesh))
                 {
                     Refii.Entities.Engine_ShadowProxy.MergedCaster(mesh, out _);

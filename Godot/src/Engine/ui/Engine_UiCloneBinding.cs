@@ -70,6 +70,9 @@ public sealed class Engine_UiCloneBinding
 		public float Faded { get; set; } = -1f;
 		public uint Pictured { get; set; }
 
+		/// <summary>Last non-zero visual layer mask observed on <see cref="Mesh"/>, restored when alpha rises above zero.</summary>
+		public uint ActiveLayers { get; set; } = 1u;
+
 		// A bound node's MATERIAL is deliberately not kept here — see Apply.
 	}
 
@@ -252,10 +255,20 @@ public sealed class Engine_UiCloneBinding
 				return;  // the subtree goes with its root
 			}
 
+			MeshInstance3D? meshNode = spatial as MeshInstance3D;
+			uint authoredLayers = meshNode is not null && meshNode.Layers != 0u ? meshNode.Layers : 1u;
+			float initialFaded = element.Quad is not null && meshNode is not null
+				? Engine_UiSceneBuilder.QuadOpacity(meshNode)
+				: -1f;
+			if (meshNode is not null && initialFaded >= 0f && initialFaded <= 0.001f && meshNode.Layers != 0u)
+			{
+				meshNode.Layers = 0u;
+			}
+
 			_bound.Add(new Bound
 			{
 				Node = spatial,
-				Mesh = spatial as MeshInstance3D,
+				Mesh = meshNode,
 				Ordinal = element.Ordinal,
 				Source = element.Ordinal,
 				IsQuad = element.Quad is not null,
@@ -265,6 +278,8 @@ public sealed class Engine_UiCloneBinding
 				// sample that stated it drawn found nothing to change and the node stayed hidden
 				// for good — the co-op screen's X prompt: active, drawn, opacity 1, HIDDEN.
 				Drawn = spatial.Visible,
+				Faded = initialFaded,
+				ActiveLayers = authoredLayers,
 				Pivot = new Vector3(element.PivotX, element.PivotY,
 					Engine_UiSceneBuilder.ToGodotZ(element.PivotZ)),
 			});
@@ -398,13 +413,21 @@ public sealed class Engine_UiCloneBinding
 	private static int Paint(Node node, Rect2 rect)
 	{
 		int applied = 0;
-		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
+		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial existing)
 		{
 			float minX = Mathf.Min(rect.Position.X, rect.End.X);
 			float minY = Mathf.Min(rect.Position.Y, rect.End.Y);
 			float maxX = Mathf.Max(rect.Position.X, rect.End.X);
 			float maxY = Mathf.Max(rect.Position.Y, rect.End.Y);
-			material.SetShaderParameter(ClipRectName, new Vector4(minX, minY, maxX, maxY));
+			var target = new Vector4(minX, minY, maxX, maxY);
+			Variant current = existing.GetShaderParameter(ClipRectName);
+			if (current.VariantType != Variant.Type.Vector4 || !current.AsVector4().IsEqualApprox(target))
+			{
+				if (Engine_UiSceneBuilder.EnsureOwnedMaterial(mesh) is { } material)
+				{
+					material.SetShaderParameter(ClipRectName, target);
+				}
+			}
 			++applied;
 		}
 
@@ -594,6 +617,22 @@ public sealed class Engine_UiCloneBinding
 
 			float alpha = resolve.Opacity[bound.Source];
 
+			// Cull zero-opacity MeshInstance3Ds from RendererSceneCull via `Layers = 0u` without
+			// touching `Node3D.Visible` (which would hide child subtrees). Prevents hidden UI pages
+			// from binding thousands of per-material sampler slots into D3D12's 2,048-sampler heap.
+			if (bound.Mesh is { } layerMesh)
+			{
+				if (layerMesh.Layers != 0u)
+				{
+					bound.ActiveLayers = layerMesh.Layers;
+				}
+				uint wantLayers = alpha > 0.001f ? bound.ActiveLayers : 0u;
+				if (layerMesh.Layers != wantLayers)
+				{
+					layerMesh.Layers = wantLayers;
+				}
+			}
+
 			// A hash of zero is "unstated", not a change: the guest drops a stated hash to zero
 			// mid-write, and the file's own texture stands meanwhile.
 			uint hash = bound.IsQuad && textures is not null && bound.Source < textures.Count
@@ -612,13 +651,11 @@ public sealed class Engine_UiCloneBinding
 
 			// Read each time it is needed, never cached: `Engine_UiTheme.SetMeshText` and
 			// `Engine_UiTheme.Paint` replace `MaterialOverride` on every string change (carrying
-			// `clip_rect` and `opacity` across), and `Engine_UiSceneBuilder.OwnQuadMaterial`
-			// replaces it for a clone that writes privately. A cached material is an orphan:
-			// writes land on something nothing renders, and a quad's `diffuse_tex` would hit the
-			// pattern book's shared material instead of the clone's.
+			// `clip_rect` and `opacity` across), and `Engine_UiSceneBuilder.EnsureOwnedMaterial`
+			// replaces a shared pattern-book material lazily on first mutation.
 			bound.ClearsSeen = MaterialsCleared;
 			if (bound.Mesh is not { } painted ||
-				painted.MaterialOverride is not ShaderMaterial material)
+				painted.MaterialOverride is not ShaderMaterial)
 			{
 				// The next material this node is given must be written, whatever it was last
 				// faded to — an empty label is left with none at all.
@@ -630,16 +667,26 @@ public sealed class Engine_UiCloneBinding
 			if (!Mathf.IsEqualApprox(alpha, bound.Faded))
 			{
 				bound.Faded = alpha;
-				material.SetShaderParameter(OpacityName, alpha);
+				// When `alpha <= 0.001f`, `painted.Layers = 0u` above already culls the mesh from
+				// rendering; only allocate a private copy-on-write material if visible or already owned.
+				if (alpha > 0.001f ||
+					(painted.MaterialOverride is ShaderMaterial current && Engine_UiSceneBuilder.IsOwnedMaterial(painted, current)))
+				{
+					if (Engine_UiSceneBuilder.EnsureOwnedMaterial(painted) is { } fadeMat)
+					{
+						fadeMat.SetShaderParameter(OpacityName, alpha);
+					}
+				}
 				Engine_UiTheme.FadeInlineIcons(painted, alpha);
 			}
 
 			Lap(ref TicksMaterial, ref mark);
 
-			if (picturing && ResolveTexture?.Invoke(hash) is { } picture)
+			if (picturing && ResolveTexture?.Invoke(hash) is { } picture &&
+				Engine_UiSceneBuilder.EnsureOwnedMaterial(painted) is { } picMat)
 			{
 				bound.Pictured = hash;
-				material.SetShaderParameter(DiffuseTexName, picture);
+				picMat.SetShaderParameter(DiffuseTexName, picture);
 			}
 
 			Lap(ref TicksTexture, ref mark);

@@ -14,14 +14,6 @@ public sealed class Fable3Title : Engine_TitleGame
 	public override Engine_Title Title => Engine_Title.Fable3;
 
 	/// <summary>
-	/// Measured 2026-11-09 (Mistpeak gypsy camp, the fx debug op's levelDoubles): all 47 effects the
-	/// level build spawned stood at a live effect of the same hash at distance 0.00 — each
-	/// level-placed CECParticleEmitter creates and places its effect through the particle wrappers
-	/// (fx_owner_hooks.cpp, world_hooks.cpp).
-	/// </summary>
-	public override bool GuestStatesLevelEffects => true;
-
-	/// <summary>
 	/// Measured 2026-11-09 (Mistpeak camp, the guest's own cloth publish): the guest simulated and
 	/// drew the morphed hero's hat and both coat pieces as cloth (3 pieces stated and drawn for the
 	/// hero entity), so its morphed garments keep their cloth.

@@ -79,4 +79,30 @@ public sealed class GameWindowScalingTests
 		(float scale, _) = settings.ComputeViewport3DParameters(new Vector2I(1280, 720));
 		AssertThat(Mathf.Abs(scale - 1.0f) < 1e-4f).IsTrue();
 	}
+
+	[TestCase]
+	public void ResolveVsyncMode_HonoursVsyncOffAcrossVulkanAndD3D12()
+	{
+		var vsyncOff = GameWindowSettings.FromValues(new Dictionary<string, string>
+		{
+			["vsync_mode"] = "off",
+		}, "refii.toml");
+		AssertThat(vsyncOff.Vsync).IsFalse();
+		AssertThat(GameWindow.ResolveVsyncMode(vsyncOff, isD3d12: false)).IsEqual(DisplayServer.VSyncMode.Disabled);
+		AssertThat(GameWindow.ResolveVsyncMode(vsyncOff, isD3d12: true)).IsEqual(DisplayServer.VSyncMode.Disabled);
+
+		var mailbox = GameWindowSettings.FromValues(new Dictionary<string, string>
+		{
+			["vsync_mode"] = "mailbox",
+		}, "refii.toml");
+		AssertThat(GameWindow.ResolveVsyncMode(mailbox, isD3d12: false)).IsEqual(DisplayServer.VSyncMode.Mailbox);
+		AssertThat(GameWindow.ResolveVsyncMode(mailbox, isD3d12: true)).IsEqual(DisplayServer.VSyncMode.Enabled);
+
+		var adaptive = GameWindowSettings.FromValues(new Dictionary<string, string>
+		{
+			["vsync_mode"] = "adaptive",
+		}, "refii.toml");
+		AssertThat(GameWindow.ResolveVsyncMode(adaptive, isD3d12: false)).IsEqual(DisplayServer.VSyncMode.Adaptive);
+		AssertThat(GameWindow.ResolveVsyncMode(adaptive, isD3d12: true)).IsEqual(DisplayServer.VSyncMode.Enabled);
+	}
 }

@@ -6,7 +6,7 @@
 
 **A modern, native open-world PC and Android remake of Fable II and Fable III**
 
-[![Discord](https://img.shields.io/discord/1234567890?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/8UFM6p7UdR)
+[![Discord](https://img.shields.io/discord/1375490057905111151?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/8UFM6p7UdR)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Android%20ARM64-blue.svg)](#cross-platform-matrix)
 [![Engine](https://img.shields.io/badge/Engine-Godot%204.7.1%20.NET-478cbf?logo=godotengine&logoColor=white)](https://godotengine.org)
 [![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](#prerequisites)

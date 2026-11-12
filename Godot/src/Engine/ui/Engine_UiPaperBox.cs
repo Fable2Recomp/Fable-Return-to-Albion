@@ -483,7 +483,7 @@ public sealed class Engine_UiPaperBox
 			return;
 		}
 
-		if (text.MaterialOverride is not ShaderMaterial material || !_view.IsInsideTree())
+		if (!_view.IsInsideTree() || Engine_UiSceneBuilder.EnsureOwnedMaterial(text) is not { } material)
 		{
 			return;
 		}
@@ -498,7 +498,7 @@ public sealed class Engine_UiPaperBox
 
 	private static void Unclip(MeshInstance3D text)
 	{
-		if (text.MaterialOverride is ShaderMaterial material)
+		if (Engine_UiSceneBuilder.EnsureOwnedMaterial(text) is { } material)
 		{
 			material.SetShaderParameter(ClipRectName, new Vector4(-1e9f, -1e9f, 1e9f, 1e9f));
 		}

@@ -238,6 +238,27 @@ void FinishStuckInGameLoadingScreenFromHost(uint8_t* base) {
   static uint32_t watched = 0;
   static uint32_t stuck_steps = 0;
 
+  // Once the guest has activated the destination world (`World+0xA8 != 0`), hold the final
+  // loading-screen teardown while Godot's world build is still pending so `CmdLoadSaveGame`
+  // stays parked in its loading screen rather than entering world simulation and audio early.
+  // Before `World+0xA8 != 0`, intermediate preload screens must still finish so the guest can
+  // reach entity activation.
+  if (refii_bridge_world_build_pending() != 0) {
+    const auto hop = [&](uint32_t at, uint32_t offset) -> uint32_t {
+      return IsGuestPointer(at) ? ReadU32(base, at + offset) : 0u;
+    };
+    uint32_t world = ReadU32(base, refii::guest::Address(0x83496AB8u));
+    world = hop(world, 0x0Cu);
+    world = hop(world, 0x58u);
+    world = hop(world, 0x04u);
+    world = hop(world, 0x00u);
+    if (IsGuestPointer(world) && ReadU8(base, world + 0xA8u) != 0u) {
+      watched = 0;
+      stuck_steps = 0;
+      return;
+    }
+  }
+
   // NOT gated on the world being up. The guest's game thread blocks on the loading
   // screen's fade-out, which only its present loop ticks — off in this headless build —
   // so the level change that would activate the world can never advance while the block

@@ -991,10 +991,9 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 				_cloned[ordinal] = unit;
 			}
 
-			// Bind and prune suppressed subtrees BEFORE owning materials or entering the scene
-			// tree, so suppressed subtrees never allocate private ShaderMaterials or UBOs.
+			// Bind and prune suppressed subtrees BEFORE entering the scene tree; materials stay
+			// shared with the pattern book and duplicate lazily via EnsureOwnedMaterial on mutation.
 			_binding.Bind(clone, Document, Suppressed);
-			Engine_UiTheme.OwnMaterials(clone);
 
 			AddChild(clone);
 			_unitAuthored[clone] = clone.Transform;

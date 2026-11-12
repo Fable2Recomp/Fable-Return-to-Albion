@@ -97,9 +97,12 @@ public static class GameChildProcess
 		arguments.Add(driver);
 
 		// Godot's per-pass GPU timestamps (`RENDER_TIMESTAMP`) are captured only under
-		// `--gpu-profile`. The switch is not bound to script, so it rides the command line like
-		// the thread model. Read by Engine_GpuPasses.
-		if (Refii.Core.Engine_RefiiConfig.Bool(config, "gpu_profile", false))
+		// `--gpu-profile`. Omit `--gpu-profile` by default on Direct3D 12 (where safe-thread command
+		// recording pays per-pass timestamp query resolve overhead without separate-thread overlap)
+		// unless explicitly requested via REFII_D3D12_GPU_PROFILE=1. Read by Engine_GpuPasses.
+		bool allowGpuProfile = !string.Equals(driver, "d3d12", System.StringComparison.OrdinalIgnoreCase) ||
+			OS.GetEnvironment("REFII_D3D12_GPU_PROFILE") == "1";
+		if (allowGpuProfile && Refii.Core.Engine_RefiiConfig.Bool(config, "gpu_profile", false))
 		{
 			arguments.Add("--gpu-profile");
 		}

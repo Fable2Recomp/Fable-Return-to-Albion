@@ -2105,13 +2105,17 @@ public static class Engine_TexLibrary
 					return;
 				}
 
-				// Avoid in-place dimension-changing ImageTexture.SetImage on live UI textures:
-				// in Godot 4.7 D3D12, changing an ImageTexture's width/height frees its active
-				// RD::Texture RID and allocates a new one while bound to live UiViewport shader
-				// descriptor tables, which can hang the D3D12 command queue. The enhanced image
-				// is already persisted to Engine_TexCache on disk for the next load.
-				if (entry.Semantic == TexSemantic.Ui &&
-					(target.GetWidth() != image.GetWidth() || target.GetHeight() != image.GetHeight()))
+				// Avoid in-place RD::Texture RID replacement (`RS::texture_replace`) on Direct3D 12
+				// whenever dimensions, format, or mipmaps differ (or on live UI textures whose dimensions
+				// change): replacing an active ImageTexture's underlying ID3D12Resource while bound to
+				// live shader descriptor tables can fault/TDR the D3D12 command queue. Matching-layout
+				// updates use `ImageTexture.Update` (`RS::texture_2d_update`), and layout-changing
+				// enhancements are already persisted to Engine_TexCache on disk for the next load.
+				bool skipLiveReplace =
+					(Engine_TextureUpload.IsD3D12Driver && !Engine_TextureUpload.CanUpdateInPlace(target, image)) ||
+					(entry.Semantic == TexSemantic.Ui &&
+						(target.GetWidth() != image.GetWidth() || target.GetHeight() != image.GetHeight()));
+				if (skipLiveReplace)
 				{
 					lock (Gate)
 					{

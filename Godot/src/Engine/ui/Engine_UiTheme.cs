@@ -310,6 +310,7 @@ public sealed class Engine_UiTheme
 		node.MaterialOverride = Engine_UiSceneBuilder.TextMaterial(opaque, selection.Font.Atlas);
 		if (node.MaterialOverride is ShaderMaterial fresh)
 		{
+			Engine_UiSceneBuilder.MarkOwnedMaterial(node, fresh);
 			if (clip is { } c && c.VariantType != Variant.Type.Nil)
 			{
 				fresh.SetShaderParameter(ClipRectName, c);
@@ -401,12 +402,15 @@ public sealed class Engine_UiTheme
 				iconMaterial.SetShaderParameter(ClipSeatName, iconSeat);
 			}
 
-			node.AddChild(MarkInlineIcon(new MeshInstance3D
+			var iconQuad = MarkInlineIcon(new MeshInstance3D
 			{
 				Mesh = IconQuad(icon.Size),
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
 				MaterialOverride = iconMaterial,
-			}));
+				Layers = iconAlpha > 0.001f ? 1u : 0u,
+			});
+			Engine_UiSceneBuilder.MarkOwnedMaterial(iconQuad, iconMaterial);
+			node.AddChild(iconQuad);
 		}
 
 		node.Mesh = mesh;
@@ -420,6 +424,7 @@ public sealed class Engine_UiTheme
 
 		if (node.MaterialOverride is ShaderMaterial fresh)
 		{
+			Engine_UiSceneBuilder.MarkOwnedMaterial(node, fresh);
 			if (clip is { } c && c.VariantType != Variant.Type.Nil)
 			{
 				fresh.SetShaderParameter(ClipRectName, c);
@@ -557,6 +562,10 @@ public sealed class Engine_UiTheme
 		label.Mesh = built.Mesh;
 		label.MaterialOverride =
 			built.Mesh is null ? null : Engine_UiSceneBuilder.TextMaterial(colour, atlas);
+		if (label.MaterialOverride is ShaderMaterial paintedText)
+		{
+			Engine_UiSceneBuilder.MarkOwnedMaterial(label, paintedText);
+		}
 
 		foreach (Engine_UiTextMesh.IconPlacement icon in built.Icons)
 		{
@@ -565,13 +574,16 @@ public sealed class Engine_UiTheme
 				continue;
 			}
 
+			ShaderMaterial iconMat = IconMaterial(art, colour.A);
 			var quad = MarkInlineIcon(new MeshInstance3D
 			{
 				Mesh = IconQuad(icon.Size),
 				// Top-left anchored, drawing down in -Y, matching the glyph cells.
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
-				MaterialOverride = IconMaterial(art, colour.A),
+				MaterialOverride = iconMat,
+				Layers = colour.A > 0.001f ? 1u : 0u,
 			});
+			Engine_UiSceneBuilder.MarkOwnedMaterial(quad, iconMat);
 
 			label.AddChild(quad);
 		}
@@ -626,12 +638,22 @@ public sealed class Engine_UiTheme
 	public static bool SetIconOpacity(Node node, float alpha)
 	{
 		if (node is not MeshInstance3D icon || !IsInlineIcon(icon) ||
-			icon.MaterialOverride is not ShaderMaterial material)
+			icon.MaterialOverride is not ShaderMaterial)
 		{
 			return false;
 		}
 
-		material.SetShaderParameter(OpacityName, alpha);
+		uint wantLayers = alpha > 0.001f ? 1u : 0u;
+		if (icon.Layers != wantLayers)
+		{
+			icon.Layers = wantLayers;
+		}
+
+		if (alpha > 0.001f && Engine_UiSceneBuilder.EnsureOwnedMaterial(icon) is { } material)
+		{
+			material.SetShaderParameter(OpacityName, alpha);
+		}
+
 		return true;
 	}
 

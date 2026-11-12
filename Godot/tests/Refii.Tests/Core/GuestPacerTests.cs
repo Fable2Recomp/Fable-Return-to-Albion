@@ -14,9 +14,9 @@ using static GdUnit4.Assertions;
 public sealed class GuestPacerTests
 {
 	[TestCase]
-	public void SteadyFrameRatesFrom30To240Hz_MaintainExact30StepsPerSecond()
+	public void SteadyFrameRatesFrom15To240Hz_MaintainExact30StepsPerSecond()
 	{
-		int[] refreshRates = { 30, 45, 50, 59, 60, 75, 90, 120, 144, 165, 240 };
+		int[] refreshRates = { 15, 20, 24, 30, 45, 50, 59, 60, 75, 90, 120, 144, 165, 240 };
 		const double durationSeconds = 10.0;
 		const int expectedSteps = 300;
 
@@ -32,12 +32,14 @@ public sealed class GuestPacerTests
 			{
 				wallNow += dt;
 				int granted = pacer.Advance(dt, wallNow);
-				AssertThat(granted >= 0 && granted <= 1).IsTrue();
+				AssertThat(granted >= 0 && granted <= Engine_GuestPacer.MaxStepsPerFrame).IsTrue();
 				totalSteps += granted;
 			}
 
-			// Across 10 seconds at any steady refresh rate >= 30 Hz, total steps must match 300 within +/-1 boundary step.
-			AssertThat(Math.Abs(totalSteps - expectedSteps) <= 1).IsTrue();
+			// Across 10 seconds at any steady refresh rate (15..240 Hz), total steps must match 300 within +/-1 boundary step.
+			AssertThat(Math.Abs(totalSteps - expectedSteps) <= 1)
+				.OverrideFailureMessage($"hz={hz} produced {totalSteps} steps (expected {expectedSteps})")
+				.IsTrue();
 		}
 	}
 
@@ -45,8 +47,8 @@ public sealed class GuestPacerTests
 	public void ThirtyHzVsyncJitter_DoesNotDropHalfStepsOrBurst()
 	{
 		var pacer = new Engine_GuestPacer();
-		// Alternate +/-1.2 ms around 33.333 ms (typical 30 Hz VSync presentation jitter).
-		double[] pattern = { 0.0321, 0.0345666667, 0.0330, 0.0336666667 };
+		// Alternate +/-6 ms around 33.333 ms (heavy 30 Hz VSync / compositor jitter).
+		double[] pattern = { 0.0273333333, 0.0393333333, 0.0313333333, 0.0353333333 };
 		double wallNow = 0.0;
 		int totalSteps = 0;
 
@@ -57,8 +59,8 @@ public sealed class GuestPacerTests
 			totalSteps += pacer.Advance(dt, wallNow);
 		}
 
-		// 300 frames (~10.0 s) at jittered 30 Hz should stay within 298..301 steps (never halving to 150).
-		AssertThat(totalSteps >= 298 && totalSteps <= 301).IsTrue();
+		// 300 frames (10.000 s) at jittered 30 Hz stays exact at 299..301 steps (never halving or slowing down).
+		AssertThat(totalSteps >= 299 && totalSteps <= 301).IsTrue();
 	}
 
 	[TestCase]
@@ -75,10 +77,11 @@ public sealed class GuestPacerTests
 			pacer.Advance(dt240, wallNow);
 		}
 
-		// Inject a 160 ms hitch (previously banked 4 catch-up steps that drained in 16 ms at ~8x speed!).
-		wallNow += 0.160;
-		int hitchGrant = pacer.Advance(0.160, wallNow);
+		// Inject a 500 ms hitch (>= HitchThresholdSeconds = 200 ms): grants 1 step and zeroes accumulator.
+		wallNow += 0.500;
+		int hitchGrant = pacer.Advance(0.500, wallNow);
 		AssertThat(hitchGrant).IsEqual(1);
+		AssertThat(pacer.AccumulatedSeconds).IsEqual(0.0);
 		double hitchWallTime = wallNow;
 
 		// Run the next 7 frames at 240 FPS (~29.17 ms < 33.33 ms): ZERO steps may be granted!
@@ -91,7 +94,7 @@ public sealed class GuestPacerTests
 		AssertThat(burstWindowSteps).IsEqual(0);
 
 		// Continue for the remainder of 1 full second (233 more frames = 240 frames = 1.000 s post-hitch):
-		// Total post-hitch grants across 1.000 s must be 30 (+/-1), NEVER 33-34 banked steps!
+		// Total post-hitch grants across 1.000 s must be 30 (+/-1), NEVER banked catch-up steps!
 		int postHitchOneSecondSteps = burstWindowSteps;
 		double firstPostHitchGrantDelay = -1.0;
 		for (int i = 7; i < 240; ++i)
@@ -117,11 +120,16 @@ public sealed class GuestPacerTests
 		const double dt240 = 1.0 / 240.0;
 		double wallNow = 0.0;
 
-		for (int i = 0; i < 6; ++i)
+		int lowFpsSteps = 0;
+		for (int i = 0; i < 20; ++i)
 		{
 			wallNow += dt22;
-			pacer.Advance(dt22, wallNow);
+			lowFpsSteps += pacer.Advance(dt22, wallNow);
 		}
+		// 20 frames * 45 ms = 0.900 s -> 27 HF steps (26 granted + 0.999999999999996 * Period carried in IEEE-754).
+		AssertThat(lowFpsSteps >= 26 && lowFpsSteps <= 27).IsTrue();
+		double conservedSeconds = (lowFpsSteps * Engine_GuestPacer.Period) + pacer.AccumulatedSeconds;
+		AssertThat(Math.Abs(conservedSeconds - 0.900) < 1e-9).IsTrue();
 
 		// Recover immediately to 240 FPS for 1.0 second: must never exceed 30 (+1 boundary) steps.
 		int recoverySteps = 0;
@@ -135,19 +143,15 @@ public sealed class GuestPacerTests
 	}
 
 	[TestCase]
-	public void WallClockMinimumInterval_BlocksSubFrameInflatedDeltaBursts()
+	public void ExtremeSubHitchSpike_CapsAtMaxStepsPerFrameAndClearsOverflow()
 	{
 		var pacer = new Engine_GuestPacer();
 
-		// Grant initial step at wall = 1.000s.
-		AssertThat(pacer.Advance(0.034, 1.000)).IsEqual(1);
-
-		// Even if Godot reports an inflated 0.035s delta only 4 ms later in real wall time (1.004s),
-		// the wall-clock guard withholds the grant so simulation cannot surge ahead of real time.
-		AssertThat(pacer.Advance(0.035, 1.004)).IsEqual(0);
-
-		// Once real wall time advances past MinGrantIntervalSeconds (e.g. 1.034s), the grant releases cleanly.
-		AssertThat(pacer.Advance(0.004, 1.034)).IsEqual(1);
+		// 180 ms is just under HitchThresholdSeconds (200 ms) and represents 5.4 steps:
+		// caps at MaxStepsPerFrame (4) and clears overflow so the next frame starts clean.
+		AssertThat(pacer.Advance(0.180, 0.180)).IsEqual(Engine_GuestPacer.MaxStepsPerFrame);
+		AssertThat(pacer.AccumulatedSeconds).IsEqual(0.0);
+		AssertThat(pacer.Advance(0.004, 0.184)).IsEqual(0);
 	}
 
 	[TestCase]

@@ -49,8 +49,10 @@ public abstract class Engine_TitleGame
 	/// <summary>
 	/// The running guest creates and places every standing effect its level places, so the level
 	/// build spawns none of them from the level data (<see cref="Refii.Fx.Engine_LiveFx.GuestOwnsLevelEffects"/>).
+	/// Both Fable 2 and Fable 3 guests create and publish their level-placed <c>CECParticleEmitter</c>
+	/// and <c>CECParticleAttacher</c> effects through the live particle wrappers.
 	/// </summary>
-	public virtual bool GuestStatesLevelEffects => false;
+	public virtual bool GuestStatesLevelEffects => true;
 
 	/// <summary>
 	/// A morph-blended model keeps its cloth. Fable 2's guest drops it: its MorphTarget blend copies

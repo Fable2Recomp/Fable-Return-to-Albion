@@ -2202,6 +2202,13 @@ public partial class GameDebugServer : Node
 					// The held sky's radiance size and its own, applied on the next frame; null when none is held.
 					["skyRadianceHeld"] = Refii.Level.Engine_SkyCosts.LeanRadianceState,
 					["meshLodThreshold"] = GetViewport().MeshLodThreshold,
+					["scaling3dMode"] = GetViewport().Scaling3DMode.ToString(),
+					["scaling3dScale"] = GetViewport().Scaling3DScale,
+					["internal3dSize"] = new
+					{
+						width = System.Math.Max(1, (int)System.MathF.Round(GetTree().Root.Size.X * GetViewport().Scaling3DScale)),
+						height = System.Math.Max(1, (int)System.MathF.Round(GetTree().Root.Size.Y * GetViewport().Scaling3DScale)),
+					},
 					["viewportPhysicalSize"] = new { width = GetTree().Root.Size.X, height = GetTree().Root.Size.Y },
 					// Window's ViewportTexture accessor includes canvas stretch; not the RS or internal 3D extent.
 					["viewportTextureAccessorSize"] = new { width = GetViewport().GetTexture().GetWidth(), height = GetViewport().GetTexture().GetHeight() },
@@ -2216,6 +2223,8 @@ public partial class GameDebugServer : Node
 					["shadowEligible"] = Refii.Lighting.Engine_LightShadowBudget.Eligible,
 					["shadowParaboloid"] = Refii.Lighting.Engine_LightShadowBudget.Paraboloid,
 					["gi"] = !Refii.Lighting.Engine_GiRefresh.ForcedOff,
+					["sdfgiConfigured"] = Refii.Lighting.Engine_LevelLighting.SdfgiEnabled,
+					["sdfgiLive"] = GetViewport().World3D?.Environment?.SdfgiEnabled ?? false,
 					["giHalf"] = Refii.Lighting.Engine_LevelLighting.GiHalfResolution,
 					["fillFloor"] = Refii.Lighting.Engine_LightingFrame.ModernFloorShare,
 					["giRebuilds"] = Refii.Lighting.Engine_GiRefresh.Rebuilds,

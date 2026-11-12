@@ -958,7 +958,8 @@ public partial class GameFx : Node3D
             Transform3D statedEntityRoot = Engine_FxSystem.FxToEntityMeshTransform(statedFxRoot);
             if (entities.TryPlaceAttachedEffect(owner, attached, statedEntityRoot, out Transform3D placedEntityRoot))
             {
-                _boneRoots[rootKey] = (statedEntityRoot, placedEntityRoot, false);
+                bool unrotated = _rootIdentity.TryGetValue(rootKey, out bool isId) && isId;
+                _boneRoots[rootKey] = (statedEntityRoot, placedEntityRoot, unrotated);
             }
 
             if (applyToNodes &&
@@ -983,7 +984,12 @@ public partial class GameFx : Node3D
         else if (_boneRoots.TryGetValue(key, out var bonePlacement))
         {
             _timelines.Remove(key);
-            smoothed = Engine_FxSystem.EntityMeshToFxTransform(bonePlacement.BoneEntityRoot);
+            // Honour `OrientParticleToAttachmentPoint`: when the guest published an identity basis
+            // (`_rootIdentity` -> `Unrotated`), keep the flame upright (`GuestIdentity`) at the dummy's
+            // world position instead of tilting it by the wall bracket's bone rotation (`sub_821EC8A8`).
+            smoothed = bonePlacement.Unrotated
+                ? new Transform3D(GuestIdentity, bonePlacement.BoneEntityRoot.Origin)
+                : Engine_FxSystem.EntityMeshToFxTransform(bonePlacement.BoneEntityRoot);
             _statedSplineByKey.TryGetValue(key, out activeWorldSpline);
         }
         else
@@ -1191,7 +1197,7 @@ public partial class GameFx : Node3D
         // stale root from the last 15 Hz particle step — never compose `StatedEntityRoot^-1 * rawGroupEntityWorld`
         // or it will cancel out the character's movement since the last particle step.
         resolvedEntityWorld = new Transform3D(
-            rawIdentityBasis ? Engine_FxSystem.EntityGuestIdentity : bone.BoneEntityRoot.Basis,
+            rawIdentityBasis || bone.Unrotated ? Engine_FxSystem.EntityGuestIdentity : bone.BoneEntityRoot.Basis,
             bone.BoneEntityRoot.Origin);
         return true;
     }

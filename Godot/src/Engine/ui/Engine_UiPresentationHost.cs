@@ -152,12 +152,21 @@ public partial class Engine_UiPresentationHost : Node3D
 		}).CallDeferred();
 	}
 
+	private static readonly StringName ClipSeatParamName = "clip_seat";
+	private static readonly Vector4 IdentitySeat = new(1f, 1f, 0f, 0f);
+
 	private void StampSeat(Node node)
 	{
-		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material &&
-			Engine_UiSceneBuilder.IsUiShader(material.Shader))
+		if (node is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial existing &&
+			Engine_UiSceneBuilder.IsUiShader(existing.Shader))
 		{
-			material.SetShaderParameter("clip_seat", _menuSeat);
+			Variant current = existing.GetShaderParameter(ClipSeatParamName);
+			Vector4 currentSeat = current.VariantType == Variant.Type.Vector4 ? current.AsVector4() : IdentitySeat;
+			if (!currentSeat.IsEqualApprox(_menuSeat) &&
+				Engine_UiSceneBuilder.EnsureOwnedMaterial(mesh) is { } material)
+			{
+				material.SetShaderParameter(ClipSeatParamName, _menuSeat);
+			}
 		}
 
 		foreach (Node child in node.GetChildren())

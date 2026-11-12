@@ -87,6 +87,14 @@ public sealed class Engine_EntityAttachments
 		public bool DummyResolved;
 
 		/// <summary>
+		/// True when <see cref="ResolveDummy"/> actually resolved <see cref="Dummy"/> on a parent
+		/// <c>.gmd</c> sidecar, static <c>.mdl</c> bone table, or character focal bone. When false
+		/// for a non-empty <see cref="Dummy"/>, <see cref="TryPlace"/> declines so the guest's own
+		/// stated child transform stands rather than snapping to the parent's origin.
+		/// </summary>
+		public bool DummyFound;
+
+		/// <summary>
 		/// True only when <see cref="ResolveDummy"/> fell back to <see cref="TryResolveFocalBone"/>
 		/// because no part GMD named the dummy, so <see cref="Mount"/> needs a one-shot rest offset
 		/// solved from the guest bone pose.
@@ -372,6 +380,15 @@ public sealed class Engine_EntityAttachments
 			if (!use.DummyResolved)
 			{
 				ResolveDummy(use, parentRig, parentParts);
+			}
+
+			// If a named dummy could not be resolved on any parent GMD, static .mdl bone table, or
+			// character focal bone, decline host re-placement so the guest's own stated child world
+			// transform stands instead of collapsing onto `parentPlacement` with an identity mount.
+			if (!use.DummyFound && use.Dummy.Length != 0)
+			{
+				++Unresolved;
+				return false;
 			}
 
 			// Objects classified as furniture (chairs, benches, stools) being dragged on the floor
@@ -721,6 +738,7 @@ public sealed class Engine_EntityAttachments
 	private static void ResolveDummy(Record record, Engine_EntitySkeleton? rig, string[] parentParts)
 	{
 		record.DummyResolved = true;
+		record.DummyFound = false;
 		record.FocalFallback = false;
 		record.Bone = -1;
 		record.Mount = Transform3D.Identity;
@@ -746,13 +764,30 @@ public sealed class Engine_EntityAttachments
 			}
 
 			record.Mount = chain;
+			record.DummyFound = true;
 			return;
+		}
+
+		if (rig is null)
+		{
+			foreach (string part in parentParts)
+			{
+				if (Refii.Level.Engine_LevelFx.TryDummyTransform(part, record.Dummy, out Transform3D fallbackMount) ||
+					(Refii.Level.Engine_LevelProps.CompanionPath(part) is { Length: > 0 } companion &&
+					 Refii.Level.Engine_LevelFx.TryDummyTransform(companion, record.Dummy, out fallbackMount)))
+				{
+					record.Mount = fallbackMount;
+					record.DummyFound = true;
+					return;
+				}
+			}
 		}
 
 		if (record.Bone < 0 && TryResolveFocalBone(record.Dummy, rig, out int focalBone))
 		{
 			record.Bone = focalBone;
 			record.Mount = Transform3D.Identity;
+			record.DummyFound = true;
 			record.FocalFallback = true;
 		}
 	}

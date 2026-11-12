@@ -2512,25 +2512,56 @@ public partial class GameEntities : Node3D
     /// <summary><see cref="PartPaths"/> per mesh, computed once.</summary>
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Mesh, string[]> _partPathsByMesh = new();
 
+    /// <summary>Cached single-element path arrays keyed by <see cref="MetaEntityModel"/> hash when a mesh carries neither <c>part_paths</c> nor <c>ResourcePath</c>.</summary>
+    private static readonly System.Collections.Generic.Dictionary<uint, string[]> _partPathsByModelHash = new();
+
     /// <summary>
     /// The model paths behind a node's mesh — every part of a composite, or the one model. The
     /// dummy an attachment names is a record in one of their `.mdl.gmd` sidecars.
     /// </summary>
     private static string[] PartPaths(MeshInstance3D node)
     {
-        if (Refii.Entities.Engine_BodyVariants.SourceMesh(node) is not { } mesh)
+        if (Refii.Entities.Engine_BodyVariants.SourceMesh(node) is { } mesh)
         {
-            return System.Array.Empty<string>();
+            if (!_partPathsByMesh.TryGetValue(mesh, out string[]? known))
+            {
+                known = PartPathsOf(mesh);
+                _partPathsByMesh.AddOrUpdate(mesh, known);
+            }
+
+            if (known.Length != 0)
+            {
+                return known;
+            }
         }
 
-        if (_partPathsByMesh.TryGetValue(mesh, out string[]? known))
+        if (node.HasMeta(MetaEntityModel))
         {
-            return known;
+            uint modelHash = (uint)node.GetMeta(MetaEntityModel).AsInt64();
+            if (modelHash != 0u)
+            {
+                lock (_partPathsByModelHash)
+                {
+                    if (_partPathsByModelHash.TryGetValue(modelHash, out string[]? byHash))
+                    {
+                        return byHash;
+                    }
+                }
+
+                string? resolved = Refii.Level.Engine_PropModelIndex.Resolve(modelHash, System.Array.Empty<string>());
+                string[] byModel = !string.IsNullOrEmpty(resolved) ? new[] { resolved } : System.Array.Empty<string>();
+                if (byModel.Length != 0)
+                {
+                    lock (_partPathsByModelHash)
+                    {
+                        _partPathsByModelHash[modelHash] = byModel;
+                    }
+                }
+                return byModel;
+            }
         }
 
-        string[] paths = PartPathsOf(mesh);
-        _partPathsByMesh.AddOrUpdate(mesh, paths);
-        return paths;
+        return System.Array.Empty<string>();
     }
 
     private static string[] PartPathsOf(Mesh mesh) =>
@@ -4342,9 +4373,10 @@ public partial class GameEntities : Node3D
         ArrayMesh? mesh = Refii.Level.Engine_PropStreamer.Resolve(path, out bool present);
         if (mesh is not null)
         {
-            if (mesh.ResourcePath.Length == 0)
+            string fullPath = Refii.Models.Engine_BnkMeshLoader.PathPrefix + path;
+            if (mesh.ResourcePath.Length == 0 && !ResourceLoader.HasCached(fullPath))
             {
-                mesh.ResourcePath = Refii.Models.Engine_BnkMeshLoader.PathPrefix + path;
+                mesh.ResourcePath = fullPath;
             }
             return mesh;
         }

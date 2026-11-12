@@ -16,6 +16,42 @@ public static class Engine_TextureUpload
     /// <summary>Whether uploads go through <see cref="AndroidTextureUpload"/>'s preparation.</summary>
     private static bool Prepares => Engine_Platform.IsAndroid && AndroidTextureUpload.Policy.Android;
 
+    private sealed record UploadLayout(int Width, int Height, Image.Format Format, bool Mipmaps);
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ImageTexture, UploadLayout> Layouts = new();
+    private static bool? _isD3D12Driver;
+
+    /// <summary>True when the active RenderingServer driver is Direct3D 12.</summary>
+    public static bool IsD3D12Driver => _isD3D12Driver ??=
+        string.Equals(RenderingServer.GetCurrentRenderingDriverName(), "d3d12", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Pure helper verifying exact storage parity (<c>width, height, format, mipmaps</c>) required
+    /// for an in-place <c>RS::texture_2d_update</c> without reallocating/replacing an <c>RD::Texture</c>.
+    /// </summary>
+    public static bool MatchesStorageLayout(
+        int currentWidth, int currentHeight, Image.Format currentFormat, bool currentMipmaps,
+        int newWidth, int newHeight, Image.Format newFormat, bool newMipmaps) =>
+        currentWidth == newWidth &&
+        currentHeight == newHeight &&
+        currentFormat == newFormat &&
+        currentMipmaps == newMipmaps;
+
+    /// <summary>
+    /// True when <paramref name="image"/> matches <paramref name="texture"/>'s uploaded dimensions,
+    /// format, and mipmap state without performing any GPU readback.
+    /// </summary>
+    public static bool CanUpdateInPlace(ImageTexture texture, Image image)
+    {
+        if (Layouts.TryGetValue(texture, out UploadLayout? layout))
+        {
+            return MatchesStorageLayout(
+                layout.Width, layout.Height, layout.Format, layout.Mipmaps,
+                image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps());
+        }
+
+        return false;
+    }
+
     /// <summary>Creates a 2D texture from a caller-owned image.</summary>
     /// <param name="image">Caller-owned decoded image, which is never modified.</param>
     /// <returns>The ordinary Godot texture with capability-compatible storage.</returns>
@@ -24,7 +60,18 @@ public static class Engine_TextureUpload
     public static ImageTexture CreateTexture(Image image, bool world = false) =>
         Engine_ServerSyncs.RunGpuUpload(
             image.GetDataSize(),
-            () => Prepares ? AndroidTextureUpload.CreateTexture(image, world) : ImageTexture.CreateFromImage(image));
+            () =>
+            {
+                if (Prepares)
+                {
+                    return AndroidTextureUpload.CreateTexture(image, world);
+                }
+
+                ImageTexture created = ImageTexture.CreateFromImage(image);
+                Layouts.AddOrUpdate(created, new UploadLayout(
+                    image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
+                return created;
+            });
 
     /// <summary>
     /// The image in the form <see cref="CreateTexture"/> would upload it, for a worker that makes
@@ -42,8 +89,22 @@ public static class Engine_TextureUpload
     {
         Engine_ServerSyncs.RunGpuUpload(image.GetDataSize(), () =>
         {
-            if (Prepares) AndroidTextureUpload.SetImage(texture, image, world);
-            else texture.SetImage(image);
+            if (Prepares)
+            {
+                AndroidTextureUpload.SetImage(texture, image, world);
+                return;
+            }
+
+            if (CanUpdateInPlace(texture, image))
+            {
+                texture.Update(image);
+            }
+            else
+            {
+                texture.SetImage(image);
+                Layouts.AddOrUpdate(texture, new UploadLayout(
+                    image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
+            }
         });
     }
 

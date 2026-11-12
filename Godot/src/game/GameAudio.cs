@@ -58,6 +58,7 @@ public partial class GameAudio : Node
 	private const int BootReports = 3;
 
 	private double _statsTimer;
+	private long _lastStatsTimestamp;
 	private ulong _lastPushed;
 	private ulong _lastDropped;
 	private ulong _lastUnderruns;
@@ -137,6 +138,7 @@ public partial class GameAudio : Node
 
 	public override void _ExitTree()
 	{
+		_output?.SetMuted(false);
 		// Hand the mix back on the way out. Leaving the guest's output discarded with
 		// nothing playing the voices would be silence that looks like a bug in the guest.
 		if (_voicePlayback)
@@ -166,8 +168,13 @@ public partial class GameAudio : Node
 			return;
 		}
 
-		PumpVoices();
-		ReportHealth(delta);
+		// When the guest has already entered active world gameplay (`WorldIsReady()`) while Godot's
+		// loading cover is still held, mute the output bus without halting the 48 kHz effect clock
+		// so ambient/NPC audio never leaks through the loading screen on Fable 2 or Fable 3.
+		bool muteUnderCover = GameWorld.CoverHeld && HostBridge.WorldIsReady();
+		_output.SetMuted(muteUnderCover);
+		PumpVoices(muteUnderCover);
+		ReportHealth();
 	}
 
 	/// <summary>
@@ -179,7 +186,7 @@ public partial class GameAudio : Node
 	/// this deliberately does NOT do is drain everything the moment it appears — that would
 	/// run Godot ahead of the simulation by up to the guest's ten-packet cap.
 	/// </summary>
-	private void PumpVoices()
+	private void PumpVoices(bool muteUnderCover)
 	{
 		if (!_voicePlayback || _voices is null)
 		{
@@ -220,7 +227,7 @@ public partial class GameAudio : Node
 			// a feed delivers it. Skipping the call would strand that audio forever.
 			_voices.Feed(
 				voice.Handle, voice.Generation, voice.SampleRate, voice.Channels,
-				voice.Volume, voice.PanLeft, voice.PanRight, _voicePcm, (int)taken);
+				muteUnderCover ? 0f : voice.Volume, voice.PanLeft, voice.PanRight, _voicePcm, (int)taken);
 			_voices.SetPitch(voice.Handle, voice.Generation, voice.PitchRatio);
 		}
 
@@ -246,9 +253,18 @@ public partial class GameAudio : Node
 	/// always print, giving every run a boot record, and after that it stays quiet unless
 	/// something is worth reading.
 	/// </summary>
-	private void ReportHealth(double delta)
+	private void ReportHealth()
 	{
-		_statsTimer += delta;
+		long now = System.Diagnostics.Stopwatch.GetTimestamp();
+		if (_lastStatsTimestamp == 0)
+		{
+			_lastStatsTimestamp = now;
+			return;
+		}
+
+		double wallDelta = (now - _lastStatsTimestamp) / (double)System.Diagnostics.Stopwatch.Frequency;
+		_lastStatsTimestamp = now;
+		_statsTimer += wallDelta;
 		if (_statsTimer < ReportIntervalSeconds)
 		{
 			return;

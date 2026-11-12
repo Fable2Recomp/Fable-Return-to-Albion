@@ -18,10 +18,10 @@ namespace Refii.Ui;
 /// </remarks>
 public static class Engine_UiBookPrebuild
 {
-    private static readonly string[] PhoneBooks = { "pause", "items" };
+    private static readonly string[] CoreBooks = { "pause", "items" };
 
     /// <summary>True when the book of the screen template <paramref name="name"/> is built behind the loading screen.</summary>
     public static bool Wants(string name) =>
-        !Refii.Core.Engine_Platform.IsAndroid ||
-        (!Refii.Game.AndroidMemoryRelease.LowRamMode && Array.IndexOf(PhoneBooks, name) >= 0);
+        (!Refii.Core.Engine_Platform.IsAndroid || !Refii.Game.AndroidMemoryRelease.LowRamMode) &&
+        Array.IndexOf(CoreBooks, name) >= 0;
 }

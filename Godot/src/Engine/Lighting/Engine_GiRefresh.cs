@@ -176,13 +176,38 @@ public static class Engine_GiRefresh
 			return;
 		}
 
-		if (!AdvanceWorldLoadGate())
+		// Respect the configured `sdfgi_enabled` setting (e.g. false on Low/Balanced presets):
+		// never turn SDFGI back on when the user or preset disabled it.
+		if (!Engine_LevelLighting.SdfgiEnabled || !Engine_LightingFrame.ModernModel)
 		{
-			environment.SdfgiEnabled = false;
+			HoldingOff = false;
+			_pending = false;
+			_waiting = 0;
+			_quiet = 0;
+			if (environment.SdfgiEnabled)
+			{
+				environment.SdfgiEnabled = false;
+			}
+			lock (_arrived)
+			{
+				if (_arrived.Count != 0)
+				{
+					_arrived.Clear();
+				}
+			}
 			return;
 		}
 
-		if (!HoldingOff && !environment.SdfgiEnabled && Engine_LightingFrame.ModernModel)
+		if (!AdvanceWorldLoadGate())
+		{
+			if (environment.SdfgiEnabled)
+			{
+				environment.SdfgiEnabled = false;
+			}
+			return;
+		}
+
+		if (!HoldingOff && !environment.SdfgiEnabled)
 		{
 			environment.SdfgiEnabled = true;
 			_sinceRebuild = 0;
@@ -193,7 +218,7 @@ public static class Engine_GiRefresh
 			if (++_offFor >= OffFrames)
 			{
 				HoldingOff = false;
-				environment.SdfgiEnabled = Engine_LightingFrame.ModernModel;
+				environment.SdfgiEnabled = true;
 				Rebuilds++;
 				GD.Print($"[gi] rebuilt after streamed geometry settled near the camera (rebuild {Rebuilds})");
 			}

@@ -4218,14 +4218,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         uint32_t instance;
         uint32_t working;
     };
-    EffectWork registry[512];
+    constexpr uint32_t kMaxEffectRegistry = 2048u;
+    EffectWork registry[kMaxEffectRegistry];
     uint32_t registry_count = 0u;
     {
         const uint32_t rbegin = read32(refii::guest::Address(0x8349E480u));
         const uint32_t rend = read32(refii::guest::Address(0x8349E484u));
         if (plausible(rbegin) && rend > rbegin && ((rend - rbegin) % 28u) == 0u &&
-            (rend - rbegin) <= 28u * 512u) {
-            for (uint32_t at = rbegin; at + 28u <= rend && registry_count < 512u; at += 28u) {
+            (rend - rbegin) <= 28u * kMaxEffectRegistry) {
+            for (uint32_t at = rbegin; at + 28u <= rend && registry_count < kMaxEffectRegistry; at += 28u) {
                 const uint32_t instance = read32(at);
                 if (!plausible(instance)) {
                     continue;
@@ -5191,9 +5192,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostWorldIsReady(void) {
     return GuestByteAt(base, game + refii::guest::GameField(0x105u)) != 0 ? 1u : 0u;
 }
 
-/// Whether Godot is still building a region the guest must not be let into yet.
-static std::atomic_bool g_world_build_pending{false};
-
 /// The 3D Engine object — the thing state 7's fence is asked about.
 ///
 /// `sub_823881C0` names this thread `"3D Engine"` at 0x823881D8, and the object is 608 bytes
@@ -5283,7 +5281,7 @@ static void apply_world_build_hold(const uint8_t* base) {
 
     // 1e30 seconds is far beyond any render clock the title will ever reach, and finite — an
     // infinity here would make the guest's own comparison behave differently under fcmpu.
-    const double value = g_world_build_pending.load(std::memory_order_relaxed) ? 1e30 : 0.0;
+    const double value = refii_bridge_world_build_pending() != 0 ? 1e30 : 0.0;
 
     uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
@@ -5460,7 +5458,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostDescribeGameFlowQueue(char* out, uint32_
 /// because state 7 is a poll on a thread that keeps ticking and the mixer is not one of the
 /// title's own threads.
 REFII_HOST_ABI_EXPORT void RefiiHostSetWorldBuildPending(uint32_t pending) {
-    g_world_build_pending.store(pending != 0u, std::memory_order_relaxed);
+    refii_bridge_set_world_build_pending(pending != 0u ? 1 : 0);
 
     auto* memory = SafeKernelMemory();
     if (memory == nullptr) {
@@ -16600,7 +16598,7 @@ void Fable2BeforeStep() {
     // once at the start of a build is wiped the first time that runs and the guest walks
     // straight into a world Godot has not finished. Costs one pointer walk per step, and
     // only while a build is actually outstanding.
-    if (g_world_build_pending.load(std::memory_order_relaxed)) {
+    if (refii_bridge_world_build_pending() != 0) {
         if (auto* memory = SafeKernelMemory()) {
             if (uint8_t* base = memory->virtual_membase()) {
                 apply_world_build_hold(base);

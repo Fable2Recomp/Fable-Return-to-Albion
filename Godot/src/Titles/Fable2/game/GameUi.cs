@@ -382,16 +382,7 @@ public partial class GameUi : Node, IGameTitleUi
 		_container.SetAnchorsPreset(Control.LayoutPreset.FullRect);
 		layer.AddChild(_container);
 
-		_viewport = new SubViewport
-		{
-			Name = "UiViewport",
-			// Its own world, so the front end's cameras and lights cannot reach the guest's, and
-			// a transparent background so the world shows through where the screen does not draw.
-			OwnWorld3D = true,
-			TransparentBg = true,
-			RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
-			GuiDisableInput = true,
-		};
+		_viewport = Engine_UiSceneBuilder.CreateCanvasViewport("UiViewport", SubViewport.UpdateMode.Disabled);
 		_container.AddChild(_viewport);
 
 		// The viewport's one true camera, owned here and never freed. Presentation trees carry
@@ -7170,6 +7161,9 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private void ui_processBody(double delta)
 	{
+		// Idle the full-window UI SubViewport while the loading screen cover sits on top of it,
+		// and wake it immediately once the cover drops.
+		Engine_UiSceneBuilder.SetViewportActive(_viewport, IsRevealed && !GameWorld.CoverHeld);
 		ResetRowActionPrompt();
         WorldInteractionAllowed = IsRevealed && !ModalPanelUp && !_fullCutscene && !GameMorphMirror.OwnsInput && !GameDecorate.Active;
 		if (DriveGoldenCockMenu(delta)) return;
@@ -7545,11 +7539,17 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 		DriveWorldIcons(guestFrame);
 		DriveCoopHeroChannel(delta);
-		DriveCoopNotices(delta);
+		if (!GameWorld.CoverHeld)
+		{
+			DriveCoopNotices(delta);
+		}
 		DriveCoopConsent(delta);
 		DriveCoopEstate(delta);
 		DriveCoopWeather(delta);
-		DrivePropertyTips(delta);
+		if (!GameWorld.CoverHeld)
+		{
+			DrivePropertyTips(delta);
+		}
 		// What the guest told its presentations since the last frame, before any book stands.
 		Engine_UiSlideStatements.Take();
 		if (guestFrame) DriveOwnedScreenProvider();

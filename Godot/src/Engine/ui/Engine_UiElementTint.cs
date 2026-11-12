@@ -72,22 +72,18 @@ public static class Engine_UiElementTint
 
 	private static void Paint(Node target, Color colour, bool own)
 	{
-		if (target is not MeshInstance3D mesh)
+		if (target is not MeshInstance3D mesh || mesh.MaterialOverride is not ShaderMaterial)
 		{
 			return;
 		}
 
-		if (own && !mesh.HasMeta(OwnedMeta) && Engine_UiSceneBuilder.OwnQuadMaterial(mesh))
-		{
-			mesh.SetMeta(OwnedMeta, true);
-		}
-
-		if (mesh.MaterialOverride is ShaderMaterial material)
+		ShaderMaterial? material = own
+			? Engine_UiSceneBuilder.EnsureOwnedMaterial(mesh)
+			: mesh.MaterialOverride as ShaderMaterial;
+		if (material is not null)
 		{
 			material.SetShaderParameter(TintRgb, new Vector3(colour.R, colour.G, colour.B));
 			material.SetShaderParameter(TintAmount, colour.A);
 		}
 	}
-
-	private static readonly StringName OwnedMeta = "tint_material_owned";
 }

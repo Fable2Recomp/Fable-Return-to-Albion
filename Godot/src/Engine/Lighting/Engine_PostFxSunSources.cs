@@ -15,7 +15,13 @@ public partial class Engine_PostFxSunSources : Node
 
     public struct Source
     {
-        public Rid Texture;
+        /// <summary>
+        /// RenderingServer texture RID (<c>Texture2D.GetRid()</c>), resolved to a low-level
+        /// <see cref="RenderingDevice"/> texture RID lazily on the render thread inside
+        /// <see cref="Engine_PostFxEffect"/> so the main thread never stalls on
+        /// <c>RenderingServer.TextureGetRdTexture</c> during level loads.
+        /// </summary>
+        public Rid TextureRid;
         public Vector3 Colour;
         public Vector2 Half;
         public float Distance;
@@ -74,11 +80,9 @@ public partial class Engine_PostFxSunSources : Node
     private int _lastSkyRevision;
     private int _lastFrameRevision;
     private Vector3 _sunDirection = Vector3.Up;
-    private Source _beams;
     private Source _disc;
-    private bool _beamsEnabled;
     private bool _discEnabled;
-    private readonly Dictionary<uint, (Texture2D? Texture, Rid Rd)> _textures = new();
+    private readonly Dictionary<uint, Texture2D?> _textures = new();
     private readonly HashSet<uint> _reported = new();
 
     public override void _ExitTree()
@@ -105,8 +109,7 @@ public partial class Engine_PostFxSunSources : Node
             bool changed = skyChanged ||
                 !ReferenceEquals(frame, _lastFrame) || frame.Revision != _lastFrameRevision;
             bool pending = _attempts < TextureAttempts && Refii.Core.Engine_GuestFrame.HalfRate &&
-                ((sky.HasSunBeamsTexture && !_beams.Texture.IsValid) ||
-                    (sky.HasSunDiscTexture && !_disc.Texture.IsValid));
+                (sky.HasSunDiscTexture && !_disc.TextureRid.IsValid);
 
             if (skyChanged)
             {
@@ -128,14 +131,12 @@ public partial class Engine_PostFxSunSources : Node
         }
 
         bool chain = Engine_PostFxParams.Enabled;
-        Source beams = _beams;
-        beams.Active = chain && _beamsEnabled && Engine_PostFxParams.Rays;
         Source disc = _disc;
         disc.Active = chain && _discEnabled && Engine_PostFxParams.Bloom;
 
         lock (Gate)
         {
-            _published = new Sources { SunDirection = _sunDirection, Beams = beams, Disc = disc };
+            _published = new Sources { SunDirection = _sunDirection, Disc = disc };
         }
     }
 
@@ -155,31 +156,18 @@ public partial class Engine_PostFxSunSources : Node
         _sunDirection = sun.LengthSquared() > 1e-12f ? sun.Normalized() : Vector3.Up;
         bool sunActive = frame.SkyParams[0] >= Engine_CelestialElements.IntensityGate;
 
-        Rid beamsTexture = sky.HasSunBeamsTexture ? LoadTexture(sky.SunBeamsTextureHash) : default;
-        float beamsIntensity = element[13] / SunBeamsIntensityDivisor;
-        _beamsEnabled = beamsTexture.IsValid && sunActive &&
-            element[13] >= Engine_CelestialElements.IntensityGate;
-        _beams = new Source
-        {
-            Texture = beamsTexture,
-            Colour = new Vector3(tint[0] * beamsIntensity, tint[1] * beamsIntensity, tint[2] * beamsIntensity),
-            Half = new Vector2(
-                element[11] * Engine_CelestialElements.SunBeamsSizeScale,
-                element[12] * Engine_CelestialElements.SunBeamsSizeScale),
-            Distance = Engine_CelestialElements.SunBeamsDistance,
-            Mode = BeamsMode,
-        };
-
-        Rid discTexture = sky.HasSunDiscTexture ? LoadTexture(sky.SunDiscTextureHash) : default;
+        // Note: `Sources.Beams` is unused by the modern post-fx pipeline (classic sky draws beams via
+        // `Engine_ClassicSkyLayers`), so we only decode and publish the sun disc texture here.
+        Rid discTextureRid = sky.HasSunDiscTexture ? LoadTextureRid(sky.SunDiscTextureHash) : default;
         float discR = element[8] * element[7] * tint[0];
         float discG = element[9] * element[7] * tint[1];
         float discB = element[10] * element[7] * tint[2];
-        _discEnabled = discTexture.IsValid && sunActive &&
+        _discEnabled = discTextureRid.IsValid && sunActive &&
             element[7] >= Engine_CelestialElements.IntensityGate &&
             (discR + discG + discB) > 1e-5f;
         _disc = new Source
         {
-            Texture = discTexture,
+            TextureRid = discTextureRid,
             Colour = new Vector3(discR, discG, discB),
             Half = new Vector2(
                 element[6] * Engine_CelestialElements.SunDiscSizeScale,
@@ -189,40 +177,29 @@ public partial class Engine_PostFxSunSources : Node
         };
     }
 
-    private Rid LoadTexture(uint hash)
+    private Rid LoadTextureRid(uint hash)
     {
-        if (_textures.TryGetValue(hash, out (Texture2D? Texture, Rid Rd) cached))
+        if (_textures.TryGetValue(hash, out Texture2D? cached))
         {
-            if (cached.Rd.IsValid || cached.Texture is null)
-            {
-                return cached.Rd;
-            }
-            Rid cachedRd = Refii.Core.Engine_ServerSyncs.RdTexture(cached.Texture.GetRid());
-            if (cachedRd.IsValid)
-            {
-                _textures[hash] = (cached.Texture, cachedRd);
-            }
-            return cachedRd;
+            return cached?.GetRid() ?? default;
         }
 
         Texture2D? texture = Engine_EnvironmentTextures.Load(
             hash, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out string path);
-        Rid rd = default;
         if (texture is not null)
         {
-            rd = Refii.Core.Engine_ServerSyncs.RdTexture(texture.GetRid());
-            _textures[hash] = (texture, rd);
-            return rd;
+            _textures[hash] = texture;
+            return texture.GetRid();
         }
 
         if ((path.Length != 0 || _attempts >= TextureAttempts - 1) && _reported.Add(hash))
         {
-            _textures[hash] = (null, default);
+            _textures[hash] = null;
             GD.Print(path.Length == 0
                 ? $"[postfx] sun source texture 0x{hash:X8} unresolved after {TextureAttempts} attempt(s)"
                 : $"[postfx] sun source texture '{path}' did not decode");
         }
 
-        return rd;
+        return default;
     }
 }

@@ -72,7 +72,7 @@ void fragment() {
 	if (outline && glyphs && UV2.x > 1.5) {
 		vec2 texel_step = max(supersample, 1.0) / tex_size;
 		colour = vec4(tint.rgb * COLOR.rgb * texel.a,
-			ui_text_outline_cover(tex, tex, UV, texel.a, uv_dx, uv_dy, false, 1e-4, 0.0, texel_step) *
+			ui_text_outline_cover(tex, UV, texel.a, uv_dx, uv_dy, false, 1e-4, 0.0, texel_step) *
 				tint.a * COLOR.a);
 	}
 	float alpha = colour.a * smoothstep(0.1, 0.5, seen);

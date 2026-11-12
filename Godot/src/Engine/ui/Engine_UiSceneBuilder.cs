@@ -559,12 +559,14 @@ public sealed class Engine_UiSceneBuilder
 			if (TextureResolver?.Invoke(icon.Tag.Texture + ".tex") is not { } art)
 				continue;
 
+			var iconMaterial = Engine_UiTheme.IconMaterial(art, _inheritedOpacity);
 			var quad = Engine_UiTheme.MarkInlineIcon(new MeshInstance3D
 			{
 				Mesh = Engine_UiTheme.IconQuad(icon.Size),
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
-				MaterialOverride = Engine_UiTheme.IconMaterial(art, _inheritedOpacity),
+				MaterialOverride = iconMaterial,
 			});
+			MarkOwnedMaterial(quad, iconMaterial);
 			node.AddChild(quad);
 		}
 
@@ -580,6 +582,7 @@ public sealed class Engine_UiSceneBuilder
 			TextMaterial(new Color(text.R, text.G, text.B, _inheritedOpacity), font.Atlas);
 		ApplyClip(textMaterial, n);
 		node.MaterialOverride = textMaterial;
+		MarkOwnedMaterial(node, textMaterial);
 
 		node.SetMeta("text_lines", lines);
 		TextGlyphsBuilt += mesh.SurfaceGetArrayLen(0) / 4;
@@ -632,16 +635,7 @@ public sealed class Engine_UiSceneBuilder
 		{
 			material.SetShaderParameter(AtlasName, atlas);
 			material.SetShaderParameter("supersample", Engine_BitmapFontTexture.SupersampleOf(atlas));
-			if (Engine_BitmapFontTexture.DistanceFieldOf(atlas) is { } field)
-			{
-				material.SetShaderParameter("distance_field", field);
-				material.SetShaderParameter("use_distance_field", true);
-			}
-			else
-			{
-				material.SetShaderParameter("distance_field", atlas);
-				material.SetShaderParameter("use_distance_field", false);
-			}
+			material.SetShaderParameter("use_distance_field", Engine_BitmapFontTexture.HasDistanceField(atlas));
 		}
 
 		return material;
@@ -661,7 +655,7 @@ public sealed class Engine_UiSceneBuilder
 	/// <summary>Recolours a built label. Silently does nothing if it has no material.</summary>
 	public static bool SetTextColour(MeshInstance3D label, Color colour)
 	{
-		if (LabelMaterial(label) is not { } m)
+		if (LabelMaterial(label) is null || EnsureOwnedMaterial(label) is not { } m)
 		{
 			return false;
 		}
@@ -768,6 +762,7 @@ public sealed class Engine_UiSceneBuilder
 			mesh.SetMeta("degenerate_uv", true);
 
 		mesh.MaterialOverride = mat;
+		MarkOwnedMaterial(mesh, mat);
 		return mesh;
 	}
 
@@ -787,36 +782,48 @@ public sealed class Engine_UiSceneBuilder
 	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, MeshInstance3D> OwnedMaterialMeshes = new();
 
 	internal static bool IsOwnedMaterial(MeshInstance3D mesh, ShaderMaterial material) =>
-		OwnedMaterialMeshes.TryGetValue(material, out MeshInstance3D? owner) && ReferenceEquals(owner, mesh);
+		!OwnedMaterialMeshes.TryGetValue(material, out MeshInstance3D? owner) || ReferenceEquals(owner, mesh);
 
 	internal static void MarkOwnedMaterial(MeshInstance3D mesh, ShaderMaterial material) =>
 		OwnedMaterialMeshes.AddOrUpdate(material, mesh);
 
-	/// <summary>Gives a cloned quad a private material, so writing it cannot leak.</summary>
-	public static bool OwnQuadMaterial(MeshInstance3D mesh)
+	/// <summary>
+	/// Copy-on-write material ownership for cloned UI meshes: returns <paramref name="mesh"/>'s private
+	/// <see cref="ShaderMaterial"/>, duplicating a shared pattern-book material on first mutation while
+	/// claiming freshly assigned standalone materials in-place.
+	/// </summary>
+	public static ShaderMaterial? EnsureOwnedMaterial(MeshInstance3D mesh)
 	{
-		if (QuadMaterial(mesh) is not { } shared)
+		if (mesh.MaterialOverride is not ShaderMaterial shared)
 		{
-			return false;
+			return null;
 		}
 
-		if (IsOwnedMaterial(mesh, shared))
+		if (!OwnedMaterialMeshes.TryGetValue(shared, out MeshInstance3D? owner))
 		{
-			return true;
+			MarkOwnedMaterial(mesh, shared);
+			return shared;
 		}
 
-		// The Shader itself is not duplicated: Duplicate copies the parameter set and keeps
-		// pointing at the one compiled program.
+		if (ReferenceEquals(owner, mesh))
+		{
+			return shared;
+		}
+
 		ShaderMaterial copy = Refii.Models.Engine_MaterialCopy.Shallow(shared);
 		mesh.MaterialOverride = copy;
 		MarkOwnedMaterial(mesh, copy);
-		return true;
+		return copy;
 	}
+
+	/// <summary>Gives a cloned quad a private material, so writing it cannot leak.</summary>
+	public static bool OwnQuadMaterial(MeshInstance3D mesh) =>
+		QuadMaterial(mesh) is not null && EnsureOwnedMaterial(mesh) is not null;
 
 	/// <summary>Replaces a built quad's primary texture. Used where the guest names art we clone.</summary>
 	public static bool SetQuadTexture(MeshInstance3D mesh, Texture2D texture)
 	{
-		if (QuadMaterial(mesh) is not { } material)
+		if (QuadMaterial(mesh) is null || EnsureOwnedMaterial(mesh) is not { } material)
 		{
 			return false;
 		}
@@ -920,7 +927,7 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public static bool SetQuadTint(MeshInstance3D mesh, Color colour, float amount)
 	{
-		if (QuadMaterial(mesh) is not { } material)
+		if (QuadMaterial(mesh) is null || EnsureOwnedMaterial(mesh) is not { } material)
 		{
 			return false;
 		}
@@ -933,7 +940,7 @@ public sealed class Engine_UiSceneBuilder
 	/// <summary>Scales a built quad's opacity.</summary>
 	public static bool SetQuadOpacity(MeshInstance3D mesh, float opacity)
 	{
-		if (QuadMaterial(mesh) is not { } material)
+		if (QuadMaterial(mesh) is null || EnsureOwnedMaterial(mesh) is not { } material)
 		{
 			return false;
 		}
@@ -1380,6 +1387,44 @@ public sealed class Engine_UiSceneBuilder
 			buf[i] = c is '.' or ':' or '@' or '/' or '"' or '%' ? '_' : c;
 		}
 		return new string(buf);
+	}
+
+	/// <summary>
+	/// Creates a shared 8-bit SDR (<c>UseHdr2D = false</c>) 3D UI <see cref="SubViewport"/> used by
+	/// both Fable 2 (<c>GameUi</c>) and Fable 3 (<c>Fable3Canvas</c>, <c>Fable3WorldIcons</c>), halving
+	/// full-window UI render-target memory and bandwidth compared to <c>RGBA16F</c>.
+	/// </summary>
+	public static SubViewport CreateCanvasViewport(
+		string name,
+		SubViewport.UpdateMode initialMode = SubViewport.UpdateMode.Disabled) =>
+		new()
+		{
+			Name = name,
+			OwnWorld3D = true,
+			TransparentBg = true,
+			UseHdr2D = false,
+			Msaa3D = Viewport.Msaa.Disabled,
+			HandleInputLocally = false,
+			GuiDisableInput = true,
+			RenderTargetUpdateMode = initialMode,
+		};
+
+	/// <summary>
+	/// Enables or disables a UI <see cref="SubViewport"/> only when its <see cref="SubViewport.RenderTargetUpdateMode"/>
+	/// actually changes, avoiding redundant <see cref="RenderingServer"/> updates every frame.
+	/// </summary>
+	public static void SetViewportActive(SubViewport? viewport, bool active)
+	{
+		if (viewport is null)
+		{
+			return;
+		}
+
+		SubViewport.UpdateMode want = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
+		if (viewport.RenderTargetUpdateMode != want)
+		{
+			viewport.RenderTargetUpdateMode = want;
+		}
 	}
 
 	/// <summary>

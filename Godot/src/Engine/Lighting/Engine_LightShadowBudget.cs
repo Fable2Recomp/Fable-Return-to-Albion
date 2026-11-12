@@ -127,14 +127,17 @@ public partial class Engine_LightShadowBudget : Node
 	/// <summary>Seconds between reassignments. Throttled to keep CPU overhead negligible.</summary>
 	private const double Interval = 0.15;
 
-	/// <summary>How long a map takes to arrive or leave.</summary>
+	/// <summary>How long a shadow map takes to arrive or leave, and a budget-evicted on-screen light to fade out.</summary>
 	private const float FadeSeconds = 0.25f;
 
-	/// <summary>Milliseconds a light stays in view after leaving the frustum, so a pan never pops it at the edge.</summary>
-	public const ulong LightHoldMs = 1500;
+	/// <summary>How long an on-screen light takes to ramp up when entering the camera frustum or light budget.</summary>
+	private const float FadeInSeconds = 0.08f;
 
-	/// <summary>Milliseconds a map stays eligible after its light leaves the frustum, before it is taken.</summary>
-	public const ulong ShadowHoldMs = 600;
+	/// <summary>Milliseconds a light stays in view after leaving the frustum (0: off-camera lights are culled immediately).</summary>
+	public const ulong LightHoldMs = 0;
+
+	/// <summary>Milliseconds a map stays eligible after its light leaves the frustum (0: off-camera lights are culled immediately).</summary>
+	public const ulong ShadowHoldMs = 0;
 
 	/// <summary>Ranks past the shadow budget a fixture already casting may fall before its map is taken.</summary>
 	public const int Slack = 4;
@@ -142,23 +145,29 @@ public partial class Engine_LightShadowBudget : Node
 	/// <summary>Ranks past the light budget a visible fixture may fall before it is hidden.</summary>
 	public const int LightSlack = 12;
 
-	/// <summary>Metres from the eye within which a light is in view whatever the frustum says.</summary>
+	/// <summary>Metres from the eye within which a light was historically kept in view (0: frustum culling applies unconditionally).</summary>
 	public const float NearEligibleMetres = 12.0f;
 
-	/// <summary>A light whose pool reaches this far past the eye is in view whatever the frustum says.</summary>
+	/// <summary>Extra metres beyond range for legacy near-eye eligibility.</summary>
 	public const float NearEligibleBeyondRange = 4.0f;
 
-	/// <summary>A map whose pool reaches this far past the PLAYER stays eligible whatever the frustum says.</summary>
+	/// <summary>A map whose pool reaches this far past the PLAYER stays eligible while the light itself is in the frustum.</summary>
 	public const float ShadowNearPlayerBeyondRange = 10.0f;
 
-	/// <summary>A map whose pool reaches this far past the eye stays eligible whatever the frustum says.</summary>
+	/// <summary>A map whose pool reaches this far past the eye stays eligible while the light itself is in the frustum.</summary>
 	public const float ShadowNearEyeBeyondRange = 6.0f;
 
-	/// <summary>Metres a light's sphere is grown by for the frustum test, so an edge pool is seen before its rim.</summary>
-	private const float LightFrustumMargin = 6.0f;
+	/// <summary>Metres a light's sphere is grown by for the frustum test (0: strict sphere-frustum culling).</summary>
+	private const float LightFrustumMargin = 0.0f;
 
 	/// <summary>Metres a shadowed light's sphere is grown by for the frustum test.</summary>
-	private const float ShadowFrustumMargin = 2.0f;
+	private const float ShadowFrustumMargin = 0.0f;
+
+	/// <summary>Camera rotation cosine threshold (~1.1 degrees) triggering an immediate frustum re-cull.</summary>
+	private const float CameraTurnCosineThreshold = 0.9998f;
+
+	/// <summary>Squared camera translation threshold (0.1 m) triggering an immediate frustum re-cull.</summary>
+	private const float CameraMoveDistanceSqThreshold = 0.01f;
 
 	/// <summary>One placed fixture as the budget sees it: its stated values, read once, and its hold clocks.</summary>
 	private struct Fixture
@@ -207,6 +216,7 @@ public partial class Engine_LightShadowBudget : Node
 		public Vector3 At;
 		public bool Shown;
 		public bool Casting;
+		public byte InFrustumBy;
 		public byte VisibleBy;
 		public byte WantedBy;
 		public byte CubeBy;
@@ -325,17 +335,6 @@ public partial class Engine_LightShadowBudget : Node
 		Camera3D? camera = Refii.Core.Engine_Views.Primary(GetViewport()?.GetCamera3D());
 
 		_since += delta;
-		if (_since < Interval)
-		{
-			if (camera is not null)
-			{
-				UpdateVolumetricLightShafts(camera);
-			}
-			return;
-		}
-
-		_since = 0;
-
 		if (camera is null)
 		{
 			return;
@@ -349,6 +348,30 @@ public partial class Engine_LightShadowBudget : Node
 				_views[views++] = view;
 			}
 		}
+
+		bool cameraMovedOrTurned = views != _viewsLast;
+		if (!cameraMovedOrTurned)
+		{
+			for (int v = 0; v < views; v++)
+			{
+				Vector3 pos = _views[v].GlobalPosition;
+				Vector3 dir = -_views[v].GlobalBasis.Z;
+				if (pos.DistanceSquaredTo(_lastCameraPos[v]) > CameraMoveDistanceSqThreshold ||
+					dir.Dot(_lastCameraDir[v]) < CameraTurnCosineThreshold)
+				{
+					cameraMovedOrTurned = true;
+					break;
+				}
+			}
+		}
+
+		if (!cameraMovedOrTurned && _since < Interval)
+		{
+			UpdateVolumetricLightShafts(camera);
+			return;
+		}
+
+		_since = 0;
 
 		for (int v = views; v < _views.Length; v++)
 		{
@@ -655,7 +678,10 @@ public partial class Engine_LightShadowBudget : Node
 			if (f.InTree)
 			{
 				f.At = f.Node.GlobalPosition;
-				f.Shown = f.Node.Visible;
+				// Treat a light whose budget eviction fade target is 0 as not currently held on, so
+				// looking back at it triggers `Apply` to immediately ramp it back up to 1.
+				f.Shown = f.Node.Visible &&
+					(!_visibilityTarget.TryGetValue(f.Node, out float visTarget) || visTarget > 0.0f);
 				f.Casting = f.Node.ShadowEnabled;
 				if (!f.Omni && f.SpotDir.LengthSquared() < 0.5f)
 				{
@@ -663,6 +689,7 @@ public partial class Engine_LightShadowBudget : Node
 				}
 			}
 
+			f.InFrustumBy = 0;
 			f.VisibleBy = 0;
 			f.WantedBy = 0;
 			f.CubeBy = 0;
@@ -735,7 +762,7 @@ public partial class Engine_LightShadowBudget : Node
 			bool show = f.VisibleBy != 0;
 			if (classic)
 			{
-				if (f.Shown)
+				if (f.Shown || light.Visible)
 				{
 					light.Visible = false;
 					f.Shown = false;
@@ -744,13 +771,43 @@ public partial class Engine_LightShadowBudget : Node
 				_visibilityTarget.Remove(light);
 				VisibilityLevel.Remove(light);
 			}
+			else if (f.InFrustumBy == 0)
+			{
+				// Strict off-camera culling: any placed light outside every active camera frustum
+				// is turned off immediately (`Visible = false`, `LightEnergy = 0`) with zero hold or fade linger.
+				if (f.Shown || light.Visible)
+				{
+					light.LightEnergy = 0.0f;
+					light.Visible = false;
+					f.Shown = false;
+				}
+
+				_visibilityTarget.Remove(light);
+				VisibilityLevel.Remove(light);
+
+				if (f.Casting || light.ShadowEnabled)
+				{
+					light.ShadowOpacity = 0.0f;
+					light.ShadowEnabled = false;
+					f.Casting = false;
+				}
+
+				_fading.Remove(light);
+				continue;
+			}
 			else if (show)
 			{
 				if (!f.Shown)
 				{
-					VisibilityLevel[light] = 0.0f;
-					light.LightEnergy = 0.0f;
-					light.Visible = true;
+					float startLevel = light.Visible && VisibilityLevel.TryGetValue(light, out float existing)
+						? existing
+						: 0.0f;
+					VisibilityLevel[light] = startLevel;
+					light.LightEnergy = f.BaseEnergy * startLevel;
+					if (!light.Visible)
+					{
+						light.Visible = true;
+					}
 					f.Shown = true;
 					_visibilityTarget[light] = 1.0f;
 				}
@@ -811,10 +868,10 @@ public partial class Engine_LightShadowBudget : Node
 		view == 0 ? Engine_LightZones.HeroZone : Refii.Game.GameEntities.SecondViewZone;
 
 	/// <summary>
-	/// One view's visible lights: those within <see cref="MaxLightDistance"/> of its eye that are
-	/// near it (<see cref="NearEligible"/>), in its frustum, or were within <see cref="LightHoldMs"/>.
-	/// With a <see cref="LightBudget"/> the nearest fill it, the ones already visible first while
-	/// they rank within <see cref="LightSlack"/> of it.
+	/// One view's visible lights: strictly those within <see cref="MaxLightDistance"/> whose light
+	/// sphere <c>(f.At, f.Range)</c> intersects the camera frustum (<see cref="SphereInView"/>).
+	/// Off-camera lights are never eligible. With a <see cref="LightBudget"/>, the nearest in-frustum
+	/// lights fill it, keeping already-visible on-screen lights within <see cref="LightSlack"/>.
 	/// </summary>
 	private static void ChooseVisible(int view, Vector3 eye, Plane[] frustum, bool viewerIndoors, uint heroZone, bool classic, ulong nowMs)
 	{
@@ -842,15 +899,15 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
-			bool inFrustum = NearEligible(distance, f.Range) || SphereInView(frustum, frustum.Length, f.At, f.Range + LightFrustumMargin);
-			ref ulong seen = ref LightSeenOf(ref f, view);
-			if (inFrustum)
+			if (!IsPlacedLightEligibleForView(frustum, frustum.Length, f.At, f.Range))
 			{
-				seen = nowMs;
+				continue;
 			}
 
-			bool inView = inFrustum || Held(seen, nowMs, LightHoldMs);
-			if (LightsEnabled && !classic && f.BaseEnergy > 0.0001f && inView)
+			f.InFrustumBy |= bit;
+			LightSeenOf(ref f, view) = nowMs;
+
+			if (LightsEnabled && !classic && f.BaseEnergy > 0.0001f)
 			{
 				_candidates[n++] = new Candidate { Fixture = i, Key = distance };
 			}
@@ -891,16 +948,21 @@ public partial class Engine_LightShadowBudget : Node
 	}
 
 	/// <summary>
-	/// One view's shadow set: visible, allowed to cast, within <see cref="MaxShadowDistance"/> of
-	/// its eye, near its player or eye (<see cref="ShadowNearEligible"/>) or in its frustum or held
-	/// within <see cref="ShadowHoldMs"/>, with a dynamic caster in reach, scored from its player's
-	/// position. The best fill the budget, a fixture already casting first while it ranks within
-	/// <see cref="Slack"/> of it; the best <paramref name="cubeBudget"/> of the chosen take a cube.
-	/// A light scored by any view counts as eligible once.
+	/// Strict camera frustum gate for placed lights: a placed light is eligible to turn on ONLY when
+	/// its light sphere <c>(position, range)</c> intersects the active camera frustum.
+	/// </summary>
+	public static bool IsPlacedLightEligibleForView(Plane[] frustum, int planeCount, Vector3 position, float range) =>
+		SphereInView(frustum, planeCount, position, MathF.Max(0f, range));
+
+	/// <summary>
+	/// One view's shadow set: strictly in-frustum and visible in this view, allowed to cast, within
+	/// <see cref="MaxShadowDistance"/> of its eye, with a dynamic caster in reach, scored from its
+	/// player's position.
 	/// </summary>
 	private static void ChooseShadowed(int view, Vector3 eye, Vector3 refPos, Plane[] frustum, bool viewerIndoors,
 		uint heroZone, bool classic, ulong nowMs, int maxShadows, int cubeBudget)
 	{
+		_ = frustum;
 		byte bit = (byte)(1 << view);
 		bool remaster = Engine_LevelLights.PlacedShadowsEnabled;
 		bool interior = Engine_LightingFrame.CurrentInterior;
@@ -908,7 +970,7 @@ public partial class Engine_LightShadowBudget : Node
 		for (int i = 0; i < _count; i++)
 		{
 			ref Fixture f = ref _fixtures[i];
-			if (!f.InTree || !f.Shown || f.VisibleBy == 0)
+			if (!f.InTree || (f.VisibleBy & bit) == 0 || (f.InFrustumBy & bit) == 0)
 			{
 				continue;
 			}
@@ -930,20 +992,7 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
-			// Near the player or the eye the map stays whatever the camera does; otherwise the
-			// frustum decides, with a hold so a pan does not take a map at the edge and give it back.
-			float refDist = refPos.DistanceTo(f.At);
-			bool inFrustum = ShadowNearEligible(refDist, eyeDist, f.Range) ||
-				SphereInView(frustum, frustum.Length, f.At, f.Range + ShadowFrustumMargin);
-			ref ulong seen = ref ShadowSeenOf(ref f, view);
-			if (inFrustum)
-			{
-				seen = nowMs;
-			}
-			else if (!Held(seen, nowMs, ShadowHoldMs))
-			{
-				continue;
-			}
+			ShadowSeenOf(ref f, view) = nowMs;
 
 			// Dynamic entity presence gating: static world shadows and volumetric shafts for both omni
 			// and spot lights are served by `fable_static_shadow_atlas`, so placed lights only need live
@@ -1038,6 +1087,7 @@ public partial class Engine_LightShadowBudget : Node
 	private static void Fade(float delta)
 	{
 		float step = delta / FadeSeconds;
+		float fadeInStep = delta / FadeInSeconds;
 		if (_visibilityTarget.Count != 0)
 		{
 			_settled.Clear();
@@ -1052,7 +1102,7 @@ public partial class Engine_LightShadowBudget : Node
 				}
 
 				float cur = VisibilityLevel.TryGetValue(light, out float v) ? v : (light.Visible ? 1.0f : 0.0f);
-				float next = Mathf.MoveToward(cur, pair.Value, step);
+				float next = Mathf.MoveToward(cur, pair.Value, pair.Value > cur ? fadeInStep : step);
 				VisibilityLevel[light] = next;
 				light.LightEnergy = BaseEnergyOf(light) * next;
 				if (next == pair.Value)

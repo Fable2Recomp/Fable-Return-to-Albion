@@ -79,15 +79,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		MouseFilter = MouseFilterEnum.Ignore;
 		Stretch = true;
 
-		_viewport = new SubViewport
-		{
-			Name = "Canvas",
-			TransparentBg = true,
-			OwnWorld3D = true,
-			HandleInputLocally = false,
-			RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
-			Msaa3D = Viewport.Msaa.Disabled,
-		};
+		_viewport = Engine_UiSceneBuilder.CreateCanvasViewport("Canvas", SubViewport.UpdateMode.Disabled);
 		AddChild(_viewport);
 
 		var root = new Node3D { Name = "Root" };
@@ -239,8 +231,9 @@ public partial class Fable3WorldIcons : SubViewportContainer
 
 		_sprites.Feed(_list);
 
+		bool reticuleActive = false;
 		float canvasHeight = CanvasHeight / PixelsPerUnit;
-		foreach (int slot in new[] { 0, 1 })
+		for (int slot = 0; slot < 2; ++slot)
 		{
 			Engine_HudReticule reticule = _reticules[slot];
 			reticule.CanvasHalfExtent = size.Y > 0f ? new Vector2(size.X / size.Y * canvasHeight, canvasHeight) * 0.5f : Vector2.Zero;
@@ -248,10 +241,20 @@ public partial class Fable3WorldIcons : SubViewportContainer
 			{
 				float guestHeight = 720f;
 				Engine_HudReticule.Aim? aim = Fable3Elements.HudHidden ? null : Fable3Reticles.Read(player, slot, out guestHeight);
+				if (aim is not null)
+				{
+					reticuleActive = true;
+				}
 				reticule.UnitsPerGuestPixel = canvasHeight / guestHeight;
 				reticule.Feed(player, aim);
 			}
 		}
+
+		// Idle the full-window 3D world-icons SubViewport while under loading cover, when the HUD is
+		// hidden, or when neither world sprites nor aim reticules are on screen.
+		Engine_UiSceneBuilder.SetViewportActive(
+			_viewport,
+			!Refii.Game.GameWorld.CoverHeld && !Fable3Elements.HudHidden && (_list.Count != 0 || reticuleActive));
 
 		// Ground truth once a sprite was placed on screen (last frame's placement): the log's
 		// `1 on screen` is the drawer's count, not pixels (r8 shows none of them).

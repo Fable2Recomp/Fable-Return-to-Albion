@@ -1288,19 +1288,21 @@ public static partial class Engine_LevelProps
         }
 
         // In a game whose guest states its level's effects, those statements draw them; spawning
-        // them from the level data as well drew each one twice.
-        if (Refii.Fx.Engine_LiveFx.GuestOwnsLevelEffects(Refii.Core.Engine_RefiiConfig.Read(out _)))
+        // authored effects from the level data as well drew each one twice. Only host-synthesized
+        // fallbacks for base-game GDB omissions (`NewLamp_on_stick`) are spawned here.
+        bool guestOwnsLevelFx = Refii.Fx.Engine_LiveFx.GuestOwnsLevelEffects(Refii.Core.Engine_RefiiConfig.Read(out _));
+        int levelFx = Engine_LevelFx.Spawn(
+            container, view, supplementalViews, placements, fxModelPaths, fxAttachTo, probes,
+            syntheticOnly: guestOwnsLevelFx);
+        if (guestOwnsLevelFx)
         {
-            GD.Print($"[props] {level}: level FX left to the guest, which states them");
+            GD.Print(levelFx != 0
+                ? $"[props] {level}: level FX left to the guest ({levelFx} unauthored lantern FX synthesized)"
+                : $"[props] {level}: level FX left to the guest, which states them");
         }
-        else
+        else if (levelFx != 0)
         {
-            int levelFx = Engine_LevelFx.Spawn(
-                container, view, supplementalViews, placements, fxModelPaths, fxAttachTo, probes);
-            if (levelFx != 0)
-            {
-                GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");
-            }
+            GD.Print($"[props] {level}: {levelFx} level FX spawned from bank");
         }
 
         // THE REGION'S OWN LIGHTS, beside the effects and off the same placements — a torch's

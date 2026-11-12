@@ -37,10 +37,50 @@ public class LightShadowBudgetPanTests
 	[TestCase]
 	public void Held_LastsTheHoldAndNeverFromNothing()
 	{
+		AssertThat(Engine_LightShadowBudget.LightHoldMs).IsEqual(0UL);
+		AssertThat(Engine_LightShadowBudget.ShadowHoldMs).IsEqual(0UL);
 		AssertThat(Engine_LightShadowBudget.Held(0, 5000, Engine_LightShadowBudget.ShadowHoldMs)).IsFalse();
 		AssertThat(Engine_LightShadowBudget.Held(1000, 1000 + Engine_LightShadowBudget.ShadowHoldMs, Engine_LightShadowBudget.ShadowHoldMs)).IsTrue();
 		AssertThat(Engine_LightShadowBudget.Held(1000, 1001 + Engine_LightShadowBudget.ShadowHoldMs, Engine_LightShadowBudget.ShadowHoldMs)).IsFalse();
 		AssertThat(Engine_LightShadowBudget.Held(1000, 1000 + Engine_LightShadowBudget.LightHoldMs, Engine_LightShadowBudget.LightHoldMs)).IsTrue();
+		AssertThat(Engine_LightShadowBudget.Held(1000, 1001 + Engine_LightShadowBudget.LightHoldMs, Engine_LightShadowBudget.LightHoldMs)).IsFalse();
+	}
+
+	[TestCase]
+	public void IsPlacedLightEligibleForView_StrictlyCullsAllOffFrustumLightsRegardlessOfNearDistance()
+	{
+		// Outward-facing Godot 4 camera frustum planes looking down -Z from origin (0, 0, 0):
+		var frustum = new Godot.Plane[]
+		{
+			new Godot.Plane(new Godot.Vector3(0, 0, 1), -0.05f),   // Near
+			new Godot.Plane(new Godot.Vector3(0, 0, -1), 100.0f),  // Far
+			new Godot.Plane(new Godot.Vector3(-1, 0, 0), 20.0f),   // Left
+			new Godot.Plane(new Godot.Vector3(1, 0, 0), 20.0f),    // Right
+			new Godot.Plane(new Godot.Vector3(0, -1, 0), 15.0f),   // Bottom
+			new Godot.Plane(new Godot.Vector3(0, 1, 0), 15.0f),    // Top
+		};
+
+		// Even at 3m behind the camera (< NearEligibleMetres = 12m), a 2m-range light is strictly culled off!
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(0, 0, 3.0f), 2.0f)).IsFalse();
+
+		// Off-camera left, right, below, above, and beyond far plane are all culled off immediately.
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(-25.0f, 0, -5.0f), 4.0f)).IsFalse();
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(25.0f, 0, -5.0f), 4.0f)).IsFalse();
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(0, -20.0f, -5.0f), 4.0f)).IsFalse();
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(0, 20.0f, -5.0f), 4.0f)).IsFalse();
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(0, 0, -108.0f), 5.0f)).IsFalse();
+
+		// A light whose sphere reaches into the frustum or sits inside it is eligible.
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(0, 0, 1.0f), 2.5f)).IsTrue();
+		AssertThat(Engine_LightShadowBudget.IsPlacedLightEligibleForView(
+			frustum, frustum.Length, new Godot.Vector3(0, 0, -8.0f), 4.0f)).IsTrue();
 	}
 
 	[TestCase]

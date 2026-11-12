@@ -229,6 +229,13 @@ public class TitleLiftPinTests
 		AssertThat(reads.TakeMenuChunks().Count).IsEqual(0);
 	}
 
+	[TestCase]
+	public void BothFable2AndFable3GuestsOwnStandingLevelEffects()
+	{
+		AssertThat(Engine_TitleGame.For(Engine_Title.Fable2).GuestStatesLevelEffects).IsTrue();
+		AssertThat(Engine_TitleGame.For(Engine_Title.Fable3).GuestStatesLevelEffects).IsTrue();
+	}
+
 	private static string? RepoRoot()
 	{
 		string? at = AppContext.BaseDirectory;

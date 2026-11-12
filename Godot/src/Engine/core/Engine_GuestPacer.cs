@@ -1,19 +1,19 @@
 namespace Refii.Core;
 
 /// <summary>
-/// Paces host-to-guest simulation step grants at a strict 1.0x real-time ceiling
+/// Paces host-to-guest simulation step grants at an exact 1.0x real-time fixed-step cadence
 /// (<see cref="StepsPerSecond"/> = 30.0 HF steps/s, 15.0 game ticks/s), independent of host FPS.
 /// </summary>
 /// <remarks>
-/// Two invariants prevent post-hitch high-FPS character movement speed bursts:
+/// Uses an exact fixed-step accumulator (<see cref="Period"/> = 1/30 s) across all playable display
+/// and frame rates (8–240+ FPS) while preventing post-hitch speed bursts:
 /// <list type="number">
-/// <item><b>No multi-step catch-up banking</b>: matching Xbox 360 <c>sub_82276D10</c> (<c>0x82276FA4</c>),
-/// a slow frame or hitch advances at most one step and discards unrun backlog instead of banking
-/// multiple steps that would subsequently drain at one step per rendered frame (e.g. 120–240 Hz).</item>
-/// <item><b>Monotonic wall-clock minimum interval</b>: consecutive step grants are separated by at
-/// least <see cref="MinGrantIntervalSeconds"/> of monotonic wall time, preserving exact 30.0 Hz
-/// cadence across all display refresh rates (30, 45, 50, 59, 60, 75, 120, 144, 165, 240+ Hz) while
-/// making sub-frame multi-step bursts impossible.</item>
+/// <item><b>Exact fractional carry</b>: normal frames carry <c>_accumulated -= steps * Period</c>
+/// with zero artificial inter-grant gap or remainder clamp, guaranteeing exact 30.00 HF steps/s across
+/// 15, 20, 24, 30 (+/- VSync jitter), 40, 45, 50, 59, 60, 75, 120, 144, and 240+ FPS.</item>
+/// <item><b>True hitch discard</b>: a stall of <see cref="HitchThresholdSeconds"/> (200 ms = 6 steps)
+/// or longer advances a single step and resets <c>_accumulated = 0</c>, so recovery frames never
+/// fast-forward the character.</item>
 /// </list>
 /// </remarks>
 public struct Engine_GuestPacer
@@ -25,29 +25,21 @@ public struct Engine_GuestPacer
 	public const double Period = 1.0 / StepsPerSecond;
 
 	/// <summary>
-	/// Frame delta threshold above which a frame is treated as a hitch rather than normal VSync jitter,
-	/// discarding any post-step remainder so recovery resumes cleanly from phase 0.
+	/// Frame delta threshold (200 ms = 6 steps) above which a frame is treated as an OS/GPU stall
+	/// rather than low-FPS play, granting a single step and zeroing the accumulator so no speed burst follows.
 	/// </summary>
-	public const double HitchDeltaSeconds = 1.5 * Period;
+	public const double HitchThresholdSeconds = 6.0 * Period;
+
+	/// <summary>Backwards-compatible alias for <see cref="HitchThresholdSeconds"/>.</summary>
+	public const double HitchDeltaSeconds = HitchThresholdSeconds;
 
 	/// <summary>
-	/// Maximum post-grant remainder preserved for 30 Hz VSync jitter (~38.3 ms = 1.15 * Period).
-	/// At 30 Hz VSync, a single slightly-short frame (e.g. 32.1 ms) shifts steady-state post-grant
-	/// remainder to ~1.0 * Period +/- VSync jitter; anything beyond 1.15 * Period indicates real
-	/// sub-30-FPS lag whose backlog must be discarded rather than replayed at high FPS.
+	/// Maximum steps granted in a single normal host frame (4 HF steps = 133.3 ms, maintaining 1.0x
+	/// simulation speed down to 7.5 FPS while bounding worst-case per-frame work).
 	/// </summary>
-	public const double MaxJitterRemainderSeconds = 1.15 * Period;
-
-	/// <summary>
-	/// Minimum monotonic wall-clock separation between two consecutive step grants (16.0 ms = 0.48 * Period).
-	/// Permits legitimate alternating-frame cadence at 31–59 FPS (16.9–32.2 ms) while blocking high-FPS
-	/// (120–240+ FPS, 4–8 ms) back-to-back step bursts.
-	/// </summary>
-	public const double MinGrantIntervalSeconds = 0.48 * Period;
+	public const int MaxStepsPerFrame = 4;
 
 	private double _accumulated;
-	private double _lastGrantWallSeconds;
-	private bool _hasLastGrant;
 
 	/// <summary>Normalized sub-step draw phase in <c>[0, 1)</c> for <see cref="Engine_TickClock.PublishHostTicks"/>.</summary>
 	public readonly double Phase => System.Math.Clamp(_accumulated / Period, 0.0, 0.999999);
@@ -55,32 +47,43 @@ public struct Engine_GuestPacer
 	/// <summary>Current accumulated seconds waiting toward the next step.</summary>
 	public readonly double AccumulatedSeconds => _accumulated;
 
-	/// <summary>Clears all state, including the monotonic wall-clock anchor.</summary>
+	/// <summary>Clears all accumulated time.</summary>
 	public void Reset()
 	{
 		_accumulated = 0.0;
-		_lastGrantWallSeconds = 0.0;
-		_hasLastGrant = false;
 	}
 
-	/// <summary>Clears buffered delta while preserving the last grant's monotonic wall timestamp (e.g. during pause/load holds).</summary>
+	/// <summary>Clears buffered delta (e.g. during pause/load holds).</summary>
 	public void ClearAccumulated()
 	{
 		_accumulated = 0.0;
 	}
 
 	/// <summary>
-	/// Advances the pacer by one host frame of <paramref name="delta"/> seconds at monotonic wall time
-	/// <paramref name="wallNowSeconds"/>, returning <c>0</c> or <c>1</c> step to grant.
+	/// Advances the pacer by one host frame of <paramref name="delta"/> seconds, returning the number
+	/// of 30 Hz high-frequency guest steps (<c>0..MaxStepsPerFrame</c>) to grant this frame.
 	/// </summary>
 	/// <param name="delta">Host frame delta in seconds.</param>
-	/// <param name="wallNowSeconds">Monotonic wall-clock time in seconds (e.g. from <see cref="System.Diagnostics.Stopwatch"/>).</param>
-	/// <param name="withholdGrant">True when closed-loop guest lead backpressure withholds a grant this frame.</param>
-	public int Advance(double delta, double wallNowSeconds, bool withholdGrant = false)
+	/// <param name="wallNowSeconds">Unused compatibility parameter (retained for call-site stability).</param>
+	/// <param name="withholdGrant">True when closed-loop guest lead backpressure withholds grants this frame.</param>
+	public int Advance(double delta, double wallNowSeconds = 0.0, bool withholdGrant = false)
 	{
-		if (!(delta > 0.0))
+		_ = wallNowSeconds;
+		if (!(delta > 0.0) || !double.IsFinite(delta))
 		{
 			return 0;
+		}
+
+		if (delta >= HitchThresholdSeconds)
+		{
+			if (withholdGrant)
+			{
+				_accumulated = System.Math.Min(_accumulated + Period, Period * 0.999);
+				return 0;
+			}
+
+			_accumulated = 0.0;
+			return 1;
 		}
 
 		_accumulated += delta;
@@ -97,25 +100,14 @@ public struct Engine_GuestPacer
 			return 0;
 		}
 
-		if (_hasLastGrant && wallNowSeconds >= _lastGrantWallSeconds &&
-			(wallNowSeconds - _lastGrantWallSeconds) < MinGrantIntervalSeconds)
-		{
-			// Prevent back-to-back high-FPS frames from draining a near-boundary remainder faster than real time.
-			_accumulated = System.Math.Min(_accumulated, Period * 0.999);
-			return 0;
-		}
-
-		_accumulated -= Period;
-
-		// Discard multi-step backlog or post-hitch remainder instead of banking catch-up bursts,
-		// while preserving ~1.0 * Period of phase cushion for +/-5 ms 30 Hz VSync presentation jitter.
-		if (delta >= HitchDeltaSeconds || _accumulated > MaxJitterRemainderSeconds)
+		int steps = (int)(_accumulated / Period);
+		if (steps > MaxStepsPerFrame)
 		{
 			_accumulated = 0.0;
+			return MaxStepsPerFrame;
 		}
 
-		_lastGrantWallSeconds = wallNowSeconds;
-		_hasLastGrant = true;
-		return 1;
+		_accumulated -= steps * Period;
+		return steps;
 	}
 }

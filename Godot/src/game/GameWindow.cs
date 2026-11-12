@@ -128,7 +128,7 @@ public partial class GameWindow : Node
 		Viewport view = GetViewport();
 		_windowSettings = settings;
 		Vector2I initialWindowSize = settings.Fullscreen && screen.Y > settings.Size.Y ? screen : root.Size;
-		ApplyViewport3DScaling(view, settings, initialWindowSize);
+		ApplyViewportQualityAndVsync(root, view, settings, initialWindowSize, scheduleMailboxSettle: true);
 		_onRootSizeChanged = () =>
 		{
 			if (IsInstanceValid(root) && IsInstanceValid(view))
@@ -137,80 +137,8 @@ public partial class GameWindow : Node
 			}
 		};
 		root.SizeChanged += _onRootSizeChanged;
-		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
-		view.Msaa3D = settings.Msaa switch
-		{
-			>= 8 => Viewport.Msaa.Msaa8X,
-			>= 4 => Viewport.Msaa.Msaa4X,
-			>= 2 => Viewport.Msaa.Msaa2X,
-			_ => Viewport.Msaa.Disabled,
-		};
-
-		// THE UPSCALER IS THE PLAYER'S, AND OFF BY DEFAULT: bilinear at 100% is native, and
-		// native is what the frame-rate target is met at.
-		view.Scaling3DMode = settings.Scaler switch
-		{
-			"fsr" => Viewport.Scaling3DModeEnum.Fsr,
-			"fsr2" => Viewport.Scaling3DModeEnum.Fsr2,
-			"nearest" => Viewport.Scaling3DModeEnum.Nearest,
-			_ => Viewport.Scaling3DModeEnum.Bilinear,
-		};
-		view.FsrSharpness = settings.FsrSharpness;
-		view.TextureMipmapBias = settings.MipmapBias;
-		view.ScreenSpaceAA = settings.ScreenSpaceAa switch
-		{
-			"fxaa" => Viewport.ScreenSpaceAAEnum.Fxaa,
-			"smaa" => Viewport.ScreenSpaceAAEnum.Smaa,
-			_ => Viewport.ScreenSpaceAAEnum.Disabled,
-		};
-		view.UseTaa = settings.Taa && view.Scaling3DMode != Viewport.Scaling3DModeEnum.Fsr2;
-		view.AnisotropicFilteringLevel = settings.Anisotropic switch
-		{
-			>= 16 => Viewport.AnisotropicFiltering.Anisotropy16X,
-			>= 8 => Viewport.AnisotropicFiltering.Anisotropy8X,
-			>= 4 => Viewport.AnisotropicFiltering.Anisotropy4X,
-			>= 2 => Viewport.AnisotropicFiltering.Anisotropy2X,
-			_ => Viewport.AnisotropicFiltering.Disabled,
-		};
-		view.UseDebanding = settings.Debanding;
-
-		ApplyHdr(root, settings);
-
-		// Vsync is a display-server setting, not a per-window one, so this is the whole
-		// application's. On Vulkan + Windows 11 DWM, VSyncMode.Disabled (VK_PRESENT_MODE_IMMEDIATE_KHR)
-		// can latch a stale presentation surface across unfocused load transitions on Intel Arc drivers;
-		// Mailbox provides tear-free low-latency presentation without blocking the swapchain, falling
-		// back automatically via SettleVsync below when a driver lacks Mailbox.
-		bool isD3d12 = RenderingServer.GetCurrentRenderingDriverName()
-			.Contains("d3d12", System.StringComparison.OrdinalIgnoreCase);
-		DisplayServer.VSyncMode wanted = !settings.Vsync
-			? (isD3d12 ? DisplayServer.VSyncMode.Disabled : DisplayServer.VSyncMode.Mailbox)
-			: settings.VsyncMode switch
-			{
-				"on" => DisplayServer.VSyncMode.Enabled,
-				"adaptive" => isD3d12 ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Adaptive,
-				_ => isD3d12 ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Mailbox,
-			};
-		DisplayServer.WindowSetVsyncMode(wanted, (int)DisplayServer.MainWindowId);
-
-		// On D3D12, if V-Sync is disabled and no explicit MaxFps cap was set, apply a safe ceiling
-		// (240 FPS) so lightweight front-end menus never spin at 800+ FPS and flood the D3D12 command queue.
-		if (isD3d12 && wanted == DisplayServer.VSyncMode.Disabled && Engine.MaxFps == 0)
-		{
-			Engine.MaxFps = 240;
-		}
-
-		// A DRIVER WITHOUT MAILBOX IS HANDED PLAIN VSYNC BY GODOT ("The requested V-Sync mode Mailbox
-		// is not available. Falling back to V-Sync mode Enabled" — this machine's NVIDIA/X11 stack,
-		// 2026-09-22), and plain vsync holds a frame that misses one refresh until the next: at
-		// 120 Hz a 9 ms frame is shown at 16.7. Mailbox was asked for precisely to avoid that, so
-		// what stands in for it is ADAPTIVE — the same wait when the frame is on time, a tear
-		// instead of a held frame when it is late. The mode Godot settled on is only known once
-		// the swap chain has been rebuilt, a frame or more after the request.
-		if (!isD3d12 && wanted == DisplayServer.VSyncMode.Mailbox)
-		{
-			GetTree().CreateTimer(1.0).Timeout += SettleVsync;
-		}
+		_onConfigChanged = (_, _) => CallDeferred(MethodName.ReloadWindowSettingsFromConfig);
+		Engine_RefiiConfig.OnConfigChanged += _onConfigChanged;
 
 		// Nothing to minimise: the launcher is a DIFFERENT PROCESS, and it stood itself down
 		// when it spawned this one.
@@ -751,6 +679,108 @@ public partial class GameWindow : Node
 
 	private GameWindowSettings _windowSettings;
 	private System.Action? _onRootSizeChanged;
+	private System.Action<string, string>? _onConfigChanged;
+
+	/// <summary>
+	/// Resolves the desired <see cref="DisplayServer.VSyncMode"/> from <paramref name="settings"/>
+	/// and the active rendering driver. Explicitly honours <see cref="DisplayServer.VSyncMode.Disabled"/>
+	/// whenever <c>!settings.Vsync</c> (<c>vsync_mode = "off"</c>) on both Vulkan and D3D12.
+	/// </summary>
+	public static DisplayServer.VSyncMode ResolveVsyncMode(GameWindowSettings settings, bool isD3d12) =>
+		!settings.Vsync
+			? DisplayServer.VSyncMode.Disabled
+			: settings.VsyncMode switch
+			{
+				"on" => DisplayServer.VSyncMode.Enabled,
+				"adaptive" => isD3d12 ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Adaptive,
+				_ => isD3d12 ? DisplayServer.VSyncMode.Enabled : DisplayServer.VSyncMode.Mailbox,
+			};
+
+	private void ApplyViewportQualityAndVsync(
+		Window root,
+		Viewport view,
+		GameWindowSettings settings,
+		Vector2I actualWindowSize,
+		bool scheduleMailboxSettle)
+	{
+		Engine.MaxFps = settings.MaxFps;
+		Refii.Core.Engine_TickClock.Pin = settings.DrawLatencyTicks;
+		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
+		view.Msaa3D = settings.Msaa switch
+		{
+			>= 8 => Viewport.Msaa.Msaa8X,
+			>= 4 => Viewport.Msaa.Msaa4X,
+			>= 2 => Viewport.Msaa.Msaa2X,
+			_ => Viewport.Msaa.Disabled,
+		};
+
+		// Set Scaling3DMode BEFORE ApplyViewport3DScaling writes Scaling3DScale so Godot's viewport
+		// buffer sizing configures both mode and scale in deterministic order on initial startup.
+		view.Scaling3DMode = settings.Scaler switch
+		{
+			"fsr" => Viewport.Scaling3DModeEnum.Fsr,
+			"fsr2" => Viewport.Scaling3DModeEnum.Fsr2,
+			"nearest" => Viewport.Scaling3DModeEnum.Nearest,
+			_ => Viewport.Scaling3DModeEnum.Bilinear,
+		};
+		ApplyViewport3DScaling(view, settings, actualWindowSize);
+
+		view.FsrSharpness = settings.FsrSharpness;
+		view.TextureMipmapBias = settings.MipmapBias;
+		view.ScreenSpaceAA = settings.ScreenSpaceAa switch
+		{
+			"fxaa" => Viewport.ScreenSpaceAAEnum.Fxaa,
+			"smaa" => Viewport.ScreenSpaceAAEnum.Smaa,
+			_ => Viewport.ScreenSpaceAAEnum.Disabled,
+		};
+		view.UseTaa = settings.Taa && view.Scaling3DMode != Viewport.Scaling3DModeEnum.Fsr2;
+		view.AnisotropicFilteringLevel = settings.Anisotropic switch
+		{
+			>= 16 => Viewport.AnisotropicFiltering.Anisotropy16X,
+			>= 8 => Viewport.AnisotropicFiltering.Anisotropy8X,
+			>= 4 => Viewport.AnisotropicFiltering.Anisotropy4X,
+			>= 2 => Viewport.AnisotropicFiltering.Anisotropy2X,
+			_ => Viewport.AnisotropicFiltering.Disabled,
+		};
+		view.UseDebanding = settings.Debanding;
+
+		ApplyHdr(root, settings);
+
+		bool isD3d12 = RenderingServer.GetCurrentRenderingDriverName()
+			.Contains("d3d12", System.StringComparison.OrdinalIgnoreCase);
+		DisplayServer.VSyncMode wanted = ResolveVsyncMode(settings, isD3d12);
+		DisplayServer.WindowSetVsyncMode(wanted, (int)DisplayServer.MainWindowId);
+
+		// When V-Sync is disabled (`vsync_mode = "off"`) and no explicit MaxFps cap was set, apply a
+		// safe 240 FPS ceiling on both Vulkan and D3D12 so menus never spin uncapped at 800+ FPS.
+		if (wanted == DisplayServer.VSyncMode.Disabled && Engine.MaxFps == 0)
+		{
+			Engine.MaxFps = 240;
+		}
+
+		if (scheduleMailboxSettle && !isD3d12 && wanted == DisplayServer.VSyncMode.Mailbox)
+		{
+			_triedAdaptive = false;
+			GetTree().CreateTimer(1.0).Timeout += SettleVsync;
+		}
+	}
+
+	private void ReloadWindowSettingsFromConfig()
+	{
+		if (!IsInsideTree() || GetTree()?.Root is not { } root || !IsInstanceValid(root))
+		{
+			return;
+		}
+
+		Viewport view = GetViewport();
+		if (!IsInstanceValid(view))
+		{
+			return;
+		}
+
+		_windowSettings = GameWindowSettings.Load();
+		ApplyViewportQualityAndVsync(root, view, _windowSettings, root.Size, scheduleMailboxSettle: true);
+	}
 
 	/// <summary>
 	/// Updates 3D resolution scaling, mesh LOD threshold, and UI max texture edge when the root
@@ -769,6 +799,11 @@ public partial class GameWindow : Node
 
 	public override void _ExitTree()
 	{
+		if (_onConfigChanged is not null)
+		{
+			Engine_RefiiConfig.OnConfigChanged -= _onConfigChanged;
+			_onConfigChanged = null;
+		}
 		if (_onRootSizeChanged is not null && GetTree()?.Root is { } root && IsInstanceValid(root))
 		{
 			root.SizeChanged -= _onRootSizeChanged;

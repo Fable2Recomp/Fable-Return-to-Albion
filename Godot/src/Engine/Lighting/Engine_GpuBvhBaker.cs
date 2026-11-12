@@ -812,7 +812,7 @@ void main() {
 					uint readBytes = (uint)(batchCount * bytesPerLight);
 					byte[]? rawOut = null;
 					RenderingDevice localRd = rd;
-					Engine_ServerSyncs.RunGpuUpload(SliceGpuBudgetBytes, () =>
+					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
 					{
 						localRd.BufferUpdate(lightBuf, 0, (uint)(batchCount * 32), lightBytes);
 						long list = localRd.ComputeListBegin();
@@ -822,6 +822,9 @@ void main() {
 						localRd.ComputeListDispatch(list, (uint)groupsX, (uint)groupsY, (uint)batchCount);
 						localRd.ComputeListEnd();
 						localRd.Submit();
+					});
+					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
+					{
 						localRd.Sync();
 						rawOut = localRd.BufferGetData(outBuf, 0, readBytes);
 					});
@@ -1197,7 +1200,7 @@ void main() {
 					uint readBytes = (uint)(stripH * rowStrideBytes);
 					byte[]? stripOut = null;
 					RenderingDevice localRd = rd;
-					Engine_ServerSyncs.RunGpuUpload(SliceGpuBudgetBytes, () =>
+					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
 					{
 						long list1 = localRd.ComputeListBegin();
 						localRd.ComputeListBindComputePipeline(list1, tracePipeline);
@@ -1214,6 +1217,9 @@ void main() {
 						localRd.ComputeListEnd();
 
 						localRd.Submit();
+					});
+					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
+					{
 						localRd.Sync();
 						stripOut = localRd.BufferGetData(outBuf, 0, readBytes);
 					});

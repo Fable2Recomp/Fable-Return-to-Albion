@@ -156,7 +156,8 @@ public static class Engine_LevelFx
         List<GdbPlacement> placements,
         Dictionary<uint, string>? modelPaths = null,
         Dictionary<uint, Node3D>? attachTo = null,
-        Refii.Lighting.LightProbeField? probes = null)
+        Refii.Lighting.LightProbeField? probes = null,
+        bool syntheticOnly = false)
     {
         // UNDER CLASSIC THE GUEST DRAWS THEM. A placed effect is simulated by the guest like any
         // other, and Engine_ClassicParticles draws every live group with the title's own shaders;
@@ -434,11 +435,21 @@ public static class Engine_LevelFx
         // a property named after its own class — and <see cref="HuntFxAttachments"/> is it.
         foreach (GdbPlacement placement in placements)
         {
+            if (syntheticOnly && !IsLampOnStickPlacement(placement))
+            {
+                continue;
+            }
+
             // NO PLACEMENT IS EXEMPT. The silver keys used to be skipped here and handed a
             // hardcoded `FX_Key_Silver_01` by Engine_LevelProps instead — a host invention that
             // the data made redundant: the ordinary walk resolves that same effect for them, and
             // going around it cost the keys the `OffsetFromDummy` their data states and the
             // orientation rule every other attachment obeys.
+            if (syntheticOnly && HuntFxAttachments(placement.Hash, views).Count != 0)
+            {
+                continue;
+            }
+
             foreach (FxAttachment attachment in ResolvePlacementAttachments(placement, views))
             {
                 if (attachment.Effect == 0 || attachment.Effect == Null ||

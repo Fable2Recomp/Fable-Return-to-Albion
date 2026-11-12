@@ -27,6 +27,10 @@ int refii_bridge_rex_time_base_mode(void);
 /// Grants the guest `steps` high-frequency steps of time. Driven mode only.
 void refii_bridge_rex_advance_time_base(uint32_t steps);
 
+/// Signals that the guest's 30 Hz high-frequency step completed, allowing the next queued
+/// driven-mode step to advance the virtual clock without triggering a multi-step re-base drop.
+void refii_bridge_rex_note_guest_step(void);
+
 /// Freezes or unfreezes the driven time base for an intentional host hold (pause, load cover)
 /// so the grant-silence watchdog does not resume real-rate guest stepping.
 void refii_bridge_rex_set_time_base_frozen(int frozen);

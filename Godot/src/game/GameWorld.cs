@@ -598,27 +598,22 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
-		if (Refii.Core.Engine_GuestFrame.Changed)
-		{
-			++_activeHoldGuestSteps;
-		}
-
-		if (!_loaded)
-		{
-			// While BuildLevelNode is running on a worker thread, allow at most one guest frame after
-			// WorldIsActive() so initial bone poses settle without letting scripts/economy timers tick.
-			FreezeGuestForLoad = _activeHoldGuestSteps >= 1;
-			return;
-		}
-
-		if (!_holdingForProps)
+		if (_loaded && !_holdingForProps)
 		{
 			FreezeGuestForLoad = false;
 			return;
 		}
 
-		// Once mounted, allow only the initial entity walk to capture posed skeletons, then hold.
-		FreezeGuestForLoad = _entities is null || _entities.HasInitialWalk;
+		if (Refii.Core.Engine_GuestFrame.Changed)
+		{
+			++_activeHoldGuestSteps;
+		}
+
+		// Allow at most 2 guest HF frames across the entire hold window after WorldIsActive() so initial
+		// bone poses settle (including save-loads where WorldIsReady() activates early), without ever
+		// dropping the freeze when `_loaded` flips true at mount (`GameEntities` pumps its initial walk
+		// directly via `LoadHold && !ReadyForRelease` without requiring guest frames to advance).
+		FreezeGuestForLoad = _activeHoldGuestSteps >= 2 || (_entities is not null && _entities.HasInitialWalk);
 	}
 
 	/// <summary>When the current hold began, for the load's wall time on the release line.</summary>
@@ -698,11 +693,11 @@ public partial class GameWorld : Node3D
 		try
 		{
 			return System.Math.Max(0, Refii.Core.Engine_RefiiConfig.Int(
-				Refii.Core.Engine_RefiiConfig.Read(out _), DeferSecondsKey, 0));
+				Refii.Core.Engine_RefiiConfig.Read(out _), DeferSecondsKey, 30));
 		}
 		catch (System.Exception)
 		{
-			return 0;
+			return 30;
 		}
 	}
 
