@@ -1,0 +1,198 @@
+/**
+ * @file        codegen/phase_validate.cpp
+ * @brief       Validate phase: verify all call targets resolve
+ *
+ * @copyright   Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
+ *              All rights reserved.
+ *
+ * @license     BSD 3-Clause License
+ *              See LICENSE file in the project root for full license text.
+ */
+
+#include <rex/codegen/phases.h>
+
+#include <fmt/format.h>
+
+#include <rex/codegen/analysis_errors.h>
+#include <rex/codegen/config.h>
+#include <rex/codegen/function_types.h>
+#include <rex/logging.h>
+
+#include "codegen_logging.h"
+#include <rex/memory/utils.h>
+
+#include <ppc.h>
+
+using rex::memory::load_and_swap;
+
+namespace rex::codegen {
+
+namespace {
+
+//=============================================================================
+// Validate all calls resolve
+//=============================================================================
+const CallEdge* findCallEdgeAt(const FunctionNode* node, uint32_t site) {
+  for (const auto& edge : node->calls()) {
+    if (edge.site == site)
+      return &edge;
+  }
+  for (const auto& edge : node->tailCalls()) {
+    if (edge.site == site)
+      return &edge;
+  }
+  return nullptr;
+}
+
+void validateConfigBoundaries(CodegenContext& ctx) {
+  auto& graph = ctx.graph;
+  const auto& byBase = graph.functionsByBase();
+
+  for (const auto& [addr, fc] : ctx.Config().functions) {
+    if (fc.isChunk())
+      continue;
+
+    const FunctionNode* node = graph.getFunction(addr);
+    if (!node) {
+      REXCODEGEN_WARN("[functions] 0x{:08X} is not a function entry point", addr);
+      continue;
+    }
+    if (node->authority() != FunctionAuthority::CONFIG) {
+      REXCODEGEN_WARN("[functions] 0x{:08X} outranked by {}", addr,
+                      AuthorityName(node->authority()));
+      continue;
+    }
+
+    uint32_t declared = fc.getSize(addr);
+    if (declared == 0)
+      continue;
+
+    const uint64_t endAddr = uint64_t(addr) + uint64_t(declared);
+    for (auto it = byBase.upper_bound(addr); it != byBase.end() && uint64_t(it->first) < endAddr;
+         ++it) {
+      uint32_t otherAddr = it->first;
+      const FunctionNode* other = it->second;
+      auto authority = other->authority();
+      if (authority == FunctionAuthority::PDATA || authority == FunctionAuthority::HELPER) {
+        REXCODEGEN_DEBUG("[functions] 0x{:08X} size 0x{:X} contains {} 0x{:08X}", addr, declared,
+                         AuthorityName(authority), otherAddr);
+        continue;
+      }
+      REXCODEGEN_WARN("[functions] 0x{:08X} size 0x{:X} split by {} entry point 0x{:08X}", addr,
+                      declared, AuthorityName(authority), otherAddr);
+    }
+  }
+}
+
+VoidResult validateGraph(CodegenContext& ctx) {
+  REXCODEGEN_TRACE("Analyze: validating call graph...");
+
+  auto& graph = ctx.graph;
+  auto& binary = ctx.binary();
+  auto& errors = ctx.errors;
+
+  validateConfigBoundaries(ctx);
+
+  size_t functionsChecked = 0;
+  size_t callsChecked = 0;
+  size_t edgesVerified = 0;
+
+  for (const auto& [addr, node] : graph.functions()) {
+    functionsChecked++;
+
+    for (const auto& block : node->blocks()) {
+      const uint8_t* data = binary.translate(block.base);
+      if (!data)
+        continue;
+
+      for (size_t offset = 0; offset < block.size; offset += 4) {
+        uint32_t insn = load_and_swap<uint32_t>(data + offset);
+
+        if (PPC_OP(insn) == PPC_OP_B && !PPC_BA(insn)) {
+          uint32_t site = block.base + static_cast<uint32_t>(offset);
+          int32_t branchOffset = PPC_BI(insn);
+          uint32_t target = site + branchOffset;
+          bool isCall = PPC_BL(insn);
+
+          callsChecked++;
+
+          bool targetExists = false;
+          bool isInternalJump = false;
+
+          if (node->containsAddress(target)) {
+            isInternalJump = true;
+            targetExists = true;
+          }
+
+          if (!targetExists && node->isWithinBounds(target)) {
+            isInternalJump = true;
+            targetExists = true;
+          }
+
+          if (!targetExists && graph.isEntryPoint(target)) {
+            targetExists = true;
+          }
+
+          if (!targetExists && graph.isImport(target)) {
+            targetExists = true;
+          }
+
+          if (!targetExists) {
+            const FunctionNode* containingFunc = graph.getFunctionContaining(target);
+            if (containingFunc) {
+              targetExists = true;
+            }
+          }
+
+          if (!targetExists) {
+            errors.Add(AnalysisErrors::Category::UnresolvedCall, target, site,
+                       fmt::format("{} 0x{:08X} from 0x{:08X} - target not in any function",
+                                   isCall ? "bl" : "b", target, site));
+            continue;
+          }
+
+          if (!isInternalJump) {
+            const CallEdge* edge = findCallEdgeAt(node.get(), site);
+            if (!edge) {
+              const FunctionNode* containingFunc = graph.getFunctionContaining(target);
+              if (!containingFunc) {
+                errors.Add(AnalysisErrors::Category::UnresolvedCall, target, site,
+                           fmt::format("{} 0x{:08X} from 0x{:08X} in {} - no CallEdge recorded",
+                                       isCall ? "bl" : "b", target, site, node->name()));
+              }
+            } else {
+              edgesVerified++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  REXCODEGEN_TRACE("Analyze: checked {} branches in {} functions, verified {} edges", callsChecked,
+                   functionsChecked, edgesVerified);
+
+  if (errors.HasErrors()) {
+    REXCODEGEN_ERROR("Analyze: found {} errors", errors.Count());
+    errors.PrintReport();
+    return Err(ErrorCategory::Validation,
+               fmt::format("Validation failed: {} unresolved calls",
+                           errors.Count(AnalysisErrors::Category::UnresolvedCall)));
+  }
+
+  REXCODEGEN_TRACE("Analyze: all calls resolve");
+  return Ok();
+}
+
+}  // anonymous namespace
+
+namespace phases {
+
+VoidResult Validate(CodegenContext& ctx, ProgressReporter* reporter) {
+  (void)reporter;
+  return validateGraph(ctx);
+}
+
+}  // namespace phases
+
+}  // namespace rex::codegen

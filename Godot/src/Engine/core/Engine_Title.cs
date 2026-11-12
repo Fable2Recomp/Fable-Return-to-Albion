@@ -207,16 +207,16 @@ public sealed class Engine_Title
 	public string GameDataRelative => System.IO.Path.Combine(Folder, "game");
 
 	public static readonly Engine_Title Fable2 = new(
-		"refii", "Fable 2", "Fable 2 Return to Albion", 0x4D5307F1, "Fable2", "refii_generated",
+		"refii", "Fable 2", "Fable 2: Return to Albion", 0x4D5307F1, "Fable2", "refii_generated",
 		"Fable2", "Fable2TU1", hasHardMods: true, ".f2mod", 0x5DD978FFu, hashedModelNodes: false,
 		"refii_hostbridge", "refii_vfs", "refii_lua")
 	{
 		PhoneHostLabels = Refii.AndroidRuntime.AndroidMenuWords.Fable2,
 	};
 
-	/// <summary>Fable 3. Its remake has no name yet; it goes by the game's until it does.</summary>
+	/// <summary>Fable 3 in Return to Albion.</summary>
 	public static readonly Engine_Title Fable3 = new(
-		"refiii", "Fable 3", "Fable 3", 0x4D5308D6, "Fable3", "refiii_generated",
+		"refiii", "Fable 3", "Fable 3: Return to Albion", 0x4D5308D6, "Fable3", "refiii_generated",
 		"Fable3", "Fable3TU3", hasHardMods: false, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
 		"refii_hostbridge", "refii_vfs")
 	{

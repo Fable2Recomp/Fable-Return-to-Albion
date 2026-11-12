@@ -4,6 +4,8 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
+include(cmake/refii_compiler_cache.cmake)
+refii_configure_compiler_cache()
 project(refii LANGUAGES CXX)
 
 if(POLICY CMP0144)
@@ -11,7 +13,7 @@ if(POLICY CMP0144)
 endif()
 
 if(WIN32)
-    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 endif()
 
 set(CMAKE_CXX_STANDARD 23)

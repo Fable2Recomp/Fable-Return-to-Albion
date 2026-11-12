@@ -83,6 +83,12 @@ public static partial class Engine_UiKeyGlyphs
 		public required ImageTexture Texture;
 		public required Texture2D Original;
 		public required string Button;
+		public required int BaseWidth;
+		public required int BaseHeight;
+		public required int Scale;
+
+		public int Width => BaseWidth * Scale;
+		public int Height => BaseHeight * Scale;
 
 		public GlyphLayer Layer;
 
@@ -481,18 +487,25 @@ public static partial class Engine_UiKeyGlyphs
 			return original;
 		}
 
+		int baseWidth = Math.Max(1, image.GetWidth());
+		int baseHeight = Math.Max(1, image.GetHeight());
+		int scale = Math.Max(1, (int)Math.Ceiling(MinGlyphSide / (double)Math.Max(1, Math.Min(baseWidth, baseHeight))));
+		Direction arrow = ArrowFor(key);
+		Image initial = BuildProxyImage(image, button, art.Layer, art.Backed, arrow, baseWidth, baseHeight, scale, Engine_UiInputMode.Keycaps);
 		var proxy = new Proxy
 		{
-			Texture = Engine_TextureUpload.CreateTexture(image),
+			Texture = Engine_TextureUpload.CreateTexture(initial),
 			Original = original,
 			Button = button,
+			BaseWidth = baseWidth,
+			BaseHeight = baseHeight,
+			Scale = scale,
 			Layer = art.Layer,
 			Backed = art.Backed,
-			Arrow = ArrowFor(key),
+			Arrow = arrow,
 		};
-		RegisterSourceImage(proxy.Texture, image);
+		RegisterSourceImage(proxy.Texture, initial);
 		_proxies[key] = proxy;
-		Draw(proxy, Engine_UiInputMode.Keycaps);
 
 		// The enhancer swaps a sharper image into the original later; the pad art follows it.
 		// (A drawn glyph keeps itself — it is redrawn on the next switch.)
@@ -724,39 +737,73 @@ public static partial class Engine_UiKeyGlyphs
 		}
 	}
 
-	private static void Draw(Proxy proxy, bool keys)
+	private static Image ToNormalizedRgba8(Image source, int targetWidth, int targetHeight, bool generateMipmaps)
 	{
-		Image? pad = SourceImageOf(proxy.Original);
-		if (pad is null || pad.IsEmpty())
+		var rgba = (Image)source.Duplicate();
+		if (rgba.IsCompressed())
 		{
-			return;
+			rgba.Decompress();
 		}
 
-		if (!keys && ShowsShipped(proxy.Button))
+		rgba.ClearMipmaps();
+		if (rgba.GetFormat() != Image.Format.Rgba8)
 		{
-			RegisterSourceImage(proxy.Texture, pad);
-			Engine_TextureUpload.SetImage(proxy.Texture, pad);
-			return;
+			rgba.Convert(Image.Format.Rgba8);
 		}
 
-		if (proxy.Layer == GlyphLayer.Overlay)
+		if (rgba.GetWidth() != targetWidth || rgba.GetHeight() != targetHeight)
+		{
+			rgba.Resize(targetWidth, targetHeight, Image.Interpolation.Cubic);
+		}
+
+		if (generateMipmaps)
+		{
+			rgba.GenerateMipmaps();
+		}
+
+		return rgba;
+	}
+
+	private static Image BuildProxyImage(
+		Image pad,
+		string button,
+		GlyphLayer layer,
+		bool backed,
+		Direction arrow,
+		int baseWidth,
+		int baseHeight,
+		int scale,
+		bool keys)
+	{
+		int width = baseWidth * scale;
+		int height = baseHeight * scale;
+
+		// Keep every proxy update at a fixed RGBA8 + mipmaps layout matching `width x height` so
+		// `ImageTexture.SetImage` always performs an in-place `RS::texture_2d_update` rather than
+		// `RS::texture_replace` (never destroying a live ID3D12Resource mid-frame on D3D12).
+		if (!keys && ShowsShipped(button))
+		{
+			return ToNormalizedRgba8(pad, width, height, generateMipmaps: true);
+		}
+
+		if (layer == GlyphLayer.Overlay)
 		{
 			// The orb under it carries the glyph; the letter over it would draw on top of the keycap.
-			Image empty = new Canvas(pad.GetWidth(), pad.GetHeight()).ToImage(pad.HasMipmaps());
-			RegisterSourceImage(proxy.Texture, empty);
-			Engine_TextureUpload.SetImage(proxy.Texture, empty);
-			return;
+			return new Canvas(width, height).ToImage(mipmaps: true);
 		}
+
+		// Ensure footprint/silhouette sampling uses the initial base dimensions even if the source
+		// texture was later replaced by a 4x enhanced image.
+		Image padAtBase = pad.GetWidth() == baseWidth && pad.GetHeight() == baseHeight
+			? pad
+			: ToNormalizedRgba8(pad, baseWidth, baseHeight, generateMipmaps: false);
 
 		// One glyph per square cell along the long side, so an animated strip shows a whole key
 		// in whichever frame its UVs select; a square texture is one cell.
 		// A small original (Fable 3's prompts are 32 px) is drawn at a whole multiple of its size, so the
 		// letter stays legible; the quads' UVs are fractions, so every cut still fits.
-		int scale = Math.Max(1, (int)Math.Ceiling(MinGlyphSide / (double)Math.Max(1, Math.Min(pad.GetWidth(), pad.GetHeight()))));
-		int width = pad.GetWidth() * scale;
-		int height = pad.GetHeight() * scale;
 		int side = Math.Min(width, height);
-		string label = keys ? LabelFor?.Invoke(proxy.Button) ?? proxy.Button : string.Empty;
+		string label = keys ? LabelFor?.Invoke(button) ?? button : string.Empty;
 		var canvas = new Canvas(width, height);
 		for (int y = 0; y + side <= height; y += side)
 		{
@@ -765,7 +812,7 @@ public static partial class Engine_UiKeyGlyphs
 				var cell = new Rect2I(x, y, side, side);
 				if (!keys)
 				{
-					DrawPadCell(canvas, cell, proxy.Button, proxy.Arrow);
+					DrawPadCell(canvas, cell, button, arrow);
 				}
 				else
 				{
@@ -773,21 +820,41 @@ public static partial class Engine_UiKeyGlyphs
 					// the gap the layout leaves between a prompt's label and its glyph (Fable 3's
 					// `24x24_NoRim` orbs sit inside their cell); a keycap filling the whole cell ran
 					// into the label. An orb that fills its cell gives the cell back unchanged.
-					Rect2I key = OpaqueFootprint(pad, cell, scale) ?? cell;
+					Rect2I key = OpaqueFootprint(padAtBase, cell, scale) ?? cell;
 					if (!BlitPack(canvas, key, KeyPackName(label)))
 					{
 						DrawKeycap(canvas, key, label, pressed: false);
 					}
 				}
 
-				if (proxy.Backed)
+				if (backed)
 				{
-					UnderSilhouette(canvas, pad, cell, scale);
+					UnderSilhouette(canvas, padAtBase, cell, scale);
 				}
 			}
 		}
 
-		Image drawn = canvas.ToImage(pad.HasMipmaps() || scale > 1);
+		return canvas.ToImage(mipmaps: true);
+	}
+
+	private static void Draw(Proxy proxy, bool keys)
+	{
+		Image? pad = SourceImageOf(proxy.Original);
+		if (pad is null || pad.IsEmpty())
+		{
+			return;
+		}
+
+		Image drawn = BuildProxyImage(
+			pad,
+			proxy.Button,
+			proxy.Layer,
+			proxy.Backed,
+			proxy.Arrow,
+			proxy.BaseWidth,
+			proxy.BaseHeight,
+			proxy.Scale,
+			keys);
 		RegisterSourceImage(proxy.Texture, drawn);
 		Engine_TextureUpload.SetImage(proxy.Texture, drawn);
 	}

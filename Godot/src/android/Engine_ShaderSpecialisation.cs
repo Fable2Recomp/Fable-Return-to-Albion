@@ -110,7 +110,8 @@ public static class Engine_ShaderSpecialisation
     /// </summary>
     public static Shader? LoadFile(string path)
     {
-        if (!Engine_ShaderVariant.IsBuild(path))
+        bool isLiteBuild = Engine_ShaderVariant.IsBuild(path);
+        if (!isLiteBuild && !Engine_ShaderVariant.ShouldComposeModernDirect(path))
         {
             return GD.Load<Shader>(path);
         }
@@ -127,7 +128,10 @@ public static class Engine_ShaderSpecialisation
                 return null;
             }
 
-            var shader = new Shader { Code = Engine_ShaderVariant.Compose(full.Code, path) };
+            string code = isLiteBuild
+                ? Engine_ShaderVariant.Compose(full.Code, path)
+                : Engine_ShaderVariant.ComposeModernDirect(full.Code);
+            var shader = new Shader { Code = code };
             LiteBuilds[path] = shader;
             ByShader.Add(shader, new Built { Path = path, Source = shader.Code, Defines = Array.Empty<string>(), Shader = shader });
             return shader;

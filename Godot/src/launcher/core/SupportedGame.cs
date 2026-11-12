@@ -28,9 +28,11 @@ public static class SupportedGame
 {
 	private static Refii.Core.Engine_Title Title => Refii.Core.Engine_Title.Active;
 
-	private static bool IsFable3 => Title == Refii.Core.Engine_Title.Fable3;
+	/// <summary>Display name of the supported edition for <paramref name="title"/>.</summary>
+	public static string NameFor(Refii.Core.Engine_Title title) =>
+		title == Refii.Core.Engine_Title.Fable3 ? "Fable 3" : "Fable 2 GOTY";
 
-	public static string Name => IsFable3 ? "Fable 3" : "Fable 2 GOTY";
+	public static string Name => NameFor(Title);
 
 	public static uint TitleId => Title.TitleId;
 
@@ -142,7 +144,11 @@ public static class SupportedGame
 
 	private static readonly Pressing[] Fable3Pressings = { Fable3UsaEurope };
 
-	public static Pressing[] Pressings => IsFable3 ? Fable3Pressings : Fable2Pressings;
+	/// <summary>The supported disc pressings for <paramref name="title"/>.</summary>
+	public static Pressing[] PressingsFor(Refii.Core.Engine_Title title) =>
+		title == Refii.Core.Engine_Title.Fable3 ? Fable3Pressings : Fable2Pressings;
+
+	public static Pressing[] Pressings => PressingsFor(Title);
 
 	public static string TitleIdText => TitleId.ToString("X8");
 
@@ -150,49 +156,54 @@ public static class SupportedGame
 	public const string EasingNote =
 		"This restriction will be eased as we eventually support more versions closer to release.";
 
-	/// <summary>The supported pressings as "716F0A0D (USA / Europe), 05FBECEA (Russia)".</summary>
-	public static string PressingsText
+	/// <summary>The supported pressings for <paramref name="title"/> as "716F0A0D (USA / Europe), ...".</summary>
+	public static string PressingsTextFor(Refii.Core.Engine_Title title)
 	{
-		get
+		Pressing[] list = PressingsFor(title);
+		string[] parts = new string[list.Length];
+		for (int i = 0; i < list.Length; i++)
 		{
-			string[] parts = new string[Pressings.Length];
-			for (int i = 0; i < Pressings.Length; i++)
+			parts[i] = list[i].ShortMediaIdText + " (" + list[i].Name + ")";
+		}
+
+		return string.Join(", ", parts);
+	}
+
+	/// <summary>The supported pressings as "716F0A0D (USA / Europe), 05FBECEA (Russia)".</summary>
+	public static string PressingsText => PressingsTextFor(Title);
+
+	/// <summary>The title updates that may be installed for <paramref name="title"/>, as "TU_... for 716F0A0D".</summary>
+	public static string TitleUpdatesTextFor(Refii.Core.Engine_Title title)
+	{
+		string text = string.Empty;
+		foreach (Pressing pressing in PressingsFor(title))
+		{
+			if (!pressing.HasTitleUpdate)
 			{
-				parts[i] = Pressings[i].ShortMediaIdText + " (" + Pressings[i].Name + ")";
+				continue;
 			}
 
-			return string.Join(", ", parts);
+			text += (text.Length > 0 ? ", " : string.Empty) +
+					pressing.TitleUpdateName + " for " + pressing.ShortMediaIdText;
 		}
+
+		return text;
 	}
 
 	/// <summary>The title updates that may be installed, as "TU_... for 716F0A0D".</summary>
-	public static string TitleUpdatesText
-	{
-		get
-		{
-			string text = string.Empty;
-			foreach (Pressing pressing in Pressings)
-			{
-				if (!pressing.HasTitleUpdate)
-				{
-					continue;
-				}
+	public static string TitleUpdatesText => TitleUpdatesTextFor(Title);
 
-				text += (text.Length > 0 ? ", " : string.Empty) +
-						pressing.TitleUpdateName + " for " + pressing.ShortMediaIdText;
-			}
-
-			return text;
-		}
-	}
+	/// <summary>What the player has to bring for <paramref name="title"/>, for messages.</summary>
+	public static string RequirementFor(Refii.Core.Engine_Title title) =>
+		NameFor(title) + " (title ID " + title.TitleId.ToString("X8") + ", media ID " + PressingsTextFor(title) + ")";
 
 	/// <summary>What the player has to bring, for messages.</summary>
-	public static string Requirement =>
-		Name + " (title ID " + TitleIdText + ", media ID " + PressingsText + ")";
+	public static string Requirement => RequirementFor(Title);
 
-	public static Pressing? FindPressing(ReadOnlySpan<byte> mediaId)
+	/// <summary>Finds a supported pressing for <paramref name="title"/> matching <paramref name="mediaId"/>.</summary>
+	public static Pressing? FindPressing(Refii.Core.Engine_Title title, ReadOnlySpan<byte> mediaId)
 	{
-		foreach (Pressing pressing in Pressings)
+		foreach (Pressing pressing in PressingsFor(title))
 		{
 			if (pressing.Matches(mediaId))
 			{
@@ -203,24 +214,26 @@ public static class SupportedGame
 		return null;
 	}
 
-	/// <summary>Whether a base executable is one of the supported pressings.</summary>
-	public static bool IsExecutable(XexIdentity executable, out string error)
+	public static Pressing? FindPressing(ReadOnlySpan<byte> mediaId) => FindPressing(Title, mediaId);
+
+	/// <summary>Whether a base executable is one of the supported pressings of <paramref name="title"/>.</summary>
+	public static bool IsExecutable(Refii.Core.Engine_Title title, XexIdentity executable, out string error)
 	{
 		error = string.Empty;
 
-		if (executable.TitleId != TitleId)
+		if (executable.TitleId != title.TitleId)
 		{
-			error = "This disc image is not " + Title.Name + ": its title ID is " +
-					executable.TitleId.ToString("X8") + ", and this build needs " + Requirement + ".";
+			error = "This disc image is not " + title.Name + ": its title ID is " +
+					executable.TitleId.ToString("X8") + ", and this build needs " + RequirementFor(title) + ".";
 			return false;
 		}
 
-		Pressing? pressing = FindPressing(executable.MediaId);
+		Pressing? pressing = FindPressing(title, executable.MediaId);
 		if (pressing == null)
 		{
-			error = "This is a different pressing of " + Title.Name + ": its media ID is " +
+			error = "This is a different pressing of " + title.Name + ": its media ID is " +
 					executable.ShortMediaIdText + ", and this build only supports media ID " +
-					PressingsText + ".";
+					PressingsTextFor(title) + ".";
 			return false;
 		}
 
@@ -236,21 +249,21 @@ public static class SupportedGame
 		return true;
 	}
 
-	/// <summary>Whether a base executable is the pressing the player selected.</summary>
-	/// <remarks>
-	/// The whole list is still consulted so a disc of another supported pressing is named as
-	/// such: the fix is a different dropdown choice, not a different disc.
-	/// </remarks>
-	public static bool IsExecutable(XexIdentity executable, Pressing selected, out string error)
+	/// <summary>Whether a base executable is one of the supported pressings.</summary>
+	public static bool IsExecutable(XexIdentity executable, out string error) =>
+		IsExecutable(Title, executable, out error);
+
+	/// <summary>Whether a base executable is the pressing of <paramref name="title"/> the player selected.</summary>
+	public static bool IsExecutable(Refii.Core.Engine_Title title, XexIdentity executable, Pressing selected, out string error)
 	{
-		if (!IsExecutable(executable, out error))
+		if (!IsExecutable(title, executable, out error))
 		{
 			return false;
 		}
 
 		if (!selected.Matches(executable.MediaId))
 		{
-			Pressing actual = FindPressing(executable.MediaId)!;
+			Pressing actual = FindPressing(title, executable.MediaId)!;
 			error = "This disc image is the " + actual.Name + " pressing (media ID " +
 					actual.ShortMediaIdText + "), not " + selected.DisplayName +
 					". Select " + actual.DisplayName + " as the game version.";
@@ -260,17 +273,25 @@ public static class SupportedGame
 		return true;
 	}
 
-	/// <summary>Whether a patch is the title update of the pressing the player selected.</summary>
-	public static bool IsTitleUpdate(XexIdentity patch, Pressing selected, out string error)
+	/// <summary>Whether a base executable is the pressing the player selected.</summary>
+	/// <remarks>
+	/// The whole list is still consulted so a disc of another supported pressing is named as
+	/// such: the fix is a different dropdown choice, not a different disc.
+	/// </remarks>
+	public static bool IsExecutable(XexIdentity executable, Pressing selected, out string error) =>
+		IsExecutable(Title, executable, selected, out error);
+
+	/// <summary>Whether a patch is the title update of the pressing of <paramref name="title"/> the player selected.</summary>
+	public static bool IsTitleUpdate(Refii.Core.Engine_Title title, XexIdentity patch, Pressing selected, out string error)
 	{
-		if (!IsTitleUpdate(patch, out error))
+		if (!IsTitleUpdate(title, patch, out error))
 		{
 			return false;
 		}
 
 		if (!selected.Matches(patch.MediaId))
 		{
-			Pressing actual = FindPressing(patch.MediaId)!;
+			Pressing actual = FindPressing(title, patch.MediaId)!;
 			error = "This title update is for the " + actual.Name + " pressing (media ID " +
 					actual.ShortMediaIdText + "), not " + selected.DisplayName +
 					". The one to fetch is " + selected.TitleUpdateName + ".";
@@ -280,17 +301,21 @@ public static class SupportedGame
 		return true;
 	}
 
-	/// <summary>Whether a patch is the supported title update for its pressing.</summary>
-	public static bool IsTitleUpdate(XexIdentity patch, out string error)
+	/// <summary>Whether a patch is the title update of the pressing the player selected.</summary>
+	public static bool IsTitleUpdate(XexIdentity patch, Pressing selected, out string error) =>
+		IsTitleUpdate(Title, patch, selected, out error);
+
+	/// <summary>Whether a patch is the supported title update for its pressing of <paramref name="title"/>.</summary>
+	public static bool IsTitleUpdate(Refii.Core.Engine_Title title, XexIdentity patch, out string error)
 	{
 		error = string.Empty;
 
-		Pressing? pressing = FindPressing(patch.MediaId);
+		Pressing? pressing = FindPressing(title, patch.MediaId);
 		if (pressing == null)
 		{
-			error = "This title update is for a different pressing of " + Title.Name + ": it names media ID " +
+			error = "This title update is for a different pressing of " + title.Name + ": it names media ID " +
 					patch.ShortMediaIdText + ", and this build only supports media ID " +
-					PressingsText + ". The ones to fetch are " + TitleUpdatesText + ".";
+					PressingsTextFor(title) + ". The ones to fetch are " + TitleUpdatesTextFor(title) + ".";
 			return false;
 		}
 
@@ -313,4 +338,8 @@ public static class SupportedGame
 
 		return true;
 	}
+
+	/// <summary>Whether a patch is the supported title update for its pressing.</summary>
+	public static bool IsTitleUpdate(XexIdentity patch, out string error) =>
+		IsTitleUpdate(Title, patch, out error);
 }

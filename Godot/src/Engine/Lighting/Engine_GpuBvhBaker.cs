@@ -73,13 +73,14 @@ vec3 direction_from_octahedral_uv(vec2 uv) {
 	return len_sq > 1e-12 ? n * inversesqrt(len_sq) : vec3(0.0, 0.0, 1.0);
 }
 
-bool intersect_aabb(vec3 origin, vec3 inv_dir, vec3 bmin, vec3 bmax, float t_min, float t_max) {
+bool intersect_aabb(vec3 origin, vec3 inv_dir, vec3 bmin, vec3 bmax, float t_min, float t_max, out float entry_t) {
 	vec3 t1 = (bmin - origin) * inv_dir;
 	vec3 t2 = (bmax - origin) * inv_dir;
 	vec3 tmin3 = min(t1, t2);
 	vec3 tmax3 = max(t1, t2);
 	float tmin = max(max(t_min, tmin3.x), max(tmin3.y, tmin3.z));
 	float tmax = min(min(t_max, tmax3.x), min(tmax3.y, tmax3.z));
+	entry_t = tmin;
 	return tmax >= tmin;
 }
 
@@ -91,25 +92,30 @@ bool trace_closest_hit(vec3 origin, vec3 dir, float t_min, float t_max, out floa
 		abs(dir.y) > 1e-8 ? 1.0 / dir.y : (dir.y >= 0.0 ? 1e8 : -1e8),
 		abs(dir.z) > 1e-8 ? 1.0 / dir.z : (dir.z >= 0.0 ? 1e8 : -1e8));
 
+	float root_tmin;
+	if (!intersect_aabb(origin, inv_dir, bvh_nodes.nodes[0].xyz, bvh_nodes.nodes[1].xyz, t_min, hit_dist, root_tmin)) {
+		return false;
+	}
+
 	int stack[64];
+	float tstack[64];
 	int sp = 0;
-	stack[sp++] = 0;
+	int node_idx = 0;
 	bool any_hit = false;
 
-	while (sp > 0) {
-		int node_idx = stack[--sp];
+	while (true) {
 		vec4 n0 = bvh_nodes.nodes[node_idx * 2];
 		vec4 n1 = bvh_nodes.nodes[node_idx * 2 + 1];
-		if (!intersect_aabb(origin, inv_dir, n0.xyz, n1.xyz, t_min, hit_dist)) {
-			continue;
-		}
-
 		int left_or_first = floatBitsToInt(n0.w);
 		int count = floatBitsToInt(n1.w);
 		if (count > 0) {
 			int end = left_or_first + count;
 			for (int i = left_or_first; i < end; ++i) {
 				int to = i * 4;
+				vec4 n_and_flags = bvh_tris.tris[to + 3];
+				if ((floatBitsToUint(n_and_flags.w) & 1u) == 0u) {
+					continue;
+				}
 				vec3 v0 = bvh_tris.tris[to].xyz;
 				vec3 e1 = bvh_tris.tris[to + 1].xyz;
 				vec3 e2 = bvh_tris.tris[to + 2].xyz;
@@ -132,13 +138,56 @@ bool trace_closest_hit(vec3 origin, vec3 dir, float t_min, float t_max, out floa
 				float t = dot(e2, qvec) * inv_det;
 				if (t > t_min && t < hit_dist) {
 					hit_dist = t;
-					hit_normal = bvh_tris.tris[to + 3].xyz;
+					hit_normal = n_and_flags.xyz;
 					any_hit = true;
 				}
 			}
-		} else if (sp + 2 <= 64) {
-			stack[sp++] = left_or_first + 1;
-			stack[sp++] = left_or_first;
+		} else {
+			int left_idx = left_or_first;
+			int right_idx = left_or_first + 1;
+			float tmin_l;
+			float tmin_r;
+			bool hit_l = intersect_aabb(origin, inv_dir, bvh_nodes.nodes[left_idx * 2].xyz, bvh_nodes.nodes[left_idx * 2 + 1].xyz, t_min, hit_dist, tmin_l);
+			bool hit_r = intersect_aabb(origin, inv_dir, bvh_nodes.nodes[right_idx * 2].xyz, bvh_nodes.nodes[right_idx * 2 + 1].xyz, t_min, hit_dist, tmin_r);
+			if (hit_l && hit_r) {
+				if (tmin_l <= tmin_r) {
+					if (sp < 64) {
+						stack[sp] = right_idx;
+						tstack[sp] = tmin_r;
+						sp++;
+					}
+					node_idx = left_idx;
+				} else {
+					if (sp < 64) {
+						stack[sp] = left_idx;
+						tstack[sp] = tmin_l;
+						sp++;
+					}
+					node_idx = right_idx;
+				}
+				continue;
+			}
+			if (hit_l) {
+				node_idx = left_idx;
+				continue;
+			}
+			if (hit_r) {
+				node_idx = right_idx;
+				continue;
+			}
+		}
+
+		bool popped = false;
+		while (sp > 0) {
+			--sp;
+			if (tstack[sp] < hit_dist) {
+				node_idx = stack[sp];
+				popped = true;
+				break;
+			}
+		}
+		if (!popped) {
+			break;
 		}
 	}
 
@@ -200,7 +249,7 @@ layout(set = 0, binding = 2, std430) restrict readonly buffer GhfHeightsBuf {
 } ghf_buf;
 
 layout(set = 0, binding = 3, std430) restrict writeonly buffer MidAo {
-	vec2 ao_and_h[];
+	vec4 samples[];
 } out_buf;
 
 layout(push_constant, std430) uniform Push {
@@ -299,42 +348,49 @@ void sample_height_and_normal(float local_x, float local_z, out float height, ou
 	world_normal = normalize(n);
 }
 
-bool intersect_aabb(vec3 origin, vec3 inv_dir, vec3 bmin, vec3 bmax, float t_min, float t_max) {
+bool intersect_aabb(vec3 origin, vec3 inv_dir, vec3 bmin, vec3 bmax, float t_min, float t_max, out float entry_t) {
 	vec3 t1 = (bmin - origin) * inv_dir;
 	vec3 t2 = (bmax - origin) * inv_dir;
 	vec3 tmin3 = min(t1, t2);
 	vec3 tmax3 = max(t1, t2);
 	float tmin = max(max(t_min, tmin3.x), max(tmin3.y, tmin3.z));
 	float tmax = min(min(t_max, tmax3.x), min(tmax3.y, tmax3.z));
+	entry_t = tmin;
 	return tmax >= tmin;
 }
 
-bool trace_closest_hit(vec3 origin, vec3 dir, float t_min, float t_max, out float hit_dist) {
+bool trace_closest_hit(vec3 origin, vec3 dir, float t_min, float t_max, uint flag_mask, uint flag_expected, out float hit_dist, out vec3 hit_normal) {
 	hit_dist = t_max;
+	hit_normal = vec3(0.0, 1.0, 0.0);
 	vec3 inv_dir = vec3(
 		abs(dir.x) > 1e-8 ? 1.0 / dir.x : (dir.x >= 0.0 ? 1e8 : -1e8),
 		abs(dir.y) > 1e-8 ? 1.0 / dir.y : (dir.y >= 0.0 ? 1e8 : -1e8),
 		abs(dir.z) > 1e-8 ? 1.0 / dir.z : (dir.z >= 0.0 ? 1e8 : -1e8));
 
+	float root_tmin;
+	if (!intersect_aabb(origin, inv_dir, bvh_nodes.nodes[0].xyz, bvh_nodes.nodes[1].xyz, t_min, hit_dist, root_tmin)) {
+		return false;
+	}
+
 	int stack[64];
+	float tstack[64];
 	int sp = 0;
-	stack[sp++] = 0;
+	int node_idx = 0;
 	bool any_hit = false;
 
-	while (sp > 0) {
-		int node_idx = stack[--sp];
+	while (true) {
 		vec4 n0 = bvh_nodes.nodes[node_idx * 2];
 		vec4 n1 = bvh_nodes.nodes[node_idx * 2 + 1];
-		if (!intersect_aabb(origin, inv_dir, n0.xyz, n1.xyz, t_min, hit_dist)) {
-			continue;
-		}
-
 		int left_or_first = floatBitsToInt(n0.w);
 		int count = floatBitsToInt(n1.w);
 		if (count > 0) {
 			int end = left_or_first + count;
 			for (int i = left_or_first; i < end; ++i) {
 				int to = i * 4;
+				vec4 n_and_flags = bvh_tris.tris[to + 3];
+				if ((floatBitsToUint(n_and_flags.w) & flag_mask) != flag_expected) {
+					continue;
+				}
 				vec3 v0 = bvh_tris.tris[to].xyz;
 				vec3 e1 = bvh_tris.tris[to + 1].xyz;
 				vec3 e2 = bvh_tris.tris[to + 2].xyz;
@@ -357,16 +413,97 @@ bool trace_closest_hit(vec3 origin, vec3 dir, float t_min, float t_max, out floa
 				float t = dot(e2, qvec) * inv_det;
 				if (t > t_min && t < hit_dist) {
 					hit_dist = t;
+					hit_normal = n_and_flags.xyz;
 					any_hit = true;
 				}
 			}
-		} else if (sp + 2 <= 64) {
-			stack[sp++] = left_or_first + 1;
-			stack[sp++] = left_or_first;
+		} else {
+			int left_idx = left_or_first;
+			int right_idx = left_or_first + 1;
+			float tmin_l;
+			float tmin_r;
+			bool hit_l = intersect_aabb(origin, inv_dir, bvh_nodes.nodes[left_idx * 2].xyz, bvh_nodes.nodes[left_idx * 2 + 1].xyz, t_min, hit_dist, tmin_l);
+			bool hit_r = intersect_aabb(origin, inv_dir, bvh_nodes.nodes[right_idx * 2].xyz, bvh_nodes.nodes[right_idx * 2 + 1].xyz, t_min, hit_dist, tmin_r);
+			if (hit_l && hit_r) {
+				if (tmin_l <= tmin_r) {
+					if (sp < 64) {
+						stack[sp] = right_idx;
+						tstack[sp] = tmin_r;
+						sp++;
+					}
+					node_idx = left_idx;
+				} else {
+					if (sp < 64) {
+						stack[sp] = left_idx;
+						tstack[sp] = tmin_l;
+						sp++;
+					}
+					node_idx = right_idx;
+				}
+				continue;
+			}
+			if (hit_l) {
+				node_idx = left_idx;
+				continue;
+			}
+			if (hit_r) {
+				node_idx = right_idx;
+				continue;
+			}
+		}
+
+		bool popped = false;
+		while (sp > 0) {
+			--sp;
+			if (tstack[sp] < hit_dist) {
+				node_idx = stack[sp];
+				popped = true;
+				break;
+			}
+		}
+		if (!popped) {
+			break;
 		}
 	}
 
 	return any_hit;
+}
+
+float eval_hemisphere_ao(vec3 world_pos, vec3 world_normal, out int hit_count) {
+	vec3 tangent;
+	vec3 bitangent;
+	build_orthonormal_basis(world_normal, tangent, bitangent);
+	vec3 ray_origin = world_pos + world_normal * 0.03;
+
+	float inv_radius = 1.0 / max(push.max_radius, 0.1);
+	float max_occ = (1.0 - push.min_ao) * 24.0;
+	float occ_sum = 0.0;
+	hit_count = 0;
+	int far_roof_hits = 0;
+
+	for (int r = 0; r < 24; ++r) {
+		vec3 local_dir = HEMISPHERE_KERNEL[r];
+		vec3 dir = normalize(tangent * local_dir.x + bitangent * local_dir.y + world_normal * local_dir.z);
+		float hit_dist;
+		vec3 hit_n;
+		if (trace_closest_hit(ray_origin, dir, 0.04, push.max_radius, 4u, 4u, hit_dist, hit_n)) {
+			float falloff = max(0.0, 1.0 - hit_dist * inv_radius);
+			occ_sum += falloff * falloff;
+			hit_count++;
+			if (local_dir.z > 0.70 && hit_dist > 2.25) {
+				far_roof_hits++;
+			}
+			if (occ_sum >= max_occ && (r + 1 - hit_count) >= 3) {
+				break;
+			}
+		}
+	}
+
+	float raw_ao = clamp(1.0 - occ_sum * (1.0 / 24.0), push.min_ao, 1.0);
+	if (hit_count >= 22 && far_roof_hits >= 5) {
+		raw_ao = mix(raw_ao, 0.85, 0.75);
+	}
+	return raw_ao;
 }
 
 void main() {
@@ -384,39 +521,77 @@ void main() {
 	float world_x = -local_x;
 	float world_z = local_z;
 
-	float wy;
-	vec3 world_normal;
-	sample_height_and_normal(local_x, local_z, wy, world_normal);
+	float bvh_min_y = bvh_nodes.nodes[0].y;
+	float bvh_max_y = bvh_nodes.nodes[1].y;
+	bool has_ghf = (push.ghf_w >= 2 && push.ghf_h >= 2);
 
-	vec3 tangent, bitangent;
-	build_orthonormal_basis(world_normal, tangent, bitangent);
-	vec3 ray_origin = vec3(world_x, wy, world_z) + world_normal * 0.03;
+	float ghf_y = bvh_min_y;
+	vec3 ghf_normal = vec3(0.0, 1.0, 0.0);
+	float raw_terrain_ao = 1.0;
+	if (has_ghf) {
+		sample_height_and_normal(local_x, local_z, ghf_y, ghf_normal);
+		int terrain_hits;
+		raw_terrain_ao = eval_hemisphere_ao(vec3(world_x, ghf_y, world_z), ghf_normal, terrain_hits);
+	}
 
-	float inv_radius = 1.0 / max(push.max_radius, 0.1);
-	float occ_sum = 0.0;
-	int hit_count = 0;
-	int far_roof_hits = 0;
+	float walk_y = ghf_y;
+	float raw_walk_ao = raw_terrain_ao;
+	bool found_arch = false;
 
-	for (int r = 0; r < 24; ++r) {
-		vec3 local_dir = HEMISPHERE_KERNEL[r];
-		vec3 dir = normalize(tangent * local_dir.x + bitangent * local_dir.y + world_normal * local_dir.z);
-		float hit_dist;
-		if (trace_closest_hit(ray_origin, dir, 0.04, push.max_radius, hit_dist)) {
-			float falloff = max(0.0, 1.0 - hit_dist * inv_radius);
-			occ_sum += falloff * falloff;
-			hit_count++;
-			if (local_dir.z > 0.70 && hit_dist > 2.25) {
-				far_roof_hits++;
-			}
+	float cur_y = has_ghf ? (ghf_y - 0.60) : (bvh_min_y - 0.25);
+	float max_scan_y = bvh_max_y + 0.50;
+	vec3 up_dir = vec3(0.0, 1.0, 0.0);
+
+	for (int step_idx = 0; step_idx < 8; ++step_idx) {
+		if (cur_y > max_scan_y) {
+			break;
 		}
+		float cand_dist;
+		vec3 cand_n;
+		if (!trace_closest_hit(vec3(world_x, cur_y, world_z), up_dir, 0.0, max_scan_y - cur_y, 6u, 4u, cand_dist, cand_n)) {
+			break;
+		}
+		float cand_y = cur_y + cand_dist;
+		if (abs(cand_n.y) < 0.65) {
+			cur_y = cand_y + 0.04;
+			continue;
+		}
+
+		vec3 up_n = cand_n.y < 0.0 ? -cand_n : cand_n;
+		float head_dist;
+		vec3 head_n;
+		bool blocked = trace_closest_hit(vec3(world_x, cand_y + 0.03, world_z), up_dir, 0.0, 1.80, 4u, 4u, head_dist, head_n);
+		if (!blocked) {
+			walk_y = cand_y;
+			int arch_hits;
+			raw_walk_ao = eval_hemisphere_ao(vec3(world_x, walk_y, world_z), up_n, arch_hits);
+			found_arch = true;
+			break;
+		}
+
+		if (head_dist < 0.35) {
+			cur_y = cand_y + 0.015 + head_dist;
+			continue;
+		}
+
+		int cand_hits;
+		float cand_ao = eval_hemisphere_ao(vec3(world_x, cand_y, world_z), up_n, cand_hits);
+		if (cand_hits < 23) {
+			walk_y = cand_y;
+			raw_walk_ao = cand_ao;
+			found_arch = true;
+			break;
+		}
+
+		cur_y = cand_y + 0.015 + head_dist;
 	}
 
-	float raw_ao = clamp(1.0 - occ_sum * (1.0 / 24.0), push.min_ao, 1.0);
-	if (hit_count >= 22 && far_roof_hits >= 5) {
-		raw_ao = mix(raw_ao, 0.85, 0.75);
+	if (!has_ghf && found_arch) {
+		ghf_y = walk_y;
+		raw_terrain_ao = raw_walk_ao;
 	}
 
-	out_buf.ao_and_h[local_y * push.terrain_w + tx] = vec2(raw_ao, wy);
+	out_buf.samples[local_y * push.terrain_w + tx] = vec4(raw_terrain_ao, ghf_y, raw_walk_ao, walk_y);
 }
 ";
 
@@ -424,66 +599,76 @@ void main() {
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer MidAo {
-	vec2 ao_and_h[];
+	vec4 samples[];
 } mid_buf;
 
-layout(set = 0, binding = 1, std430) restrict writeonly buffer OutRg8 {
-	uint packed_rg8[];
+layout(set = 0, binding = 1, std430) restrict writeonly buffer OutRgba8 {
+	uint packed_rgba8[];
 } out_buf;
 
 layout(push_constant, std430) uniform Push {
 	int terrain_w;
 	int strip_h;
-	int pair_w;
 	int pad0;
+	int pad1;
 	float min_h;
 	float inv_h_span;
-	float pad1;
 	float pad2;
+	float pad3;
 } push;
 
-uint filter_texel(int tx, int out_y) {
+void main() {
+	int tx = int(gl_GlobalInvocationID.x);
+	int out_y = int(gl_GlobalInvocationID.y);
+	if (tx >= push.terrain_w || out_y >= push.strip_h) {
+		return;
+	}
+
 	int mid_cy = out_y + 1;
-	vec2 center = mid_buf.ao_and_h[mid_cy * push.terrain_w + tx];
-	float center_ao = center.x;
-	float center_h = center.y;
-	float sum_ao = 0.0;
-	float sum_w = 0.0;
+	vec4 center = mid_buf.samples[mid_cy * push.terrain_w + tx];
+	float center_terr_ao = center.x;
+	float center_terr_h = center.y;
+	float center_walk_ao = center.z;
+	float center_walk_h = center.w;
+
+	float sum_terr_ao = 0.0;
+	float sum_terr_w = 0.0;
+	float sum_walk_ao = 0.0;
+	float sum_walk_w = 0.0;
 
 	for (int dy = -1; dy <= 1; ++dy) {
 		int ny = mid_cy + dy;
 		int row_base = ny * push.terrain_w;
 		for (int dx = -1; dx <= 1; ++dx) {
 			int nx = clamp(tx + dx, 0, push.terrain_w - 1);
-			vec2 sample_val = mid_buf.ao_and_h[row_base + nx];
-			float dh = sample_val.y - center_h;
-			float dh2 = dh * dh * 2.0;
+			vec4 s = mid_buf.samples[row_base + nx];
 			float spatial_w = (dx == 0 && dy == 0) ? 1.0 : ((dx == 0 || dy == 0) ? 0.6 : 0.36);
-			float height_w = 1.0 / (1.0 + dh2 + 0.5 * dh2 * dh2);
-			float w = spatial_w * height_w;
-			sum_ao += sample_val.x * w;
-			sum_w += w;
+
+			float dt = s.y - center_terr_h;
+			float dt2 = dt * dt * 2.0;
+			float wt = spatial_w / (1.0 + dt2 + 0.5 * dt2 * dt2);
+			sum_terr_ao += s.x * wt;
+			sum_terr_w += wt;
+
+			float dw = s.w - center_walk_h;
+			float dw2 = dw * dw * 6.0;
+			float ww = spatial_w / (1.0 + dw2 + 0.5 * dw2 * dw2);
+			sum_walk_ao += s.z * ww;
+			sum_walk_w += ww;
 		}
 	}
 
-	float filtered = sum_w > 1e-6 ? (sum_ao / sum_w) : center_ao;
-	float norm_h = clamp((center_h - push.min_h) * push.inv_h_span, 0.0, 1.0);
-	uint r_byte = uint(clamp(int(round(filtered * 255.0)), 0, 255));
-	uint g_byte = uint(clamp(int(round(norm_h * 255.0)), 0, 255));
-	return r_byte | (g_byte << 8);
-}
+	float filt_terr = sum_terr_w > 1e-6 ? (sum_terr_ao / sum_terr_w) : center_terr_ao;
+	float filt_walk = sum_walk_w > 1e-6 ? (sum_walk_ao / sum_walk_w) : center_walk_ao;
+	float norm_h = clamp((center_walk_h - push.min_h) * push.inv_h_span, 0.0, 1.0);
 
-void main() {
-	int pair_x = int(gl_GlobalInvocationID.x);
-	int out_y = int(gl_GlobalInvocationID.y);
-	if (pair_x >= push.pair_w || out_y >= push.strip_h) {
-		return;
-	}
+	uint r_byte = uint(clamp(int(round(filt_terr * 255.0)), 0, 255));
+	uint g_byte = uint(clamp(int(round(filt_walk * 255.0)), 0, 255));
+	uint h16 = uint(clamp(int(round(norm_h * 65535.0)), 0, 65535));
+	uint b_byte = h16 & 0xFFu;
+	uint a_byte = (h16 >> 8) & 0xFFu;
 
-	int tx0 = pair_x * 2;
-	uint rg0 = filter_texel(tx0, out_y);
-	uint rg1 = (tx0 + 1 < push.terrain_w) ? filter_texel(tx0 + 1, out_y) : 0u;
-	out_buf.packed_rg8[out_y * push.pair_w + pair_x] = rg0 | (rg1 << 16);
+	out_buf.packed_rgba8[out_y * push.terrain_w + tx] = r_byte | (g_byte << 8) | (b_byte << 16) | (a_byte << 24);
 }
 ";
 
@@ -778,7 +963,7 @@ void main() {
 
 	public static bool TryBakeGroundAoGpu(
 		Engine_LevelShadowMaps.BvhTree worldBvh,
-		in GhfHeights ghf,
+		GhfHeights? primaryTerrain,
 		int terrainW,
 		int terrainH,
 		float cropOriginX,
@@ -808,34 +993,66 @@ void main() {
 				return false;
 			}
 
-			ComputeTerrainHeightBounds(
-				in ghf,
-				cropOriginX,
-				cropOriginZ,
-				cropSpanX,
-				cropSpanZ,
-				out terrainMinH,
-				out terrainMaxH);
+			bool hasGhf = primaryTerrain is { Width: >= 2, Height: >= 2, Spacing: > 0.0f } validGhf &&
+				validGhf.Values.Length >= validGhf.Width * validGhf.Height;
+			GhfHeights ghf = hasGhf ? primaryTerrain! : new GhfHeights();
+
+			if (hasGhf)
+			{
+				ComputeTerrainHeightBounds(
+					in ghf,
+					cropOriginX,
+					cropOriginZ,
+					cropSpanX,
+					cropSpanZ,
+					out terrainMinH,
+					out terrainMaxH);
+				if (float.IsFinite(worldBvh.RootMin.Y))
+				{
+					terrainMinH = MathF.Min(terrainMinH, worldBvh.RootMin.Y);
+				}
+				if (float.IsFinite(worldBvh.RootMax.Y))
+				{
+					terrainMaxH = MathF.Max(terrainMaxH, worldBvh.RootMax.Y);
+				}
+			}
+			else
+			{
+				terrainMinH = float.IsFinite(worldBvh.RootMin.Y) ? worldBvh.RootMin.Y : 0.0f;
+				terrainMaxH = float.IsFinite(worldBvh.RootMax.Y) ? worldBvh.RootMax.Y : 1.0f;
+				if (terrainMaxH <= terrainMinH)
+				{
+					terrainMaxH = terrainMinH + 1.0f;
+				}
+			}
+
 			float invHeightSpan = (terrainMaxH - terrainMinH) > 1e-4f ? 1.0f / (terrainMaxH - terrainMinH) : 0.0f;
 
 			worldBvh.ExportGpuBuffers(out byte[] nodeBytes, out byte[] triBytes);
-			byte[] ghfBytes = new byte[ghf.Values.Length * sizeof(float)];
-			Buffer.BlockCopy(ghf.Values, 0, ghfBytes, 0, ghfBytes.Length);
+			byte[] ghfBytes;
+			if (hasGhf)
+			{
+				ghfBytes = new byte[ghf.Values.Length * sizeof(float)];
+				Buffer.BlockCopy(ghf.Values, 0, ghfBytes, 0, ghfBytes.Length);
+			}
+			else
+			{
+				ghfBytes = new byte[4];
+			}
 
 			// Target ~262K-524K texels per strip slice (~1-2.5 ms GPU compute per slice) so gameplay stays silky smooth
-			// and temporary VRAM stays tiny (~4.2 MB even at 4K/8K).
+			// and temporary VRAM stays tiny (~8.5 MB even at 4K/8K).
 			int targetStripRows = terrainW >= 8192 ? 64 : (terrainW >= 4096 ? 128 : 256);
 			int maxStripH = Math.Clamp(targetStripRows, 1, terrainH);
 			int maxHaloH = maxStripH + 2;
-			int pairW = (terrainW + 1) / 2;
-			int midBufferBytes = terrainW * maxHaloH * 8; // full fp32 vec2(raw_ao, wy)
-			int outBufferBytes = pairW * maxStripH * sizeof(uint); // packed RG8 pairs
+			int midBufferBytes = terrainW * maxHaloH * 16; // fp32 vec4(raw_terr_ao, ghf_y, raw_walk_ao, walk_y)
+			int outBufferBytes = terrainW * maxStripH * sizeof(uint); // packed RGBA8 (1 uint per texel)
 
-			int ghfW = ghf.Width;
-			int ghfH = ghf.Height;
-			float ghfOriginX = ghf.OriginX;
-			float ghfOriginZ = ghf.OriginZ;
-			float ghfSpacing = ghf.Spacing;
+			int ghfW = hasGhf ? ghf.Width : 0;
+			int ghfH = hasGhf ? ghf.Height : 0;
+			float ghfOriginX = hasGhf ? ghf.OriginX : 0.0f;
+			float ghfOriginZ = hasGhf ? ghf.OriginZ : 0.0f;
+			float ghfSpacing = hasGhf ? ghf.Spacing : 1.0f;
 
 			RenderingDevice? rd = null;
 			Rid traceShader = default;
@@ -931,11 +1148,11 @@ void main() {
 					return false;
 				}
 
-				byte[] resultRg8 = new byte[terrainW * terrainH * 2];
+				byte[] resultRgba8 = new byte[terrainW * terrainH * 4];
 				byte[] tracePush = new byte[64];
 				byte[] filterPush = new byte[32];
 				int traceGroupsX = (terrainW + 7) / 8;
-				int filterGroupsX = (pairW + 7) / 8;
+				int filterGroupsX = traceGroupsX;
 				float minHCopy = terrainMinH;
 
 				for (int rowOffset = 0; rowOffset < terrainH; rowOffset += maxStripH)
@@ -969,14 +1186,15 @@ void main() {
 
 					BitConverter.TryWriteBytes(filterPush.AsSpan(0), terrainW);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(4), stripH);
-					BitConverter.TryWriteBytes(filterPush.AsSpan(8), pairW);
+					BitConverter.TryWriteBytes(filterPush.AsSpan(8), 0);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(12), 0);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(16), minHCopy);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(20), invHeightSpan);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(24), 0.0f);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(28), 0.0f);
 
-					uint readBytes = (uint)(pairW * stripH * sizeof(uint));
+					int rowStrideBytes = terrainW * sizeof(uint);
+					uint readBytes = (uint)(stripH * rowStrideBytes);
 					byte[]? stripOut = null;
 					RenderingDevice localRd = rd;
 					Engine_ServerSyncs.RunGpuUpload(SliceGpuBudgetBytes, () =>
@@ -1005,22 +1223,10 @@ void main() {
 						return false;
 					}
 
-					int dstRowStride = terrainW * 2;
-					int srcRowStride = pairW * sizeof(uint);
-					if (dstRowStride == srcRowStride)
-					{
-						Buffer.BlockCopy(stripOut, 0, resultRg8, rowOffset * dstRowStride, stripH * dstRowStride);
-					}
-					else
-					{
-						for (int r = 0; r < stripH; r++)
-						{
-							Buffer.BlockCopy(stripOut, r * srcRowStride, resultRg8, (rowOffset + r) * dstRowStride, dstRowStride);
-						}
-					}
+					Buffer.BlockCopy(stripOut, 0, resultRgba8, rowOffset * rowStrideBytes, stripH * rowStrideBytes);
 				}
 
-				terrainAoBytes = resultRg8;
+				terrainAoBytes = resultRgba8;
 				Interlocked.Increment(ref _gpuAoBakeCount);
 				return true;
 			}

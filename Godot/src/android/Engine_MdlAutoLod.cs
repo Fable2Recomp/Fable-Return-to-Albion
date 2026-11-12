@@ -100,7 +100,11 @@ public static class Engine_MdlAutoLod
 		var generated = new int[Errors.Length][];
 		for (int e = Errors.Length - 1; e >= 0; e--)
 		{
+			// SurfaceTool.GenerateLod is intentionally used here for direct index-array simplification
+			// per error threshold without round-tripping through ImporterMesh.GenerateLods.
+#pragma warning disable CS0618
 			int[] level = tool.GenerateLod(Errors[e], 3);
+#pragma warning restore CS0618
 			generated[e] = level;
 			if (level.Length > indexCount * 7 / 10 && level.Length < indexCount)
 			{

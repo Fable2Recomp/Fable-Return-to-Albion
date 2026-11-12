@@ -10,7 +10,7 @@ using Refii.Save;
 namespace Refii.Launcher;
 
 /// <summary>
-/// The Saves tab: where the active title's saves are, and the saves the migration set aside past the
+/// The Saves tab: where the selected title's saves are, and the saves the migration set aside past the
 /// title's slot limit (<see cref="Engine_SaveMigration.ListOlderSaves"/>), each with a button that swaps
 /// it back into the slots.
 /// </summary>
@@ -24,27 +24,114 @@ public partial class SavesPanel : VBoxContainer
 	private int _fontSize = 18;
 	private Font? _font;
 	private SmartStyle? _style;
+	private Engine_Title _selectedTitle = Engine_Title.Active;
+	private GameScopeSelector? _scopeSelector;
 	private Label _where = null!;
 	private Label _status = null!;
 	private OptionButton _outgoing = null!;
 	private VBoxContainer _rows = null!;
 	private bool _gameRunning;
+	private bool _scopeInteractive = true;
+
+	/// <summary>Currently selected game title in the Saves tab.</summary>
+	public Engine_Title SelectedTitle => _selectedTitle;
+
+	/// <summary>Raised when the user selects another title in the segmented scope bar.</summary>
+	public event Action<Engine_Title>? TitleChanged;
+
+	/// <summary>Switches the Saves tab's scoped game title without firing <see cref="TitleChanged"/>.</summary>
+	public void SetTitle(Engine_Title title)
+	{
+		if (_selectedTitle == title)
+		{
+			_scopeSelector?.SetSelectedTitle(title, notify: false);
+			_scopeSelector?.Refresh();
+			return;
+		}
+
+		_selectedTitle = title;
+		_scopeSelector?.SetSelectedTitle(title, notify: false);
+		if (_status is not null)
+		{
+			_status.Text = string.Empty;
+		}
+
+		Refresh(_gameRunning);
+	}
+
+	/// <summary>Enables or disables user title switching on the top scope selector.</summary>
+	public void SetScopeInteractive(bool interactive)
+	{
+		_scopeInteractive = interactive;
+		if (_scopeSelector is not null)
+		{
+			_scopeSelector.Interactive = interactive;
+		}
+	}
+
+	private static string DescribeTitleSaveBadge(Engine_Title title)
+	{
+		try
+		{
+			string profile = Engine_AppRoot.SaveDirectory;
+			string slots = Engine_SaveLayout.SaveGames(profile, title.TitleId);
+			int used = Directory.Exists(slots) ? Directory.GetDirectories(slots).Length : 0;
+			return $"{used}/{title.SaveSlots} slots";
+		}
+		catch (Exception)
+		{
+			return string.Empty;
+		}
+	}
 
 	public override void _Ready()
 	{
 		AddThemeConstantOverride("separation", 8);
+
+		_scopeSelector = new GameScopeSelector(_selectedTitle)
+		{
+			BadgeProvider = DescribeTitleSaveBadge,
+			Interactive = _scopeInteractive,
+		};
+		_scopeSelector.Configure(_font, _fontSize);
+		_scopeSelector.TitleSelected += title =>
+		{
+			SetTitle(title);
+			TitleChanged?.Invoke(title);
+		};
+		AddChild(_scopeSelector);
+
 		_where = Styled(new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart });
 		AddChild(_where);
 
-		var room = new HBoxContainer();
-		room.AddChild(Styled(new Label { Text = "To make room:" }));
+		var headerRow = new HBoxContainer();
+		headerRow.AddThemeConstantOverride("separation", 8);
+		var roomLabel = Styled(new Label { Text = "To make room:" });
+		headerRow.AddChild(roomLabel);
 		_outgoing = new OptionButton { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		room.AddChild(_outgoing);
-		AddChild(room);
+		headerRow.AddChild(_outgoing);
+
+		var openSaves = Styled(new Button { Text = "Open Saves Folder" });
+		openSaves.Pressed += () =>
+		{
+			string dir = Engine_SaveLayout.GameDirectory(Engine_AppRoot.SaveDirectory, _selectedTitle.TitleId);
+			Directory.CreateDirectory(dir);
+			OS.ShellOpen(dir);
+		};
+		headerRow.AddChild(openSaves);
+		AddChild(headerRow);
 
 		var scroll = new ScrollContainer { SizeFlagsVertical = SizeFlags.ExpandFill, HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+		var scrollMargin = new MarginContainer
+		{
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			SizeFlagsVertical = SizeFlags.ExpandFill,
+		};
+		scrollMargin.AddThemeConstantOverride("margin_right", LauncherScale.Px(12));
+		scrollMargin.AddThemeConstantOverride("margin_bottom", LauncherScale.Px(4));
+		scroll.AddChild(scrollMargin);
 		_rows = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		scroll.AddChild(_rows);
+		scrollMargin.AddChild(_rows);
 		AddChild(scroll);
 
 		_status = Styled(new Label { AutowrapMode = TextServer.AutowrapMode.WordSmart });
@@ -58,6 +145,7 @@ public partial class SavesPanel : VBoxContainer
 		_font = font;
 		_fontSize = fontSize;
 		_style = style;
+		_scopeSelector?.Configure(font, fontSize);
 		if (_rows is not null)
 		{
 			foreach (Label label in FindChildren("*", nameof(Label), true, false).OfType<Label>())
@@ -90,7 +178,7 @@ public partial class SavesPanel : VBoxContainer
 		return control;
 	}
 
-	/// <summary>Lists the active title's slots and older saves again.</summary>
+	/// <summary>Lists <see cref="SelectedTitle"/>'s slots and older saves again.</summary>
 	public void Refresh(bool gameRunning)
 	{
 		if (_rows is null)
@@ -99,7 +187,9 @@ public partial class SavesPanel : VBoxContainer
 		}
 
 		_gameRunning = gameRunning;
-		Engine_Title title = Engine_Title.Active;
+		_scopeSelector?.Refresh();
+
+		Engine_Title title = _selectedTitle;
 		string profile = Engine_AppRoot.SaveDirectory;
 		string slots = Engine_SaveLayout.SaveGames(profile, title.TitleId);
 		string[] inSlots = Directory.Exists(slots)
@@ -152,7 +242,7 @@ public partial class SavesPanel : VBoxContainer
 			return;
 		}
 
-		Engine_Title title = Engine_Title.Active;
+		Engine_Title title = _selectedTitle;
 		string? outgoing = _outgoing.ItemCount > 0 && _outgoing.Selected >= 0 ? _outgoing.GetItemText(_outgoing.Selected) : null;
 		string? name = Engine_SaveMigration.SwapIn(Engine_AppRoot.SaveDirectory, title.TitleId, save, outgoing, out string error);
 		_status.Text = name is null ? "Not swapped in: " + error : $"{save.Name} from {save.Label} is in the slots as {name}.";

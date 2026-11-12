@@ -408,8 +408,10 @@ public partial class Engine_ClassicFur : Node
         m.SetShaderParameter("ps_g_DiffuseTextureUVMatrix", uv.VariantType == Variant.Type.Nil ? new Vector4(1f, 1f, 0f, 0f) : uv);
         if (Engine_ClassicShadows.Instance is { } shadows)
         {
-            m.SetShaderParameter(Cascade0Name, shadows.CascadeTextureFor(view, 0));
-            m.SetShaderParameter(Cascade1Name, shadows.CascadeTextureFor(view, 1));
+            Texture2D? c0 = shadows.CascadeTextureFor(view, 0);
+            Texture2D? c1 = shadows.CascadeTextureFor(view, 1);
+            m.SetShaderParameter(Cascade0Name, c0 is not null ? Variant.From(c0) : default);
+            m.SetShaderParameter(Cascade1Name, c1 is not null ? Variant.From(c1) : default);
         }
         // The group's spot map: the prelit rows are copies of the group's own row, which carries
         // its spot transform and layer (Engine_ClassicSpotShadows).
@@ -811,11 +813,11 @@ public partial class Engine_ClassicFur : Node
         {
             if (pass.GetShaderParameter(Cascade0Name).VariantType != Variant.Type.Nil)
             {
-                pass.SetShaderParameter(Cascade0Name, first);
+                pass.SetShaderParameter(Cascade0Name, first is not null ? Variant.From(first) : default);
             }
             if (pass.GetShaderParameter(Cascade1Name).VariantType != Variant.Type.Nil)
             {
-                pass.SetShaderParameter(Cascade1Name, second);
+                pass.SetShaderParameter(Cascade1Name, second is not null ? Variant.From(second) : default);
             }
         }
     }

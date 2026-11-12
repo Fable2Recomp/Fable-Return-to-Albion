@@ -6,26 +6,9 @@
 # that line binds both ends to one C++ ABI, and on Windows the two disagree in ways no flag
 # fixes -- MSVC mangling against Itanium, MSVC STL against libc++.
 #
-# WHY IT IS CHECKED RATHER THAN REMEMBERED: on Linux both ends are Itanium and resolve against
-# the same libstdc++, so a hook calling straight into refii_vfs links, runs, and looks correct.
-# Nothing there can notice. The violation appears only on Windows, and not at the compile that
-# introduced it -- it surfaces at the END of the player's install-time build, as undefined
-# symbols from a link that ran after ~390 translation units. Seven functions shipped that way.
-# This moves the discovery to the compile that introduces it, on either platform.
-#
-# HOW: every symbol the hook objects leave undefined, minus everything they define between
-# them, is what the payload must find elsewhere. Anything in that remainder mangled into
-# refii:: or rex:: is a C++ symbol we own, and therefore a violation. The C entries
-# (refii_bridge_*), the generated guest's sub_*, and the payload's own std:: are either
-# unmangled or not ours, and pass. Both manglings are matched, so it fires on either host.
-#
-# ONLY STRONG REFERENCES COUNT. A weak undefined (nm "w"/"v") never fails a link: it resolves
-# to null when nothing defines it, on ELF and COFF alike. The Itanium ABI produces exactly
-# one of these per `extern thread_local` a TU reads -- a weak reference to the variable's
-# initialisation routine (_ZTH...), which the wrapper calls only if it exists and which is
-# never emitted for a constant-initialised variable. The payload defines those variables
-# itself (internal_state_guest.cpp compiles into the hook set), so nothing crosses the
-# boundary; MSVC has no such routine, so this appeared only on Linux and read as two imports.
+# Supports optional per-object symbol caching via `-DCACHE_DIR=<dir>`: unchanged `.obj` files
+# reuse their cached filtered `refii::` / `rex::` symbol sets so single-hook edits run `llvm-nm`
+# only on the modified `.obj` rather than re-scanning ~90 objects from scratch.
 
 cmake_minimum_required(VERSION 3.24)
 
@@ -45,56 +28,50 @@ if(NOT _objects)
     return()
 endif()
 
-# Itanium spells the namespace as a length-prefixed component, MSVC as an @-delimited one. A
-# symbol is a run of non-whitespace, so the marker is matched inside the whole name.
 set(_symbol_pattern "[^ \t\r\n]*(_Z[^ \t\r\n]*(5refii|3rex)|@(refii|rex)@@)[^ \t\r\n]*")
+set(_undef_line_pattern "[^\r\n]+:[ \t]+U[ \t]+${_symbol_pattern}")
+set(_def_line_pattern "[^\r\n]+: [0-9a-fA-F ]*[^ \t\r\n][ \t]+${_symbol_pattern}")
 
-# The undefined pass keys on nm's type column: "U" is a strong reference, "w" and "v" are
-# weak and are left out (see the header). The defined pass takes every type.
-set(_undefined_pattern "[ \t]U[ \t]+${_symbol_pattern}")
-set(_defined_pattern "${_symbol_pattern}")
-
-# ONE REGEX PASS OVER BATCHED OUTPUT. Walking nm's lines in CMake and matching each one costs
-# minutes across ~90 objects and their hundred thousand symbols; MATCHALL over the whole blob
-# is a single pass in C++ and returns only the handful of names that could possibly be a
-# violation. Batched rather than one invocation per object for the process cost, and batched
-# rather than all-at-once because Windows stops accepting a command line at 32767 characters --
-# the same wall the payload's own link hit.
-function(_refii_collect out_var mode pattern)
-    set(_found "")
+function(_refii_nm_batch mode line_pattern var_prefix)
+    set(_remaining ${ARGN})
     set(_batch "")
     set(_size 0)
-    set(_remaining ${ARGN})
 
     while(TRUE)
         list(LENGTH _remaining _left)
         if(_left GREATER 0)
-            list(POP_FRONT _remaining _object)
-            if(EXISTS "${_object}")
-                list(APPEND _batch "${_object}")
-                math(EXPR _size "${_size} + 1")
-            endif()
+            list(POP_FRONT _remaining _obj)
+            list(APPEND _batch "${_obj}")
+            math(EXPR _size "${_size} + 1")
         endif()
 
         list(LENGTH _remaining _left)
         if(_batch AND (_size GREATER_EQUAL 24 OR _left EQUAL 0))
             execute_process(
-                COMMAND "${NM}" "${mode}" --no-sort ${_batch}
+                COMMAND "${NM}" --print-file-name "${mode}" --no-sort ${_batch}
                 OUTPUT_VARIABLE _out ERROR_VARIABLE _err RESULT_VARIABLE _result
             )
             if(NOT _result EQUAL 0)
                 message(WARNING
                     "refii_check_payload_abi: ${NM} failed (${_result}); the payload ABI was "
                     "not verified.\n${_err}")
-                set(${out_var} "SKIPPED" PARENT_SCOPE)
+                set(REFII_ABI_SKIPPED TRUE PARENT_SCOPE)
                 return()
             endif()
-            string(REGEX MATCHALL "${pattern}" _hits "${_out}")
+
+            string(REGEX MATCHALL "${line_pattern}" _hits "${_out}")
             foreach(_hit IN LISTS _hits)
-                # Drop the type column the undefined pattern anchored on.
-                string(REGEX REPLACE "^[ \t]U[ \t]+" "" _hit "${_hit}")
-                list(APPEND _found "${_hit}")
+                string(REGEX REPLACE "^(.*): [0-9a-fA-F ]*[^ \t\r\n][ \t]+([^ \t\r\n]+)$" "\\1;\\2" _pair "${_hit}")
+                list(LENGTH _pair _plen)
+                if(_plen EQUAL 2)
+                    list(GET _pair 0 _hit_obj)
+                    list(GET _pair 1 _hit_sym)
+                    string(SHA256 _okey "${_hit_obj}")
+                    list(APPEND _local_${_okey} "${_hit_sym}")
+                    list(APPEND _touched_keys "${_okey}")
+                endif()
             endforeach()
+
             set(_batch "")
             set(_size 0)
         endif()
@@ -104,25 +81,113 @@ function(_refii_collect out_var mode pattern)
         endif()
     endwhile()
 
-    if(_found)
-        list(REMOVE_DUPLICATES _found)
+    if(_touched_keys)
+        list(REMOVE_DUPLICATES _touched_keys)
+        foreach(_k IN LISTS _touched_keys)
+            list(REMOVE_DUPLICATES _local_${_k})
+            set("${var_prefix}_${_k}" "${_local_${_k}}" PARENT_SCOPE)
+        endforeach()
     endif()
-    set(${out_var} "${_found}" PARENT_SCOPE)
 endfunction()
 
-_refii_collect(_undefined --undefined-only "${_undefined_pattern}" ${_objects})
-if(_undefined STREQUAL "SKIPPED")
-    return()
+set(_undefined "")
+set(_defined "")
+set(_uncached_objects "")
+
+if(CACHE_DIR)
+    file(MAKE_DIRECTORY "${CACHE_DIR}")
 endif()
+
+foreach(_obj IN LISTS _objects)
+    if(NOT EXISTS "${_obj}")
+        continue()
+    endif()
+
+    if(CACHE_DIR)
+        string(SHA256 _okey "${_obj}")
+        file(SIZE "${_obj}" _osz)
+        file(TIMESTAMP "${_obj}" _ots "%Y%m%d%H%M%S" UTC)
+        set(_want_meta "${_osz};${_ots}")
+        set(_cfile "${CACHE_DIR}/${_okey}.cmake")
+
+        set(_cached_ok FALSE)
+        if(EXISTS "${_cfile}")
+            unset(_abi_meta)
+            unset(_abi_undef)
+            unset(_abi_def)
+            include("${_cfile}")
+            if(DEFINED _abi_meta AND _abi_meta STREQUAL _want_meta)
+                set(_cached_ok TRUE)
+                if(_abi_undef)
+                    list(APPEND _undefined ${_abi_undef})
+                endif()
+                if(_abi_def)
+                    list(APPEND _defined ${_abi_def})
+                endif()
+            endif()
+        endif()
+
+        if(NOT _cached_ok)
+            list(APPEND _uncached_objects "${_obj}")
+            set("_meta_${_okey}" "${_want_meta}")
+        endif()
+    else()
+        list(APPEND _uncached_objects "${_obj}")
+    endif()
+endforeach()
+
+if(_uncached_objects)
+    set(REFII_ABI_SKIPPED FALSE)
+    _refii_nm_batch(--undefined-only "${_undef_line_pattern}" "_new_undef" ${_uncached_objects})
+    if(REFII_ABI_SKIPPED)
+        return()
+    endif()
+    _refii_nm_batch(--defined-only "${_def_line_pattern}" "_new_def" ${_uncached_objects})
+    if(REFII_ABI_SKIPPED)
+        return()
+    endif()
+
+    foreach(_obj IN LISTS _uncached_objects)
+        string(SHA256 _okey "${_obj}")
+        set(_u "${_new_undef_${_okey}}")
+        set(_d "${_new_def_${_okey}}")
+        if(_u)
+            list(APPEND _undefined ${_u})
+        endif()
+        if(_d)
+            list(APPEND _defined ${_d})
+        endif()
+
+        if(CACHE_DIR)
+            set(_cfile "${CACHE_DIR}/${_okey}.cmake")
+            set(_u_escaped "")
+            foreach(_item IN LISTS _u)
+                list(APPEND _u_escaped "\"${_item}\"")
+            endforeach()
+            list(JOIN _u_escaped " " _u_body)
+
+            set(_d_escaped "")
+            foreach(_item IN LISTS _d)
+                list(APPEND _d_escaped "\"${_item}\"")
+            endforeach()
+            list(JOIN _d_escaped " " _d_body)
+
+            file(WRITE "${_cfile}"
+                "set(_abi_meta \"${_meta_${_okey}}\")\n"
+                "set(_abi_undef ${_u_body})\n"
+                "set(_abi_def ${_d_body})\n"
+            )
+        endif()
+    endforeach()
+endif()
+
 if(NOT _undefined)
     return()
 endif()
 
-_refii_collect(_defined --defined-only "${_defined_pattern}" ${_objects})
-if(_defined STREQUAL "SKIPPED")
-    return()
-endif()
+list(REMOVE_DUPLICATES _undefined)
 if(_defined)
+    list(REMOVE_DUPLICATES _defined)
     list(REMOVE_ITEM _undefined ${_defined})
 endif()
 if(NOT _undefined)
@@ -132,9 +197,6 @@ endif()
 list(SORT _undefined)
 set(_report "")
 foreach(_symbol IN LISTS _undefined)
-    # Two manglings, two demanglers: llvm-cxxfilt reads Itanium and hands an MSVC name back
-    # unchanged, llvm-undname reads MSVC. Neither is required -- an undemangled name still
-    # carries the function and the namespace in clear, which is enough to find the call.
     set(_pretty "${_symbol}")
     set(_demangler "")
     if(_symbol MATCHES "^\\?" AND UNDNAME AND EXISTS "${UNDNAME}")

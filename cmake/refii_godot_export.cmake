@@ -113,9 +113,18 @@ set(REFII_RELEASE_PACKAGE_DIR "${CMAKE_SOURCE_DIR}/out/package" CACHE PATH
 set(REFII_TOOL_CACHE_DIR "${CMAKE_SOURCE_DIR}/tools/cache" CACHE PATH
     "Directory the pinned toolchain archives are downloaded into and cached")
 
-# The folder a tester unzips. Also the name inside the zip.
-set(REFII_PACKAGE_NAME "Fable 2 Return to Albion" CACHE STRING
+# The folder a tester unzips. Also the name inside the zip (filesystem-safe: no ':' on Windows).
+set(REFII_PACKAGE_NAME "Fable Return to Albion" CACHE STRING
     "Name of the packaged application folder")
+if(REFII_PACKAGE_NAME STREQUAL "Fable 2"
+   OR REFII_PACKAGE_NAME STREQUAL "Fable 2 Recompiled"
+   OR REFII_PACKAGE_NAME STREQUAL "Fable 2 Return to Albion"
+   OR REFII_PACKAGE_NAME STREQUAL "refii")
+    message(STATUS
+        "Refii: migrating cached REFII_PACKAGE_NAME from '${REFII_PACKAGE_NAME}' to 'Fable Return to Albion'")
+    set(REFII_PACKAGE_NAME "Fable Return to Albion" CACHE STRING
+        "Name of the packaged application folder" FORCE)
+endif()
 
 function(refii_define_godot_export_target)
     if(NOT REFII_STAGE_GODOT_BUILD)
@@ -143,7 +152,7 @@ function(refii_define_godot_export_target)
     endif()
 
     set(_work "${REFII_RELEASE_PACKAGE_DIR}/${_platform}-${REFII_GODOT_ARCH}")
-    set(_zip "${REFII_RELEASE_PACKAGE_DIR}/refii-${_platform}-${REFII_GODOT_ARCH}.zip")
+    set(_zip "${REFII_RELEASE_PACKAGE_DIR}/${REFII_PACKAGE_NAME}-${_platform}-${REFII_GODOT_ARCH}.zip")
 
     # The HOST runs the editor; the target above is what gets packaged. They are usually the
     # same machine, but not necessarily — the zig fetch below already exists because

@@ -27,7 +27,7 @@ public partial class Fable3HostOptions : Fable3ListScreen
 	private static Fable3HostOptions? _instance;
 
 	/// <summary>Whether a host page is up: the guest's pad is neutral meanwhile.</summary>
-	public static bool IsOpen => Engine_UiHostOptionsPage.Current is not null;
+	public static new bool IsOpen => Engine_UiHostOptionsPage.Current is not null;
 
 	/// <summary>The cursor row on the open page.</summary>
 	public static int Cursor => _instance?._cursor ?? 0;

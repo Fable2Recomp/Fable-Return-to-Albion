@@ -246,7 +246,6 @@ public static class AndroidTouchLayout
         // The right thumb's resting place, and the arcs around it.
         var pivot = new Vector2(w - margin - 130f * u, h - margin - 130f * u);
         Vector2 Inner(float degrees) => pivot + Polar(178f * k, degrees);
-        Vector2 Outer(float degrees) => pivot + Polar(310f * k, degrees);
         float face = 58f * k, shoulder = 46f * k;
 
         // A IS UNDER THE RESTING THUMB: talking, picking up, opening, sprinting and every

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Godot;
 using Refii.Launcher.Core;
+using Refii.Launcher.Native;
 
 namespace Refii.Launcher;
 
@@ -10,6 +11,7 @@ public partial class InstallDialog : Control
 {
 	private const int PopupWidth = 700;
 
+	private readonly Refii.Core.Engine_Title _title;
 	private readonly Font? _font;
 	private readonly int _fontSize;
 	private readonly SmartStyle _style;
@@ -27,11 +29,21 @@ public partial class InstallDialog : Control
 
 	private string _dialogError = string.Empty;
 
+	/// <summary>The target title this install wizard configures.</summary>
+	public Refii.Core.Engine_Title TargetTitle => _title;
+
 	/// <summary>The ISO, the title update (or empty), and whether to build the classic shaders.</summary>
 	public event Action<string, string, bool>? InstallRequested;
 
 	public InstallDialog(Font? font, int fontSize, SmartStyle style)
+		: this(Refii.Core.Engine_Title.Active, font, fontSize, style)
 	{
+	}
+
+	/// <summary>Creates an install wizard scoped explicitly to <paramref name="title"/>.</summary>
+	public InstallDialog(Refii.Core.Engine_Title title, Font? font, int fontSize, SmartStyle style)
+	{
+		_title = title;
 		_font = font;
 		_fontSize = fontSize;
 		_style = style;
@@ -72,7 +84,7 @@ public partial class InstallDialog : Control
 		column.AddThemeConstantOverride("separation", 10);
 		_frame.AddChild(column);
 
-		Label heading = MakeLabel("Install " + Refii.Core.Engine_Title.Active.Name);
+		Label heading = MakeLabel("Install " + _title.Name);
 		var headingBar = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
 		headingBar.BorderColor = LauncherTokens.Gold;
 		headingBar.BorderWidthBottom = 2;
@@ -94,7 +106,7 @@ public partial class InstallDialog : Control
 		// a wrong pick and the list grows without the text above growing with it.
 		column.AddChild(MakeLabel("Game version"));
 		_versionOption = MakeDropdown();
-		foreach (SupportedGame.Pressing pressing in SupportedGame.Pressings)
+		foreach (SupportedGame.Pressing pressing in SupportedGame.PressingsFor(_title))
 		{
 			_versionOption.AddItem(pressing.DisplayName);
 		}
@@ -114,7 +126,7 @@ public partial class InstallDialog : Control
 
 		column.AddChild(MakeLabel("Game ISO"));
 		_isoEdit = AddPathRow(column, () => BrowseForFile(
-			"Select the " + Refii.Core.Engine_Title.Active.Name + " ISO", new[] { "*.iso ; Disc image" }, _isoEdit));
+			"Select the " + _title.Name + " ISO", new[] { "*.iso ; Disc image" }, _isoEdit));
 
 		// The tick decides which build of the game is installed: with the title update the
 		// patch is copied beside the executable and the TU1 config is used; without it the
@@ -315,31 +327,29 @@ public partial class InstallDialog : Control
 
 	private void BrowseForFile(string title, string[] filters, LineEdit target)
 	{
-		var picker = new FileDialog
-		{
-			FileMode = FileDialog.FileModeEnum.OpenFile,
-			Access = FileDialog.AccessEnum.Filesystem,
-			Title = title,
-			Filters = filters,
-			Size = new Vector2I(820, 560),
-		};
+		string pathHint = !string.IsNullOrWhiteSpace(target.Text) ? target.Text : _isoEdit.Text;
+		NativeFilePicker.OpenFile(
+			title,
+			filters,
+			pathHint,
+			"LastInstallBrowseDir",
+			path =>
+			{
+				if (!IsInstanceValid(this) || !IsInstanceValid(target))
+				{
+					return;
+				}
 
-		picker.UseNativeDialog = true;
-		picker.FileSelected += path =>
-		{
-			target.Text = path;
-			_dialogError = string.Empty;
-			RefreshState();
-			picker.QueueFree();
-		};
-		picker.Canceled += () => picker.QueueFree();
-
-		AddChild(picker);
-		picker.PopupCentered();
+				target.Text = path;
+				_dialogError = string.Empty;
+				RefreshState();
+			});
 	}
 
+	private SupportedGame.Pressing[] Pressings => SupportedGame.PressingsFor(_title);
+
 	private SupportedGame.Pressing SelectedPressing =>
-		SupportedGame.Pressings[Math.Clamp(_versionOption.Selected, 0, SupportedGame.Pressings.Length - 1)];
+		Pressings[Math.Clamp(_versionOption.Selected, 0, Pressings.Length - 1)];
 
 	private void OnStartPressed()
 	{
@@ -354,7 +364,7 @@ public partial class InstallDialog : Control
 		}
 		else if (!withUpdate)
 		{
-			if (DiscIsSupported(isoPath, SelectedPressing, out _, out string unsupported))
+			if (DiscIsSupported(_title, isoPath, SelectedPressing, out _, out string unsupported))
 			{
 				InstallRequested?.Invoke(isoPath, string.Empty, _classicShadersCheck.ButtonPressed);
 				QueueFree();
@@ -367,7 +377,7 @@ public partial class InstallDialog : Control
 		{
 			_dialogError = "The selected title update path does not exist.";
 		}
-		else if (TitleUpdateFitsDisc(isoPath, xexpPath, SelectedPressing, out string mismatch))
+		else if (TitleUpdateFitsDisc(_title, isoPath, xexpPath, SelectedPressing, out string mismatch))
 		{
 			InstallRequested?.Invoke(isoPath, xexpPath, _classicShadersCheck.ButtonPressed);
 			QueueFree();
@@ -391,9 +401,10 @@ public partial class InstallDialog : Control
 	/// update they picked to go with it.
 	/// </remarks>
 	private static bool TitleUpdateFitsDisc(
+		Refii.Core.Engine_Title title,
 		string isoPath, string updatePath, SupportedGame.Pressing pressing, out string error)
 	{
-		if (!DiscIsSupported(isoPath, pressing, out XexIdentity executable, out error))
+		if (!DiscIsSupported(title, isoPath, pressing, out XexIdentity executable, out error))
 		{
 			return false;
 		}
@@ -403,11 +414,12 @@ public partial class InstallDialog : Control
 			return false;
 		}
 
-		return SupportedGame.IsTitleUpdate(update.Identity, pressing, out error) &&
+		return SupportedGame.IsTitleUpdate(title, update.Identity, pressing, out error) &&
 			update.AppliesTo(executable, out error);
 	}
 
 	private static bool DiscIsSupported(
+		Refii.Core.Engine_Title title,
 		string isoPath, SupportedGame.Pressing pressing, out XexIdentity executable, out string error)
 	{
 		executable = new XexIdentity();
@@ -425,7 +437,7 @@ public partial class InstallDialog : Control
 			return false;
 		}
 
-		return SupportedGame.IsExecutable(executable, pressing, out error);
+		return SupportedGame.IsExecutable(title, executable, pressing, out error);
 	}
 
 	private void RefreshState()

@@ -139,13 +139,19 @@ public static class ModWorkspace
 	}
 
 	/// <summary>
-	/// Discovers all .f2mod packages directly under <paramref name="modsRoot"/>, name-ordered.
-	/// Subdirectories, non-.f2mod files, and cache folders (.cache) are strictly ignored.
+	/// Discovers all mod packages matching the active title's extension directly under <paramref name="modsRoot"/>, name-ordered.
 	/// </summary>
-	public static List<ModInstall> DiscoverModInstalls(string modsRoot)
+	public static List<ModInstall> DiscoverModInstalls(string modsRoot) =>
+		DiscoverModInstalls(modsRoot, Refii.Core.Engine_Title.Active.ModExtension);
+
+	/// <summary>
+	/// Discovers all mod packages matching <paramref name="packageExtension"/> (for example <c>.f2mod</c> or <c>.f3mod</c>)
+	/// directly under <paramref name="modsRoot"/>, name-ordered. Subdirectories, other extensions, and cache folders are ignored.
+	/// </summary>
+	public static List<ModInstall> DiscoverModInstalls(string modsRoot, string packageExtension)
 	{
 		var mods = new List<ModInstall>();
-		if (string.IsNullOrEmpty(modsRoot) || !Directory.Exists(modsRoot))
+		if (string.IsNullOrEmpty(modsRoot) || !Directory.Exists(modsRoot) || string.IsNullOrEmpty(packageExtension))
 		{
 			return mods;
 		}
@@ -153,7 +159,7 @@ public static class ModWorkspace
 		string[] files;
 		try
 		{
-			files = Directory.GetFiles(modsRoot, $"*{Refii.Core.Engine_Title.Active.ModExtension}");
+			files = Directory.GetFiles(modsRoot, $"*{packageExtension}");
 		}
 		catch (Exception)
 		{
@@ -189,10 +195,17 @@ public static class ModWorkspace
 	}
 
 	/// <summary>
-	/// Creates a brand-new .f2mod package in modsRoot with default metadata.
+	/// Creates a brand-new mod package in <paramref name="modsRoot"/> for the active title.
 	/// </summary>
 	public static bool CreateModPackage(
-		string modsRoot, string modName, out string packagePath, out string error)
+		string modsRoot, string modName, out string packagePath, out string error) =>
+		CreateModPackage(Refii.Core.Engine_Title.Active, modsRoot, modName, out packagePath, out error);
+
+	/// <summary>
+	/// Creates a brand-new mod package in <paramref name="modsRoot"/> for <paramref name="title"/>.
+	/// </summary>
+	public static bool CreateModPackage(
+		Refii.Core.Engine_Title title, string modsRoot, string modName, out string packagePath, out string error)
 	{
 		packagePath = string.Empty;
 		error = string.Empty;
@@ -203,10 +216,10 @@ public static class ModWorkspace
 			return false;
 		}
 
-		packagePath = Path.Combine(modsRoot, modName + PackageExtension);
+		packagePath = Path.Combine(modsRoot, modName + title.ModExtension);
 		if (File.Exists(packagePath))
 		{
-			error = $"Mod package '{modName}{PackageExtension}' already exists.";
+			error = $"Mod package '{modName}{title.ModExtension}' already exists.";
 			return false;
 		}
 
@@ -215,7 +228,7 @@ public static class ModWorkspace
 			Title = modName,
 			Version = "1.0.0",
 			Author = "Modder",
-			Description = "Custom mod for " + Refii.Core.Engine_Title.Active.Name,
+			Description = "Custom mod for " + title.Name,
 		};
 
 		return F2ModPackage.Create(packagePath, meta, Array.Empty<(string, byte[])>(), out error);

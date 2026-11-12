@@ -227,7 +227,11 @@ public static class Engine_TerrainLod
         int previous = indexCount;
         foreach (float error in LodErrors)
         {
+            // SurfaceTool.GenerateLod is intentionally used here for raw index-buffer simplification
+            // directly on normal-stripped terrain arrays without building an ImporterMesh asset.
+#pragma warning disable CS0618
             int[] level = tool.GenerateLod(error, 3);
+#pragma warning restore CS0618
             if (level.Length < 3 || level.Length > previous * 7 / 10)
             {
                 continue;

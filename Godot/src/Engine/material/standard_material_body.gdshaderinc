@@ -231,7 +231,7 @@ global uniform vec2 fable_wind_factors;
 #endif
 // A tree's transfer is the constant zero (vertex() below): FABLE_SPEC_TREE_NO_TRANSFER drops the
 // varying and its test instead of interpolating four zeros.
-#ifndef FABLE_LITE_MODERN
+#if !defined(FABLE_LITE_MODERN) && !defined(FABLE_MODERN_DIRECT)
 #if defined(FABLE_TREE_WIND) && defined(FABLE_SPEC_TREE_NO_TRANSFER)
 #else
 #define FABLE_TRANSFER_VARYING
@@ -287,7 +287,9 @@ void vertex() {
     // FABLE_SPEC_NO_PRT build draws instances that state another bake mode, or a mesh without CUSTOM0.
     v_transfer = vec4(0.0);
 #else
-    v_transfer = mix(fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX)), vec4(0.0), step(0.5, fable_unified));
+    v_transfer = fable_unified < 0.5
+        ? fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX))
+        : vec4(0.0);
 #endif
 #endif
     // GRASS1's normal gradient (VS 0453 1314-1371, PS 0487 1279-1287): w = saturate(height x
@@ -382,18 +384,22 @@ void fragment() {
     vec2 uv = UV;
 #ifndef FABLE_LITE
     if (FABLE_HAS_ORM && has_height && parallax_scale > 0.0) {
-        // The view direction in TANGENT space. Godot gives VIEW in view space, and the tangent
-        // frame beside it, so the three dots are the change of basis.
-        vec3 tangent_view = normalize(vec3(
-            dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL)));
+        float view_dist_sq = dot(VERTEX, VERTEX);
+        if (view_dist_sq < 324.0) {
+            float par_fade = clamp((18.0 - sqrt(view_dist_sq)) * (1.0 / 6.0), 0.0, 1.0);
+            // The view direction in TANGENT space. Godot gives VIEW in view space, and the tangent
+            // frame beside it, so the three dots are the change of basis.
+            vec3 tangent_view = normalize(vec3(
+                dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL)));
 
-        // Centred on 0.5, so a texel at the solved mean does not move at all and the relief
-        // displaces both ways around it.
-        float relief = texture(orm_tex, UV).a - 0.5;
+            // Centred on 0.5, so a texel at the solved mean does not move at all and the relief
+            // displaces both ways around it.
+            float relief = texture(orm_tex, UV).a - 0.5;
 
-        // tangent_view.z FLOORED. It goes to zero at grazing incidence and the offset would go to
-        // infinity — the smear that makes bad parallax obvious.
-        uv = UV + (tangent_view.xy * relief * parallax_scale / max(tangent_view.z, 0.4));
+            // tangent_view.z FLOORED. It goes to zero at grazing incidence and the offset would go to
+            // infinity — the smear that makes bad parallax obvious.
+            uv = UV + (tangent_view.xy * (relief * parallax_scale * par_fade) / max(tangent_view.z, 0.4));
+        }
     }
 #endif
 
@@ -480,9 +486,10 @@ void fragment() {
     // that reconstructed z is exactly the dot product the guest then takes. Godot's NORMAL_MAP
     // reconstructs z the same way, which is why the map can still be handed over whole.
     float ndotn = 1.0;
+    vec3 nm = vec3(0.5, 0.5, 1.0);
     vec3 mapped_view = NORMAL;
     if (FABLE_HAS_NORMAL) {
-        vec3 nm = texture(normal_tex, uv).rgb;
+        nm = texture(normal_tex, uv).rgb;
         NORMAL_MAP = nm;
         vec2 nxy = (nm.xy * 2.0) - 1.0;
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
@@ -531,6 +538,8 @@ void fragment() {
         ao = orm.r;
         ROUGHNESS = orm.g;
         METALLIC = orm.b;
+    } else if (FABLE_HAS_NORMAL) {
+        ao = mix(1.0, ndotn * ndotn, 0.35 * fable_unified);
     }
 
     // ORM HAS NOWHERE TO PUT A SPECULAR COLOUR, so the pair is reconstructed from what it does
@@ -576,12 +585,11 @@ void fragment() {
         v_specular_power = mix(v_specular_power, mix(70.0, 350.0, weather_weights.z), weather_wet);
         v_specular *= 1.0 - weather_weights.y;
         vec2 ripple = surface_ripple(fable_world) * weather_weights.z;
-        vec3 base_map = FABLE_HAS_NORMAL ? texture(normal_tex, uv).rgb : vec3(0.5, 0.5, 1.0);
-        NORMAL_MAP = mix(base_map, vec3(0.5 + ripple.x, 0.5 + ripple.y, 1.0),
+        NORMAL_MAP = mix(nm, vec3(0.5 + ripple.x, 0.5 + ripple.y, 1.0),
             max(weather_weights.z, weather_weights.y * 0.8));
     }
 #endif
-#ifdef FABLE_LITE_MODERN
+#if defined(FABLE_LITE_MODERN) || defined(FABLE_MODERN_DIRECT)
     // THE MODERN MODEL'S FILL, AND NOTHING IT MULTIPLIES AWAY. With `fable_unified` = 1,
     // `fable_ambient` scales every bake but amb3's by max(1 - 1, 0) = 0 — the probe SH, the PRT
     // transfer, the vertex bakes, their darkening, the tether and the bake AO — so none of it is
@@ -602,6 +610,24 @@ void fragment() {
     EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
     AO = combined_ao;
 #else
+    vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
+    vec3 darken = vec3(1.0);
+    if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
+        vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
+        float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
+        vec3 bent = normalize(mix(world_normal, amb_ref, bend));
+        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+        darken = mix(fable_darkening, vec3(1.0), nb * nb);
+    }
+
+    if (fable_unified > 0.999) {
+        vec3 ambient_half = vec3(0.0);
+        if (FABLE_MODE > 3.5) {
+            ambient_half = fable_bake_amb3(UV2) * fable_lightmap_rgb() * darken;
+        }
+        EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
+        AO = combined_ao;
+    } else {
     vec3 bake;
 #ifdef FABLE_TRANSFER_VARYING
     if (v_transfer.a > 0.5 && FABLE_MODE > 0.5 && FABLE_MODE < 1.5) {
@@ -613,26 +639,6 @@ void fragment() {
 #else
     bake = fable_bake(world_normal, COLOR, UV2);
 #endif
-
-    // THE GUEST'S BENT NORMAL, exactly (blob 0245 lines 1248-1294, and 0335's use of it):
-    // t = 0.5*(dot(N, AmbRef)+1); bent = lerp(N, AmbRef, t); factor = saturate(dot(bent,
-    // mappedN))^2. AmbRef is VS c19 = the main light's direction (`sub_821B16F8` writes it
-    // beside the 1.3 gamma) — the toward-the-sun vector, NOT world
-    // up. Dotting the map against the geometric normal instead under-darkened every wall.
-    // WHO TAKES IT: every standard surface draws NRM1 — a record naming no normal map gets the
-    // loader's flat default (`sub_82A9EEA0`), and the flat map still bends against the ambient
-    // reference, so it darkens too (blob 0351 1582-1586). A tree takes it only with its own map
-    // (0563 AMB2_NRM1_TRUNK1 1318-1323; 0559 has none); grass never (GRASS1 0487/0495 have no
-    // g_AmbientNormalMapDarkeningColour).
-    vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
-    vec3 darken = vec3(1.0);
-    if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
-        vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
-        float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
-        vec3 bent = normalize(mix(world_normal, amb_ref, bend));
-        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
-        darken = mix(fable_darkening, vec3(1.0), nb * nb);
-    }
 
     if (FABLE_FOLIAGE) {
         // NO SUN TERM HERE — foliage is lit in `light()`, the sun AND the lamps. Modulating the
@@ -667,6 +673,7 @@ void fragment() {
     EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
     // Godot's ambient and GI take the AO the guest's fills took above; 1 in the fable model.
     AO = mix(1.0, combined_ao, fable_unified);
+    }
 #endif
     if (FABLE_HAS_EMISSION) {
         // Linear for authored PBR mod assets (is_pbr = true) with authored physical radiance.
@@ -815,6 +822,7 @@ void fragment() {
 /// "Using 'return' in the 'light' processor function is incorrect" — and a shader that fails to
 /// compile falls back to a default material, which strips every texture in the scene.
 void light() {
+    float ndotl = dot(NORMAL, LIGHT);
 #ifndef FABLE_LITE
     // VIEW 6: the directional light's RAW shadow term, greyscale, on every surface — white
     // is unshadowed, black fully shadowed. The one view that separates "the shadow map does
@@ -826,15 +834,15 @@ void light() {
     } else if (fable_light_debug == 7) {
         // SIGNED NdotL — the terrain-parity diagnostic; see terrain_splat's view 7.
         if (LIGHT_IS_DIRECTIONAL) {
-            DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
+            DIFFUSE_LIGHT = vec3((ndotl * 0.5) + 0.5);
         }
     } else
 #endif
-    if (dot(NORMAL, LIGHT) > 0.0) {
+    if (ndotl > 1e-4) {
         // FACING AWAY, BOTH TERMS ARE EXACTLY ZERO — the diffuse's saturate(NdotL) and the
         // specular's saturate(4 NdotL) gate scale finite factors — so the light is skipped there,
         // and wherever its attenuation is zero, without changing a bit of the sum.
-        float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world) * fable_direct_ao(v_combined_ao);
+        float atten = fable_attenuation_weighted(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world, ndotl) * fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL);
         if (atten > 0.0) {
             // Plain Lambert, no specular, on foliage: every shipped tree draws the TRUNK1 pair,
             // leaves included (blob 0559 `saturate(dot(L, N))` x the shadow; the canopy wrap of
@@ -848,7 +856,7 @@ void light() {
             if (!FABLE_FOLIAGE && (!fable_zero_specular_work || any(notEqual(v_specular, vec3(0.0))))) {
 #endif
                 SPECULAR_LIGHT += fable_specular(
-                    NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+                    NORMAL, LIGHT, VIEW, atten * fable_specular_ao(v_combined_ao), LIGHT_COLOR, v_specular, v_specular_power);
             }
 #endif
         }

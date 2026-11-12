@@ -39,7 +39,7 @@ public static partial class Engine_TerrainSplatMaterial
     /// <summary>Loads the splat shaders this process can use, on the caller's (main) thread.</summary>
     public static void WarmShaders()
     {
-        _ = GD.Load<Shader>(ShaderPath);
+        _ = Refii.Models.Engine_ShaderSpecialisation.LoadFile(ShaderPath);
         WarmLiteShaders();
     }
 
@@ -74,7 +74,7 @@ public static partial class Engine_TerrainSplatMaterial
             return false;
         }
 
-        var shader = GD.Load<Shader>(ShaderPath);
+        var shader = Refii.Models.Engine_ShaderSpecialisation.LoadFile(ShaderPath);
         if (shader is null)
         {
             error = $"terrain shader missing at {ShaderPath}";

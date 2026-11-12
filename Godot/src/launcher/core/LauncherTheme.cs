@@ -18,7 +18,9 @@ public static class LauncherTheme
     public static Color BaseBackground { get; private set; }
     public static Color BaseForeground { get; private set; }
 
-    public static string WindowTitle { get; private set; } = "Fable 2 Launcher";
+    public const string DefaultWindowTitle = "Fable: Return to Albion";
+
+    public static string WindowTitle { get; private set; } = DefaultWindowTitle;
     public static string WarningText { get; private set; } = string.Empty;
     public static bool ShowLog { get; private set; } = true;
 
@@ -41,8 +43,24 @@ public static class LauncherTheme
         BaseBackground = ReadColor("BaseColor_background", new Color(0.2f, 0.8f, 0.4f, 1f));
         BaseForeground = ReadColor("BaseColor_forground", new Color(0.02f, 0.1f, 0.2f, 1f));
 
-        WindowTitle = Ini.GetString("Title", "Fable 2 Launcher", "Window");
-        WarningText = Ini.GetString("WarningText", string.Empty, "Window");
+        string configuredTitle = Ini.GetString("Title", DefaultWindowTitle, "Window");
+        if (string.IsNullOrWhiteSpace(configuredTitle) ||
+            string.Equals(configuredTitle, "Fable 2 Launcher", System.StringComparison.Ordinal) ||
+            string.Equals(configuredTitle, "Fable 3 Launcher", System.StringComparison.Ordinal))
+        {
+            configuredTitle = DefaultWindowTitle;
+        }
+        WindowTitle = configuredTitle;
+
+        string configuredWarning = Ini.GetString("WarningText", string.Empty, "Window");
+        if (string.Equals(
+                configuredWarning,
+                "Fable 2: Return to Albion is not intended to be fully playable yet.",
+                System.StringComparison.Ordinal))
+        {
+            configuredWarning = string.Empty;
+        }
+        WarningText = configuredWarning;
         ShowLog = Ini.GetBool("Log", true, "Window");
 
         BackgroundMinimumDuration = ReadFloat("MinimumDuration", 10.0f, "Background");

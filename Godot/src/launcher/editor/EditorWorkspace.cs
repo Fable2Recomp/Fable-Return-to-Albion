@@ -184,18 +184,24 @@ public static class EditorWorkspace
 	}
 
 	/// <summary>
-	/// Whether the editor can be opened, and what is missing when it cannot.
+	/// Whether the editor can be opened for the active title, and what is missing when it cannot.
+	/// </summary>
+	public static EditorReadiness Readiness(out string missing) =>
+		Readiness(Engine_Title.Active, out missing);
+
+	/// <summary>
+	/// Whether the editor can be opened for <paramref name="title"/>, and what is missing when it cannot.
 	///
 	/// The game is checked FIRST: the editor mounts the player's install, so offering it before
 	/// there is one gives them an editor with nothing in it.
 	/// </summary>
-	public static EditorReadiness Readiness(out string missing)
+	public static EditorReadiness Readiness(Engine_Title title, out string missing)
 	{
 		missing = string.Empty;
 
-		if (Refii.Core.Engine_GameData.Resolve().Length == 0)
+		if (Refii.Launcher.Core.Installer.ResolveGameDataDirectory(title).Length == 0)
 		{
-			missing = "Install the game first — the editor opens the assets it installed.";
+			missing = $"Install {title.Name} first — the editor opens the assets it installed.";
 			return EditorReadiness.NoGame;
 		}
 
@@ -318,15 +324,42 @@ public static class EditorWorkspace
 	}
 
 	/// <summary>
-	/// Opens the editor on the install.
-	///
-	/// <c>REFII_APP_ROOT</c> is what makes the editor session and the game share one install, and
-	/// <c>DOTNET_ROOT</c> points the editor at the bundled SDK when there is one.
+	/// Builds the environment variable map passed to the Godot modding editor child process for <paramref name="title"/>.
 	/// </summary>
-	public static bool Launch(out string error)
+	public static Dictionary<string, string> BuildLaunchEnvironment(Engine_Title title, string? dotnetPath = null)
+	{
+		var env = new Dictionary<string, string>(StringComparer.Ordinal)
+		{
+			["REFII_APP_ROOT"] = Engine_AppRoot.Path,
+			[Engine_Title.EnvironmentVariable] = title.Key,
+		};
+
+		if (dotnetPath is not null && dotnetPath.StartsWith(DotnetRoot, StringComparison.Ordinal))
+		{
+			env["DOTNET_ROOT"] = DotnetRoot;
+		}
+
+		return env;
+	}
+
+	/// <summary>
+	/// Opens the editor on the active title's install.
+	/// </summary>
+	public static bool Launch(out string error) =>
+		Launch(Engine_Title.Active, out error);
+
+	/// <summary>
+	/// Opens the editor scoped to <paramref name="title"/>'s install.
+	///
+	/// <c>REFII_APP_ROOT</c> makes the editor session and the game share one install,
+	/// <c>REFII_TITLE</c> tells <c>BnkMountPlugin</c> and the editor tools which game's banks and
+	/// mod packages (<c>.f2mod</c> / <c>.f3mod</c>) to mount, and <c>DOTNET_ROOT</c> points the
+	/// editor at the bundled SDK when there is one.
+	/// </summary>
+	public static bool Launch(Engine_Title title, out string error)
 	{
 		error = string.Empty;
-		if (Readiness(out string missing) != EditorReadiness.Ready)
+		if (Readiness(title, out string missing) != EditorReadiness.Ready)
 		{
 			error = missing;
 			return false;
@@ -351,12 +384,10 @@ public static class EditorWorkspace
 			// is this app's project, so the editor's user:// is this user dir.
 			start.ArgumentList.Add("--log-file");
 			start.ArgumentList.Add(Path.Combine(OS.GetUserDataDir(), "logs", "editor.log"));
-			start.Environment["REFII_APP_ROOT"] = Engine_AppRoot.Path;
 
-			string? dotnet = FindDotnet();
-			if (dotnet is not null && dotnet.StartsWith(DotnetRoot, StringComparison.Ordinal))
+			foreach ((string key, string value) in BuildLaunchEnvironment(title, FindDotnet()))
 			{
-				start.Environment["DOTNET_ROOT"] = DotnetRoot;
+				start.Environment[key] = value;
 			}
 
 			System.Diagnostics.Process.Start(start);

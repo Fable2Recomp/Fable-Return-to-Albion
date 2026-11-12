@@ -41,7 +41,10 @@ public sealed class StaticAoContainer
 	/// <summary>Maximum world-space Y height of the sampled terrain heightfield.</summary>
 	public float TerrainMaxHeight { get; init; }
 
-	/// <summary>RG8 (2 bytes per texel: R = UNORM8 contact AO, G = UNORM8 normalized terrain height) row-major (TerrainWidth * TerrainHeight * 2).</summary>
+	/// <summary>
+	/// RGBA8 (4 bytes per texel: R = UNORM8 terrain AO, G = UNORM8 walkable-floor AO,
+	/// B/A = little-endian UNORM16 normalized walkable-floor height) row-major (TerrainWidth * TerrainHeight * 4).
+	/// </summary>
 	public required byte[] TerrainAoBytes { get; set; }
 
 	public ImageTexture? RuntimeTerrainTexture { get; set; }
@@ -54,7 +57,8 @@ public sealed class StaticAoContainer
 public static class Engine_LevelAmbientOcclusion
 {
 	public const uint Magic = 0x4F414652u; // "RFAO" little-endian
-	public const uint Version = 2u;
+	public const uint Version = 3u;
+	public const int BytesPerGroundAoTexel = 4;
 	public const int PropAtlasRowWidth = 2048;
 	public const int MaxPropAtlasRows = 8192;
 	public const int MaxPropAtlasVertices = PropAtlasRowWidth * MaxPropAtlasRows;
@@ -405,6 +409,14 @@ public static class Engine_LevelAmbientOcclusion
 	public static string GetScenarioAoDiskPath(LevelEntry level, string gdbPath) =>
 		Path.Combine(CacheAoDirectory, GetScenarioAoRelativePath(level, gdbPath));
 
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	public static float DecodeHeight16(byte lo, byte hi, float minH, float maxH)
+	{
+		uint h16 = (uint)lo | ((uint)hi << 8);
+		float norm = h16 * (1.0f / 65535.0f);
+		return minH + norm * MathF.Max(0.0f, maxH - minH);
+	}
+
 	/// <summary>
 	/// Serializes a <see cref="StaticAoContainer"/> into the binary <c>.ao</c> format.
 	/// </summary>
@@ -414,7 +426,8 @@ public static class Engine_LevelAmbientOcclusion
 		int propVertCount = container.PropAoBytes.Length;
 		int terrainW = Math.Max(0, container.TerrainWidth);
 		int terrainH = Math.Max(0, container.TerrainHeight);
-		int terrainByteCount = terrainW * terrainH * 2;
+		int texelCount = terrainW * terrainH;
+		int terrainByteCount = texelCount * BytesPerGroundAoTexel;
 
 		const int headerBytes = 48;
 		int dirBytes = placementCount * 12;
@@ -458,14 +471,29 @@ public static class Engine_LevelAmbientOcclusion
 		{
 			container.TerrainAoBytes.AsSpan(0, terrainByteCount).CopyTo(span.Slice(cursor, terrainByteCount));
 		}
-		else if (terrainByteCount > 0 && container.TerrainAoBytes.Length == terrainW * terrainH)
+		else if (terrainByteCount > 0 && container.TerrainAoBytes.Length == texelCount * 2)
 		{
-			// Backwards-compatible packing if a test constructs a 1-byte-per-texel array
 			Span<byte> dst = span.Slice(cursor, terrainByteCount);
-			for (int i = 0; i < terrainW * terrainH; i++)
+			for (int i = 0; i < texelCount; i++)
 			{
-				dst[i * 2] = container.TerrainAoBytes[i];
-				dst[i * 2 + 1] = 0;
+				byte ao = container.TerrainAoBytes[i * 2];
+				byte h8 = container.TerrainAoBytes[i * 2 + 1];
+				dst[i * 4] = ao;
+				dst[i * 4 + 1] = ao;
+				dst[i * 4 + 2] = h8;
+				dst[i * 4 + 3] = h8;
+			}
+		}
+		else if (terrainByteCount > 0 && container.TerrainAoBytes.Length == texelCount)
+		{
+			Span<byte> dst = span.Slice(cursor, terrainByteCount);
+			for (int i = 0; i < texelCount; i++)
+			{
+				byte ao = container.TerrainAoBytes[i];
+				dst[i * 4] = ao;
+				dst[i * 4 + 1] = ao;
+				dst[i * 4 + 2] = 0;
+				dst[i * 4 + 3] = 0;
 			}
 		}
 
@@ -504,7 +532,7 @@ public static class Engine_LevelAmbientOcclusion
 		}
 
 		long dirBytes = (long)placementCount * 12L;
-		long terrainByteCount = (long)terrainW * terrainH * 2L;
+		long terrainByteCount = (long)terrainW * terrainH * BytesPerGroundAoTexel;
 		long expectedTotal = headerBytes + dirBytes + propVertCount + terrainByteCount;
 		if (bytes.Length < expectedTotal)
 		{
@@ -602,7 +630,7 @@ public static class Engine_LevelAmbientOcclusion
 				return false;
 			}
 
-			long expected = 48L + (long)placementCount * 12L + propVertCount + (long)terrainW * terrainH * 2L;
+			long expected = 48L + (long)placementCount * 12L + propVertCount + (long)terrainW * terrainH * BytesPerGroundAoTexel;
 			return fs.Length >= expected;
 		}
 		catch (Exception)
@@ -812,18 +840,18 @@ public static class Engine_LevelAmbientOcclusion
 			return;
 		}
 
-		// Upload 2D terrain contact AO + normalized terrain height texture (W x H, RG8).
+		// Upload 2D ground contact AO + 16-bit walkable-floor height texture (W x H, RGBA8).
 		byte[] terrainSource = container.TerrainAoBytes;
 		container.TerrainAoBytes = Array.Empty<byte>();
 		if (container.TerrainWidth >= 2 &&
 		    container.TerrainHeight >= 2 &&
-		    terrainSource.Length >= container.TerrainWidth * container.TerrainHeight * 2)
+		    terrainSource.Length >= container.TerrainWidth * container.TerrainHeight * BytesPerGroundAoTexel)
 		{
 			Image tImg = Image.CreateFromData(
 				container.TerrainWidth,
 				container.TerrainHeight,
 				false,
-				Image.Format.Rg8,
+				Image.Format.Rgba8,
 				terrainSource);
 			ImageTexture terrainTex = ImageTexture.CreateFromImage(tImg);
 			GC.KeepAlive(tImg);
@@ -831,7 +859,9 @@ public static class Engine_LevelAmbientOcclusion
 			float spanH = MathF.Max(0.01f, container.TerrainMaxHeight - container.TerrainMinHeight);
 			RenderingServer.GlobalShaderParameterSet(ParamTerrainContactAo, terrainTex);
 			RenderingServer.GlobalShaderParameterSet(ParamTerrainAoRect, container.TerrainWorldRect);
-			RenderingServer.GlobalShaderParameterSet(ParamTerrainAoHeight, new Vector4(container.TerrainMinHeight, spanH, 1.0f, 0.0f));
+			RenderingServer.GlobalShaderParameterSet(
+				ParamTerrainAoHeight,
+				new Vector4(container.TerrainMinHeight, spanH, container.TerrainWidth, container.TerrainHeight));
 			ReleasePreviousBoundTerrainTexture(terrainTex);
 		}
 		else
@@ -850,9 +880,9 @@ public static class Engine_LevelAmbientOcclusion
 			return _fallbackTerrainTexture;
 		}
 
-		var white = new byte[32];
+		var white = new byte[4 * 4 * BytesPerGroundAoTexel];
 		Array.Fill(white, (byte)255);
-		Image img = Image.CreateFromData(4, 4, false, Image.Format.Rg8, white);
+		Image img = Image.CreateFromData(4, 4, false, Image.Format.Rgba8, white);
 		_fallbackTerrainTexture = ImageTexture.CreateFromImage(img);
 		GC.KeepAlive(img);
 		return _fallbackTerrainTexture;
@@ -953,7 +983,7 @@ public static class Engine_LevelAmbientOcclusion
 				Vector3 bMin = new(key.cx * cellSize - margin, -10000.0f, key.cz * cellSize - margin);
 				Vector3 bMax = new((key.cx + 1) * cellSize + margin, 10000.0f, (key.cz + 1) * cellSize + margin);
 				var localTris = new List<Engine_LevelShadowMaps.BvhTriangle>(256);
-				worldBvh.CollectInBounds(bMin, bMax, localTris);
+				worldBvh.CollectInBounds(bMin, bMax, localTris, Engine_LevelShadowMaps.BvhTriangle.FlagAoOccluder);
 				return new Engine_LevelShadowMaps.BvhTree(localTris);
 			});
 		}
@@ -963,7 +993,9 @@ public static class Engine_LevelAmbientOcclusion
 		var placementOffsets = new Dictionary<ulong, int>();
 		byte[] propAoBytes = Array.Empty<byte>();
 
-		// 2. Bake 2D Terrain Contact AO map if a heightfield is present.
+		// 2. Bake 2D Ground Contact AO + Walkable-Floor Height map (RGBA8) whenever either a heightfield
+		// or static architectural/prop geometry is present (covering outdoor regions, buildings above .ghf,
+		// and pure indoor/cave scenarios without a .ghf).
 		int terrainW = 0;
 		int terrainH = 0;
 		Vector4 terrainRect = Vector4.Zero;
@@ -971,48 +1003,82 @@ public static class Engine_LevelAmbientOcclusion
 		float terrainMaxH = 0.0f;
 		byte[] terrainAoBytes = Array.Empty<byte>();
 
-		if (primaryTerrain is { Width: >= 2, Height: >= 2, Spacing: > 0.0f } ghf &&
-		    ghf.Values.Length >= ghf.Width * ghf.Height)
-		{
-			float fullSpanX = (ghf.Width - 1) * ghf.Spacing;
-			float fullSpanZ = (ghf.Height - 1) * ghf.Spacing;
-			float cropOriginX = ghf.OriginX;
-			float cropOriginZ = ghf.OriginZ;
-			float cropSpanX = fullSpanX;
-			float cropSpanZ = fullSpanZ;
+		bool hasGhf = primaryTerrain is { Width: >= 2, Height: >= 2, Spacing: > 0.0f } validGhf &&
+		              validGhf.Values.Length >= validGhf.Width * validGhf.Height;
+		GhfHeights ghf = hasGhf ? primaryTerrain! : new GhfHeights();
 
-			if (ghf.Width < 32 && ghf.Height < 32)
+		if (hasGhf || worldBvh.TriangleCount > 0)
+		{
+			float fullSpanX = hasGhf ? (ghf.Width - 1) * ghf.Spacing : 0.0f;
+			float fullSpanZ = hasGhf ? (ghf.Height - 1) * ghf.Spacing : 0.0f;
+			float cropOriginX;
+			float cropOriginZ;
+			float cropSpanX;
+			float cropSpanZ;
+
+			if (hasGhf)
 			{
-				// Small synthetic test grids (e.g., 9x9 unit test) use 2x + 1 resolution over full bounds.
-				terrainW = Math.Clamp((ghf.Width - 1) * 2 + 1, 2, 1024);
-				terrainH = Math.Clamp((ghf.Height - 1) * 2 + 1, 2, 1024);
+				cropOriginX = ghf.OriginX;
+				cropOriginZ = ghf.OriginZ;
+				cropSpanX = fullSpanX;
+				cropSpanZ = fullSpanZ;
+
+				if (ghf.Width < 32 && ghf.Height < 32)
+				{
+					// Small synthetic test grids (e.g., 9x9 unit test) use 2x + 1 resolution over full bounds.
+					terrainW = Math.Clamp((ghf.Width - 1) * 2 + 1, 2, 1024);
+					terrainH = Math.Clamp((ghf.Height - 1) * 2 + 1, 2, 1024);
+				}
+				else
+				{
+					int targetRes = TerrainAoResolution;
+					terrainW = targetRes;
+					terrainH = targetRes;
+
+					// Crop the 2K / 4K / 8K ground contact AO map tightly to the XZ bounding box of placed
+					// static geometry (+ 8m margin) so texel density is concentrated in the playable area
+					// (~5-10 cm/texel) instead of wasted across 1 km of outer sea/hill vista.
+					if (worldBvh.TriangleCount > 0)
+					{
+						Vector3 bvhMin = worldBvh.RootMin;
+						Vector3 bvhMax = worldBvh.RootMax;
+						// World X is mirrored (-localX), so localX spans [-bvhMax.X .. -bvhMin.X].
+						float propMinLocalX = MathF.Max(ghf.OriginX, -bvhMax.X - 8.0f);
+						float propMaxLocalX = MathF.Min(ghf.OriginX + fullSpanX, -bvhMin.X + 8.0f);
+						float propMinLocalZ = MathF.Max(ghf.OriginZ, bvhMin.Z - 8.0f);
+						float propMaxLocalZ = MathF.Min(ghf.OriginZ + fullSpanZ, bvhMax.Z + 8.0f);
+
+						if (propMaxLocalX - propMinLocalX >= 16.0f && propMaxLocalZ - propMinLocalZ >= 16.0f)
+						{
+							cropOriginX = propMinLocalX;
+							cropOriginZ = propMinLocalZ;
+							cropSpanX = propMaxLocalX - propMinLocalX;
+							cropSpanZ = propMaxLocalZ - propMinLocalZ;
+						}
+					}
+				}
 			}
 			else
 			{
-				int targetRes = TerrainAoResolution;
-				terrainW = targetRes;
-				terrainH = targetRes;
+				Vector3 bvhMin = worldBvh.RootMin;
+				Vector3 bvhMax = worldBvh.RootMax;
+				float pad = Refii.Core.Engine_AppRoot.IsTestHost ? 1.0f : 4.0f;
+				cropOriginX = -bvhMax.X - pad;
+				cropOriginZ = bvhMin.Z - pad;
+				cropSpanX = MathF.Max(4.0f, (-bvhMin.X + pad) - cropOriginX);
+				cropSpanZ = MathF.Max(4.0f, (bvhMax.Z + pad) - cropOriginZ);
 
-				// Crop the 2K / 4K / 8K ground contact AO map tightly to the XZ bounding box of placed
-				// static geometry (+ 8m margin) so texel density is concentrated in the playable area
-				// (~5-10 cm/texel) instead of wasted across 1 km of outer sea/hill vista.
-				if (worldBvh.TriangleCount > 0)
+				if (Refii.Core.Engine_AppRoot.IsTestHost && cropSpanX <= 40.0f && cropSpanZ <= 40.0f)
 				{
-					Vector3 bvhMin = worldBvh.RootMin;
-					Vector3 bvhMax = worldBvh.RootMax;
-					// World X is mirrored (-localX), so localX spans [-bvhMax.X .. -bvhMin.X].
-					float propMinLocalX = MathF.Max(ghf.OriginX, -bvhMax.X - 8.0f);
-					float propMaxLocalX = MathF.Min(ghf.OriginX + fullSpanX, -bvhMin.X + 8.0f);
-					float propMinLocalZ = MathF.Max(ghf.OriginZ, bvhMin.Z - 8.0f);
-					float propMaxLocalZ = MathF.Min(ghf.OriginZ + fullSpanZ, bvhMax.Z + 8.0f);
-
-					if (propMaxLocalX - propMinLocalX >= 16.0f && propMaxLocalZ - propMinLocalZ >= 16.0f)
-					{
-						cropOriginX = propMinLocalX;
-						cropOriginZ = propMinLocalZ;
-						cropSpanX = propMaxLocalX - propMinLocalX;
-						cropSpanZ = propMaxLocalZ - propMinLocalZ;
-					}
+					int testRes = Math.Clamp((int)MathF.Round(MathF.Max(cropSpanX, cropSpanZ) * 2.0f) + 1, 17, 129);
+					terrainW = testRes;
+					terrainH = testRes;
+				}
+				else
+				{
+					int targetRes = TerrainAoResolution;
+					terrainW = targetRes;
+					terrainH = targetRes;
 				}
 			}
 
@@ -1022,11 +1088,12 @@ public static class Engine_LevelAmbientOcclusion
 				cropSpanX > 1e-5f ? 1.0f / cropSpanX : 0.0f,
 				cropSpanZ > 1e-5f ? 1.0f / cropSpanZ : 0.0f);
 
+			GhfHeights? gpuGhf = hasGhf ? ghf : null;
 			bool gpuBaked = !Refii.Core.Engine_AppRoot.IsTestHost &&
 				worldBvh.TriangleCount > 0 &&
 				Engine_GpuBvhBaker.TryBakeGroundAoGpu(
 					worldBvh,
-					in ghf,
+					gpuGhf,
 					terrainW,
 					terrainH,
 					cropOriginX,
@@ -1042,72 +1109,188 @@ public static class Engine_LevelAmbientOcclusion
 
 			if (!gpuBaked && isCancelled?.Invoke() != true)
 			{
-				var rawAo = new float[terrainW * terrainH];
-				var sampleHeights = new float[terrainW * terrainH];
+				int texelTotal = terrainW * terrainH;
+				var rawTerrAo = new float[texelTotal];
+				var terrHeights = new float[texelTotal];
+				var rawWalkAo = new float[texelTotal];
+				var walkHeights = new float[texelTotal];
 				const float terrainTMin = 0.04f;
 				const float invTerrainRadius = 1.0f / TerrainAoMaxRadius;
 				float invRayCount = 1.0f / HemisphereKernel.Length;
+				float maxOcc = (1.0f - MinTerrainContactAo) * HemisphereKernel.Length;
 				float invFullSpanX = fullSpanX > 1e-5f ? 1.0f / fullSpanX : 0.0f;
 				float invFullSpanZ = fullSpanZ > 1e-5f ? 1.0f / fullSpanZ : 0.0f;
+				float bvhMinY = worldBvh.TriangleCount > 0 && float.IsFinite(worldBvh.RootMin.Y) ? worldBvh.RootMin.Y : 0.0f;
+				float bvhMaxY = worldBvh.TriangleCount > 0 && float.IsFinite(worldBvh.RootMax.Y) ? worldBvh.RootMax.Y : 1.0f;
+
+				float EvalHemisphere(Engine_LevelShadowMaps.BvhTree localBvh, Vector3 pos, Vector3 normal, out int outHitCount)
+				{
+					Engine_ModelSelfAo.BuildOrthonormalBasis(normal, out Vector3 tangent, out Vector3 bitangent);
+					Vector3 rayOrigin = pos + normal * 0.03f;
+					float occSum = 0.0f;
+					int hits = 0;
+					int farRoofHits = 0;
+
+					for (int r = 0; r < HemisphereKernel.Length; r++)
+					{
+						Vector3 local = HemisphereKernel[r];
+						Vector3 dir = (tangent * local.X + bitangent * local.Y + normal * local.Z).Normalized();
+						if (localBvh.TraceClosestHit(
+							rayOrigin,
+							dir,
+							terrainTMin,
+							TerrainAoMaxRadius,
+							out float hitDist,
+							out _,
+							Engine_LevelShadowMaps.BvhTriangle.FlagAoOccluder,
+							Engine_LevelShadowMaps.BvhTriangle.FlagAoOccluder))
+						{
+							float falloff = MathF.Max(0.0f, 1.0f - hitDist * invTerrainRadius);
+							occSum += falloff * falloff;
+							hits++;
+							if (local.Z > 0.70f && hitDist > 2.25f)
+							{
+								farRoofHits++;
+							}
+
+							if (occSum >= maxOcc && (r + 1 - hits) >= 3)
+							{
+								break;
+							}
+						}
+					}
+
+					outHitCount = hits;
+					float aoVal = Math.Clamp(1.0f - occSum * invRayCount, MinTerrainContactAo, 1.0f);
+					if (hits >= 22 && farRoofHits >= 5)
+					{
+						aoVal = Mathf.Lerp(aoVal, 0.85f, 0.75f);
+					}
+
+					return aoVal;
+				}
+
+				const uint archMask = Engine_LevelShadowMaps.BvhTriangle.FlagAoOccluder | Engine_LevelShadowMaps.BvhTriangle.FlagTerrain;
+				const uint archExpected = Engine_LevelShadowMaps.BvhTriangle.FlagAoOccluder;
+				const uint aoMask = Engine_LevelShadowMaps.BvhTriangle.FlagAoOccluder;
 
 				Parallel.For(0, terrainH, ty =>
 				{
 					float vCrop = terrainH > 1 ? (float)ty / (terrainH - 1) : 0.0f;
 					float localZ = cropOriginZ + vCrop * cropSpanZ;
 					float worldZ = localZ;
-					float vGhf = Math.Clamp((localZ - ghf.OriginZ) * invFullSpanZ, 0.0f, 1.0f);
+					float vGhf = hasGhf ? Math.Clamp((localZ - ghf.OriginZ) * invFullSpanZ, 0.0f, 1.0f) : 0.0f;
 
 					for (int tx = 0; tx < terrainW; tx++)
 					{
 						float uCrop = terrainW > 1 ? (float)tx / (terrainW - 1) : 0.0f;
 						float localX = cropOriginX + uCrop * cropSpanX;
 						float worldX = -localX;
-						float uGhf = Math.Clamp((localX - ghf.OriginX) * invFullSpanX, 0.0f, 1.0f);
-
-						SampleHeightAndWorldNormal(in ghf, uGhf, vGhf, out float wy, out Vector3 worldNormal);
 						int idx = ty * terrainW + tx;
-						sampleHeights[idx] = wy;
 
-						Vector3 worldPos = new(worldX, wy, worldZ);
-						Engine_LevelShadowMaps.BvhTree localBvh = GetLocalBvh(worldPos, TerrainAoMaxRadius + 1.0f);
+						Engine_LevelShadowMaps.BvhTree localBvh = GetLocalBvh(new Vector3(worldX, 0.0f, worldZ), TerrainAoMaxRadius + 1.0f);
 
-						Engine_ModelSelfAo.BuildOrthonormalBasis(worldNormal, out Vector3 tangent, out Vector3 bitangent);
-						Vector3 rayOrigin = worldPos + worldNormal * 0.03f;
-						float occSum = 0.0f;
-						int hitCount = 0;
-						int farRoofHits = 0;
-
-						for (int r = 0; r < HemisphereKernel.Length; r++)
+						float ghfY = bvhMinY;
+						float terrAo = 1.0f;
+						if (hasGhf)
 						{
-							Vector3 local = HemisphereKernel[r];
-							Vector3 dir = (tangent * local.X + bitangent * local.Y + worldNormal * local.Z).Normalized();
-							if (localBvh.TraceClosestHit(rayOrigin, dir, terrainTMin, TerrainAoMaxRadius, out float hitDist, out _))
+							float uGhf = Math.Clamp((localX - ghf.OriginX) * invFullSpanX, 0.0f, 1.0f);
+							SampleHeightAndWorldNormal(in ghf, uGhf, vGhf, out ghfY, out Vector3 ghfNormal);
+							terrAo = EvalHemisphere(localBvh, new Vector3(worldX, ghfY, worldZ), ghfNormal, out _);
+						}
+
+						float walkY = ghfY;
+						float walkAo = terrAo;
+						bool foundArch = false;
+
+						if (localBvh.TriangleCount > 0)
+						{
+							float curY = hasGhf ? (ghfY - 0.60f) : (bvhMinY - 0.25f);
+							float maxScanY = bvhMaxY + 0.50f;
+
+							for (int stepIdx = 0; stepIdx < 8; stepIdx++)
 							{
-								float falloff = MathF.Max(0.0f, 1.0f - hitDist * invTerrainRadius);
-								occSum += falloff * falloff;
-								hitCount++;
-								if (local.Z > 0.70f && hitDist > 2.25f)
+								if (curY > maxScanY)
 								{
-									farRoofHits++;
+									break;
 								}
+
+								if (!localBvh.TraceClosestHit(
+									new Vector3(worldX, curY, worldZ),
+									Vector3.Up,
+									0.0f,
+									maxScanY - curY,
+									out float candDist,
+									out Vector3 candN,
+									archMask,
+									archExpected))
+								{
+									break;
+								}
+
+								float candY = curY + candDist;
+								if (MathF.Abs(candN.Y) < 0.65f)
+								{
+									curY = candY + 0.04f;
+									continue;
+								}
+
+								Vector3 upN = candN.Y < 0.0f ? -candN : candN;
+								bool blocked = localBvh.TraceClosestHit(
+									new Vector3(worldX, candY + 0.03f, worldZ),
+									Vector3.Up,
+									0.0f,
+									1.80f,
+									out float headDist,
+									out _,
+									aoMask,
+									aoMask);
+
+								if (!blocked)
+								{
+									walkY = candY;
+									walkAo = EvalHemisphere(localBvh, new Vector3(worldX, walkY, worldZ), upN, out _);
+									foundArch = true;
+									break;
+								}
+
+								if (headDist < 0.35f)
+								{
+									curY = candY + 0.015f + headDist;
+									continue;
+								}
+
+								float candAo = EvalHemisphere(localBvh, new Vector3(worldX, candY, worldZ), upN, out int candHits);
+								if (candHits < 23)
+								{
+									walkY = candY;
+									walkAo = candAo;
+									foundArch = true;
+									break;
+								}
+
+								curY = candY + 0.015f + headDist;
 							}
 						}
 
-						float aoVal = Math.Clamp(1.0f - occSum * invRayCount, MinTerrainContactAo, 1.0f);
-						if (hitCount >= 22 && farRoofHits >= 5)
+						if (!hasGhf && foundArch)
 						{
-							aoVal = Mathf.Lerp(aoVal, 0.85f, 0.75f);
+							ghfY = walkY;
+							terrAo = walkAo;
 						}
 
-						rawAo[idx] = aoVal;
+						terrHeights[idx] = ghfY;
+						rawTerrAo[idx] = terrAo;
+						walkHeights[idx] = walkY;
+						rawWalkAo[idx] = walkAo;
 					}
 				});
 
 				terrainMinH = float.MaxValue;
 				terrainMaxH = float.MinValue;
-				for (int i = 0; i < sampleHeights.Length; i++)
+				for (int i = 0; i < walkHeights.Length; i++)
 				{
-					float h = sampleHeights[i];
+					float h = walkHeights[i];
 					if (float.IsFinite(h))
 					{
 						if (h < terrainMinH) terrainMinH = h;
@@ -1120,11 +1303,16 @@ public static class Engine_LevelAmbientOcclusion
 					terrainMinH = 0.0f;
 					terrainMaxH = 1.0f;
 				}
+				else if (terrainMaxH - terrainMinH < 0.01f)
+				{
+					terrainMaxH = terrainMinH + 1.0f;
+				}
 
-				float invHeightSpan = (terrainMaxH - terrainMinH) > 1e-4f ? 1.0f / (terrainMaxH - terrainMinH) : 0.0f;
+				float invHeightSpan = 1.0f / (terrainMaxH - terrainMinH);
 
-				// Parallel 3x3 height-aware bilateral filter to soften contact rays without bleeding across cliffs.
-				terrainAoBytes = new byte[terrainW * terrainH * 2];
+				// Parallel 3x3 height-aware bilateral filter on both R (terrain) and G (walkable floor)
+				// plus 16-bit walkable height in (B, A).
+				terrainAoBytes = new byte[texelTotal * BytesPerGroundAoTexel];
 				int wLocal = terrainW;
 				int hLocal = terrainH;
 				float minHLocal = terrainMinH;
@@ -1133,9 +1321,12 @@ public static class Engine_LevelAmbientOcclusion
 					for (int tx = 0; tx < wLocal; tx++)
 					{
 						int centerIdx = ty * wLocal + tx;
-						float centerH = sampleHeights[centerIdx];
-						float sumAo = 0.0f;
-						float sumWeight = 0.0f;
+						float centerTerrH = terrHeights[centerIdx];
+						float centerWalkH = walkHeights[centerIdx];
+						float sumTerrAo = 0.0f;
+						float sumTerrW = 0.0f;
+						float sumWalkAo = 0.0f;
+						float sumWalkW = 0.0f;
 
 						for (int dy = -1; dy <= 1; dy++)
 						{
@@ -1145,20 +1336,32 @@ public static class Engine_LevelAmbientOcclusion
 							{
 								int nx = Math.Clamp(tx + dx, 0, wLocal - 1);
 								int nIdx = rowBase + nx;
-								float dh = sampleHeights[nIdx] - centerH;
-								float dh2 = dh * dh * 2.0f;
 								float spatialW = (dx == 0 && dy == 0) ? 1.0f : (dx == 0 || dy == 0) ? 0.6f : 0.36f;
-								float heightW = 1.0f / (1.0f + dh2 + 0.5f * dh2 * dh2);
-								float w = spatialW * heightW;
-								sumAo += rawAo[nIdx] * w;
-								sumWeight += w;
+
+								float dt = terrHeights[nIdx] - centerTerrH;
+								float dt2 = dt * dt * 2.0f;
+								float wt = spatialW / (1.0f + dt2 + 0.5f * dt2 * dt2);
+								sumTerrAo += rawTerrAo[nIdx] * wt;
+								sumTerrW += wt;
+
+								float dw = walkHeights[nIdx] - centerWalkH;
+								float dw2 = dw * dw * 6.0f;
+								float ww = spatialW / (1.0f + dw2 + 0.5f * dw2 * dw2);
+								sumWalkAo += rawWalkAo[nIdx] * ww;
+								sumWalkW += ww;
 							}
 						}
 
-						float filtered = sumWeight > 1e-6f ? sumAo / sumWeight : rawAo[centerIdx];
-						float normH = Math.Clamp((centerH - minHLocal) * invHeightSpan, 0.0f, 1.0f);
-						terrainAoBytes[centerIdx * 2] = (byte)Math.Clamp((int)MathF.Round(filtered * 255.0f), 0, 255);
-						terrainAoBytes[centerIdx * 2 + 1] = (byte)Math.Clamp((int)MathF.Round(normH * 255.0f), 0, 255);
+						float filtTerr = sumTerrW > 1e-6f ? sumTerrAo / sumTerrW : rawTerrAo[centerIdx];
+						float filtWalk = sumWalkW > 1e-6f ? sumWalkAo / sumWalkW : rawWalkAo[centerIdx];
+						float normH = Math.Clamp((centerWalkH - minHLocal) * invHeightSpan, 0.0f, 1.0f);
+						int h16 = Math.Clamp((int)MathF.Round(normH * 65535.0f), 0, 65535);
+
+						int byteOffset = centerIdx * BytesPerGroundAoTexel;
+						terrainAoBytes[byteOffset] = (byte)Math.Clamp((int)MathF.Round(filtTerr * 255.0f), 0, 255);
+						terrainAoBytes[byteOffset + 1] = (byte)Math.Clamp((int)MathF.Round(filtWalk * 255.0f), 0, 255);
+						terrainAoBytes[byteOffset + 2] = (byte)(h16 & 0xFF);
+						terrainAoBytes[byteOffset + 3] = (byte)((h16 >> 8) & 0xFF);
 					}
 				});
 			}

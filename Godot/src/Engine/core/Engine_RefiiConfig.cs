@@ -30,12 +30,14 @@ namespace Refii.Core;
 public static class Engine_RefiiConfig
 {
     /// <summary>The path to the active title's config, or empty when there is not one.</summary>
-    public static string ResolvePath()
+    public static string ResolvePath() => ResolvePath(Engine_Title.Active);
+
+    /// <summary>The path to <paramref name="title"/>'s config, or empty when there is not one.</summary>
+    public static string ResolvePath(Engine_Title title)
     {
-        Engine_Title title = Engine_Title.Active;
         lock (_cacheGate)
         {
-            if (_resolvedPath.Length != 0 && _resolvedFor == title)
+            if (title == Engine_Title.Active && _resolvedPath.Length != 0 && _resolvedFor == title)
             {
                 return _resolvedPath;
             }
@@ -45,7 +47,7 @@ public static class Engine_RefiiConfig
 
         try
         {
-            candidates.Add(Installer.GetRuntimeConfigPath());
+            candidates.Add(Installer.GetRuntimeConfigPath(title));
         }
         catch (Exception)
         {
@@ -87,16 +89,46 @@ public static class Engine_RefiiConfig
         {
             if (!string.IsNullOrEmpty(candidate) && System.IO.File.Exists(candidate))
             {
-                lock (_cacheGate)
+                if (title == Engine_Title.Active)
                 {
-                    _resolvedPath = candidate;
-                    _resolvedFor = title;
+                    lock (_cacheGate)
+                    {
+                        _resolvedPath = candidate;
+                        _resolvedFor = title;
+                    }
                 }
                 return candidate;
             }
         }
 
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Reads every key in <paramref name="title"/>'s config file, or an empty dictionary when missing.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> ReadFor(Engine_Title title, out string path)
+    {
+        if (title == Engine_Title.Active)
+        {
+            return Read(out path);
+        }
+
+        path = ResolvePath(title);
+        if (path.Length == 0)
+        {
+            return new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            return RuntimeConfig.ReadValues(path);
+        }
+        catch (Exception exception)
+        {
+            GD.PushWarning($"[config] could not read {path}: {exception.Message}");
+            return new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>

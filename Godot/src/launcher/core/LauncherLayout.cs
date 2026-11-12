@@ -15,6 +15,8 @@ public readonly struct LauncherLayout
 
 	// Design-base geometry (multiplied by LauncherScale.Unit in Build).
 	public const float BasePrimaryButtonHeight = 52.0f;
+	public const float BaseDualDockHeight = 114.0f;
+	public const float BaseDualDockPipelineHeight = 166.0f;
 	public const float BasePanelPadding = 24.0f;
 	public const float BasePanelTopClearance = 56.0f;
 
@@ -23,23 +25,27 @@ public readonly struct LauncherLayout
 
 	/// <summary>
 	/// Floating overlay layout:
-	/// - InfoDrawer (News / Changelog / Credits): compact card sitting above the warning pill/bottom area on the LEFT (over "Art by Mirai-Miki" location).
-	/// - MainDrawer (Debug & System: Settings, Modding, Reinstall): full-height drawer on the RIGHT (default open).
-	/// - Top Left: Wordmark on top row, File & About on sub-row directly under it.
+	/// - InfoDrawer (News / Changelog / Credits): compact card sitting above the warning pill/bottom area on the LEFT.
+	/// - MainDrawer (Settings, Modding, Install, Saves): full-height drawer on the RIGHT (default open).
+	/// - Bottom Left: either the single primary button (mobile) or the side-by-side Dual-Game Launch Dock (desktop).
 	/// </summary>
-	public static LauncherLayout Build(Vector2 viewportPos, Vector2 viewportSize, float menuBarHeight)
+	public static LauncherLayout Build(
+		Vector2 viewportPos,
+		Vector2 viewportSize,
+		float menuBarHeight,
+		bool dualDock = false,
+		bool pipelineStripVisible = false)
 	{
 		float viewportWidth = Mathf.Max(1.0f, viewportSize.X);
 		float viewportHeight = Mathf.Max(1.0f, viewportSize.Y);
 
 		float pad = LauncherScale.Px(BasePanelPadding);
 		float topClear = LauncherScale.Px(BasePanelTopClearance);
-		float buttonHeight = LauncherScale.Px(BasePrimaryButtonHeight);
 		float warningHeight = LauncherScale.Px(32.0f);
 
-		// Main full-height drawer on the RIGHT (Settings, Modding, Reinstall):
+		// Main full-height drawer on the RIGHT (Settings, Modding, Install, Saves):
 		float mainWidth = ClampFloat(
-			viewportWidth * 0.40f, LauncherScale.Px(460.0f), LauncherScale.Px(580.0f));
+			viewportWidth * 0.44f, LauncherScale.Px(540.0f), LauncherScale.Px(680.0f));
 
 		var mainPos = new Vector2(
 			viewportPos.X + viewportWidth - mainWidth + pad,
@@ -48,29 +54,48 @@ public readonly struct LauncherLayout
 			mainWidth - (pad * 2.0f),
 			viewportHeight - topClear - pad);
 
-		// Floating primary action: bottom-left.
-		var actionSize = new Vector2(LauncherScale.Px(280.0f), buttonHeight);
+		float leftAvailableWidth = Mathf.Max(1.0f, viewportWidth - mainWidth);
+
+		Vector2 actionSize;
+		if (dualDock)
+		{
+			float dockHeight = LauncherScale.Px(
+				pipelineStripVisible ? BaseDualDockPipelineHeight : BaseDualDockHeight);
+			float dockWidth = ClampFloat(
+				leftAvailableWidth - (pad * 2.0f),
+				LauncherScale.Px(400.0f),
+				LauncherScale.Px(548.0f));
+			actionSize = new Vector2(dockWidth, dockHeight);
+		}
+		else
+		{
+			float buttonHeight = LauncherScale.Px(BasePrimaryButtonHeight);
+			actionSize = new Vector2(LauncherScale.Px(280.0f), buttonHeight);
+		}
+
 		var actionPos = new Vector2(
 			viewportPos.X + pad,
-			viewportPos.Y + viewportHeight - pad - buttonHeight);
+			viewportPos.Y + viewportHeight - pad - actionSize.Y);
 
 		// Quiet notice pill floats above the action.
-		float leftAvailableWidth = Mathf.Max(1.0f, viewportWidth - mainWidth);
+		float maxWarningWidth = dualDock ? actionSize.X : LauncherScale.Px(420.0f);
 		var warningSize = new Vector2(
-			Mathf.Min(LauncherScale.Px(420.0f), leftAvailableWidth - (pad * 2.0f)), warningHeight);
+			Mathf.Min(maxWarningWidth, leftAvailableWidth - (pad * 2.0f)), warningHeight);
 		var warningPos = new Vector2(
 			viewportPos.X + pad,
-			actionPos.Y - warningHeight - LauncherScale.Px(14.0f));
+			actionPos.Y - warningHeight - LauncherScale.Px(12.0f));
 
-		// Info / News card on the LEFT (Changelog & Credits):
-		// Compact card anchored just above the warning pill (clearing the art
-		// credit line), so the middle of the artwork stays visible.
+		// Info / News card on the LEFT (Changelog, Credits, About):
+		// Compact card anchored just above the warning pill (clearing the art credit line).
 		float infoWidth = ClampFloat(
 			viewportWidth * 0.38f, LauncherScale.Px(400.0f), LauncherScale.Px(500.0f));
-		float infoBottomLimit = warningPos.Y - LauncherScale.Px(40.0f);
+		float infoBottomLimit = warningPos.Y - LauncherScale.Px(36.0f);
+		float headerFloor = viewportPos.Y + menuBarHeight + LauncherScale.Px(24.0f);
+		float maxInfoHeight = Mathf.Max(LauncherScale.Px(150.0f), infoBottomLimit - headerFloor);
 		float infoHeight = Mathf.Clamp(
-			LauncherScale.Px(280.0f), LauncherScale.Px(200.0f),
-			infoBottomLimit - LauncherScale.Px(56.0f));
+			LauncherScale.Px(260.0f),
+			Mathf.Min(LauncherScale.Px(180.0f), maxInfoHeight),
+			maxInfoHeight);
 
 		var infoPos = new Vector2(
 			viewportPos.X + pad,

@@ -15,6 +15,18 @@
 extern "C" {
 #endif
 
+#ifndef REFII_SHADER_BUILD_EXPORT
+#if defined(_WIN32)
+#if defined(refii_shader_sbk_EXPORTS)
+#define REFII_SHADER_BUILD_EXPORT __declspec(dllexport)
+#else
+#define REFII_SHADER_BUILD_EXPORT __declspec(dllimport)
+#endif
+#else
+#define REFII_SHADER_BUILD_EXPORT __attribute__((visibility("default")))
+#endif
+#endif
+
 // Bumped when a signature or an event's meaning changes. The launcher checks it before the
 // first call so a stale library beside a new launcher fails with a message rather than a
 // wrong argument.
@@ -43,7 +55,7 @@ typedef int32_t (*refii_shader_build_progress_fn)(void* user, int32_t event, con
 #define REFII_SHADER_BUILD_STOPPED 2
 
 // The ABI version this library was built with; compare against REFII_SHADER_BUILD_ABI_VERSION.
-int32_t refii_shader_build_v1_abi_version(void);
+REFII_SHADER_BUILD_EXPORT int32_t refii_shader_build_v1_abi_version(void);
 
 // Extracts the banks in `bank_dir` (Shaders.sbk and ShadersRelease.sbk, any case) into `output_dir`,
 // translates and compiles every blob for `targets` ("auto" is the host's backend set, or a
@@ -57,10 +69,9 @@ int32_t refii_shader_build_v1_abi_version(void);
 // that same thread. Returns REFII_SHADER_BUILD_OK on success and REFII_SHADER_BUILD_STOPPED
 // when the callback asked it to stop. On failure, writes a UTF-8 message into `error`
 // (NUL-terminated, truncated to `error_capacity`) and returns REFII_SHADER_BUILD_FAILED.
-int32_t refii_shader_build_v2_run(const char* title, const char* bank_dir,
-                                  const char* output_dir, const char* targets,
-                                  refii_shader_build_progress_fn progress, void* user, char* error,
-                                  size_t error_capacity);
+REFII_SHADER_BUILD_EXPORT int32_t refii_shader_build_v2_run(
+    const char* title, const char* bank_dir, const char* output_dir, const char* targets,
+    refii_shader_build_progress_fn progress, void* user, char* error, size_t error_capacity);
 
 #ifdef __cplusplus
 }

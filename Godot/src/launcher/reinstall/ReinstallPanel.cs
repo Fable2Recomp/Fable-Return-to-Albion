@@ -1,12 +1,13 @@
 using System;
 using Godot;
+using Refii.Core;
 using Refii.Launcher.Core;
 
 namespace Refii.Launcher;
 
 /// <summary>
 /// The Install tab: everything the launcher derives from the player's own game, one row each,
-/// with its state and a button to build it again.
+/// with its state and a button to build it again, scoped to the selected title via <see cref="GameScopeSelector"/>.
 /// </summary>
 /// <remarks>
 /// A CHECKLIST, NOT A TOOLBOX. Each row is one artefact the install pipeline produces — the
@@ -31,10 +32,14 @@ public partial class ReinstallPanel : VBoxContainer
 		public Button Action = null!;
 	}
 
+	private Engine_Title _selectedTitle = Engine_Title.Active;
+	private GameScopeSelector? _scopeSelector;
 	private Row _gameData = null!;
 	private Row _gameCode = null!;
 	private Row _shaders = null!;
 	private Row _assets = null!;
+	private Button _openFolderButton = null!;
+	private Button _uninstallButton = null!;
 	private Label _operationLabel = null!;
 	private Label _statusLabel = null!;
 	private Label _errorLabel = null!;
@@ -44,34 +49,71 @@ public partial class ReinstallPanel : VBoxContainer
 	private Button _pauseBuild = null!;
 	private Button _stopBuild = null!;
 	private bool _built;
+	private bool _lastBusy;
+	private bool _lastGameRunning;
 
 	private const string CheckGlyph = "✓";
 	private static readonly Color CheckFill = new(0.16f, 0.52f, 0.33f);
 
-	/// <summary>Install the game data again from a disc image.</summary>
-	public event Action? ReinstallRequested;
+	/// <summary>Currently selected game title in the Install tab.</summary>
+	public Engine_Title SelectedTitle => _selectedTitle;
+
+	/// <summary>Raised when the user switches the top segmented game selector.</summary>
+	public event Action<Engine_Title>? TitleChanged;
+
+	/// <summary>Install the game data again from a disc image for the given title.</summary>
+	public event Action<Engine_Title>? ReinstallRequested;
 
 	/// <summary>
-	/// Generate and compile the game code again: the one artefact that something outside the
-	/// launcher can invalidate, since replacing the executable leaves a module whose every
-	/// function address belongs to a different binary.
+	/// Generate and compile the game code again for the given title.
 	/// </summary>
-	public event Action? BuildGameCodeRequested;
+	public event Action<Engine_Title>? BuildGameCodeRequested;
 
-	/// <summary>Translate the shader bank into the classic renderer's shaders.</summary>
-	public event Action? CompileShadersRequested;
+	/// <summary>Translate the shader bank into the classic renderer's shaders for the given title.</summary>
+	public event Action<Engine_Title>? CompileShadersRequested;
 
 	/// <summary>
-	/// Build every modernized texture and material now rather than during play. A one-off
-	/// preparation of the player's data, not a preference: which look is drawn is the Look
-	/// setting; this only decides when that look is paid for.
+	/// Build every modernized texture and material now rather than during play for the given title.
 	/// </summary>
-	public event Action? BuildModernizedAssetsRequested;
+	public event Action<Engine_Title>? BuildModernizedAssetsRequested;
+
+	/// <summary>Remove launcher-managed extracted/compiled files for the given title (after confirmation).</summary>
+	public event Action<Engine_Title>? UninstallRequested;
 
 	/// <summary>Hold the running step where it is; resume it; abandon it.</summary>
 	public event Action? PauseBuildRequested;
 	public event Action? ResumeBuildRequested;
 	public event Action? StopBuildRequested;
+
+	/// <summary>Switches the Install tab's scoped game title without firing <see cref="TitleChanged"/>.</summary>
+	public void SetTitle(Engine_Title title)
+	{
+		if (_selectedTitle == title)
+		{
+			_scopeSelector?.SetSelectedTitle(title, notify: false);
+			_scopeSelector?.Refresh();
+			return;
+		}
+
+		_selectedTitle = title;
+		_scopeSelector?.SetSelectedTitle(title, notify: false);
+		if (_built)
+		{
+			Refresh(_lastBusy, _lastGameRunning);
+		}
+	}
+
+	private static string DescribeTitleInstallBadge(Engine_Title title)
+	{
+		try
+		{
+			return Installer.AssetsExist(title) ? "Installed" : "Not Installed";
+		}
+		catch (Exception)
+		{
+			return string.Empty;
+		}
+	}
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
@@ -86,6 +128,7 @@ public partial class ReinstallPanel : VBoxContainer
 				child.QueueFree();
 			}
 
+			_scopeSelector = null;
 			_built = false;
 		}
 
@@ -103,6 +146,18 @@ public partial class ReinstallPanel : VBoxContainer
 		AddThemeConstantOverride("separation", 8);
 		SizeFlagsVertical = SizeFlags.ExpandFill;
 
+		_scopeSelector = new GameScopeSelector(_selectedTitle)
+		{
+			BadgeProvider = DescribeTitleInstallBadge,
+		};
+		_scopeSelector.Configure(_font, _fontSize);
+		_scopeSelector.TitleSelected += title =>
+		{
+			SetTitle(title);
+			TitleChanged?.Invoke(title);
+		};
+		AddChild(_scopeSelector);
+
 		// EVERYTHING SCROLLS. Four rows with their detail lines and a failure's text run past
 		// the drawer's height; the drawer must not grow past the window to hold them.
 		var scroll = new ScrollContainer
@@ -112,9 +167,19 @@ public partial class ReinstallPanel : VBoxContainer
 			HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
 		};
 		AddChild(scroll);
+
+		var scrollMargin = new MarginContainer
+		{
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			SizeFlagsVertical = SizeFlags.ExpandFill,
+		};
+		scrollMargin.AddThemeConstantOverride("margin_right", LauncherScale.Px(12));
+		scrollMargin.AddThemeConstantOverride("margin_bottom", LauncherScale.Px(4));
+		scroll.AddChild(scrollMargin);
+
 		var content = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		content.AddThemeConstantOverride("separation", 8);
-		scroll.AddChild(content);
+		scrollMargin.AddChild(content);
 
 		Label explain = MakeLabel(
 			"What the launcher builds from your own game files. A tick means it is there and " +
@@ -127,10 +192,20 @@ public partial class ReinstallPanel : VBoxContainer
 		rows.AddThemeConstantOverride("separation", 6);
 		content.AddChild(rows);
 
-		_gameData = AddRow(rows, "Game data", "Reinstall", () => ReinstallRequested?.Invoke());
-		_gameCode = AddRow(rows, "Game code", "Build", () => BuildGameCodeRequested?.Invoke());
-		_shaders = AddRow(rows, "Classic shaders", "Build", () => CompileShadersRequested?.Invoke());
-		_assets = AddRow(rows, "Modernized assets", "Build", () => BuildModernizedAssetsRequested?.Invoke());
+		_gameData = AddRow(rows, "Game data", "Install", () => ReinstallRequested?.Invoke(_selectedTitle));
+		_gameCode = AddRow(rows, "Game code", "Build", () => BuildGameCodeRequested?.Invoke(_selectedTitle));
+		_shaders = AddRow(rows, "Classic shaders", "Build", () => CompileShadersRequested?.Invoke(_selectedTitle));
+		_assets = AddRow(rows, "Modernized assets", "Build", () => BuildModernizedAssetsRequested?.Invoke(_selectedTitle));
+
+		content.AddChild(new HSeparator());
+
+		var manageRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		manageRow.AddThemeConstantOverride("separation", 8);
+		_openFolderButton = MakeSecondaryButton("Open Data Folder", OnOpenDataFolderPressed);
+		manageRow.AddChild(_openFolderButton);
+		_uninstallButton = MakeDangerButton("Uninstall…", OnUninstallPressed);
+		manageRow.AddChild(_uninstallButton);
+		content.AddChild(manageRow);
 
 		_progressSeparator = new HSeparator { Visible = false };
 		content.AddChild(_progressSeparator);
@@ -198,6 +273,45 @@ public partial class ReinstallPanel : VBoxContainer
 		Refresh(false, false);
 	}
 
+	private void OnOpenDataFolderPressed()
+	{
+		string dir = Installer.ResolveGameDataDirectory(_selectedTitle);
+		if (dir.Length == 0)
+		{
+			dir = _selectedTitle.AssetsDirectory;
+		}
+
+		System.IO.Directory.CreateDirectory(dir);
+		OS.ShellOpen(dir);
+	}
+
+	private void OnUninstallPressed()
+	{
+		Engine_Title target = _selectedTitle;
+		var dialog = new ConfirmationDialog
+		{
+			Title = $"Uninstall {target.Name} Managed Files",
+			DialogText =
+				$"Remove launcher-extracted game data and compiled code for {target.Name}?\n\n" +
+				"Your save games and installed mod packages are preserved.",
+			OkButtonText = $"Uninstall {target.Name}",
+			CancelButtonText = "Cancel",
+			DialogAutowrap = true,
+			MinSize = new Vector2I(480, 0),
+		};
+		dialog.Confirmed += () => UninstallRequested?.Invoke(target);
+		dialog.VisibilityChanged += () =>
+		{
+			if (!dialog.Visible)
+			{
+				dialog.QueueFree();
+			}
+		};
+		Node host = (Node?)GetTree()?.Root.GetNodeOrNull("Launcher") ?? (Node?)GetWindow() ?? this;
+		host.AddChild(dialog);
+		dialog.PopupCentered();
+	}
+
 	/// <summary>Shows the pause and stop buttons while a step runs, and reflects its state.</summary>
 	public void SetBuildControls(bool visible, bool paused, bool stopping)
 	{
@@ -209,9 +323,7 @@ public partial class ReinstallPanel : VBoxContainer
 	}
 
 	/// <summary>
-	/// One artefact: the tick, then the name over its detail line, then the button. A box
-	/// rather than a grid so a row's detail wraps under its own name and a hidden tick does not
-	/// shift the columns beside it.
+	/// One artefact: the tick, then the name over its detail line, then the button.
 	/// </summary>
 	private Row AddRow(VBoxContainer rows, string name, string action, Action onPressed)
 	{
@@ -275,8 +387,7 @@ public partial class ReinstallPanel : VBoxContainer
 		return face;
 	}
 
-	/// <summary>Designed action face matching the hero button: solid emerald fill,
-	/// gold hairline, cream label.</summary>
+	/// <summary>Designed action face matching the hero button: solid emerald fill, gold hairline, cream label.</summary>
 	private Button MakeActionButton(string text, Action onPressed)
 	{
 		var button = new Button
@@ -303,6 +414,62 @@ public partial class ReinstallPanel : VBoxContainer
 		button.AddThemeColorOverride("font_pressed_color", LauncherTokens.Cream);
 		button.AddThemeColorOverride("font_disabled_color", new Color(LauncherTokens.Cream, 0.45f));
 
+		button.Pressed += onPressed;
+		return button;
+	}
+
+	private Button MakeSecondaryButton(string text, Action onPressed)
+	{
+		var button = new Button
+		{
+			Text = text,
+			CustomMinimumSize = new Vector2(130, 32),
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			Alignment = HorizontalAlignment.Center,
+			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+		};
+		Apply(button);
+		button.AddThemeStyleboxOverride(
+			"normal", ActionFace(new Color(LauncherTokens.ParchmentLit, 0.7f), new Color(LauncherTokens.Gold, 0.45f)));
+		button.AddThemeStyleboxOverride(
+			"hover", ActionFace(LauncherTokens.ParchmentLit, new Color(LauncherTokens.Gold, 0.8f)));
+		button.AddThemeStyleboxOverride(
+			"pressed", ActionFace(LauncherTokens.ParchmentRaised, new Color(LauncherTokens.Gold, 0.65f)));
+		button.AddThemeStyleboxOverride(
+			"disabled", ActionFace(new Color(LauncherTokens.Parchment, 0.35f), new Color(LauncherTokens.Gold, 0.18f)));
+		button.AddThemeStyleboxOverride("focus", ActionFocus());
+		button.AddThemeColorOverride("font_color", LauncherTokens.Walnut);
+		button.AddThemeColorOverride("font_hover_color", LauncherTokens.GoldInk);
+		button.AddThemeColorOverride("font_pressed_color", LauncherTokens.GoldInk);
+		button.AddThemeColorOverride("font_disabled_color", LauncherTokens.SepiaInk);
+		button.Pressed += onPressed;
+		return button;
+	}
+
+	private Button MakeDangerButton(string text, Action onPressed)
+	{
+		var button = new Button
+		{
+			Text = text,
+			CustomMinimumSize = new Vector2(130, 32),
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			Alignment = HorizontalAlignment.Center,
+			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+		};
+		Apply(button);
+		button.AddThemeStyleboxOverride(
+			"normal", ActionFace(new Color(LauncherTokens.Crimson, 0.82f), new Color(LauncherTokens.Gold, 0.35f)));
+		button.AddThemeStyleboxOverride(
+			"hover", ActionFace(LauncherTokens.Crimson, new Color(LauncherTokens.GoldBright, 0.75f)));
+		button.AddThemeStyleboxOverride(
+			"pressed", ActionFace(new Color(LauncherTokens.Crimson, 0.95f), new Color(LauncherTokens.Gold, 0.55f)));
+		button.AddThemeStyleboxOverride(
+			"disabled", ActionFace(new Color(LauncherTokens.OakDim, 0.75f), new Color(LauncherTokens.Gold, 0.18f)));
+		button.AddThemeStyleboxOverride("focus", ActionFocus());
+		button.AddThemeColorOverride("font_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_hover_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_pressed_color", LauncherTokens.Cream);
+		button.AddThemeColorOverride("font_disabled_color", new Color(LauncherTokens.Cream, 0.42f));
 		button.Pressed += onPressed;
 		return button;
 	}
@@ -335,29 +502,35 @@ public partial class ReinstallPanel : VBoxContainer
 		return face;
 	}
 
-	/// <summary>Repaints every row's state. <paramref name="busy"/> is a running step.</summary>
+	/// <summary>Repaints every row's state for <see cref="SelectedTitle"/>. <paramref name="busy"/> is a running step.</summary>
 	public void Refresh(bool busy, bool gameIsRunning)
 	{
+		_lastBusy = busy;
+		_lastGameRunning = gameIsRunning;
+		_scopeSelector?.Refresh();
+
+		Engine_Title title = _selectedTitle;
 		bool idle = !busy && !gameIsRunning;
-		bool assets = Installer.AssetsExist();
+		bool assets = Installer.AssetsExist(title);
 
 		// Game data: the installed pressing and its title update, from the two file headers.
-		bool pairOk = Installer.CheckInstalledTitleUpdate(out string pair);
+		bool pairOk = Installer.CheckInstalledTitleUpdate(title, out string pair);
 		SetState(_gameData, assets, assets
 			? (pairOk ? pair : "Title update: " + pair)
 			: (pairOk ? "Not installed. Install from your disc image." : pair));
+		_gameData.Action.Text = assets ? "Reinstall" : "Install";
 		_gameData.Action.Disabled = !idle;
 
 		// Game code: tracked on the MODULE, which goes stale when the executable changes.
 		string reason = string.Empty;
-		bool gameCodeCurrent = assets && !Recompile.GameCodeBuild.NeedsBuildCached(out reason);
+		bool gameCodeCurrent = assets && !Recompile.GameCodeBuild.NeedsBuildCached(title, out reason);
 		SetState(_gameCode, gameCodeCurrent, assets
 			? (gameCodeCurrent ? "Built from the installed executable." : reason)
 			: "Needs the game data.");
 		_gameCode.Action.Disabled = !idle || !assets;
 
 		// Classic shaders: the pipeline's report marks the step done.
-		Installer.ReinstallStepStatus status = Installer.GetReinstallStepStatus();
+		Installer.ReinstallStepStatus status = Installer.GetReinstallStepStatus(title);
 		SetState(_shaders, status.Shaders, assets
 			? (status.Shaders
 				? "Built. Drawn when the Look setting is Classic."
@@ -365,10 +538,7 @@ public partial class ReinstallPanel : VBoxContainer
 			: "Needs the game data.");
 		_shaders.Action.Disabled = !idle || !assets;
 
-		// Modernized assets: ticked on a COMPLETED sweep for the current settings (the marker
-		// Engine_TexPrebuild writes), never on "something is cached" — the cache fills during
-		// play as well, and one texture would have read as complete. Gated on the game not
-		// running: the prebuild and a session would be two writers on one cache.
+		// Modernized assets: ticked on a COMPLETED sweep for the current settings.
 		SetState(_assets, status.Assets, !assets
 			? "Needs the game data."
 			: status.AssetsDetail.Length != 0
@@ -376,6 +546,10 @@ public partial class ReinstallPanel : VBoxContainer
 				: "Optional. Builds the Modern look's textures ahead of play instead of during it.");
 		_assets.Tick.Modulate = status.Assets ? new Color(1, 1, 1, 1) : new Color(1, 1, 1, 0.35f);
 		_assets.Action.Disabled = !idle || !assets;
+
+		_openFolderButton.Text = $"Open {title.Name} Folder";
+		_uninstallButton.Text = $"Uninstall {title.Name}…";
+		_uninstallButton.Disabled = !idle || !assets;
 	}
 
 	private static void SetState(Row row, bool done, string detail)

@@ -13,17 +13,19 @@ namespace Refii.AndroidRuntime;
 /// and its discard of the copy work the same for both.</remarks>
 public static class AndroidModPicker
 {
-    /// <summary>The mod name a picked document's URI carries: its last path segment, without <c>.f2mod</c>; null when it names no package.</summary>
+    /// <summary>The mod name a picked document's URI carries: its last path segment, without <paramref name="packageExtension"/>; null when it names no package.</summary>
     /// <param name="uri">The picker's content URI (or a plain path).</param>
-    public static string? NameFromUri(string uri)
+    /// <param name="packageExtension">Optional mod package extension (defaults to <see cref="ModWorkspace.PackageExtension"/>).</param>
+    public static string? NameFromUri(string uri, string? packageExtension = null)
     {
         if (string.IsNullOrEmpty(uri)) return null;
+        string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
         string decoded;
         try { decoded = Uri.UnescapeDataString(uri); }
         catch (UriFormatException) { decoded = uri; }
         string leaf = decoded[(decoded.LastIndexOfAny(new[] { '/', ':' }) + 1)..];
-        if (!leaf.EndsWith(ModWorkspace.PackageExtension, StringComparison.OrdinalIgnoreCase)) return null;
-        string name = leaf[..^ModWorkspace.PackageExtension.Length].Trim();
+        if (!leaf.EndsWith(ext, StringComparison.OrdinalIgnoreCase)) return null;
+        string name = leaf[..^ext.Length].Trim();
         return name.Length == 0 ? null : name;
     }
 
@@ -46,26 +48,28 @@ public static class AndroidModPicker
     /// <param name="uri">The picker's content URI.</param>
     /// <param name="modsRoot">The mods folder.</param>
     /// <param name="copyTo">Writes the document's bytes to the given new file (Godot's FileAccess on the phone).</param>
+    /// <param name="packageExtension">Optional mod package extension (defaults to <see cref="ModWorkspace.PackageExtension"/>).</param>
     /// <returns>The installer's inspection of the copy; a failed one names why. The copy stays for the
     /// panel to install or discard, and is removed here when it is not a package.</returns>
-    public static ModInstallResult Fetch(string uri, string modsRoot, Action<string> copyTo)
+    public static ModInstallResult Fetch(string uri, string modsRoot, Action<string> copyTo, string? packageExtension = null)
     {
+        string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
         string downloads = ModInstaller.DownloadsDirectory(modsRoot);
         Directory.CreateDirectory(downloads);
         string partial = Path.Combine(downloads, "picked-" + Guid.NewGuid().ToString("N") + ".partial");
         try
         {
             copyTo(partial);
-            string? name = NameFromUri(uri);
+            string? name = NameFromUri(uri, ext);
             if (name == null)
             {
                 if (!F2ModPackage.TryReadMetadata(partial, out ModMetadata meta, out string error))
                     return ModInstallResult.Failed("The picked file is not a mod package: " + error);
                 name = NameFromTitle(ModText.ForMod(partial, meta.Title));
             }
-            string final = Path.Combine(downloads, name + ModWorkspace.PackageExtension);
+            string final = Path.Combine(downloads, name + ext);
             File.Move(partial, final, overwrite: true);
-            ModInstallResult result = ModInstaller.Inspect(final, modsRoot);
+            ModInstallResult result = ModInstaller.Inspect(final, modsRoot, ext);
             if (!result.Ok) ModInstaller.DiscardDownload(final, modsRoot);
             return result;
         }

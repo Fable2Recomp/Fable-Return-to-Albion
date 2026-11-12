@@ -30,8 +30,13 @@ public static class GitHubApi
     public static string GetRepositoryBranch() =>
         Ini.GetString("Branch", "main", "Github");
 
-    public static string GetProjectTitle() =>
-        Ini.GetString("ProjectTitle", "Fable 2: Return to Albion", "About");
+    public static string GetProjectTitle()
+    {
+        string raw = Ini.GetString("ProjectTitle", "Fable: Return to Albion", "About");
+        return string.IsNullOrWhiteSpace(raw) || raw == "Fable 2: Return to Albion"
+            ? "Fable: Return to Albion"
+            : raw;
+    }
 
     public static string GetProjectPage() =>
         Ini.GetString("ProjectPage", "https://github.com/Fable2Recomp/Fable2Remake", "About");

@@ -71,15 +71,24 @@ public abstract class LauncherTitleScreen
 		}
 	}
 
+	/// <summary>Unified BBCode wordmark shown across the top-left of the Fable: Return to Albion launcher.</summary>
+	public const string UnifiedWordmark =
+		"[color=#e8dcc2]FABLE[/color][color=#daa520]:[/color][color=#e8dcc2] RETURN TO ALBION[/color]";
+
 	/// <summary>The title this screen is for.</summary>
 	public abstract Engine_Title Title { get; }
 
 	/// <summary>The wordmark over the art, as BBCode.</summary>
-	public virtual string Wordmark =>
-		"[color=#e8dcc2]" + Title.Name.ToUpperInvariant() + " RECOMPILED[/color]";
+	public virtual string Wordmark => UnifiedWordmark;
 
-	/// <summary>The launcher window's title while this title is selected.</summary>
-	public virtual string WindowTitle => Title.Name + " Launcher";
+	/// <summary>The launcher window's title.</summary>
+	public virtual string WindowTitle => LauncherTheme.DefaultWindowTitle;
+
+	/// <summary>Optional compact status pill shown on the title's launch card (e.g. "Experimental"), or null.</summary>
+	public virtual string? StatusBadge => null;
+
+	/// <summary>Optional tooltip describing <see cref="StatusBadge"/> on the title's launch card.</summary>
+	public virtual string StatusTooltip => string.Empty;
 
 	/// <summary>The notice floated over the art; empty shows none.</summary>
 	public virtual string WarningText => string.Empty;

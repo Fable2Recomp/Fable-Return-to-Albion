@@ -112,42 +112,23 @@ function(refii_stage_payload_sdk)
         file(REMOVE "${_dev_marker}")
     endif()
 
-    set(_commands
-        # lib/ and bin/ are what this directory held before the generator became a library:
-        # copies of the runtime and a rexglue executable. A staging root from that layout
-        # still has them, the launcher no longer reads either, and the export must not ship
-        # them -- so they are removed on every build rather than left to be found.
-        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/lib" "${_sdk_dir}/bin"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_sdk_dir}/src"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/src/payload/src/payload_export.cpp"
-            "${CMAKE_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h"
-            "${_sdk_dir}/src"
-        # Staged VERBATIM. The launcher writes the effective manifest at install time with
-        # absolute paths, because only it knows where the player put the game and where
-        # the generated sources are going; a manifest with relative paths baked in here
-        # resolves differently in a dev tree than in an exported app.
-        # One folder per supported executable; the launcher reads the one matching the
-        # player's install. Removed first so a version dropped from the tree does not linger.
-        # Every title's version folders, side by side: Fable2/versions and Fable3/versions.
-        COMMAND ${CMAKE_COMMAND} -E rm -rf "${_sdk_dir}/versions"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/Fable2/versions"
-            "${_sdk_dir}/versions"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/Fable3/versions"
-            "${_sdk_dir}/versions"
-    )
+    file(MAKE_DIRECTORY "${REFII_PACKAGE_STAMP_DIR}")
+    set(_payload_sdk_stamp "${REFII_PACKAGE_STAMP_DIR}/payload_sdk_$<CONFIG>.stamp")
+    set(_payload_sdk_depfile "${REFII_PACKAGE_STAMP_DIR}/payload_sdk_$<CONFIG>.d")
 
     # Unquoted -D values: under VERBATIM, CMake quotes each argument itself, and quotes
     # written here arrive as part of the value — an EXISTS test on a path with literal
     # quotes around it fails every time.
-    list(APPEND _commands
+    add_custom_command(
+        OUTPUT "${_payload_sdk_stamp}"
+        DEPFILE "${_payload_sdk_depfile}"
         COMMAND ${CMAKE_COMMAND}
             -DMANIFEST=${_include_manifest}
             -DDESTINATION=${_sdk_dir}
             -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
             -DGENERATED_ROOT=${CMAKE_SOURCE_DIR}/generated
+            -DSTAMP=${_payload_sdk_stamp}
+            -DDEPFILE=${_payload_sdk_depfile}
             -P "${CMAKE_SOURCE_DIR}/cmake/refii_stage_payload_includes.cmake"
         # THE GATE: everything staged above compiles by include, for every title, or the build
         # fails here rather than in the launcher on a player's machine.
@@ -155,14 +136,18 @@ function(refii_stage_payload_sdk)
             -DDESTINATION=${_sdk_dir}
             -DGENERATED_ROOT=${CMAKE_SOURCE_DIR}/generated
             -P "${CMAKE_SOURCE_DIR}/cmake/refii_check_staged_includes.cmake"
-    )
-
-    add_custom_target(refii_payload_sdk ALL
-        ${_commands}
-        DEPENDS "${_include_manifest}"
+        COMMAND ${CMAKE_COMMAND} -E touch "${_payload_sdk_stamp}"
+        DEPENDS
+            "${_include_manifest}"
+            "${CMAKE_SOURCE_DIR}/src/payload/src/payload_export.cpp"
+            "${CMAKE_SOURCE_DIR}/src/payload/src/libcxx_chrono_shim.h"
+            "${CMAKE_SOURCE_DIR}/cmake/refii_stage_payload_includes.cmake"
+            "${CMAKE_SOURCE_DIR}/cmake/refii_check_staged_includes.cmake"
         COMMENT "Staging the install-time payload build inputs into Godot/build"
         VERBATIM
     )
+
+    add_custom_target(refii_payload_sdk ALL DEPENDS "${_payload_sdk_stamp}")
 
     unset(_payload_include_target)
 endfunction()

@@ -203,9 +203,13 @@ public static class Engine_TexPrebuild
 		$"height={Engine_TexSettings.OrmHeight};converter={Engine_TexCache.ConverterVersion};" +
 		$"policy={Engine_TexSemantic.PolicyVersion}";
 
+	/// <summary>Beside the cache it describes for <paramref name="title"/>, so clearing the cache clears the claim.</summary>
+	public static string MarkerPathFor(Engine_Title title) =>
+		System.IO.Path.Combine(Engine_TexCache.CacheRootFor(title), "prebuild.txt");
+
 	/// <summary>Beside the cache it describes, so clearing the cache clears the claim.</summary>
 	public static string MarkerPath =>
-		System.IO.Path.Combine(Engine_TexCache.CacheRoot, "prebuild.txt");
+		MarkerPathFor(Engine_Title.Active);
 
 	/// <summary>Fast boot marker for the ORM-only sweep, keyed by fingerprint and mounted file count.</summary>
 	public static string OrmMarkerPath =>
@@ -318,10 +322,16 @@ public static class Engine_TexPrebuild
 	/// False with an empty detail when there is none; false with the detail when the marker is
 	/// for other settings, so the row can say why it does not count.
 	/// </summary>
-	public static bool IsCurrent(out string detail)
+	public static bool IsCurrent(out string detail) =>
+		IsCurrent(Engine_Title.Active, out detail);
+
+	/// <summary>
+	/// Whether a completed sweep for <paramref name="title"/> and the current settings is on record.
+	/// </summary>
+	public static bool IsCurrent(Engine_Title title, out string detail)
 	{
 		detail = string.Empty;
-		string path = MarkerPath;
+		string path = MarkerPathFor(title);
 		if (!System.IO.File.Exists(path))
 		{
 			return false;

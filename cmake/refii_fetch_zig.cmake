@@ -77,26 +77,21 @@ function(_refii_zig_install unpacked dest platform)
                      GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 endfunction()
 
-# Stages Zig for one target into <dest>, which ends up as bin/recompile/zig.
-function(refii_fetch_zig platform arch dest cache_dir)
+# Ensures the pinned Zig archive is downloaded, SHA-256 verified, and unpacked once into
+# <cache_dir>/zig-<version>-<platform>-<arch> without copying 19,500+ files into a destination.
+# Sets <out_unpacked> in PARENT_SCOPE to the cached unpacked toolchain directory.
+function(refii_ensure_zig_cached platform arch cache_dir out_unpacked)
     _refii_zig_spec("${platform}" "${arch}" _file _sha)
 
     file(MAKE_DIRECTORY "${cache_dir}")
     set(_archive "${cache_dir}/${_file}")
 
-    # UNPACKED ONCE, INTO THE CACHE, then copied per package.
+    # UNPACKED ONCE, INTO THE CACHE, then mirrored incrementally per package.
     #
-    # The download was already cached; the UNPACK was not. The x86_64-windows archive is 93 MiB
-    # and becomes 346 MiB across 19,546 files — libc and libc++ headers, compiler-rt, the MinGW
-    # CRT — and every package run decompressed all of it again. The file COUNT is the cost here
-    # rather than the bytes: five figures of small files is where Windows is slowest, between
-    # per-file create overhead and on-access antivirus. It cannot be stamped at `dest` instead,
-    # because `dest` is inside the app folder and refii_run_godot_export.cmake wipes that on
-    # entry, deliberately, so a stale library cannot survive into a zip. So the durable copy
-    # lives here in the cache and only the copy out of it happens per run.
-    #
-    # The stamp records the PIN, not just "something is here", so bumping REFII_ZIG_VERSION or
-    # a hash re-extracts rather than leaving the previous toolchain in place.
+    # The download was already cached; the UNPACK is cached here too. The x86_64-windows archive
+    # is 93 MiB and becomes 346 MiB across 19,546 files — libc and libc++ headers, compiler-rt,
+    # the MinGW CRT. The stamp records the PIN, not just "something is here", so bumping
+    # REFII_ZIG_VERSION or a hash re-extracts rather than leaving the previous toolchain in place.
     set(_unpacked "${cache_dir}/zig-${REFII_ZIG_VERSION}-${platform}-${arch}")
     set(_stamp "${_unpacked}/.refii-zig-stamp")
     set(_want "${REFII_ZIG_VERSION} ${platform} ${arch} ${_sha}")
@@ -111,8 +106,7 @@ function(refii_fetch_zig platform arch dest cache_dir)
     endif()
 
     if(_have_unpacked)
-        _refii_zig_install("${_unpacked}" "${dest}" "${platform}")
-        message(STATUS "Bundled Zig ${REFII_ZIG_VERSION} for ${platform}-${arch} (cached unpack)")
+        set(${out_unpacked} "${_unpacked}" PARENT_SCOPE)
         return()
     endif()
 
@@ -174,8 +168,7 @@ function(refii_fetch_zig platform arch dest cache_dir)
     endif()
 
     # MOVED, not copied. Both paths are under cache_dir and so on one volume, which makes this
-    # a directory rename rather than a second pass over 19,546 files. Copying here and deleting
-    # the extract afterwards did the same work twice for no benefit.
+    # a directory rename rather than a second pass over 19,546 files.
     file(REMOVE_RECURSE "${_unpacked}")
     file(RENAME "${_root}" "${_unpacked}")
     file(REMOVE_RECURSE "${_work}")
@@ -183,7 +176,12 @@ function(refii_fetch_zig platform arch dest cache_dir)
     # Written LAST, so an interrupted extract leaves no stamp and the next run redoes it
     # rather than serving half a toolchain out of the cache for ever.
     file(WRITE "${_stamp}" "${_want}\n")
+    set(${out_unpacked} "${_unpacked}" PARENT_SCOPE)
+endfunction()
 
+# Stages Zig for one target into <dest>, which ends up as bin/recompile/zig.
+function(refii_fetch_zig platform arch dest cache_dir)
+    refii_ensure_zig_cached("${platform}" "${arch}" "${cache_dir}" _unpacked)
     _refii_zig_install("${_unpacked}" "${dest}" "${platform}")
     message(STATUS "Bundled Zig ${REFII_ZIG_VERSION} for ${platform}-${arch}")
 endfunction()

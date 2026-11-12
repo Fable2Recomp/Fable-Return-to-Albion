@@ -154,10 +154,10 @@ public sealed class LevelAmbientOcclusionTests
 			TerrainMaxHeight = 14.0f,
 			TerrainAoBytes = new byte[]
 			{
-				255, 0, 255, 10, 255, 20, 255, 30,
-				255, 40, 100, 50, 110, 60, 255, 70,
-				255, 80, 120, 90, 130, 100, 255, 110,
-				255, 120, 255, 130, 255, 140, 255, 150,
+				255, 255, 0, 0,   255, 250, 10, 1,  255, 245, 20, 2,  255, 240, 30, 3,
+				255, 235, 40, 4,  100, 95, 50, 5,   110, 105, 60, 6,  255, 230, 70, 7,
+				255, 225, 80, 8,  120, 115, 90, 9,  130, 125, 100, 10, 255, 220, 110, 11,
+				255, 215, 120, 12, 255, 210, 130, 13, 255, 205, 140, 14, 255, 200, 150, 15,
 			},
 		};
 
@@ -229,12 +229,14 @@ public sealed class LevelAmbientOcclusionTests
 			primaryTerrain: ghf,
 			read: _ => null);
 
+		// Note: box at Y=0.05..2.5 with default flags is treated as a terrain occluder for R channel
+		// (and on open terrain around the box, G channel also carries ground contact AO).
 		AssertThat(baked.TerrainWidth).IsEqual(17);
 		AssertThat(baked.TerrainHeight).IsEqual(17);
-		AssertThat(baked.TerrainAoBytes.Length).IsEqual(17 * 17 * 2);
+		AssertThat(baked.TerrainAoBytes.Length).IsEqual(17 * 17 * Engine_LevelAmbientOcclusion.BytesPerGroundAoTexel);
 
 		// Center texel (8, 8) is directly under the box at world (-8, 0, 8); corner texel (0, 0) is open sky.
-		byte centerAo = baked.TerrainAoBytes[(8 * baked.TerrainWidth + 8) * 2];
+		byte centerAo = baked.TerrainAoBytes[(8 * baked.TerrainWidth + 8) * Engine_LevelAmbientOcclusion.BytesPerGroundAoTexel];
 		byte cornerAo = baked.TerrainAoBytes[0];
 
 		AssertThat((int)centerAo).IsLess(175);
@@ -293,11 +295,11 @@ public sealed class LevelAmbientOcclusionTests
 		AssertThat(helperBlock.Contains("fable_direct_ao", StringComparison.Ordinal)).IsTrue();
 
 		// Verify combined_ao in standard_material_body and terrain_splat_body uses max(..., 0.0) without clamp
-		// and modulates direct lighting in light() via fable_direct_ao(v_combined_ao)
+		// and modulates direct lighting in light() via fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL)
 		AssertThat(standardBody.Contains("float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, fable_unified));", StringComparison.Ordinal)).IsTrue();
-		AssertThat(standardBody.Contains("fable_direct_ao(v_combined_ao)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(standardBody.Contains("fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL)", StringComparison.Ordinal)).IsTrue();
 		AssertThat(terrainBody.Contains("float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, fable_unified));", StringComparison.Ordinal)).IsTrue();
-		AssertThat(terrainBody.Contains("fable_direct_ao(v_combined_ao)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(terrainBody.Contains("fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL)", StringComparison.Ordinal)).IsTrue();
 	}
 
 	[TestCase]
@@ -346,8 +348,9 @@ public sealed class LevelAmbientOcclusionTests
 		AssertThat(texLib.Contains("BuildOrmFromImages(", StringComparison.Ordinal)).IsTrue();
 		AssertThat(heroMorph.Contains("Engine_TexLibrary.BuildOrmFromTextures(", StringComparison.Ordinal)).IsFalse();
 
-		// Verify static shadow atlas lookup uses distance-proportional penumbra and 5-tap filter
-		AssertThat(lightingInc.Contains("float fable_sample_static_shadow_bilinear(", StringComparison.Ordinal)).IsTrue();
+		// Verify static shadow atlas lookup uses hardware-bilinear tiered PCF with tile-clamped UVs and distance-proportional penumbra
+		AssertThat(lightingInc.Contains("float fable_sample_static_shadow_tiered(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("textureLod(fable_static_shadow_atlas,", StringComparison.Ordinal)).IsTrue();
 		AssertThat(lightingInc.Contains("float penumbra = max(0.09, d * 0.055);", StringComparison.Ordinal)).IsTrue();
 	}
 

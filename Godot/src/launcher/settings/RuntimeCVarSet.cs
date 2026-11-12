@@ -144,6 +144,15 @@ public static class RuntimeCVarsGodot
 
             ..RuntimeCVarsAndroid.GraphicsPreset,
 
+            new(DesktopGraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, DesktopGraphicsPresets.DefaultPreset,
+                "Overall desktop rendering performance preset: Low (iGPU), Balanced, High, Ultra, or Custom. "
+                + "Adjusts resolution scaling, global illumination, sun and lamp shadow budgets, volumetric fog, "
+                + "and draw detail together without changing your chosen Look or texture enhancement.",
+                "low|Low (iGPU),balanced|Balanced,high|High,ultra|Ultra,custom|Custom"),
+
+            new(DesktopGraphicsPresets.RevisionKey, DisplayCategory, RuntimeCVarType.Int, "1",
+                "The desktop performance preset revision these settings were last written from."),
+
             new("max_fps", DisplayCategory, RuntimeCVarType.Int, "0",
                 "Frame rate cap. 0 is uncapped, which with vsync off will run the GPU as hard "
                 + "as it can. The SIMULATION is not affected: the guest advances on its own "
@@ -508,6 +517,15 @@ public static class RuntimeCVarsGodot
             new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Let torches, lamps and fixtures cast dynamic shadows within placed_shadow_range. "
                 + "Off follows the shipped data, where only the few spot lights marked to cast do."),
+            new("omni_shadow_mode", LightingCategory, RuntimeCVarType.String, "dual_paraboloid",
+                "Shadow map projection used by dynamic point lights (torches, lamps, braziers). "
+                + "Dual Paraboloid renders 2 shadow passes per lamp instead of 6 cubemap faces with near-identical "
+                + "character shadows; Cubemap uses 6-face point shadows for the nearest lamps on Ultra.",
+                "dual_paraboloid|Dual Paraboloid (Fast),cube|Cubemap (Ultra)"),
+            new("sdfgi_enabled", LightingCategory, RuntimeCVarType.Bool, "true",
+                "Enable real-time bounced sky and surface global illumination (SDFGI) in Modern mode. "
+                + "Off keeps Modern direct lighting, sky-tethered ambient fill, and ambient occlusion while "
+                + "saving significant GPU frame time on integrated GPUs."),
             new("cull_back_faces", VideoCategory, RuntimeCVarType.Bool, "true",
                 "Draw ordinary models from their front side only, as the original game does. "
                 + "Halves the pixel work on solid shapes. Off draws every surface from both "
@@ -830,27 +848,77 @@ public static class RuntimeCVarsGodot
     /// save of the panel pins nothing and a later change to the mod's file still reaches the
     /// player — the game's page shows the same row as Default. <c>none</c> unbinds.
     /// </summary>
-    public static IEnumerable<RuntimeCVarDefinition> ModBindings()
+    /// <summary>
+    /// Reads rebindable mod actions across every registered title.
+    /// </summary>
+    public static IEnumerable<RuntimeCVarDefinition> ModBindings(
+        IReadOnlyDictionary<string, string>? modsRootsByTitleKey = null)
     {
-        // A {KEY} in a mod's name or an action's label is the mod's own text, in the install's culture.
+        foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
+        {
+            RuntimeCVarDefinition[] defs;
+            try
+            {
+                string? overrideRoot = null;
+                modsRootsByTitleKey?.TryGetValue(title.Key, out overrideRoot);
+                defs = ModBindingsForTitle(title, overrideRoot).ToArray();
+            }
+            catch (Exception exception)
+            {
+                if (!Refii.Core.Engine_AppRoot.IsTestHost)
+                {
+                    Godot.GD.PushWarning("[settings] the mods' Controls rows could not be read: " + exception.Message);
+                }
+                continue;
+            }
+
+            foreach (RuntimeCVarDefinition def in defs)
+            {
+                yield return def;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads rebindable mod actions for <paramref name="title"/> from its enabled mod packages
+    /// (<c>.f2mod</c> for Fable 2, <c>.f3mod</c> for Fable 3), tagging each definition with
+    /// <see cref="RuntimeCVarDefinition.OwnerTitle"/> set to <c>title.Folder</c>.
+    /// </summary>
+    public static IEnumerable<RuntimeCVarDefinition> ModBindingsForTitle(
+        Refii.Core.Engine_Title title,
+        string? modsRootOverride = null)
+    {
+        string modsRoot = !string.IsNullOrEmpty(modsRootOverride)
+            ? modsRootOverride!
+            : (title == Refii.Core.Engine_Title.Active
+                ? Refii.Assets.Engine_GameAssets.ModsRoot
+                : Refii.Mods.ModWorkspace.GetDefaultModsRoot(title.AssetsDirectory));
+
         var titles = new System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var installs = new System.Collections.Generic.Dictionary<string, Refii.Mods.ModInstall>(StringComparer.OrdinalIgnoreCase);
-        foreach (Refii.Mods.ModInstall install in Refii.Mods.ModWorkspace.DiscoverModInstalls(Refii.Assets.Engine_GameAssets.ModsRoot))
+        foreach (Refii.Mods.ModInstall install in Refii.Mods.ModWorkspace.DiscoverModInstalls(modsRoot, title.ModExtension))
         {
             titles[install.Name] = Refii.Mods.ModText.TitleOf(install);
             installs[install.Name] = install;
         }
 
-        IEnumerable<Refii.Mods.ModInput.Action> actions = Refii.Mods.ModInput.ReadDeclared().Select(action =>
-            installs.TryGetValue(action.Mod, out Refii.Mods.ModInstall? install)
-                ? action with { Label = Refii.Mods.ModText.ForMod(install, action.Label) }
-                : action);
-        return ModBindings(actions, mod => titles.TryGetValue(mod, out string? title) ? title : mod);
+        IEnumerable<Refii.Mods.ModInput.Action> actions = Refii.Mods.ModInput
+            .ReadDeclaredFromJson(modsRoot, title.ModExtension)
+            .Select(action =>
+                installs.TryGetValue(action.Mod, out Refii.Mods.ModInstall? install)
+                    ? action with { Label = Refii.Mods.ModText.ForMod(install, action.Label) }
+                    : action);
+        return ModBindings(
+            actions,
+            mod => titles.TryGetValue(mod, out string? modTitle) ? modTitle : mod,
+            ownerTitle: title.Folder);
     }
 
     /// <summary>The definitions for <paramref name="actions"/>: a key row where keys are declared, a pad row where buttons or triggers are.</summary>
     public static IEnumerable<RuntimeCVarDefinition> ModBindings(
-        IEnumerable<Refii.Mods.ModInput.Action> actions, Func<string, string> title)
+        IEnumerable<Refii.Mods.ModInput.Action> actions,
+        Func<string, string> title,
+        string? ownerTitle = null)
     {
         foreach (Refii.Mods.ModInput.Action action in actions)
         {
@@ -861,7 +929,8 @@ public static class RuntimeCVarsGodot
                 yield return new RuntimeCVarDefinition(
                     Refii.Mods.ModInput.KeySettingKey(action), category, RuntimeCVarType.String, string.Empty,
                     action.Label + " on the keyboard: a comma list of key names (F, Ctrl, Space, F5, BracketLeft ...); " +
-                    "empty keeps the mod's own (" + keys + "), none unbinds. The game's Options > Controls page edits the same setting.");
+                    "empty keeps the mod's own (" + keys + "), none unbinds. The game's Options > Controls page edits the same setting.",
+                    OwnerTitle: ownerTitle);
             }
 
             if (action.Buttons.Count != 0 || action.Triggers.Count != 0)
@@ -871,7 +940,8 @@ public static class RuntimeCVarsGodot
                     action.Label + " on the pad: a comma list of the game's buttons A B X Y LB RB LT RT L3 R3 Start Back DpadUp DpadDown " +
                     "DpadLeft DpadRight or JoyButton names (your controller remap applies first); empty keeps the mod's own (" +
                     Refii.Mods.ModInput.DeclaredPadText(action) + "), none unbinds. " +
-                    "The game's Options > Controls page edits the same setting.");
+                    "The game's Options > Controls page edits the same setting.",
+                    OwnerTitle: ownerTitle);
             }
         }
     }
@@ -887,13 +957,13 @@ public static class RuntimeCVarsGodot
 /// emits it rather than treating it as debris.
 ///
 /// <see cref="All"/> is every title's; <see cref="Active"/> is what the active title's screen
-/// lists and its config file holds. A setting of another title is neither shown nor written.
+/// lists and its config file holds.
 /// </remarks>
 public static class RuntimeCVarSet
 {
     private static IReadOnlyList<RuntimeCVarDefinition>? _all;
 
-    /// <summary>Every title's settings: the catalog a key is looked up in.</summary>
+    /// <summary>Every title's settings: shared CVars, title-owned CVars, and per-title mod bindings.</summary>
     public static IReadOnlyList<RuntimeCVarDefinition> All => _all ??= Build();
 
     /// <summary>The settings <paramref name="title"/> reads, in <see cref="All"/>'s order.</summary>
@@ -904,13 +974,14 @@ public static class RuntimeCVarSet
     public static IReadOnlyList<RuntimeCVarDefinition> Active => For(Refii.Core.Engine_Title.Active);
 
     /// <summary>
-    /// Reads the list again: the mods' Controls rows (<see cref="RuntimeCVarsGodot.ModBindings()"/>)
-    /// follow the enabled mods' input.json, so the settings panel refreshes them whenever it
-    /// reloads (<c>RuntimeSettingsModel.Reload</c>).
+    /// Rebuilds the unified setting catalog across all titles, reading enabled mod input bindings
+    /// from each title's mods folder (or optional <paramref name="modsRootsByTitleKey"/> overrides).
     /// </summary>
-    public static void Refresh() => _all = Build();
+    public static void Refresh(IReadOnlyDictionary<string, string>? modsRootsByTitleKey = null) =>
+        _all = Build(modsRootsByTitleKey);
 
-    private static IReadOnlyList<RuntimeCVarDefinition> Build()
+    private static IReadOnlyList<RuntimeCVarDefinition> Build(
+        IReadOnlyDictionary<string, string>? modsRootsByTitleKey = null)
     {
         var all = RuntimeCVars.Definitions
             .Concat(
@@ -921,15 +992,14 @@ public static class RuntimeCVarSet
                     godot => !RuntimeCVars.Definitions.Any(
                         native => native.Name == godot.Name)))
             .ToList();
-        try
+
+        if (modsRootsByTitleKey is null)
         {
             all.AddRange(RuntimeCVarsGodot.ModBindings().Where(mod => all.All(known => known.Name != mod.Name)));
         }
-        catch (Exception exception)
+        else
         {
-            // No mods root, or a file that will not read: the shipped rows stand; the game's own
-            // page reads the mods directly.
-            Godot.GD.PushWarning("[settings] the mods' Controls rows could not be read: " + exception.Message);
+            all.AddRange(RuntimeCVarsGodot.ModBindings(modsRootsByTitleKey).Where(mod => all.All(known => known.Name != mod.Name)));
         }
 
         return all;

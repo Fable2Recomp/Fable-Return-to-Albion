@@ -146,6 +146,7 @@ public static class Engine_LevelLighting
 		_sunSplits = null;
 		_sunScale = null;
 		_giHalfResolution = null;
+		_sdfgiEnabled = null;
 		SunShadowMap = ReadSunShadowMap();
 	}
 
@@ -249,7 +250,7 @@ public static class Engine_LevelLighting
 			: DirectionalLight3D.ShadowMode.Parallel4Splits;
 		bool blend = SunBlendOverride ?? (splits >= 4);
 		if (light.DirectionalShadowBlendSplits != blend) light.DirectionalShadowBlendSplits = blend;
-		float distance = isNight ? Mathf.Min(NightFarDepth, CascadeDepth) : CascadeDepth;
+		float distance = isNight ? Mathf.Min(NightFarDepth, CascadeDepth * 0.6f) : CascadeDepth;
 		if (light.DirectionalShadowMode != mode) light.DirectionalShadowMode = mode;
 		if (light.DirectionalShadowMaxDistance != distance) light.DirectionalShadowMaxDistance = distance;
 		if (light.DirectionalShadowFadeStart != 0.85f) light.DirectionalShadowFadeStart = 0.85f;
@@ -519,6 +520,35 @@ public static class Engine_LevelLighting
 		set => _giHalfResolution = value;
 	}
 
+	private static bool? _sdfgiEnabled;
+
+	/// <summary>
+	/// Whether real-time bounced sky and surface global illumination (<c>sdfgi_enabled</c>) is active
+	/// in Modern mode. Defaults to true; disabling keeps Modern direct lighting, sky-tethered ambient
+	/// fill, and ambient occlusion while shedding SDFGI probe/cascade GPU cost on integrated GPUs.
+	/// </summary>
+	public static bool SdfgiEnabled
+	{
+		get
+		{
+			if (_sdfgiEnabled is null)
+			{
+				try
+				{
+					_sdfgiEnabled = Refii.Core.Engine_RefiiConfig.Bool(
+						Refii.Core.Engine_RefiiConfig.Read(out _), "sdfgi_enabled", true);
+				}
+				catch (System.Exception)
+				{
+					_sdfgiEnabled = true;
+				}
+			}
+
+			return _sdfgiEnabled.Value;
+		}
+		set => _sdfgiEnabled = value;
+	}
+
 	public const int DefaultSdfgiCascades = 4;
 
 	private static void ConfigureGlobalIllumination(Godot.Environment environment, bool unified, bool hasSky)
@@ -533,12 +563,13 @@ public static class Engine_LevelLighting
 		}
 
 		// A rebuild in progress holds it off for a frame or two; see Engine_GiRefresh.
-		environment.SdfgiEnabled = unified &&
+		bool enableGi = unified && SdfgiEnabled;
+		environment.SdfgiEnabled = enableGi &&
 			!Engine_GiRefresh.HoldingOff &&
 			!Engine_GiRefresh.ForcedOff &&
 			!Engine_GiRefresh.HoldForWorldLoad &&
 			!Engine_GiRefresh.SettlingAfterWorldLoad;
-		if (!unified)
+		if (!enableGi)
 		{
 			return;
 		}
@@ -586,13 +617,13 @@ public static class Engine_LevelLighting
 				55.0f);
 		}
 
-		environment.SsaoRadius = 0.65f;
-		environment.SsaoIntensity = 1.15f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
+		environment.SsaoRadius = 0.42f;
+		environment.SsaoIntensity = 1.30f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
 		environment.SsaoPower = 1.35f;
-		environment.SsaoDetail = 0.50f;
-		environment.SsaoHorizon = 0.06f;
-		environment.SsaoSharpness = 0.98f;
-		environment.SsaoLightAffect = 0.15f;
+		environment.SsaoDetail = 0.85f;
+		environment.SsaoHorizon = 0.04f;
+		environment.SsaoSharpness = 0.72f;
+		environment.SsaoLightAffect = 0.18f;
 	}
 
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)

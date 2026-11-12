@@ -23,12 +23,6 @@
 #include <rex/result.h>
 #include <rex/version.h>
 
-#if defined(_WIN32)
-#define REFII_RECOMPILER_EXPORT __declspec(dllexport)
-#else
-#define REFII_RECOMPILER_EXPORT __attribute__((visibility("default")))
-#endif
-
 namespace {
 
 namespace fs = std::filesystem;
@@ -128,7 +122,7 @@ class ScopedLogCapture {
             stop_requested->store(true);
           }
         });
-    sink_->set_level(spdlog::level::trace);
+    sink_->set_level(spdlog::level::info);
 
     spdlog::apply_all([this](std::shared_ptr<spdlog::logger> logger) {
       saved_.emplace_back(logger, logger->sinks());

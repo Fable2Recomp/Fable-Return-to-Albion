@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using Refii.Recompile;
 
 namespace Refii.AndroidRuntime;
 
@@ -20,30 +21,20 @@ namespace Refii.AndroidRuntime;
 /// <para>Each store is atomic and keeps the object's hash, so a torn or damaged object is a miss. The
 /// directory is app-private, as the module is, and holds only what the last success used plus what later
 /// failures left: about 100 MB of objects and 10 MB of records for Fable 2.</para>
+/// <para>Delegates to the shared <see cref="CompileCache"/> and <see cref="CompileDepfile"/> engine layer.</para>
 /// </remarks>
 internal sealed class AndroidCompileCache
 {
-    /// <summary>The bundle's files in a dependency record's names.</summary>
     private const string BundlePrefix = "bundle/";
-    /// <summary>The generator's files in a dependency record's names.</summary>
     private const string GeneratedPrefix = "generated/";
 
-    private readonly string _root, _bundle, _generated, _recipe;
-    private readonly Dictionary<string, string> _files;
-    private readonly ILookup<string, string> _byFileName;
-    private readonly IReadOnlyCollection<string> _includes;
-    private readonly Dictionary<string, string?> _hashes = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, bool> _pchRecords = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _used = new(StringComparer.Ordinal);
-    private readonly SortedSet<string> _bundleInputs = new(StringComparer.Ordinal);
-    private HashSet<string> _pchNames = new(StringComparer.Ordinal);
-    private string? _pchId;
+    private readonly CompileCache _inner;
 
     /// <summary>Whether every unit of this build has a complete record, so <see cref="BundleInputs"/> is the module's whole input.</summary>
-    public bool Complete { get; private set; } = true;
+    public bool Complete => _inner.Complete;
 
     /// <summary>The bundle files this build's units read, by bundle-relative path.</summary>
-    public IReadOnlyCollection<string> BundleInputs => _bundleInputs;
+    public IReadOnlyCollection<string> BundleInputs => _inner.TrackedInputs;
 
     /// <summary>Opens the cache for one build.</summary>
     /// <param name="root">The app-private cache directory; created when absent.</param>
@@ -55,20 +46,18 @@ internal sealed class AndroidCompileCache
     public AndroidCompileCache(string root, string bundleDirectory, string generated, Dictionary<string, string> files,
         IReadOnlyCollection<string> includes, string recipe)
     {
-        _includes = includes;
-        _root = root;
-        _bundle = Path.TrimEndingDirectorySeparator(Path.GetFullPath(bundleDirectory));
-        _generated = Path.TrimEndingDirectorySeparator(Path.GetFullPath(generated));
-        _files = files;
-        _byFileName = FileNameIndex(files);
-        _recipe = recipe;
-        Directory.CreateDirectory(root);
+        var roots = new[]
+        {
+            CompileInputRoot.Prehashed(BundlePrefix, bundleDirectory, files, trackInputsAndShadowing: true),
+            CompileInputRoot.DiskHashed(GeneratedPrefix, generated, trackInputsAndShadowing: false),
+        };
+        _inner = new CompileCache(root, roots, files.Keys, includes, recipe);
     }
 
     /// <summary>The bundle's paths by file name, ordered, for the same-name check.</summary>
     /// <param name="files">A bundle's file hashes.</param>
     public static ILookup<string, string> FileNameIndex(Dictionary<string, string> files) =>
-        files.Keys.OrderBy(path => path, StringComparer.Ordinal).ToLookup(path => path[(path.LastIndexOf('/') + 1)..], StringComparer.Ordinal);
+        CompileCache.FileNameIndex(files);
 
     /// <summary>The files an include of one of these inputs could have found: same file name, below an
     /// include directory or below a folder holding an input (an include searches its own file's folder first).</summary>
@@ -77,87 +66,21 @@ internal sealed class AndroidCompileCache
     /// <param name="includes">The bundle-relative include directories.</param>
     /// <returns>A hash that changes when such a file appears or goes. Unrelated files in the bundle, such as
     /// a third-party tree's own allocator.h, are not reachable and leave it alone.</returns>
-    public static string SameNames(IEnumerable<string> bundlePaths, ILookup<string, string> index, IEnumerable<string> includes)
-    {
-        var inputs = bundlePaths.ToList();
-        var folders = new HashSet<string>(includes, StringComparer.Ordinal);
-        foreach (string path in inputs) folders.Add(path[..Math.Max(0, path.LastIndexOf('/'))]);
-        bool Reachable(string path)
-        {
-            for (int end = path.LastIndexOf('/'); end > 0; end = path.LastIndexOf('/', end - 1))
-                if (folders.Contains(path[..end])) return true;
-            return false;
-        }
-        var text = new StringBuilder();
-        foreach (string name in inputs.Select(path => path[(path.LastIndexOf('/') + 1)..]).Distinct(StringComparer.Ordinal).OrderBy(name => name, StringComparer.Ordinal))
-        {
-            text.Append(name);
-            foreach (string path in index[name].Where(Reachable)) text.Append('\0').Append(path);
-            text.Append('\n');
-        }
-        return HashText(text.ToString());
-    }
+    public static string SameNames(IEnumerable<string> bundlePaths, ILookup<string, string> index, IEnumerable<string> includes) =>
+        CompileCache.SameNames(bundlePaths, index, includes);
 
     /// <summary>Hex SHA-256 of a text.</summary>
-    public static string HashText(string text) =>
-        Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+    public static string HashText(string text) => CompileCache.HashText(text);
 
     /// <summary>The object for a unit whose recorded inputs are all unchanged, or null.</summary>
     /// <param name="source">The unit's source path.</param>
     /// <returns>A verified object path that later builds may keep using.</returns>
-    public string? Find(string source)
-    {
-        try
-        {
-            string? name = NameOf(source);
-            string? id = name == null ? null : UnitId(name);
-            if (id == null) return null;
-            string record = Path.Combine(_root, id + ".deps");
-            string objectPath = Path.Combine(_root, id + ".o");
-            if (!File.Exists(record) || !File.Exists(objectPath)) return null;
-            var inputs = new List<string>();
-            string objectHash = "";
-            foreach (string line in File.ReadLines(record))
-            {
-                if (line.StartsWith("object ", StringComparison.Ordinal)) objectHash = line[7..];
-                else if (line.StartsWith("pch ", StringComparison.Ordinal))
-                {
-                    if (!PchRecordHolds(line[4..], inputs)) return null;
-                }
-                else if (!Holds(line, inputs)) return null;
-            }
-            if (objectHash.Length == 0 || HashFile(objectPath) != objectHash) return null;
-            _used.Add(id);
-            _bundleInputs.UnionWith(inputs);
-            AddOwnInput(name!);
-            return objectPath;
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or FormatException) { return null; }
-    }
+    public string? Find(string source) => _inner.Find(source);
 
     /// <summary>Records the precompiled header's inputs, which its units read without opening them again.</summary>
     /// <param name="dependencies">The header's clang -MD output.</param>
     /// <param name="output">The precompiled header, which is not itself an input.</param>
-    public void StorePch(string dependencies, string output)
-    {
-        _pchNames = new HashSet<string>(StringComparer.Ordinal);
-        _pchId = null;
-        if (!TryNames(dependencies, output, null, out var names))
-        {
-            Complete = false;
-            return;
-        }
-        var text = new StringBuilder();
-        AppendRecord(text, names);
-        string content = text.ToString();
-        string id = HashText(content)[..32];
-        WriteAtomic(Path.Combine(_root, "pch-" + id + ".deps"), content);
-        _pchNames = names.ToHashSet(StringComparer.Ordinal);
-        _pchId = id;
-        _pchRecords[id] = true;
-        // A later build asks through PchRecordHolds, which adds these.
-        _bundleInputs.UnionWith(names.Where(name => name.StartsWith(BundlePrefix, StringComparison.Ordinal)).Select(name => name[BundlePrefix.Length..]));
-    }
+    public void StorePch(string dependencies, string output) => _inner.StorePch(dependencies, output);
 
     /// <summary>Moves a freshly compiled object into the cache, when its inputs can all be named.</summary>
     /// <param name="source">The unit's source path.</param>
@@ -165,195 +88,16 @@ internal sealed class AndroidCompileCache
     /// <param name="dependencies">Its clang -MD output.</param>
     /// <param name="usesPch">Whether it was compiled with the precompiled header.</param>
     /// <returns>Where the object now is, which is <paramref name="built"/> when it could not be cached.</returns>
-    public string Store(string source, string built, string dependencies, bool usesPch)
-    {
-        try
-        {
-            string? name = NameOf(source);
-            string? id = name == null ? null : UnitId(name);
-            if (id == null || !TryNames(dependencies, built, name, out var names) || (usesPch && _pchId == null))
-            {
-                Complete = false;
-                return built;
-            }
-            var own = usesPch ? names.Where(input => !_pchNames.Contains(input)).ToList() : names;
-            var text = new StringBuilder();
-            text.Append("object ").Append(HashFile(built)).Append('\n');
-            if (usesPch) text.Append("pch ").Append(_pchId).Append('\n');
-            AppendRecord(text, own);
-            string target = Path.Combine(_root, id + ".o");
-            // The object first, so a record never names a missing or older one: Find checks the hash.
-            File.Move(built, target, true);
-            WriteAtomic(Path.Combine(_root, id + ".deps"), text.ToString());
-            _used.Add(id);
-            _bundleInputs.UnionWith(own.Where(input => input.StartsWith(BundlePrefix, StringComparison.Ordinal)).Select(input => input[BundlePrefix.Length..]));
-            AddOwnInput(name!);
-            return target;
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
-        {
-            // Out of space or similar: this build still links what it compiled, and the next compiles it again.
-            Complete = false;
-            return File.Exists(built) ? built : throw new IOException("A compiled unit could not be kept", error);
-        }
-    }
+    public string Store(string source, string built, string dependencies, bool usesPch) =>
+        _inner.Store(source, built, dependencies, usesPch);
 
     /// <summary>Removes everything this build did not use, once it has succeeded.</summary>
-    public void KeepOnlyUsed()
-    {
-        var pchRecords = new HashSet<string>(StringComparer.Ordinal);
-        foreach (string id in _used)
-        {
-            string record = Path.Combine(_root, id + ".deps");
-            if (!File.Exists(record)) continue;
-            foreach (string line in File.ReadLines(record))
-                if (line.StartsWith("pch ", StringComparison.Ordinal)) pchRecords.Add("pch-" + line[4..] + ".deps");
-        }
-        foreach (string file in Directory.EnumerateFiles(_root).ToList())
-        {
-            string name = Path.GetFileName(file);
-            if (name == AndroidPhoneCompiler.PartitionFile) continue;
-            bool kept = name.StartsWith("pch-", StringComparison.Ordinal) ? pchRecords.Contains(name)
-                : _used.Contains(Path.GetFileNameWithoutExtension(name));
-            if (!kept) File.Delete(file);
-        }
-    }
+    public void KeepOnlyUsed() => _inner.KeepOnlyUsed(maxGenerations: 1);
 
     /// <summary>The paths in a clang -MD file, without its target.</summary>
     /// <param name="text">The make rule clang wrote.</param>
     /// <remarks>Make's escapes: a backslash before a space or '#', '$$' for '$', and backslash-newline to continue a line.</remarks>
-    public static List<string> ParseDependencies(string text)
-    {
-        var words = new List<string>();
-        var word = new StringBuilder();
-        void Flush() { if (word.Length > 0) { words.Add(word.ToString()); word.Clear(); } }
-        for (int i = 0; i < text.Length; i++)
-        {
-            char c = text[i];
-            if (c == '\\' && i + 1 < text.Length)
-            {
-                char next = text[i + 1];
-                if (next == '\n') { Flush(); i++; continue; }
-                if (next == '\r' && i + 2 < text.Length && text[i + 2] == '\n') { Flush(); i += 2; continue; }
-                if (next is ' ' or '#') { word.Append(next); i++; continue; }
-                word.Append(c);
-            }
-            else if (c == '$' && i + 1 < text.Length && text[i + 1] == '$') { word.Append('$'); i++; }
-            else if (char.IsWhiteSpace(c)) Flush();
-            else word.Append(c);
-        }
-        Flush();
-        // The target ends in a colon; a path holding one is not something this build writes.
-        int target = words.FindIndex(entry => entry.EndsWith(':'));
-        return target < 0 ? new List<string>() : words.Skip(target + 1).ToList();
-    }
-
-    /// <summary>A unit's cache name: recipe, name and source bytes. Null when the source cannot be hashed.</summary>
-    private string? UnitId(string name) =>
-        CurrentHash(name) is { } hash ? HashText(_recipe + "\0" + name + "\0" + hash)[..32] : null;
-
-    /// <summary>Adds a bundle source to the module's inputs, which its own record may not list.</summary>
-    private void AddOwnInput(string name)
-    {
-        if (name.StartsWith(BundlePrefix, StringComparison.Ordinal)) _bundleInputs.Add(name[BundlePrefix.Length..]);
-    }
-
-    /// <summary>A path's record name, or null outside the bundle and generated folders.</summary>
-    private string? NameOf(string path)
-    {
-        string full = Path.GetFullPath(path);
-        if (full.StartsWith(_bundle + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            return BundlePrefix + full[(_bundle.Length + 1)..].Replace('\\', '/');
-        if (full.StartsWith(_generated + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-            return GeneratedPrefix + full[(_generated.Length + 1)..].Replace('\\', '/');
-        return null;
-    }
-
-    /// <summary>Today's hash of a named input, or null when it is gone or unverified.</summary>
-    private string? CurrentHash(string name)
-    {
-        if (name.StartsWith(BundlePrefix, StringComparison.Ordinal))
-            return _files.TryGetValue(name[BundlePrefix.Length..], out string? recorded) ? recorded : null;
-        if (_hashes.TryGetValue(name, out string? known)) return known;
-        string path = Path.Combine(_generated, name[GeneratedPrefix.Length..]);
-        string? hash = File.Exists(path) ? HashFile(path) : null;
-        _hashes[name] = hash;
-        return hash;
-    }
-
-    /// <summary>Whether one line of a record still holds; a "names" line is the same-name check over its inputs so far.</summary>
-    private bool Holds(string line, List<string> inputs)
-    {
-        if (line.StartsWith("names ", StringComparison.Ordinal))
-            return SameNames(inputs, _byFileName, _includes) == line[6..];
-        int space = line.IndexOf(' ');
-        if (space <= 0) throw new FormatException("Malformed compile cache record");
-        string name = line[(space + 1)..];
-        if (CurrentHash(name) != line[..space]) return false;
-        if (name.StartsWith(BundlePrefix, StringComparison.Ordinal)) inputs.Add(name[BundlePrefix.Length..]);
-        return true;
-    }
-
-    /// <summary>Whether a shared precompiled-header record still holds, checking it once per build.</summary>
-    private bool PchRecordHolds(string id, List<string> inputs)
-    {
-        if (_pchRecords.TryGetValue(id, out bool known)) return known;
-        string record = Path.Combine(_root, "pch-" + id + ".deps");
-        if (!File.Exists(record)) return false;
-        var own = new List<string>();
-        bool holds = File.ReadLines(record).All(line => Holds(line, own));
-        _pchRecords[id] = holds;
-        if (holds) _bundleInputs.UnionWith(own);
-        return holds;
-    }
-
-    /// <summary>A dependency file's inputs by name, or false when one lies outside what a record can name.</summary>
-    /// <param name="dependencies">The clang -MD output path.</param>
-    /// <param name="output">The file the rule builds, which is ignored if it is listed.</param>
-    /// <param name="source">The unit's own name, added when the rule does not list it; null for none.</param>
-    /// <param name="names">Sorted distinct input names.</param>
-    private bool TryNames(string dependencies, string output, string? source, out List<string> names)
-    {
-        names = new List<string>();
-        if (!File.Exists(dependencies)) return false;
-        var set = new SortedSet<string>(StringComparer.Ordinal);
-        if (source != null) set.Add(source);
-        string outputFull = Path.GetFullPath(output);
-        foreach (string path in ParseDependencies(File.ReadAllText(dependencies)))
-        {
-            string full = Path.GetFullPath(path);
-            // Clang lists the precompiled header it reads; StorePch records what that was built from.
-            if (full == outputFull || full.EndsWith(".pch", StringComparison.Ordinal)) continue;
-            string? name = NameOf(full);
-            if (name == null || CurrentHash(name) == null) return false;
-            set.Add(name);
-        }
-        names = set.ToList();
-        return true;
-    }
-
-    /// <summary>Appends sorted "hash name" lines and the same-name check over their bundle files.</summary>
-    private void AppendRecord(StringBuilder text, IReadOnlyCollection<string> names)
-    {
-        foreach (string name in names) text.Append(CurrentHash(name)).Append(' ').Append(name).Append('\n');
-        text.Append("names ").Append(SameNames(names.Where(name => name.StartsWith(BundlePrefix, StringComparison.Ordinal))
-            .Select(name => name[BundlePrefix.Length..]), _byFileName, _includes)).Append('\n');
-    }
-
-    /// <summary>Publishes a small file in one step, so a killed build leaves the old one or none.</summary>
-    private static void WriteAtomic(string path, string text)
-    {
-        string temporary = path + ".tmp";
-        File.WriteAllText(temporary, text);
-        File.Move(temporary, path, true);
-    }
-
-    /// <summary>Hex SHA-256 of a file.</summary>
-    private static string HashFile(string path)
-    {
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexString(Refii.Core.Engine_Hash.Sha256(stream)).ToLowerInvariant();
-    }
+    public static List<string> ParseDependencies(string text) => CompileDepfile.Parse(text);
 }
 
 /// <summary>What a built module needs from the APK's own native libraries, read from ELF dynamic symbol tables.</summary>

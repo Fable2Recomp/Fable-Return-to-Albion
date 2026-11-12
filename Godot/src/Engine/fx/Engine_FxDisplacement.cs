@@ -53,6 +53,12 @@ public partial class Engine_FxDisplacement : Node
     /// </remarks>
     private bool HostAlive => _host is not null && GodotObject.IsInstanceValid(_host);
     private Vector2I _size;
+    private Vector2I _dispTargetSize;
+    private static readonly bool[] _viewActive = new bool[2];
+
+    /// <summary>Whether <paramref name="view"/>'s displacement SubViewport is actively rendering this frame.</summary>
+    public static bool IsViewActive(int view) =>
+        (uint)view < 2u && System.Threading.Volatile.Read(ref _viewActive[view]);
 
     public static float Strength = 1f;
 
@@ -109,7 +115,7 @@ public partial class Engine_FxDisplacement : Node
             RenderTargetClearMode = SubViewport.ClearMode.Always,
             Msaa3D = Viewport.Msaa.Disabled,
             UseDebanding = false,
-            UseHdr2D = true,
+            UseHdr2D = false,
             PositionalShadowAtlasSize = 0,
             // ITS OWN WORLD. The layer's surfaces are rendering-server instances in this world
             // (Engine_FxLayerInstance), so the main scene's index never holds them and this
@@ -156,6 +162,12 @@ public partial class Engine_FxDisplacement : Node
         if (_view == 0)
         {
             Refii.Core.Engine_Views.ViewsChanged -= FollowViews;
+            System.Threading.Volatile.Write(ref _viewActive[1], false);
+        }
+
+        if ((uint)_view < 2u)
+        {
+            System.Threading.Volatile.Write(ref _viewActive[_view], false);
         }
     }
 
@@ -233,9 +245,18 @@ public partial class Engine_FxDisplacement : Node
             _rect.Size = v;
         }
 
+        float scale3D = _host.Scaling3DScale > 0f ? _host.Scaling3DScale : 1f;
+        var dispSize = new Vector2I(
+            Math.Max(1, (int)MathF.Ceiling(v.X * scale3D * 0.5f)),
+            Math.Max(1, (int)MathF.Ceiling(v.Y * scale3D * 0.5f)));
+        if (dispSize != _dispTargetSize)
+        {
+            _dispTargetSize = dispSize;
+            _viewport.Size = dispSize;
+        }
+
         if (size == _size) return;
         _size = size;
-        _viewport.Size = new Vector2I(Math.Max(1, size.X / 2), Math.Max(1, size.Y / 2));
         float s = 0.5f * ((size.X / 1280f) + (size.Y / 720f)) * 255f * Strength;
         _apply?.SetShaderParameter("disp_pixel_scale", new Vector2(s, s));
     }
@@ -249,12 +270,14 @@ public partial class Engine_FxDisplacement : Node
         if (main is null)
         {
             _rect.Visible = false;
+            if ((uint)_view < 2u) System.Threading.Volatile.Write(ref _viewActive[_view], false);
             return;
         }
 
         if ((main.CullMask & LayerMask) != 0) main.CullMask &= ~LayerMask;
 
-        bool active = Engine.GetProcessFrames() - _activeFrame <= 1;
+        bool active = _enabled && Engine.GetProcessFrames() - _activeFrame <= 1;
+        if ((uint)_view < 2u) System.Threading.Volatile.Write(ref _viewActive[_view], active);
         _rect.Visible = active;
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
         if (!active) return;

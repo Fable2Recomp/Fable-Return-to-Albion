@@ -708,7 +708,8 @@ public static partial class Engine_UiInventorySource
 				continue;
 			}
 
-			IReadOnlyList<(uint Primary, uint Secondary)> socketed = Fable2Bridge.GetItemAugments(record.RecordId);
+			IReadOnlyList<(uint Primary, uint Secondary)> socketed =
+				Fable2Bridge.GetItemAugments(record.RecordId) ?? System.Array.Empty<(uint Primary, uint Secondary)>();
 			(int slots, int filled) = Engine_UiItemStats.AugmentSlotUse(record.RecordId, socketed);
 			if (slots <= 0)
 			{

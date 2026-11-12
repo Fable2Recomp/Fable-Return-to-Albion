@@ -102,23 +102,25 @@ public static class ModInstaller
 	/// Everything an install would report about <paramref name="packagePath"/> — validity, hard
 	/// mod, native sources, unmet requirements, replacement — without writing anything.
 	/// </summary>
-	public static ModInstallResult Inspect(string packagePath, string? modsRoot = null)
+	public static ModInstallResult Inspect(string packagePath, string? modsRoot = null, string? packageExtension = null)
 	{
+		string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
 		string root = modsRoot ?? DefaultModsRoot;
 		string name = System.IO.Path.GetFileNameWithoutExtension(packagePath ?? string.Empty);
-		string refusal = CheckFile(packagePath ?? string.Empty, name);
+		string refusal = CheckFile(packagePath ?? string.Empty, name, ext);
 		return refusal.Length != 0
 			? ModInstallResult.Failed(refusal, name, packagePath ?? string.Empty)
-			: InspectPackage(packagePath!, name, root);
+			: InspectPackage(packagePath!, name, root, ext);
 	}
 
 	/// <summary>
-	/// Installs <paramref name="packagePath"/> into the mods folder as <c>&lt;name&gt;.f2mod</c>,
-	/// keeping a same-named installed package as <c>&lt;name&gt;.f2mod.bak</c>, and registers it
+	/// Installs <paramref name="packagePath"/> into the mods folder as <c>&lt;name&gt;&lt;ext&gt;</c>,
+	/// keeping a same-named installed package as <c>&lt;name&gt;&lt;ext&gt;.bak</c>, and registers it
 	/// in the load order disabled.
 	/// </summary>
-	public static ModInstallResult InstallFromFile(string packagePath, string? modsRoot = null)
+	public static ModInstallResult InstallFromFile(string packagePath, string? modsRoot = null, string? packageExtension = null)
 	{
+		string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
 		string root = modsRoot ?? DefaultModsRoot;
 		if (string.IsNullOrEmpty(root))
 		{
@@ -126,20 +128,20 @@ public static class ModInstaller
 		}
 
 		string name = System.IO.Path.GetFileNameWithoutExtension(packagePath ?? string.Empty);
-		string refusal = CheckFile(packagePath ?? string.Empty, name);
+		string refusal = CheckFile(packagePath ?? string.Empty, name, ext);
 		if (refusal.Length != 0)
 		{
 			return ModInstallResult.Failed(refusal, name, packagePath ?? string.Empty);
 		}
 
-		string destination = System.IO.Path.Combine(root, name + ModWorkspace.PackageExtension);
+		string destination = System.IO.Path.Combine(root, name + ext);
 		string source = System.IO.Path.GetFullPath(packagePath!);
 		bool inPlace = string.Equals(source, System.IO.Path.GetFullPath(destination),
 			OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
 		string staged = inPlace
 			? destination
-			: System.IO.Path.Combine(root, CacheFolder, StagingFolder, name + ModWorkspace.PackageExtension);
+			: System.IO.Path.Combine(root, CacheFolder, StagingFolder, name + ext);
 		try
 		{
 			if (!inPlace)
@@ -154,7 +156,7 @@ public static class ModInstaller
 			return ModInstallResult.Failed("Could not copy the package: " + exception.Message, name, source);
 		}
 
-		ModInstallResult checkedCopy = InspectPackage(staged, name, root);
+		ModInstallResult checkedCopy = InspectPackage(staged, name, root, ext);
 		if (!checkedCopy.Ok)
 		{
 			TryDelete(inPlace ? null : staged);
@@ -197,7 +199,7 @@ public static class ModInstaller
 		ModLoadOrder order = ModLoadOrder.Read(root);
 		order.Enabled.RemoveAll(entry => string.Equals(entry, name, StringComparison.OrdinalIgnoreCase));
 		order.RegisterMod(name, enabled: false);
-		ModDependencies.Sort(order, ModWorkspace.DiscoverModInstalls(root), out _);
+		ModDependencies.Sort(order, ModWorkspace.DiscoverModInstalls(root, ext), out _);
 		if (!order.Write(root, out string orderError))
 		{
 			warnings.Add("The load order could not be written: " + orderError);
@@ -207,16 +209,17 @@ public static class ModInstaller
 	}
 
 	/// <summary>
-	/// Downloads an https link to <c>&lt;mods&gt;/.cache/downloads/&lt;name&gt;.f2mod</c> and
+	/// Downloads an https link to <c>&lt;mods&gt;/.cache/downloads/&lt;name&gt;&lt;ext&gt;</c> and
 	/// inspects it, for a caller that shows the player what it is before installing it with
 	/// <see cref="InstallFromFile"/>. The file name comes from the response's
 	/// <c>Content-Disposition</c>, else the final URL's last segment, and must end in
-	/// <c>.f2mod</c>. <paramref name="progress"/> gets the fraction done, or -1 while the size is
+	/// <paramref name="packageExtension"/>. <paramref name="progress"/> gets the fraction done, or -1 while the size is
 	/// unknown.
 	/// </summary>
 	public static async Task<ModInstallResult> DownloadAsync(
-		string url, IProgress<float>? progress, CancellationToken cancel = default, string? modsRoot = null)
+		string url, IProgress<float>? progress, CancellationToken cancel = default, string? modsRoot = null, string? packageExtension = null)
 	{
+		string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
 		string root = modsRoot ?? DefaultModsRoot;
 		if (string.IsNullOrEmpty(root))
 		{
@@ -275,10 +278,10 @@ public static class ModInstaller
 
 				string fileName = DownloadFileName(response, current);
 				string name = System.IO.Path.GetFileNameWithoutExtension(fileName);
-				if (!fileName.EndsWith(ModWorkspace.PackageExtension, StringComparison.OrdinalIgnoreCase))
+				if (!fileName.EndsWith(ext, StringComparison.OrdinalIgnoreCase))
 				{
 					return ModInstallResult.Failed(
-						$"'{fileName}' is not a mod package — only {ModWorkspace.PackageExtension} files are installed.");
+						$"'{fileName}' is not a mod package — only {ext} files are installed.");
 				}
 
 				string nameRefusal = CheckName(name);
@@ -295,7 +298,7 @@ public static class ModInstaller
 
 				string downloads = DownloadsDirectory(root);
 				Directory.CreateDirectory(downloads);
-				string final = System.IO.Path.Combine(downloads, name + ModWorkspace.PackageExtension);
+				string final = System.IO.Path.Combine(downloads, name + ext);
 				partial = final + PartialExtension;
 
 				using var stall = CancellationTokenSource.CreateLinkedTokenSource(cancel);
@@ -342,7 +345,7 @@ public static class ModInstaller
 				File.Move(partial, final, overwrite: true);
 				partial = string.Empty;
 				progress?.Report(1f);
-				return Inspect(final, root);
+				return Inspect(final, root, ext);
 			}
 		}
 		catch (OperationCanceledException) when (cancel.IsCancellationRequested)
@@ -368,17 +371,18 @@ public static class ModInstaller
 	/// nothing to show the player in between; the download is removed either way.
 	/// </summary>
 	public static async Task<ModInstallResult> InstallFromUrlAsync(
-		string url, IProgress<float>? progress, CancellationToken cancel = default, string? modsRoot = null)
+		string url, IProgress<float>? progress, CancellationToken cancel = default, string? modsRoot = null, string? packageExtension = null)
 	{
+		string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
 		string root = modsRoot ?? DefaultModsRoot;
-		ModInstallResult downloaded = await DownloadAsync(url, progress, cancel, root).ConfigureAwait(false);
+		ModInstallResult downloaded = await DownloadAsync(url, progress, cancel, root, ext).ConfigureAwait(false);
 		if (!downloaded.Ok)
 		{
 			DiscardDownload(downloaded.Path, root);
 			return downloaded;
 		}
 
-		ModInstallResult installed = InstallFromFile(downloaded.Path, root);
+		ModInstallResult installed = InstallFromFile(downloaded.Path, root, ext);
 		DiscardDownload(downloaded.Path, root);
 		return installed;
 	}
@@ -401,15 +405,16 @@ public static class ModInstaller
 	}
 
 	/// <summary>The words the launcher shows before an install: hard mod first, then needs, then warnings.</summary>
-	public static string Describe(ModInstallResult result)
+	public static string Describe(ModInstallResult result, string? packageExtension = null)
 	{
+		string ext = string.IsNullOrEmpty(packageExtension) ? ModWorkspace.PackageExtension : packageExtension;
 		var text = new StringBuilder();
 		string version = result.Version.Length == 0 ? "no version stated" : "version " + result.Version;
 		text.Append($"Install '{result.Title}' ({version}) as '{result.Name}'?");
 		if (result.Replaces)
 		{
 			text.Append($"\n\nThis replaces the installed '{result.Name}'. The old package is kept as " +
-				$"{result.Name}{ModWorkspace.PackageExtension}{BackupExtension}.");
+				$"{result.Name}{ext}{BackupExtension}.");
 		}
 
 		if (result.HardMod)
@@ -449,18 +454,18 @@ public static class ModInstaller
 
 	// ---------------------------------------------------------------------------------------
 
-	/// <summary>The checks that need only the file: exists, is a .f2mod, under the cap, a usable name.</summary>
-	private static string CheckFile(string packagePath, string name)
+	/// <summary>The checks that need only the file: exists, matches <paramref name="packageExtension"/>, under the cap, a usable name.</summary>
+	private static string CheckFile(string packagePath, string name, string packageExtension)
 	{
 		if (packagePath.Length == 0 || !File.Exists(packagePath))
 		{
 			return $"No file at '{packagePath}'.";
 		}
 
-		if (!packagePath.EndsWith(ModWorkspace.PackageExtension, StringComparison.OrdinalIgnoreCase))
+		if (!packagePath.EndsWith(packageExtension, StringComparison.OrdinalIgnoreCase))
 		{
 			return $"'{System.IO.Path.GetFileName(packagePath)}' is not a mod package — only " +
-				$"{ModWorkspace.PackageExtension} files are installed.";
+				$"{packageExtension} files are installed.";
 		}
 
 		long length;
@@ -495,7 +500,7 @@ public static class ModInstaller
 			: string.Empty;
 	}
 
-	private static ModInstallResult InspectPackage(string packagePath, string name, string modsRoot)
+	private static ModInstallResult InspectPackage(string packagePath, string name, string modsRoot, string packageExtension)
 	{
 		if (!F2ModPackage.TryOpen(packagePath, out F2ModPackage? package, out string openError) || package is null)
 		{
@@ -546,7 +551,7 @@ public static class ModInstaller
 			// MOD JSON VALIDATION: ModValidate.Validate(path, text) per .json entry, as warnings.
 			warnings.AddRange(ValidateJson(package));
 
-			List<ModInstall> installed = ModWorkspace.DiscoverModInstalls(modsRoot);
+			List<ModInstall> installed = ModWorkspace.DiscoverModInstalls(modsRoot, packageExtension);
 			string self = System.IO.Path.GetFullPath(packagePath);
 			bool replaces = installed.Any(mod =>
 				string.Equals(mod.Name, name, StringComparison.OrdinalIgnoreCase) &&

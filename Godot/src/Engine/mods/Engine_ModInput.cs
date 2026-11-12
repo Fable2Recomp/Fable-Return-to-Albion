@@ -724,6 +724,191 @@ public static class ModInput
 	}
 
 	/// <summary>
+	/// Managed JSON reader for declared mod input actions in <paramref name="modsRoot"/> matching
+	/// <paramref name="packageExtension"/>. Safe to call in both Godot and headless unit tests.
+	/// </summary>
+	public static List<Action> ReadDeclaredFromJson(string modsRoot, string packageExtension)
+	{
+		var actions = new List<Action>();
+		foreach ((string mod, string text) in ModEntries.ReadEnabledText(modsRoot, packageExtension, ModInputPath))
+		{
+			System.Text.Json.JsonDocument doc;
+			try
+			{
+				doc = System.Text.Json.JsonDocument.Parse(text, new System.Text.Json.JsonDocumentOptions
+				{
+					AllowTrailingCommas = true,
+					CommentHandling = System.Text.Json.JsonCommentHandling.Skip,
+				});
+			}
+			catch (Exception)
+			{
+				continue;
+			}
+
+			using (doc)
+			{
+				if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				foreach (System.Text.Json.JsonProperty prop in doc.RootElement.EnumerateObject())
+				{
+					string actionName = prop.Name.Trim();
+					if (actionName.Length == 0 || prop.Value.ValueKind != System.Text.Json.JsonValueKind.Object)
+					{
+						continue;
+					}
+
+					Action? action = ParseJsonElement(mod, actionName, prop.Value);
+					if (action is null)
+					{
+						continue;
+					}
+
+					actions.RemoveAll(a => a.Name == action.Name);
+					actions.Add(action);
+				}
+			}
+		}
+
+		return actions;
+	}
+
+	private static Action? ParseJsonElement(string mod, string actionName, System.Text.Json.JsonElement binding)
+	{
+		string name = mod + "." + actionName;
+		string label = binding.TryGetProperty("label", out var labelEl) && labelEl.ValueKind == System.Text.Json.JsonValueKind.String
+			? (labelEl.GetString() ?? actionName)
+			: actionName;
+
+		var keys = new List<Key>();
+		foreach (string keyName in JsonNames(binding, "keys"))
+		{
+			Key key = SafeFindKeycode(keyName);
+			if (key != Key.None)
+			{
+				keys.Add(key);
+			}
+		}
+
+		var buttons = new List<JoyButton>();
+		var triggers = new List<JoyAxis>();
+		foreach (string buttonName in JsonNames(binding, "buttons"))
+		{
+			if (TryButton(buttonName, out JoyButton button))
+			{
+				buttons.Add(button);
+			}
+			else if (TryTrigger(buttonName, out JoyAxis trigger))
+			{
+				triggers.Add(trigger);
+			}
+		}
+
+		JoyAxis? axis = null;
+		int axisSign = 0;
+		if (binding.TryGetProperty("axis", out var axisEl) && axisEl.ValueKind == System.Text.Json.JsonValueKind.String)
+		{
+			string axisName = (axisEl.GetString() ?? string.Empty).Trim();
+			if (axisName.Length != 0)
+			{
+				if (axisName[0] == '+' || axisName[0] == '-')
+				{
+					axisSign = axisName[0] == '+' ? 1 : -1;
+					axisName = axisName[1..];
+				}
+
+				if (Enum.TryParse(axisName, true, out JoyAxis parsedAxis) && parsedAxis != JoyAxis.Invalid)
+				{
+					axis = parsedAxis;
+				}
+				else
+				{
+					axisSign = 0;
+				}
+			}
+		}
+
+		if (keys.Count == 0 && buttons.Count == 0 && triggers.Count == 0 && axis is null)
+		{
+			return null;
+		}
+
+		string chord = binding.TryGetProperty("chord", out var chordEl) && chordEl.ValueKind == System.Text.Json.JsonValueKind.String
+			? (chordEl.GetString() ?? string.Empty).Trim()
+			: string.Empty;
+		Key chordKey = Key.None;
+		if (ModInputClaims.ParseModifier(chord) == ModInputClaims.Modifier.Key)
+		{
+			chordKey = SafeFindKeycode(chord);
+			if (chordKey == Key.None)
+			{
+				chord = string.Empty;
+			}
+		}
+
+		return new Action(name, mod, label, keys, buttons, triggers, axis, axisSign)
+		{
+			Chord = chord,
+			ChordKey = chordKey,
+		};
+	}
+
+	private static Key SafeFindKeycode(string keyName)
+	{
+		string trimmed = keyName.Trim();
+		if (trimmed.Length == 0)
+		{
+			return Key.None;
+		}
+
+		if (Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			if (trimmed.Length == 1 && char.IsAsciiDigit(trimmed[0]))
+			{
+				return Key.Key0 + (trimmed[0] - '0');
+			}
+
+			return Enum.TryParse(trimmed, ignoreCase: true, out Key parsed) ? parsed : Key.None;
+		}
+
+		return OS.FindKeycodeFromString(trimmed);
+	}
+
+	private static IEnumerable<string> JsonNames(System.Text.Json.JsonElement binding, string field)
+	{
+		if (!binding.TryGetProperty(field, out var value))
+		{
+			yield break;
+		}
+
+		if (value.ValueKind == System.Text.Json.JsonValueKind.String)
+		{
+			string? single = value.GetString()?.Trim();
+			if (!string.IsNullOrEmpty(single))
+			{
+				yield return single!;
+			}
+		}
+		else if (value.ValueKind == System.Text.Json.JsonValueKind.Array)
+		{
+			foreach (System.Text.Json.JsonElement item in value.EnumerateArray())
+			{
+				if (item.ValueKind == System.Text.Json.JsonValueKind.String)
+				{
+					string? one = item.GetString()?.Trim();
+					if (!string.IsNullOrEmpty(one))
+					{
+						yield return one!;
+					}
+				}
+			}
+		}
+	}
+
+	/// <summary>
 	/// Every action the enabled mods declare, in load order, as the files state them — the read
 	/// alone, which the launcher's Controls group also takes; nothing is registered.
 	/// </summary>

@@ -46,8 +46,14 @@ public partial class GameInput
 		/// <summary>When the action presses it (<see cref="KeyContext"/>): always, only in play, only in a menu, only while the title's choices are up.</summary>
 		public KeyContext When { get; init; }
 
+		private readonly string? _hostAction;
+
 		/// <summary>For <see cref="KeyPress.HostAction"/>: the guest tick action posted once per press (the title's tick pump runs it).</summary>
-		public string HostAction { get; init; }
+		public string HostAction
+		{
+			get => _hostAction ?? string.Empty;
+			init => _hostAction = value;
+		}
 
 		/// <summary>Whether <paramref name="stored"/> means "the default": empty, today's, or a former one.</summary>
 		public bool IsDefault(string? stored)

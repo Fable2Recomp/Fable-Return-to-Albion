@@ -9,13 +9,13 @@ render_mode unshaded, cull_disabled, blend_mix, depth_draw_never;
 // because the atlas is padded with transparent black — without the cut, the bilinear tail of
 // the neighbouring cell haloes every character.
 
-uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;
 
 // THE GLYPH EDGE FROM A DISTANCE FIELD (Engine_SdfField): the atlas's signed distance, built on
 // the player's machine from the shipped coverage, 0.5 on the coverage's own half contour. The edge
 // is resolved per screen pixel at any magnification, and the mips filter the distance itself when
 // the text shrinks, so a thin stroke does not vanish between texels.
-uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable;
+uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable, hint_default_black;
 uniform bool use_distance_field = false;
 
 // Texture pixels per SHIPPED atlas texel — the atlas is supersampled at load.
@@ -47,11 +47,14 @@ uniform float alpha_floor = -1.0;
 // UI's template clones) crashed in InstanceUniforms::get_property_list (2026-10-20).
 uniform vec4 clip_seat = vec4(1.0, 1.0, 0.0, 0.0);
 
-// The title's text contract (Engine_UiTextContract): SnapGlyphs, ContrastFloor, CoverageGamma.
-// The neutral values (false, 1.0, 1.0) draw the shipped coverage as the shader did before them.
+// The title's text contract (Engine_UiTextContract): SnapGlyphs, ContrastFloor, CoverageGamma,
+// plus whether the mesh carries UV2 run-mode attributes (ColourRunsReplace / Outlines) and outlines.
+// The neutral values (false, 1.0, 1.0, false, false) draw the shipped coverage as the shader did before them.
 uniform bool snap_glyphs = false;
 uniform float contrast_floor = 1.0;
 uniform float coverage_gamma = 1.0;
+uniform bool has_uv2_modes = false;
+uniform bool outline = false;
 
 varying vec2 clip_world;
 
@@ -90,8 +93,11 @@ void fragment() {
 	vec2 uv_dx = dFdx(UV);
 	vec2 uv_dy = dFdy(UV);
 
-	// Screen pixels per SHIPPED atlas texel.
-	vec2 shipped = UV * vec2(textureSize(atlas, 0)) / max(supersample, 1.0);
+	// Screen pixels per SHIPPED atlas texel, plus UV step per shipped texel (computed once in uniform control flow).
+	vec2 atlas_size = max(vec2(textureSize(atlas, 0)), vec2(1.0));
+	float safe_supersample = max(supersample, 1.0);
+	vec2 shipped = UV * atlas_size / safe_supersample;
+	vec2 texel_step = safe_supersample / atlas_size;
 	float magnified = 1.0 / max(max(fwidth(shipped.x), fwidth(shipped.y)), 1e-5);
 
 	// Sample the distance field and compute its screen-space derivative unconditionally in uniform
@@ -134,13 +140,20 @@ void fragment() {
 
 	// A RUN THAT REPLACES (Engine_UiTextContract.RunReplaces, UV2 x = RGB, y = alpha): Fable 3's
 	// colour tags overwrite the element's colour and opacity with their own vector instead of
-	// multiplying. An OUTLINED run (Engine_UiTextContract.Outlined) adds 2 to x. Unmarked runs and
-	// every Fable 2 run carry (0, 0).
-	bool outlined = UV2.x > 1.5;
-	if (UV2.x - (outlined ? 2.0 : 0.0) > 0.5) {
-		tint.rgb = COLOR.rgb;
+	// multiplying. An OUTLINED run (Engine_UiTextContract.Outlined) adds 2 to x. Gated behind
+	// uniform booleans so Fable 2 glyph meshes (which omit ArrayType.TexUV2) never read UV2 or
+	// evaluate the outline loop on D3D12.
+	bool outlined = false;
+	float run_alpha = tint.a * opacity;
+	if (has_uv2_modes) {
+		outlined = outline && UV2.x > 1.5;
+		if (UV2.x - (outlined ? 2.0 : 0.0) > 0.5) {
+			tint.rgb = COLOR.rgb;
+		}
+		if (UV2.y > 0.5) {
+			run_alpha = COLOR.a;
+		}
 	}
-	float run_alpha = UV2.y > 0.5 ? COLOR.a : tint.a * opacity;
 
 	// THE COVERAGE CURVE. Godot mixes in linear light, where a half-covered pixel of light text on a
 	// dark page shows at about three quarters of the text's brightness, and dark text on parchment
@@ -152,10 +165,11 @@ void fragment() {
 		texel.a = mix(1.0 - pow(1.0 - texel.a, coverage_gamma), pow(texel.a, coverage_gamma), bright);
 	}
 
-	// THE OUTLINE (ui_text_outline.gdshaderinc).
-	float cover = outlined
-		? ui_text_outline_cover(atlas, distance_field, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, supersample)
-		: texel.a;
+	// THE OUTLINE (ui_text_outline.gdshaderinc), gated by uniform `outline` so non-outlined titles skip it statically.
+	float cover = texel.a;
+	if (outline && outlined) {
+		cover = ui_text_outline_cover(atlas, distance_field, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, texel_step);
+	}
 
 	// The scissor, clip rect, and alpha floor (evaluated after all derivative and texture operations).
 	if (clipped || colour.a * opacity <= alpha_floor || cover * run_alpha < 0.01) {

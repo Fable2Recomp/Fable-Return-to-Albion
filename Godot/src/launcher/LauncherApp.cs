@@ -21,7 +21,15 @@ public partial class LauncherApp : Control
 	};
 	private static readonly string[] FileMenuItems =
 	{
-		"Set Install Folder", "Uninstall", "", "Show Announcements", "Show Debug Panel", "Close",
+		"Set Shared Install Folder",
+		"Open Fable 2 Folder",
+		"Open Fable 3 Folder",
+		"Open Saves Folder",
+		"Open Logs Folder",
+		"",
+		"Show Announcements",
+		"Show Debug Panel",
+		"Close",
 	};
 	/// <summary>The About menu's entries every title shares, after the title's own.</summary>
 	private static readonly LauncherLink[] SharedAboutLinks =
@@ -113,6 +121,10 @@ public partial class LauncherApp : Control
 	private ModdingPanel _moddingPanel = null!;
 	private ReinstallPanel _reinstallPanel = null!;
 	private SavesPanel _savesPanel = null!;
+	private GameLaunchDock? _launchDock;
+	private Refii.Core.Engine_Title _selectedManageTitle = Refii.Core.Engine_Title.Fable2;
+	private bool _lastPipelineStripVisible;
+	private bool _lastGameRunning;
 	private float _menuBarHeight = 72.0f;
 
 	/// <summary>
@@ -185,6 +197,7 @@ public partial class LauncherApp : Control
 
 		LoadLauncherConfig();
 		LoadActiveTitle();
+		_selectedManageTitle = Refii.Core.Engine_Title.Active;
 		LauncherTheme.Load();
 
 		// The mods that ship with the app, packed into each title's mods folder before the Mods
@@ -306,7 +319,9 @@ public partial class LauncherApp : Control
 		return Refii.Core.Engine_AppRoot.Path;
 	}
 
-	private void MountGameAssets()
+	private void MountGameAssets() => MountGameAssets(Refii.Core.Engine_Title.Active);
+
+	private void MountGameAssets(Refii.Core.Engine_Title title)
 	{
 		Refii.Assets.Engine_GameAssets? assets = Refii.Assets.Engine_GameAssets.Instance;
 		if (assets is null)
@@ -329,10 +344,10 @@ public partial class LauncherApp : Control
 		// it reports "0 files" as though the mount worked, which reads as a broken
 		// reader rather than a missing install, and every consumer downstream then
 		// behaves as if it has assets.
-		string directory = Installer.ResolveGameDataDirectory();
+		string directory = Installer.ResolveGameDataDirectory(title);
 		if (directory.Length == 0)
 		{
-			Log("Game assets not mounted: no install found. Install the game first.");
+			Log($"{title.Name} assets not mounted: no install found. Install the game first.");
 			return;
 		}
 
@@ -484,23 +499,7 @@ public partial class LauncherApp : Control
 
 	private static void ApplyWindowIcon()
 	{
-		string external = LauncherPaths.GetLauncherAssetPath("icon.png");
-		if (File.Exists(external))
-		{
-			Image external_image = Image.LoadFromFile(external);
-			if (external_image is not null)
-			{
-				DisplayServer.SetIcon(external_image);
-				return;
-			}
-		}
-
-		var bundled = ResourceLoader.Load<Texture2D>("res://assets/launcher/icon.png");
-		Image? image = bundled?.GetImage();
-		if (image is not null)
-		{
-			DisplayServer.SetIcon(image);
-		}
+		Refii.Core.Engine_TitleIcon.Apply();
 	}
 
 	private Font? LoadLauncherFont()
@@ -699,6 +698,7 @@ public partial class LauncherApp : Control
 
 		// Panel content (settings, modding, reinstall) is uniform body text:
 		// refresh the panels' stored size and re-apply to existing nodes.
+		_launchDock?.ApplyStylesAndScale();
 		_settingsPanel.Configure(null, body, _infoStyle);
 		_moddingPanel.Configure(null, body, _infoStyle);
 		if (!ScaleAndroidInstallation(body)) _reinstallPanel.Configure(null, body, _infoStyle);
@@ -855,12 +855,13 @@ public partial class LauncherApp : Control
 	/// companions on first layout.</summary>
 	private void PlayEntrance()
 	{
+		Control actionTarget = (Control?)_launchDock ?? _primaryButton;
 		_settingsDrawer.Modulate = new Color(1, 1, 1, 0);
 		_settingsDrawer.Position = _settingsDrawerBasePos + new Vector2(28, 0);
 		_infoPanel.Modulate = new Color(1, 1, 1, 0);
 		_infoPanel.Position = _drawerBasePos + new Vector2(-28, 0);
-		_primaryButton.Modulate = new Color(1, 1, 1, 0);
-		_primaryButton.Position = new Vector2(0, 10);
+		actionTarget.Modulate = new Color(1, 1, 1, 0);
+		actionTarget.Position = new Vector2(0, 10);
 		_warningPanel.Modulate = new Color(1, 1, 1, 0);
 		_warningPanel.Position = _warningBasePos + new Vector2(0, 8);
 
@@ -868,7 +869,7 @@ public partial class LauncherApp : Control
 		tween.SetParallel(true);
 		TweenEntrance(tween, _settingsDrawer, _settingsDrawerBasePos, 0.30f, 0.0f);
 		TweenEntrance(tween, _infoPanel, _drawerBasePos, 0.30f, 0.03f);
-		TweenEntrance(tween, _primaryButton, Vector2.Zero, 0.30f, 0.06f);
+		TweenEntrance(tween, actionTarget, Vector2.Zero, 0.30f, 0.06f);
 		TweenEntrance(tween, _warningPanel, _warningBasePos, 0.30f, 0.12f);
 	}
 
@@ -928,17 +929,22 @@ public partial class LauncherApp : Control
 
 	private void ApplyStyles()
 	{
-		_screen = LauncherTitleScreen.Active;
+		// Unified home screen: always show the shared Fable: Return to Albion wordmark,
+		// window title, Albion background slideshow, and project info tabs.
+		_screen = LauncherTitleScreen.For(Refii.Core.Engine_Title.Fable2);
 		ApplyBackgrounds();
 
-		// THE HEADER IS A CARD: the wordmark and the three menus sit on a light grey
+		// THE HEADER IS A CARD: the wordmark and the File & About menus sit on a light grey
 		// translucent wash, sized to their content (see ApplyLayout) rather than a bar across
-		// the window, so the cream text reads over any artwork. Grey, not the parchment of the
-		// drawers: the header's text is cream and gold, and stays so.
+		// the window, so the cream text reads over any artwork.
 		StyleBoxFlat headerCard = GlassCard();
 		headerCard.BgColor = LauncherTokens.SlateGlass;
 		headerCard.BorderColor = new Color(1, 1, 1, 0.22f);
 		_menuBar.AddThemeStyleboxOverride("panel", headerCard);
+
+		// The legacy top-bar game switch button is retired in favor of the Dual-Game Launch Dock
+		// and per-tab GameScopeSelector pills.
+		_gameMenu.Visible = false;
 
 		_wordmark.BbcodeEnabled = true;
 		// The wordmark's width IS the card's: its minimum follows the text (the scene's fixed
@@ -1043,7 +1049,10 @@ public partial class LauncherApp : Control
 		// Reinstall tab, which wraps.
 		_primaryButton.ClipText = true;
 		_primaryButton.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-		BuildBuildControls();
+		if (_phone != null)
+		{
+			BuildBuildControls();
+		}
 
 		ApplySystemFont(_artCredit, LauncherScale.Font(LauncherTokens.CaptionSize));
 		_artCredit.AddThemeColorOverride("font_color", new Color(LauncherTokens.Cream, 0.72f));
@@ -1141,18 +1150,62 @@ public partial class LauncherApp : Control
 		_infoTab.Visible = false; // hidden while info drawer is open
 		_settingsTab.Visible = false; // hidden while debug drawer is open
 
+		_moddingPanel.SetTitle(_selectedManageTitle);
+		_reinstallPanel.SetTitle(_selectedManageTitle);
+		_savesPanel.SetTitle(_selectedManageTitle);
+		_moddingPanel.TitleChanged += SetSelectedManageTitle;
+		_reinstallPanel.TitleChanged += SetSelectedManageTitle;
+		_savesPanel.TitleChanged += SetSelectedManageTitle;
+		_moddingPanel.ModsChanged += () =>
+		{
+			_settingsPanel.ReloadForTitle();
+			RefreshState();
+		};
+
 		if (_phone == null)
 		{
-		_reinstallPanel.ReinstallRequested += StartInstallFlow;
-		_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
-		_reinstallPanel.PauseBuildRequested += OnPauseBuildPressed;
-		_reinstallPanel.ResumeBuildRequested += OnPauseBuildPressed;
-		_reinstallPanel.StopBuildRequested += OnStopBuildPressed;
-		_reinstallPanel.CompileShadersRequested += StartShaderBuild;
-		_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
+			_primaryButton.Visible = false;
+			_progressTrack.Visible = false;
+			_progressClip.Visible = false;
+			if (_buildControls is not null)
+			{
+				_buildControls.Visible = false;
+			}
+
+			_launchDock = new GameLaunchDock();
+			_actionPanel.AddChild(_launchDock);
+			_launchDock.Configure(_font, _buttonStyle, _infoStyle);
+			_launchDock.PrimaryActionRequested += OnDockPrimaryAction;
+			_launchDock.OverflowActionRequested += OnDockOverflowAction;
+			_launchDock.PauseBuildRequested += OnPauseBuildPressed;
+			_launchDock.StopBuildRequested += OnStopBuildPressed;
+
+			_reinstallPanel.ReinstallRequested += StartInstallFlow;
+			_reinstallPanel.BuildGameCodeRequested += StartGameCodeBuild;
+			_reinstallPanel.PauseBuildRequested += OnPauseBuildPressed;
+			_reinstallPanel.ResumeBuildRequested += OnPauseBuildPressed;
+			_reinstallPanel.StopBuildRequested += OnStopBuildPressed;
+			_reinstallPanel.CompileShadersRequested += StartShaderBuild;
+			_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
+			_reinstallPanel.UninstallRequested += OnUninstallTitle;
 		}
 
 		ApplyScale();
+	}
+
+	/// <summary>Synchronizes the selected per-game scope across the Modding, Install, and Saves tabs.</summary>
+	private void SetSelectedManageTitle(Refii.Core.Engine_Title title)
+	{
+		if (OnPhoneManageTitleSelected(title))
+		{
+			return;
+		}
+
+		_selectedManageTitle = title;
+		_moddingPanel.SetTitle(title);
+		_reinstallPanel.SetTitle(title);
+		_savesPanel.SetTitle(title);
+		RefreshDebugDrawer();
 	}
 
 	/// <summary>Connects shared menus to actions supported by the current platform.</summary>
@@ -1212,12 +1265,29 @@ public partial class LauncherApp : Control
 		_wordmark.Text = _screen.Wordmark;
 	}
 
-	/// <summary>The About menu: the active title's own links, then the shared ones.</summary>
+	/// <summary>The About menu: unique links across all titles, followed by shared links.</summary>
 	private void PopulateAboutMenu()
 	{
 		_aboutLinks.Clear();
-		_aboutLinks.AddRange(_screen.AboutLinks);
-		_aboutLinks.AddRange(SharedAboutLinks);
+		var seenUrls = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
+		{
+			foreach (LauncherLink link in LauncherTitleScreen.For(title).AboutLinks)
+			{
+				if (seenUrls.Add(link.Url))
+				{
+					_aboutLinks.Add(link);
+				}
+			}
+		}
+
+		foreach (LauncherLink link in SharedAboutLinks)
+		{
+			if (seenUrls.Add(link.Url))
+			{
+				_aboutLinks.Add(link);
+			}
+		}
 
 		PopupMenu popup = _aboutMenu.GetPopup();
 		popup.Clear();
@@ -1253,16 +1323,12 @@ public partial class LauncherApp : Control
 	}
 
 	/// <summary>
-	/// Rebuilds the page for the active title: its screen (wordmark, window title, notice, art,
-	/// info drawer, About links), and the settings, modding and install panels, which follow the
-	/// title's own config file, settings and folders.
+	/// Rebuilds the unified launcher header, backgrounds, info tabs, and panels.
 	/// </summary>
 	private void ApplyTitleScreen()
 	{
-		_screen = LauncherTitleScreen.Active;
+		_screen = LauncherTitleScreen.For(Refii.Core.Engine_Title.Fable2);
 		ApplyWordmark();
-		// The header card is sized to the wordmark, which just changed; measured once the label
-		// has laid the new text out.
 		CallDeferred(MethodName.ApplyLayout);
 		ApplyBackgrounds();
 		ApplyInfoTabs();
@@ -1396,15 +1462,31 @@ public partial class LauncherApp : Control
 		if (OnAndroidFileMenu(item)) return;  // the phone's own entries, LauncherApp.Android.cs
 		switch (item)
 		{
+			case "Set Shared Install Folder":
 			case "Set Install Folder":
 				ShowInstallFolderDialog();
 				break;
 
+			case "Open Fable 2 Folder":
+				OpenTitleDataFolder(Refii.Core.Engine_Title.Fable2);
+				break;
+
+			case "Open Fable 3 Folder":
+				OpenTitleDataFolder(Refii.Core.Engine_Title.Fable3);
+				break;
+
+			case "Open Saves Folder":
+				System.IO.Directory.CreateDirectory(Refii.Core.Engine_AppRoot.SaveDirectory);
+				OS.ShellOpen(Refii.Core.Engine_AppRoot.SaveDirectory);
+				break;
+
+			case "Open Logs Folder":
+				System.IO.Directory.CreateDirectory(Refii.Core.Engine_AppRoot.LogsDirectory);
+				OS.ShellOpen(Refii.Core.Engine_AppRoot.LogsDirectory);
+				break;
+
 			case "Uninstall":
-				Log(Installer.UninstallManagedFiles(out string uninstallLog)
-					? uninstallLog
-					: "No " + Installer.GetGameTitle() + " launcher-managed files to uninstall.");
-				RefreshState();
+				OnUninstallTitle(_selectedManageTitle);
 				break;
 
 			case "Show Info Panel":
@@ -1427,29 +1509,45 @@ public partial class LauncherApp : Control
 		}
 	}
 
+	private static void OpenTitleDataFolder(Refii.Core.Engine_Title title)
+	{
+		string dir = Installer.ResolveGameDataDirectory(title);
+		if (dir.Length == 0)
+		{
+			dir = title.AssetsDirectory;
+		}
+
+		System.IO.Directory.CreateDirectory(dir);
+		OS.ShellOpen(dir);
+	}
+
+	private void OnUninstallTitle(Refii.Core.Engine_Title title)
+	{
+		Log(Installer.UninstallManagedFiles(title, out string uninstallLog)
+			? uninstallLog
+			: "No " + title.Name + " launcher-managed files to uninstall.");
+		RefreshState();
+	}
+
 	private void ShowInstallFolderDialog()
 	{
-		var dialog = new FileDialog
-		{
-			FileMode = FileDialog.FileModeEnum.OpenDir,
-			Access = FileDialog.AccessEnum.Filesystem,
-			Title = "Select Install Folder",
-			CurrentDir = Installer.GetInstallBasePath(),
-			Size = new Vector2I(760, 520),
-		};
+		NativeFilePicker.OpenDirectory(
+			"Select Install Folder",
+			Installer.GetInstallBasePath(),
+			"LastGameFolderBrowseDir",
+			path =>
+			{
+				if (!IsInstanceValid(this))
+				{
+					return;
+				}
 
-		dialog.DirSelected += path =>
-		{
-			string withSeparator = path.EndsWith('/') || path.EndsWith('\\') ? path : path + "/";
-			Ini.SetString("GamePath", withSeparator, "Game");
-			Ini.Save();
-			Log("Install path set to: " + withSeparator);
-			RefreshState();
-			dialog.QueueFree();
-		};
-		dialog.Canceled += () => dialog.QueueFree();
-
-		AddChild(dialog);
+				string withSeparator = path.EndsWith('/') || path.EndsWith('\\') ? path : path + "/";
+				Ini.SetString("GamePath", withSeparator, "Game");
+				Ini.Save();
+				Log("Install path set to: " + withSeparator);
+				RefreshState();
+			});
 	}
 
 	private void Log(string message)
@@ -1475,7 +1573,10 @@ public partial class LauncherApp : Control
 		LauncherScale.Update(viewport);
 		ApplyScale();
 
-		LauncherLayout layout = LauncherLayout.Build(Vector2.Zero, viewport, _menuBarHeight);
+		bool dualDock = _launchDock is not null;
+		bool showPipelineStrip = dualDock && (_pipeline.Running || (_downloadProgress is not null && !_downloadProgress.IsComplete));
+		LauncherLayout layout = LauncherLayout.Build(
+			Vector2.Zero, viewport, _menuBarHeight, dualDock, showPipelineStrip);
 
 		// The header card hugs its content: the wordmark row and the menu row, plus the
 		// HeaderCol's own inset on both sides, floating off the corner like the other cards.
@@ -1508,20 +1609,28 @@ public partial class LauncherApp : Control
 		_actionBasePos = layout.ActionPos;
 		_actionPanel.Position = _actionBasePos;
 		_actionPanel.Size = layout.ActionSize;
-		_primaryButton.Position = Vector2.Zero;
-		_primaryButton.Size = layout.ActionSize;
-		_progressTrack.Position = Vector2.Zero;
-		_progressTrack.Size = layout.ActionSize;
-		_progressClip.Position = Vector2.Zero;
-		_progressClip.Size = new Vector2(0, layout.ActionSize.Y);
-		_progressFill.Position = Vector2.Zero;
-		_progressFill.Size = _primaryButton.Size;
-
-		// Beside the primary button, over the artwork: the one free space next to it.
-		if (_buildControls is not null)
+		if (_launchDock is not null)
 		{
-			_buildControls.Position = new Vector2(layout.ActionSize.X + LauncherScale.Px(10.0f), 0);
-			_buildControls.Size = new Vector2(LauncherScale.Px(240.0f), layout.ActionSize.Y);
+			_launchDock.Position = Vector2.Zero;
+			_launchDock.Size = layout.ActionSize;
+		}
+		else
+		{
+			_primaryButton.Position = Vector2.Zero;
+			_primaryButton.Size = layout.ActionSize;
+			_progressTrack.Position = Vector2.Zero;
+			_progressTrack.Size = layout.ActionSize;
+			_progressClip.Position = Vector2.Zero;
+			_progressClip.Size = new Vector2(0, layout.ActionSize.Y);
+			_progressFill.Position = Vector2.Zero;
+			_progressFill.Size = _primaryButton.Size;
+
+			// Beside the primary button, over the artwork: the one free space next to it.
+			if (_buildControls is not null)
+			{
+				_buildControls.Position = new Vector2(layout.ActionSize.X + LauncherScale.Px(10.0f), 0);
+				_buildControls.Size = new Vector2(LauncherScale.Px(240.0f), layout.ActionSize.Y);
+			}
 		}
 
 		_drawerBasePos = layout.InfoPos;
@@ -1620,11 +1729,11 @@ public partial class LauncherApp : Control
 		}
 	}
 
-	/// <summary>Displays progress and the primary action using the active platform backend.</summary>
+	/// <summary>Displays progress and per-title actions across the Dual-Game Launch Dock.</summary>
 	private void RefreshState()
 	{
 		if (_phone != null) { RefreshAndroidState(); return; }
-		bool assetsExist = Installer.AssetsExist();
+
 		bool installedBuildExists = Installer.InstalledBuildExists();
 		bool canDownloadBuild = ManagedDownloads.HasDownloadSource();
 		bool updateAvailable = _updates.UpdateAvailable;
@@ -1637,87 +1746,75 @@ public partial class LauncherApp : Control
 		}
 
 		bool downloadInProgress = _downloadProgress is not null && !_downloadProgress.IsComplete;
+		string downloadLabel = downloadInProgress
+			? ManagedDownloader.BuildProgressButtonLabel(_downloadProgress!)
+			: string.Empty;
 		bool gameIsRunning = _launch.GameIsRunning;
+		_lastGameRunning = gameIsRunning;
 
-		string gameTitle = Installer.GetGameTitle();
-		string label = "Play " + gameTitle;
-		bool enabled = true;
-		bool compactFont = false;
+		if (_launchDock is not null)
+		{
+			string pipelineLabel = _pipeline.Label;
+			string pipelineStatus = _pipeline.DisplayStatus();
+			float pipelineFraction = _pipeline.Fraction;
+			var cardStates = new Dictionary<Refii.Core.Engine_Title, TitleCardState>();
 
-		if (isoInProgress)
-		{
-			label = ProgressLabel.BuildButtonLabel(_pipeline.Label, _pipeline.DisplayStatus());
-			enabled = false;
-			compactFont = true;
-		}
-		else if (downloadInProgress)
-		{
-			label = ManagedDownloader.BuildProgressButtonLabel(_downloadProgress!);
-			enabled = false;
-			compactFont = true;
-		}
-		else if (gameIsRunning)
-		{
-			label = gameTitle + " Running";
-			enabled = false;
-		}
-		else if (!assetsExist)
-		{
-			// The whole install runs from here: extract the ISO, install the title update,
-			// generate the game code and compile it.
-			label = "Install " + gameTitle;
-		}
-		// The game is installed but this app has no runtime for it yet (a title whose ReXGlue
-		// instance is not built): nothing the launcher can do will make it playable.
-		else if (!Installer.TitleRuntimeExists())
-		{
-			label = Refii.Core.Engine_Title.Active.RemakeName + " Runtime Not Built";
-			enabled = false;
-			compactFont = true;
-		}
-		else if (Recompile.GameCodeBuild.NeedsBuildCached(out _))
-		{
-			label = "Build Game Code";
-			compactFont = true;
-		}
-		// AFTER the two above, and last, because this one is no longer about the player's
-		// install at all — it means refii's OWN runtime is missing, which is a broken
-		// package. Ordered first, it hid "Install Fable 2" behind a dead end that no
-		// action in the launcher could clear.
-		else if (!installedBuildExists && canDownloadBuild)
-		{
-			label = "Download " + Platform.ExecutableName;
-		}
-		else if (!installedBuildExists)
-		{
-			label = "Missing Runtime Files";
-		}
-		else if (canDownloadBuild && updateAvailable)
-		{
-			label = "Update Available";
-		}
+			foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
+			{
+				bool assets = Installer.AssetsExist(title);
+				bool titleRuntime = Installer.TitleRuntimeExists(title);
+				string needsReason = string.Empty;
+				bool needsBuild = assets && titleRuntime && Recompile.GameCodeBuild.NeedsBuildCached(title, out needsReason);
 
-		_primaryButton.Text = label;
-		_primaryButton.Disabled = !enabled;
-		_progressTrack.Visible = !enabled;
-		_progressTrack.Position = _primaryButton.Position;
-		_progressTrack.Size = _primaryButton.Size;
+				cardStates[title] = GameLaunchDock.EvaluateCardState(
+					title: title,
+					assetsExist: assets,
+					titleRuntimeExists: titleRuntime,
+					needsBuild: needsBuild,
+					needsBuildReason: needsReason,
+					installedBuildExists: installedBuildExists,
+					canDownloadBuild: canDownloadBuild,
+					updateAvailable: updateAvailable,
+					downloadInProgress: downloadInProgress,
+					downloadLabel: downloadLabel,
+					gameRunning: gameIsRunning,
+					runningGameTitle: _launch.RunningTitle,
+					pipelineRunning: isoInProgress,
+					pipelineTitle: _pipeline.ActiveTitle,
+					pipelineLabel: pipelineLabel,
+					pipelineStatus: pipelineStatus,
+					pipelineFraction: pipelineFraction);
+			}
 
-		float fraction = Mathf.Clamp(_pipeline.Fraction, 0.0f, 1.0f);
-		_progressClip.Visible = !enabled && fraction > 0.0f;
-		_progressClip.Position = _primaryButton.Position;
-		_progressClip.Size = new Vector2(_primaryButton.Size.X * fraction, _primaryButton.Size.Y);
-		_progressFill.Position = Vector2.Zero;
-		_progressFill.Size = _primaryButton.Size;
-		ApplyFont(_primaryButton, compactFont
-			? LauncherScale.Font(LauncherTokens.BodySize)
-			: LauncherScale.Font(LauncherTokens.DisplaySize));
+			bool showStrip = isoInProgress || downloadInProgress;
+			string stripSummary = isoInProgress
+				? ProgressLabel.BuildButtonLabel(pipelineLabel, pipelineStatus)
+				: downloadLabel;
+			float stripFraction = isoInProgress ? pipelineFraction : -1.0f;
+			Recompile.BuildControl? control = _pipeline.Control;
+
+			_launchDock.UpdateStates(
+				cardStates,
+				showStrip,
+				stripSummary,
+				stripFraction,
+				showBuildControls: control is not null,
+				isPaused: control?.IsPaused ?? false,
+				isStopping: control?.IsStopping ?? false);
+
+			if (showStrip != _lastPipelineStripVisible)
+			{
+				_lastPipelineStripVisible = showStrip;
+				ApplyLayout();
+			}
+		}
 
 		if (_warningLabel is not null && _warningPanel is not null)
 		{
 			if (_pipeline.Error.Length != 0 && !_pipeline.Running)
 			{
-				_warningLabel.Text = _pipeline.Error;
+				string prefix = _pipeline.LastErrorTitle is { } failedTitle ? failedTitle.Name + ": " : string.Empty;
+				_warningLabel.Text = prefix + _pipeline.Error;
 				_warningPanel.Visible = true;
 			}
 			else if (_screen.WarningText.Length != 0)
@@ -1734,8 +1831,6 @@ public partial class LauncherApp : Control
 
 		RefreshBuildControls();
 		RefreshInfoBody();
-		// The Install tab shows the running step and the last failure; it has to follow the
-		// state, not only the tab change.
 		RefreshDebugDrawer();
 	}
 
@@ -1784,6 +1879,12 @@ public partial class LauncherApp : Control
 	{
 		if (_buildControls is null || _pauseBuildButton is null || _stopBuildButton is null)
 		{
+			return;
+		}
+
+		if (_launchDock is not null)
+		{
+			_buildControls.Visible = false;
 			return;
 		}
 
@@ -1839,16 +1940,21 @@ public partial class LauncherApp : Control
 		if (isReinstall)
 		{
 			bool running = _pipeline.Running;
+			Refii.Core.Engine_Title scoped = _reinstallPanel.SelectedTitle;
+			bool runningForScoped = running && (_pipeline.ActiveTitle is null || _pipeline.ActiveTitle == scoped);
+			bool errorForScoped = !running && _pipeline.Error.Length != 0 &&
+				(_pipeline.LastErrorTitle is null || _pipeline.LastErrorTitle == scoped);
+
 			_reinstallPanel.Refresh(running, _launch.GameIsRunning);
 			_reinstallPanel.SetBuildControls(
-				_pipeline.Control is not null,
+				runningForScoped && _pipeline.Control is not null,
 				_pipeline.Control?.IsPaused ?? false,
 				_pipeline.Control?.IsStopping ?? false);
 			_reinstallPanel.SetProgress(
-				running ? _pipeline.Label : string.Empty,
-				running ? _pipeline.DisplayStatus()
-						: (_pipeline.Error.Length != 0 ? _pipeline.Status : string.Empty),
-				_pipeline.Error);
+				runningForScoped ? _pipeline.Label : string.Empty,
+				runningForScoped ? _pipeline.DisplayStatus()
+						: (errorForScoped ? _pipeline.Status : string.Empty),
+				errorForScoped ? _pipeline.Error : string.Empty);
 		}
 	}
 
@@ -1993,6 +2099,83 @@ public partial class LauncherApp : Control
 		CallDeferred(nameof(RefreshInfoBody));
 	}
 
+	/// <summary>Handles primary button clicks on a specific card in <see cref="GameLaunchDock"/>.</summary>
+	private void OnDockPrimaryAction(Refii.Core.Engine_Title title, TitleCardActionKind action)
+	{
+		if (Engine.IsEditorHint())
+		{
+			return;
+		}
+
+		RememberActiveAndScopedTitle(title);
+		switch (action)
+		{
+			case TitleCardActionKind.Install:
+				StartInstallFlow(title);
+				break;
+
+			case TitleCardActionKind.BuildGameCode:
+				StartGameCodeBuild(title);
+				break;
+
+			case TitleCardActionKind.DownloadRuntime:
+				StartBuildDownload();
+				break;
+
+			case TitleCardActionKind.Play:
+				ExecutePrimaryForTitle(title, forceElevated: false);
+				break;
+		}
+	}
+
+	/// <summary>Handles overflow menu selections on a card in <see cref="GameLaunchDock"/>.</summary>
+	private void OnDockOverflowAction(Refii.Core.Engine_Title title, TitleCardOverflowAction action)
+	{
+		SetSelectedManageTitle(title);
+		switch (action)
+		{
+			case TitleCardOverflowAction.RunAsAdmin:
+				RememberActiveAndScopedTitle(title);
+				ExecutePrimaryForTitle(title, forceElevated: true);
+				break;
+
+			case TitleCardOverflowAction.OpenDataFolder:
+				OpenTitleDataFolder(title);
+				break;
+
+			case TitleCardOverflowAction.ManageInstall:
+				OpenDrawerToTab(2, title);
+				break;
+
+			case TitleCardOverflowAction.ManageMods:
+				OpenDrawerToTab(1, title);
+				break;
+
+			case TitleCardOverflowAction.ViewSaves:
+				OpenDrawerToTab(3, title);
+				break;
+		}
+	}
+
+	private void OpenDrawerToTab(int tabIndex, Refii.Core.Engine_Title title)
+	{
+		SetSelectedManageTitle(title);
+		_settingsTabs.CurrentTab = tabIndex;
+		RefreshDebugDrawer();
+		if (!_settingsDrawer.Visible)
+		{
+			ShowSettingsDrawer();
+		}
+	}
+
+	private void RememberActiveAndScopedTitle(Refii.Core.Engine_Title title)
+	{
+		Refii.Core.Engine_Title.Active = title;
+		Ini.SetString(ActiveTitleKey, title.Key, TitleSection);
+		Ini.Save();
+		SetSelectedManageTitle(title);
+	}
+
 	/// <summary>Routes the user's primary action to the platform's installation or game launch path.</summary>
 	private void OnPrimaryPressed()
 	{
@@ -2002,16 +2185,23 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		if (!Installer.AssetsExist())
+		ExecutePrimaryForTitle(Refii.Core.Engine_Title.Active, forceElevated: false);
+	}
+
+	private void ExecutePrimaryForTitle(Refii.Core.Engine_Title title, bool forceElevated)
+	{
+		_settingsPanel.SaveIfDirty();
+
+		if (!Installer.AssetsExist(title))
 		{
-			StartInstallFlow();
+			StartInstallFlow(title);
 			return;
 		}
 
-		if (Recompile.GameCodeBuild.NeedsBuild(out string gameCodeReason))
+		if (Recompile.GameCodeBuild.NeedsBuild(title, out string gameCodeReason))
 		{
-			Log(gameCodeReason + " Building it now.");
-			StartGameCodeBuild();
+			Log($"{title.Name}: {gameCodeReason} Building it now.");
+			StartGameCodeBuild(title);
 			return;
 		}
 
@@ -2022,62 +2212,57 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		// THE GAME IS A CHILD PROCESS. Godot still hosts the guest and owns the renderer —
-		// what changed is WHICH process does it.
-		//
-		// The window used to open in this process, which left the launcher standing but unable
-		// to Play a second time: `RefiiHostStartup` refuses a restart because the recompiled
-		// guest takes fixed memory reservations once per process. Spawning a copy of this
-		// executable gives every Play a clean address space, and keeps a guest crash out of
-		// the launcher.
 		if (_launch.GameIsRunning)
 		{
-			Log("The game is already running.");
+			Log("A game session is already running.");
 			return;
 		}
 
-		// TRACY'S ADVANCED DATA NEEDS AN ELEVATED GAME on Windows (kernel event tracing), and the
-		// launcher never runs elevated or runs Tracy itself — so the question is put here, as the
-		// player commits to the launch. Unattended, nobody can answer a permission prompt.
-		if (Refii.Game.GameElevatedLaunch.Wanted(Refii.Core.Engine_RefiiConfig.Read(out _)))
+		if (forceElevated)
+		{
+			StartGame(title, elevated: true);
+			return;
+		}
+
+		if (Refii.Game.GameElevatedLaunch.Wanted(Refii.Core.Engine_RefiiConfig.ReadFor(title, out _)))
 		{
 			if (Unattended)
 			{
-				Log("Unattended: starting the game without Tracy's advanced data (it needs Administrator).");
-				StartGame(elevated: false);
+				Log($"Unattended: starting {title.Name} without Tracy's advanced data (it needs Administrator).");
+				StartGame(title, elevated: false);
 				return;
 			}
 
-			AskChoice("Run the game as Administrator?",
+			AskChoice($"Run {title.Name} as Administrator?",
 				"Tracy's advanced data is on (tracy_advanced): CPU sampling with call stacks and " +
 				"context switches for the game's threads. On Windows that comes from the kernel's " +
 				"event tracing, which only an Administrator may start. Windows will ask for " +
 				"permission next. Without it the game runs normally and those parts of a capture " +
 				"stay empty.",
-				new ChoiceDialog.Choice("Run as Administrator", () => StartGame(elevated: true)),
-				new ChoiceDialog.Choice("Run without the advanced data", () => StartGame(elevated: false)));
+				new ChoiceDialog.Choice("Run as Administrator", () => StartGame(title, elevated: true)),
+				new ChoiceDialog.Choice("Run without the advanced data", () => StartGame(title, elevated: false)));
 			return;
 		}
 
-		StartGame(elevated: false);
+		StartGame(title, elevated: false);
 	}
 
-	private void StartGame(bool elevated)
+	private void StartGame(Refii.Core.Engine_Title title, bool elevated)
 	{
 		if (_launch.GameIsRunning)
 		{
-			Log("The game is already running.");
+			Log("A game session is already running.");
 			return;
 		}
 
 		if (!Refii.Game.GameChildProcess.Spawn(
-				elevated, out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
+				title, elevated, out Refii.Launcher.Core.ProcessHandle handle, out string spawnError))
 		{
-			Log("Failed to start the game. " + spawnError);
+			Log($"Failed to start {title.Name}. " + spawnError);
 			return;
 		}
 
-		_launch.AdoptGameProcess(handle);
+		_launch.AdoptGameProcess(handle, title);
 		_launcherModeBeforePlay = DisplayServer.WindowGetMode((int)DisplayServer.MainWindowId);
 		if (_launcherModeBeforePlay == DisplayServer.WindowMode.Minimized)
 		{
@@ -2094,7 +2279,7 @@ public partial class LauncherApp : Control
 			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
 		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: true);
 		Refii.Game.GameElevatedLaunch.TrimProcessWorkingSet();
-		Log($"Started the game{(elevated ? " as Administrator" : string.Empty)} (pid {handle.ProcessId}); " +
+		Log($"Started {title.Name}{(elevated ? " as Administrator" : string.Empty)} (pid {handle.ProcessId}); " +
 			"the launcher will return when it closes.");
 		RefreshState();
 	}
@@ -2152,7 +2337,7 @@ public partial class LauncherApp : Control
 	}
 
 	/// <summary>The whole install: the disc, the game code, and the classic shaders when asked.</summary>
-	private void StartInstall(string isoPath, string xexpPath, bool classicShaders)
+	private void StartInstall(Refii.Core.Engine_Title title, string isoPath, string xexpPath, bool classicShaders)
 	{
 		var steps = new List<Install.InstallPipeline.Step>
 		{
@@ -2163,53 +2348,56 @@ public partial class LauncherApp : Control
 		{
 			steps.Add(new(Install.InstallPipeline.StepKind.ClassicShaders));
 		}
-		StartSteps(steps);
+		StartSteps(title, steps);
 	}
 
-	/// <summary>Runs the game code build on its own, from the primary button or the Install tab.</summary>
-	private void StartGameCodeBuild()
+	/// <summary>Runs the game code build on its own, from a dock card or the Install tab.</summary>
+	private void StartGameCodeBuild(Refii.Core.Engine_Title title)
 	{
 		if (_pipeline.Running || _launch.GameIsRunning)
 		{
 			return;
 		}
 
-		AskBuildSpeed("Build Game Code", useAllCores =>
+		AskBuildSpeed($"Build {title.Name} Game Code", useAllCores =>
 		{
 			Recompile.GameCodeBuild.UseAllCores = useAllCores;
-			StartSteps(new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.GameCode) });
+			StartSteps(title, new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.GameCode) });
 		});
 	}
 
-	private void StartShaderBuild() =>
-		StartSteps(new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.ClassicShaders) });
+	private void StartShaderBuild(Refii.Core.Engine_Title title) =>
+		StartSteps(title, new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.ClassicShaders) });
 
-	private void StartAssetPrebuild() =>
-		StartSteps(new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.ModernizedAssets) });
+	private void StartAssetPrebuild(Refii.Core.Engine_Title title) =>
+		StartSteps(title, new[] { new Install.InstallPipeline.Step(Install.InstallPipeline.StepKind.ModernizedAssets) });
 
-	private void StartSteps(IReadOnlyList<Install.InstallPipeline.Step> steps)
+	private void StartSteps(Refii.Core.Engine_Title title, IReadOnlyList<Install.InstallPipeline.Step> steps)
 	{
 		if (_pipeline.Running || _launch.GameIsRunning)
 		{
 			return;
 		}
 
-		_ = RunPipelineAsync(steps);
+		_ = RunPipelineAsync(title, steps);
 	}
 
 	/// <summary>
-	/// Runs the steps and settles the launcher afterwards: the step ticks, the mounted assets
-	/// after a fresh install, and the unattended run's halt on a failed game code build.
+	/// Runs the steps for <paramref name="title"/> and settles the launcher afterwards: the step ticks,
+	/// the mounted assets after a fresh install, and the unattended run's halt on a failed game code build.
 	/// </summary>
-	private async System.Threading.Tasks.Task RunPipelineAsync(IReadOnlyList<Install.InstallPipeline.Step> steps)
+	private async System.Threading.Tasks.Task RunPipelineAsync(
+		Refii.Core.Engine_Title title,
+		IReadOnlyList<Install.InstallPipeline.Step> steps)
 	{
 		// THE SETTINGS AS THEY ARE ON DISK. The player has very likely just chosen a look in the
 		// settings panel, and building for the settings they abandoned would be a long wait for
 		// the wrong artefacts.
 		_settingsPanel.SaveIfDirty();
+		SetSelectedManageTitle(title);
 		RefreshState();
 
-		Install.InstallPipeline.Outcome outcome = await _pipeline.RunAsync(steps, Log);
+		Install.InstallPipeline.Outcome outcome = await _pipeline.RunAsync(title, steps, Log);
 
 		Installer.InvalidateReinstallStepStatus();
 		Recompile.GameCodeBuild.InvalidateStatus();
@@ -2222,10 +2410,10 @@ public partial class LauncherApp : Control
 
 		if (outcome.Ok)
 		{
-			Log(installed ? "Installation complete." : "Done.");
+			Log(installed ? $"{title.Name} installation complete." : $"{title.Name}: Done.");
 			if (installed)
 			{
-				MountGameAssets();
+				MountGameAssets(title);
 			}
 		}
 		else
@@ -2233,7 +2421,7 @@ public partial class LauncherApp : Control
 			if (!outcome.Stopped)
 			{
 				string stepName = outcome.FailedStep.HasValue ? outcome.FailedStep.Value.ToString() : "Install";
-				Log($"{stepName} failed: {outcome.Error}");
+				Log($"{title.Name} {stepName} failed: {outcome.Error}");
 			}
 
 			if (!outcome.Stopped && Unattended &&
@@ -2248,19 +2436,19 @@ public partial class LauncherApp : Control
 		RefreshState();
 	}
 
-	private void StartInstallFlow()
+	private void StartInstallFlow(Refii.Core.Engine_Title title)
 	{
-		var dialog = new InstallDialog(null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle);
+		SetSelectedManageTitle(title);
+		var dialog = new InstallDialog(title, null, LauncherScale.Font(LauncherTokens.BodySize), _baseStyle);
 
 		// ISO and title update, then the one build decision, then the whole pipeline runs unattended:
-		// extract, generate, compile. Asking again afterwards would strand the install
-		// half-done behind a second button nobody knows to press.
+		// extract, generate, compile.
 		dialog.InstallRequested += (iso, xexp, classicShaders) => AskBuildSpeed(
-			"Install " + Installer.GetGameTitle(),
+			"Install " + title.Name,
 			useAllCores =>
 			{
 				Recompile.GameCodeBuild.UseAllCores = useAllCores;
-				StartInstall(iso, xexp, classicShaders);
+				StartInstall(title, iso, xexp, classicShaders);
 			});
 
 		AddChild(dialog);
@@ -2409,7 +2597,7 @@ public partial class LauncherApp : Control
 			RefreshState();
 		}
 
-		if (_downloadProgress is not null || _launch.GameIsRunning != _primaryButton.Disabled)
+		if (_downloadProgress is not null || _launch.GameIsRunning != _lastGameRunning)
 		{
 			RefreshState();
 		}

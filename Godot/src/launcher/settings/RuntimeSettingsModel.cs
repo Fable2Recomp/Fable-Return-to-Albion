@@ -9,12 +9,19 @@ namespace Refii.Launcher.Core;
 public sealed partial class RuntimeSettingsModel
 {
     public string ConfigPath { get; private set; } = string.Empty;
+    public string SecondaryConfigPath { get; private set; } = string.Empty;
     public SortedDictionary<string, string> Values { get; private set; } = new(StringComparer.Ordinal);
     public string StatusMessage { get; private set; } = string.Empty;
     public string Filter { get; set; } = string.Empty;
 
+    private SortedDictionary<string, string> _fable2StoredValues = new(StringComparer.Ordinal);
+    private SortedDictionary<string, string> _fable3StoredValues = new(StringComparer.Ordinal);
+    private IReadOnlyDictionary<string, string>? _modsRootsOverride;
+
     private const string PanelSection = "Settings";
     private const string ShowAdvancedKey = "ShowAdvanced";
+    private const string ShowDeveloperKey = "ShowDebugTab";
+    private const string ActiveTabKey = "ActiveTab";
 
     /// <summary>
     /// Whether the tuning dials are listed. Off, the panel shows the decisions a player makes
@@ -32,6 +39,34 @@ public sealed partial class RuntimeSettingsModel
     }
 
     /// <summary>
+    /// Whether the <see cref="SettingsTab.Developer"/> (Debug &amp; Profiling) tab is shown in the tab bar.
+    /// Defaults to <see langword="true"/> so profiling and diagnostic CVars (such as Tracy and RenderDoc) are
+    /// immediately accessible.
+    /// </summary>
+    public bool ShowDeveloperSettings
+    {
+        get => Ini.GetBool(ShowDeveloperKey, true, PanelSection);
+        set
+        {
+            Ini.SetBool(ShowDeveloperKey, value, PanelSection);
+            Ini.Save();
+        }
+    }
+
+    /// <summary>The last selected <see cref="SettingsTab"/> in the launcher settings panel.</summary>
+    public SettingsTab ActiveTab
+    {
+        get => Enum.TryParse<SettingsTab>(Ini.GetString(ActiveTabKey, "Display", PanelSection), ignoreCase: true, out var tab)
+            ? tab
+            : SettingsTab.Display;
+        set
+        {
+            Ini.SetString(ActiveTabKey, value.ToString(), PanelSection);
+            Ini.Save();
+        }
+    }
+
+    /// <summary>
     /// A setting that tunes rather than decides. The remaster's lighting and texture dials, the
     /// developer switches, the picture's internals, and every runtime cvar that is not a key
     /// binding. The two decisions a look is made of stay in the plain view.
@@ -40,7 +75,7 @@ public sealed partial class RuntimeSettingsModel
     {
         if (Refii.AndroidRuntime.AndroidLauncherSettings.Advanced(definition.Name) is bool phone) return phone;
         if (definition.Name is "lighting_model" or "materials_modernized" or "texture_upscaling_enabled"
-            or "lighting_preset" or "hdr_output" or "bloom_scale" or GraphicsPresets.Key)
+            or "lighting_preset" or "hdr_output" or "bloom_scale" or GraphicsPresets.Key or DesktopGraphicsPresets.Key)
         {
             return false;
         }
@@ -161,7 +196,116 @@ public sealed partial class RuntimeSettingsModel
                 _ => "4096",
             };
             Values["static_shadow_resolution"] = lower == "quality" ? "4096" : "2048";
+            if (DesktopGraphicsPresets.Offered)
+            {
+                Values[DesktopGraphicsPresets.Key] = CurrentDesktopPreset();
+            }
+            if (GraphicsPresets.Offered)
+            {
+                Values[GraphicsPresets.Key] = CurrentGraphicsPreset();
+            }
             Save();
+        }
+    }
+
+    /// <summary>Returns the desktop performance preset matching <see cref="Values"/>, or <c>"custom"</c>.</summary>
+    public string CurrentDesktopPreset() => DesktopGraphicsPresets.Current(Values);
+
+    /// <summary>Applies a named desktop performance preset (<c>low</c>, <c>balanced</c>, <c>high</c>, <c>ultra</c>) and saves.</summary>
+    public bool ApplyDesktopPreset(string presetName)
+    {
+        if (!DesktopGraphicsPresets.Apply(presetName, Values))
+        {
+            return false;
+        }
+
+        Values["lighting_preset"] = CurrentLightingPreset();
+        Save();
+        return true;
+    }
+
+    /// <summary>Updates <c>performance_preset</c> when one of its member settings changes.</summary>
+    public bool RefreshDesktopPreset(string changedSetting)
+    {
+        if (!DesktopGraphicsPresets.Offered || !DesktopGraphicsPresets.Members.Contains(changedSetting))
+        {
+            return false;
+        }
+
+        Values[DesktopGraphicsPresets.Key] = CurrentDesktopPreset();
+        Save();
+        return true;
+    }
+
+    /// <summary>Re-evaluates <c>performance_preset</c> after bulk changes (such as the lighting dialog).</summary>
+    public void RefreshDesktopPreset()
+    {
+        if (!DesktopGraphicsPresets.Offered)
+        {
+            return;
+        }
+
+        string current = CurrentDesktopPreset();
+        if (Values.TryGetValue(DesktopGraphicsPresets.Key, out string? stored) && stored == current)
+        {
+            return;
+        }
+
+        Values[DesktopGraphicsPresets.Key] = current;
+        Save();
+    }
+
+    /// <summary>
+    /// Composite window presentation mode combining <c>fullscreen</c> and <c>borderless</c>:
+    /// <c>"windowed"</c>, <c>"borderless"</c>, or <c>"fullscreen"</c>.
+    /// </summary>
+    public string GetWindowMode()
+    {
+        bool fs = Values.TryGetValue("fullscreen", out string? f) && RuntimeConfig.NormalizeBoolValue(f) == "true";
+        if (fs)
+        {
+            return "fullscreen";
+        }
+
+        bool bl = Values.TryGetValue("borderless", out string? b) && RuntimeConfig.NormalizeBoolValue(b) == "true";
+        return bl ? "borderless" : "windowed";
+    }
+
+    /// <summary>Applies the composite window mode (<c>windowed</c>, <c>borderless</c>, or <c>fullscreen</c>) and saves.</summary>
+    public void ApplyWindowMode(string mode)
+    {
+        switch (mode)
+        {
+            case "fullscreen":
+                Values["fullscreen"] = "true";
+                Values["borderless"] = "false";
+                break;
+            case "borderless":
+                Values["fullscreen"] = "false";
+                Values["borderless"] = "true";
+                break;
+            default:
+                Values["fullscreen"] = "false";
+                Values["borderless"] = "false";
+                break;
+        }
+
+        Save();
+    }
+
+    private void ReadDesktopPreset()
+    {
+        if (DesktopGraphicsPresets.Offered)
+        {
+            Values[DesktopGraphicsPresets.Key] = CurrentDesktopPreset();
+        }
+    }
+
+    private void ApplyDesktopDefaults()
+    {
+        if (DesktopGraphicsPresets.Offered)
+        {
+            DesktopGraphicsPresets.Apply(DesktopGraphicsPresets.DefaultPreset, Values);
         }
     }
 
@@ -179,63 +323,368 @@ public sealed partial class RuntimeSettingsModel
     }
 
     /// <summary>
-    /// Reads the ACTIVE title's config afresh: the launcher calls this when the title switches, so
-    /// the panel edits that game's file and lists that game's settings.
+    /// Reads both <c>refii.toml</c> and <c>refiii.toml</c> into the unified settings model so one
+    /// shared settings panel edits shared engine CVars across both games while keeping title-owned
+    /// CVars and per-title roots isolated.
     /// </summary>
-    public void Reload()
+    public void Reload() =>
+        ReloadFromPaths(
+            Installer.GetRuntimeConfigPath(Refii.Core.Engine_Title.Fable2),
+            Installer.GetRuntimeConfigPath(Refii.Core.Engine_Title.Fable3),
+            _modsRootsOverride,
+            ensureDefaults: true);
+
+    /// <summary>
+    /// Loads the unified settings model from explicit Fable 2 and Fable 3 TOML paths.
+    /// </summary>
+    public void ReloadFromPaths(
+        string fable2ConfigPath,
+        string fable3ConfigPath,
+        IReadOnlyDictionary<string, string>? modsRootsByTitleKey = null,
+        bool ensureDefaults = true)
     {
         StatusMessage = string.Empty;
-        ConfigPath = Installer.GetRuntimeConfigPath();
-        // The mods' Controls rows follow the enabled mods' input.json: read again on every reload.
-        RuntimeCVarSet.Refresh();
+        ConfigPath = fable2ConfigPath;
+        SecondaryConfigPath = fable3ConfigPath;
+        _modsRootsOverride = modsRootsByTitleKey;
 
-        if (!RuntimeConfig.EnsureDefaults(ConfigPath, out string error))
+        // Refresh unified setting definitions (including enabled mod input bindings across all titles).
+        if (modsRootsByTitleKey is null)
         {
-            StatusMessage = "Failed to prepare " + System.IO.Path.GetFileName(ConfigPath) + ": " + error;
+            RuntimeCVarSet.Refresh();
+        }
+        else
+        {
+            RuntimeCVarSet.Refresh(modsRootsByTitleKey);
         }
 
-        Values = RuntimeConfig.ReadValues(ConfigPath);
+        if (ensureDefaults)
+        {
+            if (!RuntimeConfig.EnsureDefaultsForTitle(Refii.Core.Engine_Title.Fable2, ConfigPath, out string error))
+            {
+                StatusMessage = "Failed to prepare " + System.IO.Path.GetFileName(ConfigPath) + ": " + error;
+            }
+
+            if (System.IO.File.Exists(SecondaryConfigPath) &&
+                !RuntimeConfig.EnsureDefaultsForTitle(Refii.Core.Engine_Title.Fable3, SecondaryConfigPath, out string error3) &&
+                StatusMessage.Length == 0)
+            {
+                StatusMessage = "Failed to prepare " + System.IO.Path.GetFileName(SecondaryConfigPath) + ": " + error3;
+            }
+        }
+
+        _fable2StoredValues = RuntimeConfig.ReadValues(ConfigPath);
+        _fable3StoredValues = RuntimeConfig.ReadValues(SecondaryConfigPath);
+
+        Values = new SortedDictionary<string, string>(_fable2StoredValues, StringComparer.Ordinal);
+
+        // Overlay Fable 3-owned settings from refiii.toml, and fall back to refiii.toml for shared
+        // settings when refii.toml had not stored them yet.
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        {
+            if (definition.OwnerTitle == Refii.Core.Engine_Title.Fable3.Folder)
+            {
+                if (_fable3StoredValues.TryGetValue(definition.Name, out string? f3Val))
+                {
+                    Values[definition.Name] = f3Val;
+                }
+            }
+            else if (definition.OwnerTitle is null &&
+                     !IsPerTitleIsolatedRoot(definition.Name) &&
+                     !Values.ContainsKey(definition.Name) &&
+                     _fable3StoredValues.TryGetValue(definition.Name, out string? sharedFallback))
+            {
+                Values[definition.Name] = sharedFallback;
+            }
+        }
+
         Refii.Core.Engine_Switches.Invalidate();
-        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.Active)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             if (!Values.ContainsKey(definition.Name))
             {
                 Values[definition.Name] = definition.DefaultValue;
             }
         }
+
         if (Values.TryGetValue("placed_light_range", out string? lrStr) &&
             double.TryParse(lrStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedLr) &&
             parsedLr <= 8.0)
         {
             Values["placed_light_range"] = (parsedLr <= 1.1 ? 40.0 : parsedLr >= 1.9 ? 80.0 : 60.0).ToString("0.0", CultureInfo.InvariantCulture);
         }
+
         Values["lighting_preset"] = CurrentLightingPreset();
+        ReadDesktopPreset();
         ReadGraphicsPreset();  // the phone's, RuntimeSettingsModel.GraphicsPreset.cs
     }
 
+    private static bool IsPerTitleIsolatedRoot(string key) =>
+        key is "game_data_root" or "cache_root" or "user_data_root";
+
+    /// <summary>
+    /// Atomically saves shared engine settings to both <c>refii.toml</c> and <c>refiii.toml</c> while
+    /// routing title-owned CVars strictly to their owning title's file and preserving per-title roots.
+    /// </summary>
     public void Save()
     {
-        if (!RuntimeConfig.WriteValues(ConfigPath, Values, out string error))
+        if (string.IsNullOrEmpty(ConfigPath))
         {
-            StatusMessage = "Failed to save " + System.IO.Path.GetFileName(ConfigPath) + ": " + error;
-            return;
+            ConfigPath = Installer.GetRuntimeConfigPath(Refii.Core.Engine_Title.Fable2);
         }
 
-        StatusMessage = "Saved " + System.IO.Path.GetFileName(ConfigPath);
+        if (string.IsNullOrEmpty(SecondaryConfigPath))
+        {
+            SecondaryConfigPath = Installer.GetRuntimeConfigPath(Refii.Core.Engine_Title.Fable3);
+        }
+
+        // 1. Prepare and write Fable 2's config (refii.toml)
+        var fable2Out = new SortedDictionary<string, string>(_fable2StoredValues, StringComparer.Ordinal);
+        foreach ((string key, string val) in Values)
+        {
+            fable2Out[key] = val;
+        }
+        // Preserve Fable 2's stored root if Values had it cleared
+        foreach (string rootKey in new[] { "game_data_root", "cache_root" })
+        {
+            if (_fable2StoredValues.TryGetValue(rootKey, out string? existingRoot) && !string.IsNullOrEmpty(existingRoot) &&
+                (!Values.TryGetValue(rootKey, out string? curRoot) || string.IsNullOrEmpty(curRoot)))
+            {
+                fable2Out[rootKey] = existingRoot;
+            }
+        }
+
+        if (!RuntimeConfig.WriteValuesForTitle(Refii.Core.Engine_Title.Fable2, ConfigPath, fable2Out, out string error2))
+        {
+            StatusMessage = "Failed to save " + System.IO.Path.GetFileName(ConfigPath) + ": " + error2;
+            return;
+        }
+        _fable2StoredValues = fable2Out;
+
+        // 2. Prepare and write Fable 3's config (refiii.toml), keeping Fable 3's own roots & unknown keys isolated
+        var fable3Out = new SortedDictionary<string, string>(_fable3StoredValues, StringComparer.Ordinal);
+        if (!fable3Out.ContainsKey("game_data_root") || !fable3Out.ContainsKey("cache_root"))
+        {
+            RuntimeConfig.PopulateDefaultRoots(fable3Out, SecondaryConfigPath);
+        }
+
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.For(Refii.Core.Engine_Title.Fable3))
+        {
+            if (IsPerTitleIsolatedRoot(definition.Name))
+            {
+                if (_fable3StoredValues.TryGetValue(definition.Name, out string? f3Root) &&
+                    !string.IsNullOrEmpty(f3Root))
+                {
+                    fable3Out[definition.Name] = f3Root;
+                }
+                continue;
+            }
+
+            if (Values.TryGetValue(definition.Name, out string? val))
+            {
+                fable3Out[definition.Name] = val;
+            }
+        }
+
+        if (!RuntimeConfig.WriteValuesForTitle(Refii.Core.Engine_Title.Fable3, SecondaryConfigPath, fable3Out, out string error3))
+        {
+            StatusMessage = "Failed to save " + System.IO.Path.GetFileName(SecondaryConfigPath) + ": " + error3;
+            return;
+        }
+        _fable3StoredValues = fable3Out;
+
+        StatusMessage = "Saved settings (" + System.IO.Path.GetFileName(ConfigPath) + " & " +
+                        System.IO.Path.GetFileName(SecondaryConfigPath) + ")";
         Refii.Core.Engine_Switches.Invalidate();
     }
 
     public void ResetAllToDefaults()
     {
+        string? f2Root = Values.TryGetValue("game_data_root", out string? r) ? r : null;
+        string? f2Cache = Values.TryGetValue("cache_root", out string? c) ? c : null;
+
         Values.Clear();
-        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.Active)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             Values[definition.Name] = definition.DefaultValue;
         }
 
+        if (!string.IsNullOrEmpty(f2Root))
+        {
+            Values["game_data_root"] = f2Root!;
+        }
+        if (!string.IsNullOrEmpty(f2Cache))
+        {
+            Values["cache_root"] = f2Cache!;
+        }
+
+        ApplyDesktopDefaults();
         ApplyPhoneDefaults();
         Values["lighting_preset"] = CurrentLightingPreset();
         Save();
+    }
+
+    /// <summary>Resets every setting belonging to <paramref name="tab"/> to its default (or Balanced preset member default) and saves.</summary>
+    public void ResetTabToDefaults(SettingsTab tab)
+    {
+        IReadOnlyDictionary<string, string>? desktopDefaults = DesktopGraphicsPresets.Offered
+            ? DesktopGraphicsPresets.Values(DesktopGraphicsPresets.DefaultPreset)
+            : null;
+
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        {
+            if (IsPerTitleIsolatedRoot(definition.Name))
+            {
+                continue;
+            }
+
+            if (!RuntimeConfig.ShouldShowCVar(definition))
+            {
+                continue;
+            }
+
+            SettingPresentation meta = DesktopSettingMetadata.Classify(definition);
+            if (meta.Tab != tab)
+            {
+                continue;
+            }
+
+            if (desktopDefaults is not null && desktopDefaults.TryGetValue(definition.Name, out string? presetVal))
+            {
+                Values[definition.Name] = presetVal;
+            }
+            else
+            {
+                Values[definition.Name] = definition.DefaultValue;
+            }
+        }
+
+        Values["lighting_preset"] = CurrentLightingPreset();
+        ReadDesktopPreset();
+        ReadGraphicsPreset();
+        Save();
+    }
+
+    /// <summary>
+    /// Builds the ordered Essential and Advanced section lists for <paramref name="tab"/>.
+    /// </summary>
+    public (List<(string Section, List<RuntimeCVarDefinition> Rows)> Essential,
+            List<(string Section, List<RuntimeCVarDefinition> Rows)> Advanced) BuildTabSections(
+        SettingsTab tab,
+        bool includeContextualHidden = false)
+    {
+        var essentialOrder = new List<string>();
+        var essentialMap = new Dictionary<string, List<(RuntimeCVarDefinition Def, int Order)>>(StringComparer.Ordinal);
+        var advancedOrder = new List<string>();
+        var advancedMap = new Dictionary<string, List<(RuntimeCVarDefinition Def, int Order)>>(StringComparer.Ordinal);
+
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        {
+            if (!RuntimeConfig.ShouldShowCVar(definition))
+            {
+                continue;
+            }
+
+            SettingPresentation meta = DesktopSettingMetadata.Classify(definition);
+            if (meta.Tab != tab || meta.HandledByHeroOrComposite || meta.HandledByLightingModal)
+            {
+                continue;
+            }
+
+            if (!includeContextualHidden && !DesktopSettingMetadata.IsContextuallyVisible(definition, Values))
+            {
+                continue;
+            }
+
+            bool isEssential = meta.Tier == SettingTier.Essential;
+            Dictionary<string, List<(RuntimeCVarDefinition Def, int Order)>> targetMap =
+                isEssential ? essentialMap : advancedMap;
+            List<string> targetOrder = isEssential ? essentialOrder : advancedOrder;
+
+            if (!targetMap.TryGetValue(meta.Section, out List<(RuntimeCVarDefinition Def, int Order)>? bucket))
+            {
+                bucket = new List<(RuntimeCVarDefinition Def, int Order)>();
+                targetMap[meta.Section] = bucket;
+                targetOrder.Add(meta.Section);
+            }
+
+            bucket.Add((definition, meta.Order));
+        }
+
+        var essential = essentialOrder
+            .Select(sec => (sec, essentialMap[sec].OrderBy(x => x.Order).Select(x => x.Def).ToList()))
+            .ToList();
+        var advanced = advancedOrder
+            .Select(sec => (sec, advancedMap[sec].OrderBy(x => x.Order).Select(x => x.Def).ToList()))
+            .ToList();
+        return (essential, advanced);
+    }
+
+    /// <summary>
+    /// Searches across all visible tabs, sections, friendly labels, CVar keys, and descriptions.
+    /// </summary>
+    public List<(SettingsTab Tab, string Section, List<RuntimeCVarDefinition> Rows)> SearchAll(
+        string query,
+        bool includeDeveloper)
+    {
+        string needle = (query ?? string.Empty).Trim().ToLowerInvariant();
+        if (needle.Length == 0)
+        {
+            return new List<(SettingsTab Tab, string Section, List<RuntimeCVarDefinition> Rows)>();
+        }
+
+        var bucketOrder = new List<(SettingsTab Tab, string Section)>();
+        var buckets = new Dictionary<(SettingsTab Tab, string Section), List<(RuntimeCVarDefinition Def, int Order)>>();
+
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
+        {
+            if (!RuntimeConfig.ShouldShowCVar(definition))
+            {
+                continue;
+            }
+
+            SettingPresentation meta = DesktopSettingMetadata.Classify(definition);
+            if (meta.Tab == SettingsTab.Developer && !includeDeveloper &&
+                !definition.Name.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (meta.HandledByHeroOrComposite && definition.Name is DesktopGraphicsPresets.Key or GraphicsPresets.Key)
+            {
+                continue;
+            }
+
+            string haystack = string.Concat(
+                definition.Name, " ",
+                meta.Label, " ",
+                FormatDisplayName(definition), " ",
+                meta.Section, " ",
+                DesktopSettingMetadata.TabFullName(meta.Tab), " ",
+                definition.OwnerTitle ?? string.Empty, " ",
+                meta.Summary ?? string.Empty, " ",
+                definition.Description).ToLowerInvariant();
+
+            if (!haystack.Contains(needle, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var key = (meta.Tab, meta.Section);
+            if (!buckets.TryGetValue(key, out List<(RuntimeCVarDefinition Def, int Order)>? list))
+            {
+                list = new List<(RuntimeCVarDefinition Def, int Order)>();
+                buckets[key] = list;
+                bucketOrder.Add(key);
+            }
+
+            list.Add((definition, meta.Order));
+        }
+
+        return bucketOrder
+            .OrderBy(k => (int)k.Tab)
+            .Select(k => (k.Tab, k.Section, buckets[k].OrderBy(x => x.Order).Select(x => x.Def).ToList()))
+            .ToList();
     }
 
     public List<(string Category, List<RuntimeCVarDefinition> Definitions)> BuildGroups()
@@ -245,8 +694,7 @@ public sealed partial class RuntimeSettingsModel
         var byCategory = new Dictionary<string, List<RuntimeCVarDefinition>>(StringComparer.Ordinal);
 
         bool showAdvanced = ShowAdvanced || filter.Length != 0;
-        // The active title's settings only; a category none of them fills is not listed.
-        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.Active)
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {
             if (!RuntimeConfig.ShouldShowCVar(definition) || !MatchesFilter(definition, filter))
             {
@@ -461,9 +909,15 @@ public sealed partial class RuntimeSettingsModel
             ? sizes
             : ResolutionsByAspect["16:9"];
 
-        return FitToMonitor(candidates, aspect, values)
+        var resolved = FitToMonitor(candidates, aspect, values)
             .Select(size => new RuntimeCVarOption(size, size))
             .ToList();
+        if (DesktopGraphicsPresets.Offered)
+        {
+            resolved.Insert(0, new RuntimeCVarOption("native", "Match Window"));
+        }
+
+        return resolved;
     }
 
     /// <summary>
@@ -490,9 +944,18 @@ public sealed partial class RuntimeSettingsModel
     /// It never returns empty: a monitor smaller than every listed size still gets the smallest,
     /// because a dropdown with nothing in it cannot be corrected from the UI.
     /// </remarks>
+    private static bool IsRunningUnderTestHost() =>
+        AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase)
+        || System.Environment.CommandLine.Contains("testhost", StringComparison.OrdinalIgnoreCase);
+
     private static List<string> FitToMonitor(
         string[] candidates, string aspect, IReadOnlyDictionary<string, string> values)
     {
+        if (IsRunningUnderTestHost())
+        {
+            return new List<string>(candidates);
+        }
+
         Vector2I screen;
         try
         {

@@ -131,8 +131,9 @@ bool WatchdogDue(uint64_t real, uint64_t seen_grant, uint64_t step) {
          refii::pace::StepBlocked(real, step);
 }
 
-/// How far the virtual clock may lead real time, in HF steps — enough for a catch-up burst.
-constexpr uint64_t kMaxLeadSteps = 2u;
+/// How far the virtual clock may lead real time, in HF steps — one step quantum for sub-frame
+/// host grant scheduling jitter, without allowing multi-step fast-forward bursts ahead of real time.
+constexpr uint64_t kMaxLeadSteps = 1u;
 
 /// The most deferred steps the queue may hold; the excess is dropped and counted in
 /// `g_dropped_steps`, so a guest that cannot keep up does not lag permanently.
@@ -220,6 +221,20 @@ extern "C" void refii_bridge_rex_advance_time_base(uint32_t steps) {
   if (ticks == 0u) {
     ticks = real;
     g_last_seen_real.store(real, std::memory_order_relaxed);
+  }
+
+  // When recovering from a watchdog lapse (`g_in_lapse`), `WatchdogDue` has already advanced
+  // `g_virtual_ticks` at real wall-clock rate during the host stall. Re-anchor at `real` and
+  // clear any stale pending backlog instead of stacking this recovery grant into the future.
+  if (g_in_lapse) {
+    ticks = std::max(ticks, real);
+    g_pending_steps.store(0u, std::memory_order_relaxed);
+    g_virtual_ticks.store(ticks, std::memory_order_relaxed);
+    g_last_grant_real.store(real, std::memory_order_relaxed);
+    g_last_seen_real.store(real, std::memory_order_relaxed);
+    g_in_lapse = false;
+    g_granted_steps.fetch_add(steps, std::memory_order_relaxed);
+    return;
   }
 
   // The grant goes on the queue; how much of it is released now is decided against the wall

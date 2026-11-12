@@ -131,9 +131,14 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	}
 
 	private readonly Dictionary<uint, Drawn> _drawn = new();
+	private static readonly int[] _shownByView = new int[2];
 
 	/// <summary>Number of currently live world sprites tracked by this layer.</summary>
 	public int ActiveCount => _drawn.Count;
+
+	/// <summary>Whether <paramref name="view"/> currently has any world-space HUD markers placed on screen.</summary>
+	public static bool HasActiveSprites(int view) =>
+		(uint)view < 2u && System.Threading.Volatile.Read(ref _shownByView[view]) > 0;
 
 	private static readonly Shader MarkerShader =
 		GD.Load<Shader>("res://src/Engine/ui/ui_world_marker.gdshader");
@@ -307,10 +312,23 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	/// </summary>
 	public float PieceScale { get; set; } = 1f;
 
+	public override void _ExitTree()
+	{
+		if ((uint)SightView < 2u)
+		{
+			System.Threading.Volatile.Write(ref _shownByView[SightView], 0);
+		}
+	}
+
 	public override void _Process(double delta)
 	{
 		if (_drawn.Count == 0)
 		{
+			Shown = 0;
+			if ((uint)SightView < 2u)
+			{
+				System.Threading.Volatile.Write(ref _shownByView[SightView], 0);
+			}
 			if (_reported.Length != 0 && _reported != "none")
 			{
 				Report(0);
@@ -418,6 +436,10 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		}
 
 		Shown = shown;
+		if ((uint)SightView < 2u)
+		{
+			System.Threading.Volatile.Write(ref _shownByView[SightView], shown);
+		}
 		Report(shown);
 	}
 

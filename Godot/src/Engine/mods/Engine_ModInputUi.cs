@@ -75,7 +75,17 @@ public static class ModInputUi
 	}
 
 	/// <summary>A key's name as refii.toml and <c>input.json</c> spell it: Godot's own, what <c>OS.FindKeycodeFromString</c> reads back.</summary>
-	public static string KeyName(Key key) => OS.GetKeycodeString(key);
+	public static string KeyName(Key key)
+	{
+		if (Refii.Core.Engine_AppRoot.IsTestHost)
+		{
+			return key is >= Key.Key0 and <= Key.Key9
+				? ((int)(key - Key.Key0)).ToString()
+				: key.ToString();
+		}
+
+		return OS.GetKeycodeString(key);
+	}
 
 	/// <summary>One row: an action on one device.</summary>
 	public sealed record Row(ModInput.Action Action, Device Device)

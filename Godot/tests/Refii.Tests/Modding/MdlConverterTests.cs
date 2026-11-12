@@ -345,7 +345,7 @@ public class MdlConverterTests
 		/// <summary>glTF space (Y up).</summary>
 		public float[] Positions = Array.Empty<float>();
 
-		public float[]? Normals;
+		public float[]? Normals = null;
 
 		public float[]? Uvs;
 
@@ -367,7 +367,7 @@ public class MdlConverterTests
 		/// <summary>The mesh node's TRS; null for none.</summary>
 		public double[]? Translation;
 
-		public double[]? Rotation;
+		public double[]? Rotation = null;
 
 		public double[]? Scale;
 

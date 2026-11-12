@@ -54,9 +54,17 @@ public sealed class InstallPipeline
 	private float _fraction = -1.0f;
 	private BuildControl? _control;
 	private StepKind? _current;
+	private Refii.Core.Engine_Title? _activeTitle;
+	private Refii.Core.Engine_Title? _lastErrorTitle;
 
 	/// <summary>True from the first step's start to the run's end.</summary>
 	public bool Running => _running;
+
+	/// <summary>The title currently being installed or built, or null when idle.</summary>
+	public Refii.Core.Engine_Title? ActiveTitle => _activeTitle;
+
+	/// <summary>The title whose run produced <see cref="Error"/>, or null when none.</summary>
+	public Refii.Core.Engine_Title? LastErrorTitle => _lastErrorTitle;
 
 	/// <summary>The running step's name, for the primary button and the Install tab.</summary>
 	public string Label => _label;
@@ -130,8 +138,12 @@ public sealed class InstallPipeline
 		log(_label + " stop requested.");
 	}
 
-	/// <summary>Runs the steps in order on the calling (main) thread's continuations.</summary>
-	public async Task<Outcome> RunAsync(IReadOnlyList<Step> steps, Action<string> log)
+	/// <summary>Runs the steps in order for the active title on the calling (main) thread's continuations.</summary>
+	public Task<Outcome> RunAsync(IReadOnlyList<Step> steps, Action<string> log) =>
+		RunAsync(Refii.Core.Engine_Title.Active, steps, log);
+
+	/// <summary>Runs the steps in order for <paramref name="title"/> on the calling (main) thread's continuations.</summary>
+	public async Task<Outcome> RunAsync(Refii.Core.Engine_Title title, IReadOnlyList<Step> steps, Action<string> log)
 	{
 		if (_running)
 		{
@@ -139,7 +151,11 @@ public sealed class InstallPipeline
 		}
 
 		_running = true;
+		_activeTitle = title;
+		_lastErrorTitle = null;
 		_error = string.Empty;
+		Refii.Core.Engine_Title previousTitle = Refii.Core.Engine_Title.Active;
+		Refii.Core.Engine_Title.Active = title;
 		try
 		{
 			foreach (Step step in steps)
@@ -148,14 +164,18 @@ public sealed class InstallPipeline
 				Volatile.Write(ref _fraction, -1.0f);
 				Outcome outcome = step.Kind switch
 				{
-					StepKind.GameData => await InstallGameDataAsync(step, log),
-					StepKind.GameCode => await BuildGameCodeAsync(log),
-					StepKind.ClassicShaders => await BuildShadersAsync(log),
-					StepKind.ModernizedAssets => await BuildModernizedAssetsAsync(log),
+					StepKind.GameData => await InstallGameDataAsync(title, step, log),
+					StepKind.GameCode => await BuildGameCodeAsync(title, log),
+					StepKind.ClassicShaders => await BuildShadersAsync(title, log),
+					StepKind.ModernizedAssets => await BuildModernizedAssetsAsync(title, log),
 					_ => new Outcome(false, false, step.Kind, "unknown step"),
 				};
 				if (!outcome.Ok)
 				{
+					if (!outcome.Stopped)
+					{
+						_lastErrorTitle = title;
+					}
 					return outcome;
 				}
 			}
@@ -163,6 +183,8 @@ public sealed class InstallPipeline
 		}
 		finally
 		{
+			Refii.Core.Engine_Title.Active = previousTitle;
+			_activeTitle = null;
 			_current = null;
 			_control = null;
 			_running = false;
@@ -187,9 +209,9 @@ public sealed class InstallPipeline
 		return new Outcome(false, true, _current, "stopped");
 	}
 
-	private async Task<Outcome> InstallGameDataAsync(Step step, Action<string> log)
+	private async Task<Outcome> InstallGameDataAsync(Refii.Core.Engine_Title title, Step step, Action<string> log)
 	{
-		_label = "Installing";
+		_label = title.Name + ": Installing";
 		_status = "Starting installation...";
 
 		if (!Installer.InstallBasePathLeavesWindowsPathRoom(
@@ -300,12 +322,12 @@ public sealed class InstallPipeline
 	/// The longest step by a wide margin — a compiler building roughly 150,000 functions —
 	/// and not optional: the recompiled guest is derived from the player's own image.
 	/// </summary>
-	private async Task<Outcome> BuildGameCodeAsync(Action<string> log)
+	private async Task<Outcome> BuildGameCodeAsync(Refii.Core.Engine_Title title, Action<string> log)
 	{
-		_label = "Building game code";
+		_label = title.Name + ": Building game code";
 		_status = "Preparing game code...";
 		Volatile.Write(ref _fraction, 0.0f);
-		log("Building the recompiled game module from the installed executable.");
+		log("Building the recompiled game module from " + title.Name + "'s installed executable.");
 
 		GameCodeBuild.Result result;
 		using (var control = new BuildControl())
@@ -336,16 +358,16 @@ public sealed class InstallPipeline
 		{
 			return Fail(StepKind.GameCode, "Building game code failed.", result.Error, log);
 		}
-		log("Game code built: " + GameCodeBuild.ModulePath);
+		log("Game code built: " + GameCodeBuild.GetModulePath(title));
 		return new Outcome(true, false, null, string.Empty);
 	}
 
-	private async Task<Outcome> BuildShadersAsync(Action<string> log)
+	private async Task<Outcome> BuildShadersAsync(Refii.Core.Engine_Title title, Action<string> log)
 	{
-		_label = "Compiling shaders";
+		_label = title.Name + ": Compiling shaders";
 		_status = "Preparing shader compile...";
 		Volatile.Write(ref _fraction, 0.0f);
-		log("Compiling the shader banks from the installed game data.");
+		log("Compiling the shader banks from " + title.Name + "'s installed game data.");
 
 		GameCodeBuild.Result result;
 		using (var control = new BuildControl())
@@ -383,9 +405,9 @@ public sealed class InstallPipeline
 	/// Minutes of decoding and upscaling, on a background thread so closing the launcher
 	/// mid-run cannot leave a thread holding the cache open; what was written stays written.
 	/// </summary>
-	private async Task<Outcome> BuildModernizedAssetsAsync(Action<string> log)
+	private async Task<Outcome> BuildModernizedAssetsAsync(Refii.Core.Engine_Title title, Action<string> log)
 	{
-		string directory = Refii.Core.Engine_GameData.Resolve();
+		string directory = Installer.ResolveGameDataDirectory(title);
 		if (directory.Length == 0)
 		{
 			return Fail(StepKind.ModernizedAssets, "Building modernized assets",
@@ -397,7 +419,7 @@ public sealed class InstallPipeline
 		// silently does base decodes only — which looks exactly like a successful prebuild.
 		Refii.Textures.Engine_TexEnhance.RegisterDefault();
 
-		_label = "Building modernized assets";
+		_label = title.Name + ": Building modernized assets";
 		_status = "Finding what to build...";
 		log($"Building modernized assets from {directory}");
 
@@ -406,26 +428,35 @@ public sealed class InstallPipeline
 		{
 			try
 			{
-				Refii.Textures.Engine_TexPrebuild.Progress result =
-					Refii.Textures.Engine_TexPrebuild.Run(
-						directory,
-						progress =>
-						{
-							if (progress.Total > 0)
+				Refii.Core.Engine_Title previous = Refii.Core.Engine_Title.Active;
+				Refii.Core.Engine_Title.Active = title;
+				try
+				{
+					Refii.Textures.Engine_TexPrebuild.Progress result =
+						Refii.Textures.Engine_TexPrebuild.Run(
+							directory,
+							progress =>
 							{
-								Volatile.Write(ref _fraction, (float)progress.Done / progress.Total);
-							}
-							_status = progress.Total == 0
-								? "Finding what to build..."
-								: $"{progress.Done:N0} of {progress.Total:N0} " +
-								  $"({100.0 * progress.Done / progress.Total:F0}%) — " +
-								  $"built {progress.Built:N0}, failed {progress.Failed:N0}";
-						});
+								if (progress.Total > 0)
+								{
+									Volatile.Write(ref _fraction, (float)progress.Done / progress.Total);
+								}
+								_status = progress.Total == 0
+									? "Finding what to build..."
+									: $"{progress.Done:N0} of {progress.Total:N0} " +
+									  $"({100.0 * progress.Done / progress.Total:F0}%) — " +
+									  $"built {progress.Built:N0}, failed {progress.Failed:N0}";
+							});
 
-				done.SetResult(result.Total == 0
-					? "Nothing to build — no material records were found."
-					: $"Built {result.Built:N0} of {result.Total:N0}" +
-					  (result.Failed > 0 ? $", {result.Failed:N0} could not be read." : "."));
+					done.SetResult(result.Total == 0
+						? "Nothing to build — no material records were found."
+						: $"Built {result.Built:N0} of {result.Total:N0}" +
+						  (result.Failed > 0 ? $", {result.Failed:N0} could not be read." : "."));
+				}
+				finally
+				{
+					Refii.Core.Engine_Title.Active = previous;
+				}
 			}
 			catch (Exception exception)
 			{

@@ -9,6 +9,9 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <IsPackable>false</IsPackable>
+    <!-- CS0436: Godot.NET.Sdk's source generator emits GodotPlugins.Game.Main in both
+         refii-launcher and Refii.Tests; using Refii.Tests' own generated entry point is expected. -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
     <RunSettingsFilePath Condition="Exists('$(MSBuildThisFileDirectory)test.runsettings')">$(MSBuildThisFileDirectory)test.runsettings</RunSettingsFilePath>
     <RunSettingsFilePath Condition="'$(GODOT_BIN)' == '' and Exists('$(MSBuildThisFileDirectory)test.local.runsettings')">$(MSBuildThisFileDirectory)test.local.runsettings</RunSettingsFilePath>
   </PropertyGroup>
@@ -21,7 +24,51 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\refii-launcher.csproj" />
+    <ProjectReference Include="..\..\..\tools\build_cache\Refii.BuildCache.csproj" />
+    <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../../../tools/godot/Godot_v*_mono_linux.x86_64" />
+    <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../../../tools/godot/Godot_v*_mono_win64_console.exe" />
   </ItemGroup>
+
+  <!-- Auto-wire pinned GODOT_BIN + Refii.BuildCache editor-warmup shim for direct `dotnet test`
+       runs so developers never pay GdUnit4's redundant 45s headless editor SVG warmup when .godot
+       UID caches are already populated. -->
+  <Target Name="ConfigureGdUnitAutoRunSettings"
+          BeforeTargets="VSTest"
+          Condition="'$(REFII_NO_BUILD_CACHE)' != '1' and !Exists('$(MSBuildThisFileDirectory)test.local.runsettings')">
+    <PropertyGroup>
+      <RefiiResolvedRealGodot Condition="'$(REFII_REAL_GODOT_BIN)' != ''">$(REFII_REAL_GODOT_BIN)</RefiiResolvedRealGodot>
+      <RefiiResolvedRealGodot Condition="'$(RefiiResolvedRealGodot)' == '' and '$(GODOT_BIN)' != ''">$(GODOT_BIN)</RefiiResolvedRealGodot>
+      <RefiiResolvedRealGodot Condition="'$(RefiiResolvedRealGodot)' == ''">@(RefiiPinnedGodot->'%(FullPath)')</RefiiResolvedRealGodot>
+      <RefiiShimExeSuffix Condition="$([MSBuild]::IsOSPlatform('Windows'))">.exe</RefiiShimExeSuffix>
+      <RefiiShimCandidate>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../../tools/build_cache/bin/$(Configuration)/net8.0/Refii.BuildCache$(RefiiShimExeSuffix)'))</RefiiShimCandidate>
+      <RefiiShimCandidate Condition="!Exists('$(RefiiShimCandidate)')">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../../out/cache/build-tool/bin/Refii.BuildCache$(RefiiShimExeSuffix)'))</RefiiShimCandidate>
+      <RefiiAutoRunSettingsFile>$(IntermediateOutputPath)gdunit.auto.runsettings</RefiiAutoRunSettingsFile>
+      <RefiiEscapedShimCandidate>$(RefiiShimCandidate.Replace('&amp;', '&amp;amp;').Replace('&lt;', '&amp;lt;').Replace('&gt;', '&amp;gt;'))</RefiiEscapedShimCandidate>
+      <RefiiEscapedRealGodot>$(RefiiResolvedRealGodot.Replace('&amp;', '&amp;amp;').Replace('&lt;', '&amp;lt;').Replace('&gt;', '&amp;gt;'))</RefiiEscapedRealGodot>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(RefiiResolvedRealGodot)' != '' and Exists('$(RefiiShimCandidate)')">
+      <RefiiAutoRunSettingsLines Include="&lt;?xml version=&quot;1.0&quot; encoding=&quot;utf-8&quot;?&gt;" />
+      <RefiiAutoRunSettingsLines Include="&lt;RunSettings&gt;" />
+      <RefiiAutoRunSettingsLines Include="  &lt;GdUnit4&gt;" />
+      <RefiiAutoRunSettingsLines Include="    &lt;Parameters&gt;--headless&lt;/Parameters&gt;" />
+      <RefiiAutoRunSettingsLines Include="  &lt;/GdUnit4&gt;" />
+      <RefiiAutoRunSettingsLines Include="  &lt;RunConfiguration&gt;" />
+      <RefiiAutoRunSettingsLines Include="    &lt;EnvironmentVariables&gt;" />
+      <RefiiAutoRunSettingsLines Include="      &lt;GODOT_BIN&gt;$(RefiiEscapedShimCandidate)&lt;/GODOT_BIN&gt;" />
+      <RefiiAutoRunSettingsLines Include="      &lt;REFII_REAL_GODOT_BIN&gt;$(RefiiEscapedRealGodot)&lt;/REFII_REAL_GODOT_BIN&gt;" />
+      <RefiiAutoRunSettingsLines Include="    &lt;/EnvironmentVariables&gt;" />
+      <RefiiAutoRunSettingsLines Include="  &lt;/RunConfiguration&gt;" />
+      <RefiiAutoRunSettingsLines Include="&lt;/RunSettings&gt;" />
+    </ItemGroup>
+    <WriteLinesToFile Condition="'@(RefiiAutoRunSettingsLines)' != ''"
+                      File="$(RefiiAutoRunSettingsFile)"
+                      Lines="@(RefiiAutoRunSettingsLines)"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+    <PropertyGroup Condition="Exists('$(RefiiAutoRunSettingsFile)')">
+      <RunSettingsFilePath>$(RefiiAutoRunSettingsFile)</RunSettingsFilePath>
+    </PropertyGroup>
+  </Target>
 
   <!-- Engine_Hash's ARM path on any machine (Engine_HashArmTests): the same source a second time,
        in a namespace whose ARM instruction classes are the architecture manual's pseudocode. -->

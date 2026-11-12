@@ -18,13 +18,12 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 
 	public override Engine_Title Title => Engine_Title.Fable2;
 
-	public override string Wordmark =>
-		"[color=#e8dcc2]FABLE [/color][color=#daa520]2[/color][color=#e8dcc2]: RETURN TO ALBION[/color]";
+	public override string Wordmark => UnifiedWordmark;
 
-	/// <summary>The launcher ini's <c>[Window] Title</c>, which ships as Fable 2's.</summary>
+	/// <summary>The launcher ini's <c>[Window] Title</c>.</summary>
 	public override string WindowTitle => LauncherTheme.WindowTitle;
 
-	/// <summary>The launcher ini's <c>[Window] WarningText</c>, which ships as Fable 2's.</summary>
+	/// <summary>The launcher ini's <c>[Window] WarningText</c>.</summary>
 	public override string WarningText => LauncherTheme.WarningText;
 
 	private static readonly IReadOnlyDictionary<string, string> ArtCredits =
@@ -43,13 +42,19 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 	{
 		new("Change Log", LauncherInfoSource.ProjectChangeLog),
 		new("Credits", LauncherInfoSource.ProjectContributors),
+		new("About", LauncherInfoSource.Text,
+			"[color=#daa520][font_size=16]Fable: Return to Albion[/font_size][/color]\n\n" +
+			"[color=#2b221b]A unified native PC remaster and recompilation hub for Fable 2 and Fable 3, " +
+			"built from your own Xbox 360 discs.[/color]\n\n" +
+			"[color=#8c7b6b]• [b]Fable 2[/b]: Install, mod (.f2mod), and play directly from the launch dock.\n" +
+			"• [b]Fable 3[/b] (Experimental): Early development support — install from disc and manage .f3mod packages alongside Fable 2.[/color]"),
 	};
 
 	public override IReadOnlyList<LauncherInfoTab> InfoTabs => Tabs;
 
 	private static readonly LauncherLink[] Links =
 	{
-		new("Fable 2: Return to Albion", "https://github.com/Fable2Recomp/Fable2Remake"),
+		new("Fable: Return to Albion", "https://github.com/Fable2Recomp/Fable2Remake"),
 	};
 
 	public override IReadOnlyList<LauncherLink> AboutLinks => Links;

@@ -43,7 +43,7 @@ const int MIST_STRIDE = 4;
 const int BASE_CAPSULES = 394;
 const int CAPSULE_STRIDE = 2;
 
-const int RAY_STEPS = 12;
+const int RAY_STEPS = 8;
 const float MAX_RAY_DIST = 80.0;
 const float INV_FOUR_PI = 0.07957747154;
 
@@ -108,9 +108,10 @@ void eval_local_medium(
 	// regions so close torches, lanterns, and braziers form crisp volumetric shafts without requiring
 	// thick background world fog.
 	float weight = mix(0.65, 1.0, atmos_ramp);
-	vec3 local_floor = tint_dir * (0.0042 * mix(0.80, 1.0, atmos_ramp));
+	float local_dist_fade = 1.0 - smoothstep(20.0, 35.0, dist_from_cam);
+	vec3 local_floor = tint_dir * (0.0042 * mix(0.80, 1.0, atmos_ramp) * local_dist_fade);
 	sigma_s = max(base_scattering * weight * 1.65, local_floor);
-	sigma_t = max(base_extinction * weight, 0.0022 * mix(0.75, 1.0, atmos_ramp));
+	sigma_t = max(base_extinction * weight, 0.0022 * mix(0.75, 1.0, atmos_ramp) * local_dist_fade);
 
 	while (mist_mask != 0u) {
 		int m = findLSB(mist_mask);

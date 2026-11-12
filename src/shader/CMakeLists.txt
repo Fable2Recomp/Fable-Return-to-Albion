@@ -111,6 +111,13 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
+if(TARGET libzstd_static)
+    target_compile_options(libzstd_static PRIVATE
+        $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wno-unused-function>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wno-unused-function>
+    )
+endif()
+
 set_target_properties(XenosRecomp PROPERTIES
     OUTPUT_NAME XenosRecomp
     RUNTIME_OUTPUT_DIRECTORY "${REFII_LIBRARY_OUTPUT_DIR}"

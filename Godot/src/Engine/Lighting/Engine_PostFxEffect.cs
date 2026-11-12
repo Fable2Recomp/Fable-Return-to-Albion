@@ -596,10 +596,73 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Rid rid = _rd!.Texture(textureFormat, new RDTextureView(), initial);
         if (rid.IsValid && initial is null)
         {
+            EndBatch();
             _rd!.TextureClear(rid, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
         }
 
         return rid;
+    }
+
+    private long _batchList = -1;
+    private bool _batchHasDispatch;
+    private bool _raysZeroCleared;
+    private bool _occlZeroCleared;
+    private bool _bloomZeroCleared;
+
+    private void BeginBatch()
+    {
+        if (_batchList >= 0 || ClassicPost)
+        {
+            return;
+        }
+
+        _batchList = _rd!.ComputeListBegin();
+        _batchHasDispatch = false;
+    }
+
+    private void EndBatch()
+    {
+        if (_batchList < 0)
+        {
+            return;
+        }
+
+        _rd!.ComputeListEnd();
+        _batchList = -1;
+        _batchHasDispatch = false;
+    }
+
+    private void ClearRaysIfDirty()
+    {
+        if (_raysZeroCleared)
+        {
+            return;
+        }
+
+        Clear(_rays[0]);
+        _raysZeroCleared = true;
+    }
+
+    private void ClearOcclIfDirty()
+    {
+        if (_occlZeroCleared)
+        {
+            return;
+        }
+
+        Clear(_occl);
+        _occlZeroCleared = true;
+    }
+
+    private void ClearBloomIfDirty()
+    {
+        if (_bloomZeroCleared)
+        {
+            return;
+        }
+
+        Clear(_bloom[0]);
+        _bloomZeroCleared = true;
     }
 
     private void EnsureTargets(Vector2I size)
@@ -628,6 +691,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _shaftHistoryValid = false;
+        _raysZeroCleared = true;
+        _occlZeroCleared = true;
+        _bloomZeroCleared = true;
 
         if (_trapRatio > 0f)
         {
@@ -739,6 +805,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _shaftHistoryValid = false;
+        _raysZeroCleared = true;
+        _occlZeroCleared = true;
+        _bloomZeroCleared = true;
 
         _glowSize = default;
         _glowLayer = default;
@@ -995,6 +1064,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 EnsureGlow(layer) &&
                 HighlightTargets(camBasis, camOrigin, projection))
             {
+                BeginBatch();
                 HighlightPrep(layer);
                 HighlightBlur(_glowHSet, _glow[0], _glow[1], new Vector2I(1, 0), scale);
                 HighlightBlur(_glowVSet, _glow[1], _glow[0], new Vector2I(0, 1), scale);
@@ -1007,11 +1077,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // adding it into the colour buffer once reproduces for the whole chain.
             if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(View, out Rid additive))
             {
+                BeginBatch();
                 AddLayer(colour, size, additive);
             }
 
             VolumetricShafts(colour, depth, size, camBasis, camOrigin, projection);
 
+            BeginBatch();
             Downscale4(colour, size);
 
             // THE RAYS ARE A RADIAL BLUR OF THE SUN LAYER — not of the scene, and not of a
@@ -1027,22 +1099,26 @@ public partial class Engine_PostFxEffect : CompositorEffect
             bool classicSky = Refii.Models.Engine_ClassicMaterial.Active && Engine_ClassicSkyLayers.Snapshot(_skyFrame);
             if (classicSky)
             {
-                Clear(_rays[0]);
+                EndBatch();
+                ClearRaysIfDirty();
                 if (raysOn && ClassicBeams(depth, camBasis, camOrigin, projection, out Vector2 beamsUv))
                 {
+                    _raysZeroCleared = false;
                     Radial(0, beamsUv);
                     Radial(1, beamsUv);
                 }
             }
             else if (raysOn && sunOnScreen && sun.Disc.Active && sun.Disc.Texture.IsValid)
             {
+                _raysZeroCleared = false;
+                BeginBatch();
                 SunLayer(depth, sunUv, sun.Disc, projection);
                 Radial(0, sunUv);
                 Radial(1, sunUv);
             }
             else
             {
-                Clear(_rays[0]);
+                ClearRaysIfDirty();
             }
 
             // The GLOW LAYER: every stated halo, rasterised with the scene depth in hand. Its
@@ -1050,32 +1126,39 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // with bloom off it need not exist at all.
             if (!bloomOn || !HaloLayer(depth, camBasis, camOrigin, projection))
             {
-                Clear(_occl);
+                ClearOcclIfDirty();
             }
             if (Refii.Models.Engine_ClassicMaterial.Active)
             {
+                EndBatch();
                 ClassicDecals(depth, camBasis, camOrigin, projection);
+                _occlZeroCleared = false;
             }
             if (classicSky)
             {
                 // Drawn even with bloom off: the sun disc's and moon bloom's pixels are the
                 // glares' occlusion queries.
+                EndBatch();
                 ClassicGlow(depth, camBasis, camOrigin, projection);
+                _occlZeroCleared = false;
             }
 
             if (bloomOn)
             {
+                _bloomZeroCleared = false;
+                BeginBatch();
                 Brightcut();
                 Gauss(_gaussBloomHSet, _bloom[0], _bloom[1], new Vector2I(1, 0), _bloomWeightsH);
                 Gauss(_gaussBloomVSet, _bloom[1], _bloom[0], new Vector2I(0, 1), _bloomWeightsV);
             }
             else
             {
-                Clear(_bloom[0]);
+                ClearBloomIfDirty();
             }
 
             if (dofOn)
             {
+                BeginBatch();
                 if (!ClassicPost)
                 {
                     DofDownscale(colour, depth, size, projection.Inverse());
@@ -1084,11 +1167,16 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 Gauss(_gaussDofVSet, _dof[0], _dof[1], new Vector2I(0, 1), _dofWeightsV);
             }
 
-            if (_maskWanted && !_satMask!.Build(depth))
+            if (_maskWanted)
             {
-                Clear(_satMask.Texture);
+                EndBatch();
+                if (!_satMask!.Build(depth))
+                {
+                    Clear(_satMask.Texture);
+                }
             }
 
+            BeginBatch();
             Composite(colour, depth, size, projection.Inverse());
             Histogram();
             if (_trapRatio > 0f && view == 0)
@@ -1096,6 +1184,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 TrapCapture(colour, size);
             }
 
+            EndBatch();
             if (staged)
             {
                 _rd.TextureCopy(
@@ -1452,7 +1541,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         System.Buffer.BlockCopy(s, 0, _shaftBytes, 0, ShaftBufferBytes);
+        EndBatch();
         rd.BufferUpdate(_shaftBuffer, 0, ShaftBufferBytes, _shaftBytes);
+        BeginBatch();
 
         int currIdx = _shaftPingPong & 1;
         int prevIdx = 1 - currIdx;
@@ -1551,6 +1642,12 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// </summary>
     private void AddLayer(Rid colour, Vector2I size, Rid layer, KeyedSet set, float gain)
     {
+        float effectiveGain = gain * Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
+        if (effectiveGain <= 1e-6f)
+        {
+            return;
+        }
+
         RenderingDevice rd = _rd!;
         if (!set.Matches(rd, colour, layer))
         {
@@ -1561,8 +1658,6 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 Buffer(_stateBuffer, 2),
             });
         }
-
-        float effectiveGain = gain * Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
 
         byte[] push = _pushSmall;
         BitConverter.TryWriteBytes(push.AsSpan(0), size.X);
@@ -1694,6 +1789,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         System.Buffer.BlockCopy(_highlightScratch, 0, _highlightBytes, 0, HighlightBufferBytes);
+        EndBatch();
         _rd!.BufferUpdate(_highlightBuffer, 0, HighlightBufferBytes, _highlightBytes);
         return true;
     }
@@ -1995,7 +2091,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
         RenderingDevice rd = _rd!;
         uint bytes = (uint)(count * HaloFloats * sizeof(float));
         System.Buffer.BlockCopy(_haloScratch, 0, _haloBytes, 0, (int)bytes);
+        EndBatch();
         rd.BufferUpdate(_haloBuffer, 0, bytes, _haloBytes);
+        _occlZeroCleared = false;
+        BeginBatch();
 
         if (!_halolayerSet.Matches(rd, depth, spriteArray))
         {
@@ -2146,6 +2245,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Clear(Rid texture)
     {
+        EndBatch();
         _rd!.TextureClear(texture, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
     }
 
@@ -2320,6 +2420,25 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Dispatch(Rid pipeline, Rid uniformSet, byte[]? push, int groupsX, int groupsY)
     {
+        if (_batchList >= 0)
+        {
+            if (_batchHasDispatch)
+            {
+                _rd!.ComputeListAddBarrier(_batchList);
+            }
+
+            _rd!.ComputeListBindComputePipeline(_batchList, pipeline);
+            _rd.ComputeListBindUniformSet(_batchList, uniformSet, 0);
+            if (push is not null)
+            {
+                _rd.ComputeListSetPushConstant(_batchList, push, (uint)push.Length);
+            }
+
+            _rd.ComputeListDispatch(_batchList, (uint)groupsX, (uint)groupsY, 1);
+            _batchHasDispatch = true;
+            return;
+        }
+
         long list = _rd!.ComputeListBegin();
         _rd.ComputeListBindComputePipeline(list, pipeline);
         _rd.ComputeListBindUniformSet(list, uniformSet, 0);

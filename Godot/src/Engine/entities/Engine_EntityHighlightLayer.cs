@@ -122,6 +122,16 @@ public partial class Engine_EntityHighlightLayer : Node
     private static bool PhoneComposites => Refii.Core.Engine_Platform.IsAndroid && Engine_MobileHighlight.Composites;
 
 
+    /// <summary>Whether <paramref name="view"/>'s targeting highlight layer is actively rendering this frame.</summary>
+    public static bool IsViewActive(int view)
+    {
+        if (view is < 0 or >= Views) return false;
+        lock (Gate)
+        {
+            return _publishedActive[view];
+        }
+    }
+
     /// <summary>
     /// The layer texture for the post chain, valid only when something was drawn on it this
     /// frame. Render-thread safe: plain values under a lock.
@@ -324,9 +334,10 @@ public partial class Engine_EntityHighlightLayer : Node
     {
         if (!HostAlive) return;
         Vector2 v = _host!.GetVisibleRect().Size;
+        float scale3D = _host.Scaling3DScale > 0f ? _host.Scaling3DScale : 1f;
         var size = new Vector2I(
-            Math.Max((int)v.X / 2, 1),
-            Math.Max((int)v.Y / 2, 1));
+            Math.Max((int)(v.X * scale3D) / 2, 1),
+            Math.Max((int)(v.Y * scale3D) / 2, 1));
         if (size == _size) return;
         _size = size;
         _viewport.Size = size;

@@ -318,13 +318,14 @@ public static class Engine_UiModMenus
 	/// button pressed — as a ROW ACTION on a screen list raises it (Engine_UiRowActions); the plain
 	/// row choice leaves both empty.
 	/// </summary>
-	public static (bool Cancelled, string Command) RaiseRow(string menu, string row, int player, string mod, string rowCommand, string button)
+	public static (bool Cancelled, string Command) RaiseRow(string menu, string row, int player, string mod, string? rowCommand, string button)
 	{
-		(bool cancelled, string command) = Refii.Mods.ModGodot.Host?.RaiseModMenuRow(menu, row, player, mod, rowCommand, button)
-			?? (false, rowCommand ?? string.Empty);
+		string effectiveRowCommand = rowCommand ?? string.Empty;
+		(bool cancelled, string command) = Refii.Mods.ModGodot.Host?.RaiseModMenuRow(menu, row, player, mod, effectiveRowCommand, button)
+			?? (false, effectiveRowCommand);
 		if (HostBridge.IsGuestUp && !cancelled)
 		{
-			HostBridge.PostModCommand(Engine_UiModMenuCommand.RowCommandLine(menu, row, player, mod, rowCommand, button));
+			HostBridge.PostModCommand(Engine_UiModMenuCommand.RowCommandLine(menu, row, player, mod, effectiveRowCommand, button));
 		}
 
 		GD.Print($"[mod-menus] '{menu}/{row}' chosen by player {player}" + (mod.Length == 0 ? string.Empty : $" ({mod})") +

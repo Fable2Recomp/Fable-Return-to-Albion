@@ -17,8 +17,12 @@ public sealed class Fable3LauncherScreen : LauncherTitleScreen
 
 	public override Engine_Title Title => Engine_Title.Fable3;
 
-	public override string Wordmark =>
-		"[color=#e8dcc2]FABLE [/color][color=#daa520]3[/color][color=#e8dcc2] RECOMPILED[/color]";
+	public override string Wordmark => UnifiedWordmark;
+
+	public override string? StatusBadge => "Experimental";
+
+	public override string StatusTooltip =>
+		"Fable 3 support is in early development and is not playable end-to-end yet.";
 
 	public override string WarningText => "Fable 3 support is in early development and is not playable yet.";
 

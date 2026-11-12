@@ -56,6 +56,7 @@ public partial class GameWindow : Node
 		// properties — this node no longer owns a window of its own.
 		const int Main = (int)DisplayServer.MainWindowId;
 		DisplayServer.WindowSetTitle(Engine_Title.Active.RemakeName, Main);
+		Engine_TitleIcon.Apply();
 
 		// refii.toml owns the window, as it does for the other renderers.
 		GameWindowSettings settings = GameWindowSettings.Load();
@@ -121,18 +122,21 @@ public partial class GameWindow : Node
 		// 3D SCALING LEAVES THE UI ALONE. Godot renders the 3D world at this fraction and
 		// upscales it into a full-resolution frame, so the HUD, the books and every glyph stay
 		// native — which is the whole reason to prefer this over resizing the window.
-		// When Fullscreen is true, DisplayServer.WindowSetMode(Fullscreen) forces the OS window
-		// to native monitor resolution (screen), so if the user configured a sub-native resolution
-		// in settings.Size, fold that ratio into Scaling3DScale so 3D renders at the requested resolution.
+		// When Fullscreen is true, or when a windowed session is maximized/resized on a HiDPI
+		// display, fold the window-to-target ratio into Scaling3DScale dynamically so 3D renders
+		// at the requested display_resolution unless "native" (MatchWindowResolution) was chosen.
 		Viewport view = GetViewport();
-		float fullscreenScale = settings.Fullscreen && screen.Y > 0 && settings.Size.Y > 0 && settings.Size.Y < screen.Y
-			? (float)settings.Size.Y / screen.Y
-			: 1f;
-		view.Scaling3DScale = Mathf.Clamp(settings.RenderScale * fullscreenScale, 0.25f, 2.0f);
-		// SCALED WITH HEIGHT: the mesh LOD keys are the guest's switch distances at 720 lines
-		// (Engine_MdlLods), and Godot's threshold is in pixels, so 1 here follows the 360 at
-		// any resolution.
-		view.MeshLodThreshold = settings.MeshLodPixels * (settings.Size.Y / Refii.Models.Engine_MdlLods.ReferenceHeight);
+		_windowSettings = settings;
+		Vector2I initialWindowSize = settings.Fullscreen && screen.Y > settings.Size.Y ? screen : root.Size;
+		ApplyViewport3DScaling(view, settings, initialWindowSize);
+		_onRootSizeChanged = () =>
+		{
+			if (IsInstanceValid(root) && IsInstanceValid(view))
+			{
+				ApplyViewport3DScaling(view, _windowSettings, root.Size);
+			}
+		};
+		root.SizeChanged += _onRootSizeChanged;
 		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
 		view.Msaa3D = settings.Msaa switch
 		{
@@ -745,8 +749,32 @@ public partial class GameWindow : Node
 
 	private (Engine_UiModel.FrontEndScreen, uint, bool, uint) _lastFrontEnd;
 
+	private GameWindowSettings _windowSettings;
+	private System.Action? _onRootSizeChanged;
+
+	/// <summary>
+	/// Updates 3D resolution scaling, mesh LOD threshold, and UI max texture edge when the root
+	/// window initializes, maximizes, enters fullscreen, or resizes.
+	/// </summary>
+	private static void ApplyViewport3DScaling(Viewport view, GameWindowSettings settings, Vector2I actualWindowSize)
+	{
+		(float scaling3D, float lodThreshold) = settings.ComputeViewport3DParameters(actualWindowSize);
+		view.Scaling3DScale = scaling3D;
+		view.MeshLodThreshold = lodThreshold;
+		if (actualWindowSize.X > 0 && actualWindowSize.Y > 0)
+		{
+			Refii.Textures.Engine_TexSemantic.UpdateUiMaxEdgeForResolution(actualWindowSize.X, actualWindowSize.Y);
+		}
+	}
+
 	public override void _ExitTree()
 	{
+		if (_onRootSizeChanged is not null && GetTree()?.Root is { } root && IsInstanceValid(root))
+		{
+			root.SizeChanged -= _onRootSizeChanged;
+		}
+		_onRootSizeChanged = null;
+
 		// The orphan count names what the tree's teardown will NOT free: a node outside the
 		// tree keeps its rendering-server instance, and Godot's own exit then destroys that
 		// instance after the storage it depends on — the SIGSEGV in ~RendererSceneCull that

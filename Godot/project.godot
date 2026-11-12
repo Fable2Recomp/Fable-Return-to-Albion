@@ -14,14 +14,16 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 
 [application]
 
-config/name="Fable 2 Launcher"
-config/description="Rebuild of the refii launcher. Dependencies remain native DLLs."
+config/name="Fable: Return to Albion"
+config/description="Unified launcher and engine for Fable: Return to Albion (Fable 2 & Fable 3)."
 run/main_scene="res://main.tscn"
 run/main_scene.android="res://src/android/AndroidGame.tscn"
+config/use_custom_user_dir=true
+config/custom_user_dir_name="Fable Return to Albion"
 config/project_settings_override="user://renderer.cfg"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 run/flush_stdout_on_print=true
-config/icon="res://assets/launcher/icon.png"
+config/icon="res://assets/launcher/fable.png"
 
 [audio]
 
@@ -40,8 +42,8 @@ file_logging/max_log_files=10
 [display]
 
 window/handheld/orientation.android=4
-window/size/viewport_width=1280
-window/size/viewport_height=760
+window/size/viewport_width=1440
+window/size/viewport_height=840
 window/size/viewport_width.android=1560
 window/size/viewport_height.android=720
 window/stretch/mode="canvas_items"
@@ -74,7 +76,7 @@ rendering_device/pipeline_cache/save_chunk_size_mb.android=0.25
 rendering_device/staging_buffer/max_size_mb=128
 rendering_device/staging_buffer/texture_upload_region_size_px=128
 rendering_device/d3d12/max_resource_descriptors=262144
-rendering_device/d3d12/max_sampler_descriptors=4096
+rendering_device/d3d12/max_sampler_descriptors=2048
 rendering_device/driver.windows="d3d12"
 lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
 shader_compiler/shader_cache/strip_debug=true
@@ -82,7 +84,7 @@ viewport/hdr_2d=true
 limits/global_shader_variables/buffer_size=262144
 limits/global_shader_variables/buffer_size.android=524288
 rendering_device/d3d12/max_resource_descriptors_per_frame=131072
-rendering_device/d3d12/max_sampler_descriptors_per_frame=4096
+rendering_device/d3d12/max_sampler_descriptors_per_frame=2048
 rendering_device/d3d12/max_misc_descriptors_per_frame=4096
 
 [shader_globals]

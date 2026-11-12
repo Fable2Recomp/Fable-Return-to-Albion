@@ -69,8 +69,21 @@ public partial class Engine_LightShadowBudget : Node
 	/// <summary>Max dynamic entity shadow lights at once (default 8; 0 uses uncapped).</summary>
 	public static int MaxDynamicEntityShadowLights = 8;
 
-	/// <summary>Of the dynamic shadow lights, the nearest N that use Cube shadows (default 4; remainder use DualParaboloid).</summary>
+	/// <summary>Of the dynamic shadow lights, the nearest N that use Cube shadows when <see cref="CubeOmniShadows"/> is true.</summary>
 	public static int MaxCubeShadowLights = 4;
+
+	/// <summary>
+	/// Whether dynamic point lights use 6-face cubemap shadows (<c>omni_shadow_mode = "cube"</c>) for
+	/// the nearest <see cref="MaxCubeShadowLights"/> fixtures instead of 2-pass dual-paraboloid maps.
+	/// </summary>
+	public static bool CubeOmniShadows = ConfiguredCubeOmniShadows();
+
+	private static bool ConfiguredCubeOmniShadows() =>
+		string.Equals(
+			Refii.Core.Engine_RefiiConfig.String(
+				Refii.Core.Engine_RefiiConfig.Read(out _), "omni_shadow_mode", "dual_paraboloid").Trim(),
+			"cube",
+			StringComparison.OrdinalIgnoreCase);
 
 	/// <summary>Metres from the eye to a light beyond which its shadow is culled; <c>placed_shadow_range</c>.</summary>
 	public static float MaxShadowDistance = Engine_LevelLights.PlacedShadowRange();
@@ -84,6 +97,7 @@ public partial class Engine_LightShadowBudget : Node
 		MaxShadowDistance = Engine_LevelLights.PlacedShadowRange();
 		MaxLightDistance = Engine_LevelLights.PlacedLightRange();
 		LightBudget = ConfiguredLightBudget();
+		CubeOmniShadows = ConfiguredCubeOmniShadows();
 	}
 
 	/// <summary>Debug lever: false hides every placed light regardless of the budget.</summary>
@@ -197,6 +211,7 @@ public partial class Engine_LightShadowBudget : Node
 		public byte WantedBy;
 		public byte CubeBy;
 		public byte ScoredBy;
+		public bool ShaftActive;
 
 		// Per view: when the fixture was last inside the frustum, 0 never.
 		public ulong LightSeen0, LightSeen1, ShadowSeen0, ShadowSeen1;
@@ -406,10 +421,23 @@ public partial class Engine_LightShadowBudget : Node
 		bool interior = Engine_LightingFrame.CurrentInterior;
 		bool viewerIndoors = interior || Engine_LightZones.IsIndoors(heroZone);
 
+		int maxShafts = Math.Clamp(
+			Engine_VolumetricLightShafts.MaxActiveShaftLights,
+			0,
+			Engine_VolumetricLightShafts.MaxShaftLights);
+		if (maxShafts <= 0)
+		{
+			Engine_VolumetricLightShafts.HideVolume();
+			return;
+		}
+
 		int candidateCount = 0;
 		for (int i = 0; i < _count; i++)
 		{
 			ref Fixture f = ref _fixtures[i];
+			bool wasShaftActive = f.ShaftActive;
+			f.ShaftActive = false;
+
 			if (!f.InTree || !f.Shown || f.BaseEnergy <= 0.0001f)
 			{
 				continue;
@@ -430,9 +458,23 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
+			float distFade = Mathf.Clamp((maxDist - dist) / 8.0f, 0.0f, 1.0f);
+			float score = Engine_VolumetricLightShafts.ScoreCandidateLight(
+				eye,
+				f.At,
+				f.Range,
+				f.LinearColor,
+				f.BaseEnergy * distFade,
+				f.VolumetricFogScale,
+				wasShaftActive);
+			if (score <= 0.0f)
+			{
+				continue;
+			}
+
 			if (candidateCount < _shaftCandidates.Length)
 			{
-				_shaftCandidates[candidateCount++] = new Candidate { Fixture = i, Key = dist };
+				_shaftCandidates[candidateCount++] = new Candidate { Fixture = i, Key = -score };
 			}
 		}
 
@@ -454,7 +496,7 @@ public partial class Engine_LightShadowBudget : Node
 			_capsuleInputs.AsSpan(0, capsuleCount);
 
 		int outCount = 0;
-		for (int c = 0; c < candidateCount && outCount < Engine_VolumetricLightShafts.MaxShaftLights; c++)
+		for (int c = 0; c < candidateCount && outCount < maxShafts; c++)
 		{
 			ref Fixture f = ref _fixtures[_shaftCandidates[c].Fixture];
 			if (!GodotObject.IsInstanceValid(f.Node))
@@ -462,7 +504,7 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
-			float dist = _shaftCandidates[c].Key;
+			float dist = eye.DistanceTo(f.At);
 			float maxDist = Engine_VolumetricLightShafts.MaxFogRangeMetres + f.Range;
 			float distFade = Mathf.Clamp((maxDist - dist) / 8.0f, 0.0f, 1.0f);
 			float liveEnergy = f.Node.LightEnergy * distFade;
@@ -482,6 +524,7 @@ public partial class Engine_LightShadowBudget : Node
 				? Engine_VolumetricLightShafts.ComputeLightCapsuleMask(f.At, statedRange, capsuleSpan)
 				: 0u;
 
+			f.ShaftActive = true;
 			_shaftInputs[outCount++] = new Engine_VolumetricLightShafts.ShaftLightInput(
 				Position: f.At,
 				StatedRange: statedRange,
@@ -559,6 +602,7 @@ public partial class Engine_LightShadowBudget : Node
 					fixture.LightSeen1 = was[slot].LightSeen1;
 					fixture.ShadowSeen0 = was[slot].ShadowSeen0;
 					fixture.ShadowSeen1 = was[slot].ShadowSeen1;
+					fixture.ShaftActive = was[slot].ShaftActive;
 				}
 
 				fixture.Omni = light is OmniLight3D;
@@ -656,7 +700,7 @@ public partial class Engine_LightShadowBudget : Node
 		// Each view ranks from its own player — player one's from the hero, player two's from player
 		// two — and takes the whole budget; the union casts.
 		int maxShadows = Budget > 0 ? Budget : (MaxDynamicEntityShadowLights > 0 ? MaxDynamicEntityShadowLights : int.MaxValue);
-		int cubeBudget = Math.Min(MaxCubeShadowLights, maxShadows);
+		int cubeBudget = CubeOmniShadows ? Math.Min(MaxCubeShadowLights, maxShadows) : 0;
 		for (int v = 0; v < views; v++)
 		{
 			Vector3 eye = _views[v].GlobalPosition;

@@ -302,12 +302,11 @@ public abstract partial class Fable3ListScreen : Fable3Canvas
 
 	public override void _Draw()
 	{
-		if (!_open || Theme?.Fonts is null)
+		if (!_open || Theme?.Fonts is null || Theme.Fonts.Get(UiFontBucket.Normal) is not { } font)
 		{
 			return;
 		}
 
-		UiFont font = Theme.Fonts.Get(UiFontBucket.Normal);
 		Vector2 size = GetViewportRect().Size;
 		float scale = size.Y / CanvasHeight;
 

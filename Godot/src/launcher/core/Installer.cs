@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Refii.Launcher.Core;
@@ -12,12 +13,20 @@ public static class Installer
     public static string GetInstallRootPath() =>
         LauncherPaths.ResolveFromLauncherDirectory(Ini.GetString("GamePath", "assets/", "Game"));
 
+    /// <summary>The install base path for <paramref name="title"/>: <c>&lt;root&gt;/Fable2/</c>, <c>&lt;root&gt;/Fable3/</c>.</summary>
+    public static string GetInstallBasePath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetInstallRootPath(), title.Folder) + Path.DirectorySeparatorChar;
+
     /// <summary>The active title's install: <c>&lt;root&gt;/Fable2/</c>, <c>&lt;root&gt;/Fable3/</c>.</summary>
     public static string GetInstallBasePath() =>
-        Path.Combine(GetInstallRootPath(), Refii.Core.Engine_Title.Active.Folder) + Path.DirectorySeparatorChar;
+        GetInstallBasePath(Refii.Core.Engine_Title.Active);
 
     public static string GetInstalledExecutablePath() =>
         Path.Combine(Platform.GetExecutableDirectory(), Platform.ExecutableName);
+
+    /// <summary>The runtime config path for <paramref name="title"/> (<see cref="Refii.Core.Engine_Title.ConfigPath"/>).</summary>
+    public static string GetRuntimeConfigPath(Refii.Core.Engine_Title title) =>
+        title.ConfigPath;
 
     /// <summary>
     /// The active title's runtime config, at the app root (<see cref="Refii.Core.Engine_Title.ConfigPath"/>).
@@ -126,15 +135,24 @@ public static class Installer
     /// The check runs against the executable the ISO extraction just wrote, not the one the
     /// dialog looked at, so a path pasted by hand or an unattended run gets the same answer.
     /// </remarks>
-    public static bool InstallTitleUpdate(string sourcePath, string destinationPath, out string error)
+    public static bool InstallTitleUpdate(string sourcePath, string destinationPath, out string error) =>
+        InstallTitleUpdate(Refii.Core.Engine_Title.Active, sourcePath, destinationPath, out error);
+
+    /// <summary>
+    /// Writes the title update beside <paramref name="title"/>'s installed executable after checking
+    /// that it patches that executable.
+    /// </summary>
+    public static bool InstallTitleUpdate(
+        Refii.Core.Engine_Title title, string sourcePath, string destinationPath, out string error)
     {
-        if (!SafePath.IsSafeDestinationUnderBase(destinationPath, GetInstallBasePath(), out error))
+        string installBase = GetInstallBasePath(title);
+        if (!SafePath.IsSafeDestinationUnderBase(destinationPath, installBase, out error))
         {
             return false;
         }
 
         string dataBankPath = GetTitleUpdateDataBankPath(destinationPath);
-        if (!SafePath.IsSafeDestinationUnderBase(dataBankPath, GetInstallBasePath(), out error))
+        if (!SafePath.IsSafeDestinationUnderBase(dataBankPath, installBase, out error))
         {
             return false;
         }
@@ -178,8 +196,8 @@ public static class Installer
             return false;
         }
 
-        if (!SupportedGame.IsExecutable(executable, out error) ||
-            !SupportedGame.IsTitleUpdate(update.Identity, out error) ||
+        if (!SupportedGame.IsExecutable(title, executable, out error) ||
+            !SupportedGame.IsTitleUpdate(title, update.Identity, out error) ||
             !update.AppliesTo(executable, out error))
         {
             return false;
@@ -226,30 +244,32 @@ public static class Installer
     /// Whether the installed executable and title update belong together, with a line to show.
     /// Cached briefly: the panels ask every refresh and the answer only changes on an install.
     /// </summary>
-    public static bool CheckInstalledTitleUpdate(out string summary)
+    public static bool CheckInstalledTitleUpdate(out string summary) =>
+        CheckInstalledTitleUpdate(Refii.Core.Engine_Title.Active, out summary);
+
+    /// <summary>
+    /// Whether <paramref name="title"/>'s installed executable and title update belong together, with a line to show.
+    /// </summary>
+    public static bool CheckInstalledTitleUpdate(Refii.Core.Engine_Title title, out string summary)
     {
         long now = Environment.TickCount64;
-        if (_titleUpdateValid && now - _titleUpdateStamp < StepStatusTtlMs)
+        if (_titleUpdateCache.TryGetValue(title.Key, out var cached) && now - cached.Stamp < StepStatusTtlMs)
         {
-            summary = _titleUpdateSummary;
-            return _titleUpdateOk;
+            summary = cached.Summary;
+            return cached.Ok;
         }
 
-        _titleUpdateOk = CheckInstalledTitleUpdateNow(out _titleUpdateSummary);
-        _titleUpdateValid = true;
-        _titleUpdateStamp = now;
-        summary = _titleUpdateSummary;
-        return _titleUpdateOk;
+        bool ok = CheckInstalledTitleUpdateNow(title, out summary);
+        _titleUpdateCache[title.Key] = (ok, summary, now);
+        return ok;
     }
 
-    private static string _titleUpdateSummary = string.Empty;
-    private static bool _titleUpdateOk;
-    private static bool _titleUpdateValid;
-    private static long _titleUpdateStamp;
+    private static readonly Dictionary<string, (bool Ok, string Summary, long Stamp)> _titleUpdateCache =
+        new(StringComparer.Ordinal);
 
-    private static bool CheckInstalledTitleUpdateNow(out string summary)
+    private static bool CheckInstalledTitleUpdateNow(Refii.Core.Engine_Title title, out string summary)
     {
-        string gameData = GetActiveGameDataDirectoryPath();
+        string gameData = GetActiveGameDataDirectoryPath(title);
         string failedMarker = Path.Combine(gameData, InstallFailedFileName);
         if (File.Exists(failedMarker))
         {
@@ -283,7 +303,7 @@ public static class Installer
             return false;
         }
 
-        if (!SupportedGame.IsExecutable(executable, out string unsupported))
+        if (!SupportedGame.IsExecutable(title, executable, out string unsupported))
         {
             summary = unsupported;
             return false;
@@ -302,7 +322,7 @@ public static class Installer
             return false;
         }
 
-        if (!SupportedGame.IsTitleUpdate(update.Identity, out string mismatch) ||
+        if (!SupportedGame.IsTitleUpdate(title, update.Identity, out string mismatch) ||
             !update.AppliesTo(executable, out mismatch))
         {
             summary = mismatch;
@@ -319,13 +339,21 @@ public static class Installer
         return true;
     }
 
+    /// <summary>Path to <paramref name="title"/>'s game marker file (<c>game/default.xexp</c>).</summary>
+    public static string GetGameMarkerPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetInstallBasePath(title), GetGameMarkerRelativePath());
+
     public static string GetGameMarkerPath() =>
-        Path.Combine(GetInstallBasePath(), GetGameMarkerRelativePath());
+        GetGameMarkerPath(Refii.Core.Engine_Title.Active);
 
     public static string GetGameTitle() => Refii.Core.Engine_Title.Active.Name;
 
+    /// <summary>Path to <paramref name="title"/>'s configured game data directory.</summary>
+    public static string GetGameDataDirectoryPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetInstallBasePath(title), GetGameDataDirectoryName());
+
     public static string GetGameDataDirectoryPath() =>
-        Path.Combine(GetInstallBasePath(), GetGameDataDirectoryName());
+        GetGameDataDirectoryPath(Refii.Core.Engine_Title.Active);
 
     private static string GetWorkspaceBasePath(string gameInstallRoot)
     {
@@ -344,33 +372,47 @@ public static class Installer
     }
 
     private const long ActiveGameDataTtlMs = 1000;
-    private static string _activeGameData = string.Empty;
-    private static bool _activeGameDataValid;
-    private static long _activeGameDataStamp;
+    private static readonly Dictionary<string, (string Path, long Stamp)> _activeGameDataCache =
+        new(StringComparer.Ordinal);
 
-    public static string GetActiveGameDataDirectoryPath()
+    /// <summary>Resolved or configured game data directory path for <paramref name="title"/>.</summary>
+    public static string GetActiveGameDataDirectoryPath(Refii.Core.Engine_Title title)
     {
         long now = Environment.TickCount64;
-        if (_activeGameDataValid && now - _activeGameDataStamp < ActiveGameDataTtlMs)
+        if (_activeGameDataCache.TryGetValue(title.Key, out var cached) && now - cached.Stamp < ActiveGameDataTtlMs)
         {
-            return _activeGameData;
+            return cached.Path;
         }
 
-        string resolved = ResolveGameDataDirectory();
-        _activeGameData = resolved.Length > 0 ? resolved : GetGameDataDirectoryPath();
-        _activeGameDataValid = true;
-        _activeGameDataStamp = now;
-        return _activeGameData;
+        string resolved = ResolveGameDataDirectory(title);
+        string active = resolved.Length > 0 ? resolved : GetGameDataDirectoryPath(title);
+        _activeGameDataCache[title.Key] = (active, now);
+        return active;
     }
 
+    public static string GetActiveGameDataDirectoryPath() =>
+        GetActiveGameDataDirectoryPath(Refii.Core.Engine_Title.Active);
+
+    /// <summary>Unpacked workspace path for <paramref name="title"/>.</summary>
+    public static string GetLuaWorkspacePath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath(title)), "unpacked");
+
     public static string GetLuaWorkspacePath() =>
-        Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "unpacked");
+        GetLuaWorkspacePath(Refii.Core.Engine_Title.Active);
+
+    /// <summary>The game executable the recompiler reads for <paramref name="title"/>.</summary>
+    public static string GetGameExecutablePath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetActiveGameDataDirectoryPath(title), "default.xex");
 
     /// <summary>
     /// The game executable the recompiler reads, inside the installed game data.
     /// </summary>
     public static string GetGameExecutablePath() =>
-        Path.Combine(GetActiveGameDataDirectoryPath(), "default.xex");
+        GetGameExecutablePath(Refii.Core.Engine_Title.Active);
+
+    /// <summary>Where the generator writes the recompiled C++ for <paramref name="title"/>.</summary>
+    public static string GetGeneratedCodeDirectoryPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath(title)), "generated");
 
     /// <summary>
     /// Where the generator writes the recompiled C++, beside the installed game data.
@@ -385,56 +427,88 @@ public static class Installer
     /// Deleted once the module is built; nothing may be kept here.
     /// </remarks>
     public static string GetGeneratedCodeDirectoryPath() =>
-        Path.Combine(GetWorkspaceBasePath(GetActiveGameDataDirectoryPath()), "generated");
+        GetGeneratedCodeDirectoryPath(Refii.Core.Engine_Title.Active);
+
+    /// <summary>
+    /// Persistent compile cache directory (<c>cache/&lt;Folder&gt;/compile</c>) holding cached generated C++,
+    /// precompiled headers, object files, and Zig runtime libraries for <paramref name="title"/>.
+    /// </summary>
+    /// <param name="title">Title whose compile cache directory is requested.</param>
+    /// <returns>Full path to <paramref name="title"/>'s compile cache directory.</returns>
+    public static string GetCompileCacheDirectoryPath(Refii.Core.Engine_Title title) =>
+        !string.IsNullOrEmpty(LauncherPaths.OverrideLauncherDirectory)
+            ? Path.Combine(LauncherPaths.GetLauncherDirectory(), "cache", title.Folder, "compile")
+            : Path.Combine(title.CacheDirectory, "compile");
+
+    /// <summary>Persistent compile cache directory for the active title.</summary>
+    /// <returns>Full path to the active title's compile cache directory.</returns>
+    public static string GetCompileCacheDirectoryPath() =>
+        GetCompileCacheDirectoryPath(Refii.Core.Engine_Title.Active);
 
     /// <summary>Which derived artefacts the Install tab tracks by a file the pipeline writes.</summary>
     public readonly record struct ReinstallStepStatus(bool Shaders, bool Assets, string AssetsDetail);
 
     private const long StepStatusTtlMs = 1000;
-    private static ReinstallStepStatus _stepStatus;
-    private static bool _stepStatusValid;
-    private static long _stepStatusStamp;
+    private static readonly Dictionary<string, (ReinstallStepStatus Status, long Stamp)> _stepStatusCache =
+        new(StringComparer.Ordinal);
 
     public static void InvalidateReinstallStepStatus()
     {
-        _stepStatusValid = false;
-        _activeGameDataValid = false;
-        _titleUpdateValid = false;
+        _stepStatusCache.Clear();
+        _activeGameDataCache.Clear();
+        _titleUpdateCache.Clear();
     }
 
-    public static ReinstallStepStatus GetReinstallStepStatus()
+    public static ReinstallStepStatus GetReinstallStepStatus() =>
+        GetReinstallStepStatus(Refii.Core.Engine_Title.Active);
+
+    /// <summary>Returns cached derived-artefact step status for <paramref name="title"/>.</summary>
+    public static ReinstallStepStatus GetReinstallStepStatus(Refii.Core.Engine_Title title)
     {
         long now = Environment.TickCount64;
-        if (_stepStatusValid && now - _stepStatusStamp < StepStatusTtlMs)
+        if (_stepStatusCache.TryGetValue(title.Key, out var cached) && now - cached.Stamp < StepStatusTtlMs)
         {
-            return _stepStatus;
+            return cached.Status;
         }
 
-        string workspace = GetLuaWorkspacePath();
-        bool assets = Refii.Textures.Engine_TexPrebuild.IsCurrent(out string assetsDetail);
-        _stepStatus = new ReinstallStepStatus(
+        string workspace = GetLuaWorkspacePath(title);
+        bool assets = Refii.Textures.Engine_TexPrebuild.IsCurrent(title, out string assetsDetail);
+        var status = new ReinstallStepStatus(
             File.Exists(Path.Combine(workspace, "shaders", "compile_report.tsv")),
             assets,
             assetsDetail);
-        _stepStatusValid = true;
-        _stepStatusStamp = now;
-        return _stepStatus;
+        _stepStatusCache[title.Key] = (status, now);
+        return status;
     }
 
+    /// <summary>Content directory path for <paramref name="title"/>.</summary>
+    public static string GetGameContentDirectoryPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetActiveGameDataDirectoryPath(title), "data");
+
     public static string GetGameContentDirectoryPath() =>
-        Path.Combine(GetActiveGameDataDirectoryPath(), "data");
+        GetGameContentDirectoryPath(Refii.Core.Engine_Title.Active);
+
+    /// <summary>Ensures <paramref name="title"/>'s runtime config exists and carries current defaults.</summary>
+    public static bool EnsureRuntimeConfigFile(Refii.Core.Engine_Title title, out string error) =>
+        RuntimeConfig.EnsureDefaultsForTitle(title, GetRuntimeConfigPath(title), out error);
 
     public static bool EnsureRuntimeConfigFile(out string error) =>
-        RuntimeConfig.EnsureDefaults(GetRuntimeConfigPath(), out error);
+        EnsureRuntimeConfigFile(Refii.Core.Engine_Title.Active, out error);
 
     public const string InstallOkFileName = ".install-ok";
     public const string InstallFailedFileName = ".install-failed";
 
+    public static string GetGameInstallReceiptPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetGameDataDirectoryPath(title), InstallOkFileName);
+
     public static string GetGameInstallReceiptPath() =>
-        Path.Combine(GetGameDataDirectoryPath(), InstallOkFileName);
+        GetGameInstallReceiptPath(Refii.Core.Engine_Title.Active);
+
+    public static string GetGameInstallFailedPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetGameDataDirectoryPath(title), InstallFailedFileName);
 
     public static string GetGameInstallFailedPath() =>
-        Path.Combine(GetGameDataDirectoryPath(), InstallFailedFileName);
+        GetGameInstallFailedPath(Refii.Core.Engine_Title.Active);
 
     /// <summary>
     /// True when a directory really holds an extracted install.
@@ -505,10 +579,15 @@ public static class Installer
     /// shared convention is consulted before giving up. Both candidates must carry banks
     /// to be accepted; a marker on its own is not an install.
     /// </summary>
-    public static string ResolveGameDataDirectory()
+    public static string ResolveGameDataDirectory() =>
+        ResolveGameDataDirectory(Refii.Core.Engine_Title.Active);
+
+    /// <summary>Where <paramref name="title"/>'s game data actually is, or empty when not installed.</summary>
+    public static string ResolveGameDataDirectory(Refii.Core.Engine_Title title)
     {
-        string configured = GetGameDataDirectoryPath();
-        if (HasExtractedAssets(configured, GetGameMarkerPath()))
+        string configured = GetGameDataDirectoryPath(title);
+        string marker = GetGameMarkerPath(title);
+        if (HasExtractedAssets(configured, marker))
         {
             return configured;
         }
@@ -516,17 +595,23 @@ public static class Installer
         // An install without the title update has no patch to act as the marker; the
         // executable beside where it would sit stands in for it.
         string executable = Path.Combine(
-            Path.GetDirectoryName(GetGameMarkerPath()) ?? string.Empty, "default.xex");
+            Path.GetDirectoryName(marker) ?? string.Empty, "default.xex");
         if (HasExtractedAssets(configured, executable))
         {
             return configured;
         }
 
-        string resolved = Refii.Core.Engine_GameData.Resolve();
+        string resolved = title == Refii.Core.Engine_Title.Active
+            ? Refii.Core.Engine_GameData.Resolve()
+            : Refii.Core.Engine_GameData.ResolveFor(title);
         return HasBanks(resolved) ? resolved : string.Empty;
     }
 
-    public static bool AssetsExist() => ResolveGameDataDirectory().Length > 0;
+    /// <summary>True when <paramref name="title"/>'s game data is installed.</summary>
+    public static bool AssetsExist(Refii.Core.Engine_Title title) =>
+        ResolveGameDataDirectory(title).Length > 0;
+
+    public static bool AssetsExist() => AssetsExist(Refii.Core.Engine_Title.Active);
 
     /// <summary>
     /// Whether refii's own runtime is present — NOT whether the game is installed.
@@ -539,9 +624,9 @@ public static class Installer
     ///
     /// A false answer here means the APP is broken — a bad package, a missing native — and
     /// installing the game cannot fix it. Whether the player's game is installed is
-    /// <see cref="AssetsExist"/>, and whether its code is built is
+    /// <see cref="AssetsExist()"/>, and whether its code is built is
     /// <c>GameCodeBuild.NeedsBuild</c>. Whether the active title has a runtime of its own is
-    /// <see cref="TitleRuntimeExists"/>.
+    /// <see cref="TitleRuntimeExists()"/>.
     /// </remarks>
     public static bool InstalledBuildExists() =>
         File.Exists(Path.Combine(
@@ -550,21 +635,39 @@ public static class Installer
         File.Exists(GetInstalledExecutablePath());
 
     /// <summary>
+    /// Whether <paramref name="title"/>'s ReXGlue instance ships with this app: its host bridge in
+    /// <c>bin/&lt;Folder&gt;/</c>. False for a title whose runtime is not built yet.
+    /// </summary>
+    public static bool TitleRuntimeExists(Refii.Core.Engine_Title title) =>
+        File.Exists(Path.Combine(
+            title.BinDirectory,
+            Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge")));
+
+    /// <summary>
     /// Whether the active title's ReXGlue instance ships with this app: its host bridge in
     /// <c>bin/&lt;Folder&gt;/</c>. False for a title whose runtime is not built yet, which can be
     /// installed but not played.
     /// </summary>
     public static bool TitleRuntimeExists() =>
-        File.Exists(Path.Combine(
-            Refii.Core.Engine_Title.Active.BinDirectory,
-            Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge")));
+        TitleRuntimeExists(Refii.Core.Engine_Title.Active);
 
-    public static bool UninstallManagedFiles(out string log)
+    public static bool UninstallManagedFiles(out string log) =>
+        UninstallManagedFiles(Refii.Core.Engine_Title.Active, out log);
+
+    /// <summary>Removes <paramref name="title"/>'s managed game, update, and compile-cache directories, leaving saves and mods intact.</summary>
+    public static bool UninstallManagedFiles(Refii.Core.Engine_Title title, out string log)
     {
         var removed = new System.Text.StringBuilder();
         bool hasRemovedFiles = false;
+        string[] directories =
+        {
+            GetGameDataDirectoryPath(title),
+            GetUpdateDirectoryPath(title),
+            GetCompileCacheDirectoryPath(title),
+            GetGeneratedCodeDirectoryPath(title),
+        };
 
-        foreach (string directory in new[] { GetGameDataDirectoryPath(), GetUpdateDirectoryPath() })
+        foreach (string directory in directories)
         {
             if (!Directory.Exists(directory))
             {
@@ -583,8 +686,9 @@ public static class Installer
             }
         }
 
+        InvalidateReinstallStepStatus();
         log = hasRemovedFiles
-            ? removed.ToString().TrimEnd() + "\n" + GetGameTitle() + " install removed successfully."
+            ? removed.ToString().TrimEnd() + "\n" + title.Name + " install removed successfully."
             : string.Empty;
         return hasRemovedFiles;
     }
@@ -592,6 +696,10 @@ public static class Installer
     public static string GetUpdateDirectoryName() =>
         Ini.GetString("UpdateDirectory", "update", "Game");
 
+    /// <summary>Path to <paramref name="title"/>'s update directory.</summary>
+    public static string GetUpdateDirectoryPath(Refii.Core.Engine_Title title) =>
+        Path.Combine(GetInstallBasePath(title), GetUpdateDirectoryName());
+
     public static string GetUpdateDirectoryPath() =>
-        Path.Combine(GetInstallBasePath(), GetUpdateDirectoryName());
+        GetUpdateDirectoryPath(Refii.Core.Engine_Title.Active);
 }

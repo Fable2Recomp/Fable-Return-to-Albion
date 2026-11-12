@@ -197,6 +197,15 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         _rd = null;
     }
 
+    /// <summary>
+    /// Whether any active effect or HUD marker in <paramref name="view"/> reads <c>fx_scene_depth</c> this frame.
+    /// </summary>
+    private static bool HasActiveDepthConsumer(int view) =>
+        Engine_FxAdditiveLayer.IsViewActive(view) ||
+        Engine_FxDisplacement.IsViewActive(view) ||
+        Refii.Entities.Engine_EntityHighlightLayer.IsViewActive(view) ||
+        Refii.Ui.Engine_HudWorldSprites.HasActiveSprites(view);
+
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
         if (_rd is not null) Refii.Core.Engine_RdRetire.Pump(_rd);
@@ -205,6 +214,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         Vector2I size = buffers.GetInternalSize();
         if (size.X <= 0 || size.Y <= 0) return;
         EnsureTarget(size);
+        if (!HasActiveDepthConsumer(View)) return;
         Rid depth = buffers.GetDepthLayer(0);
         // The set is held by the resources it binds: the RDUniforms and their Array were three
         // finalizable wrappers per frame for a set the cache already had.

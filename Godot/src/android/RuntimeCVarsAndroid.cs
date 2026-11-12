@@ -300,4 +300,36 @@ public static class RuntimeCVarsAndroid
             + "collection at the wrong moment show up in a few loads. Slows the game; 0 is off. "
             + "Takes effect at the next launch."),
     };
+
+    /// <summary>Every CVar key defined exclusively for Android so the desktop settings panel can hide them.</summary>
+    public static readonly System.Collections.Generic.IReadOnlySet<string> AllKeys = BuildAllKeys();
+
+    private static System.Collections.Generic.HashSet<string> BuildAllKeys()
+    {
+        var keys = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal);
+        foreach (RuntimeCVarDefinition[] group in new[]
+        {
+            GraphicsPreset,
+            SunShadowFilter,
+            IntroVideos,
+            TextureStorage,
+            BakedShadows,
+            FpsCounter,
+            VibrationStrength,
+            RenderThread,
+            Tuning,
+            LohCompaction,
+            EffectsAndCanvas,
+            StableLightCounts,
+            GcStress,
+        })
+        {
+            foreach (RuntimeCVarDefinition definition in group)
+            {
+                keys.Add(definition.Name);
+            }
+        }
+
+        return keys;
+    }
 }

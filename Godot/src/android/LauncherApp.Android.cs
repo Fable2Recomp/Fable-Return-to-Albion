@@ -13,6 +13,8 @@ namespace Refii.Launcher;
 public partial class LauncherApp
 {
     private AndroidPhoneLauncher? _phone;
+    private VBoxContainer? _phoneContainer;
+    private GameScopeSelector? _phoneScope;
     private string _phoneStatus = "";
 
     /// <summary>The launcher is on its way straight to the game (<see cref="SkipLauncher"/>): hidden and not built.</summary>
@@ -51,6 +53,7 @@ public partial class LauncherApp
         }
         catch (Exception error) { GD.PushError("[mods] bundled mods not installed: " + error.Message); }
         LoadActiveTitle();
+        _selectedManageTitle = Engine_Title.Active;
         SeedAndroidConfig();
         _patches = new Patches();
         _launch = new LaunchController(_patches);
@@ -104,10 +107,10 @@ public partial class LauncherApp
         DrawPhoneGlyphs();
         WireMenus();
         WireTabs();
-        _settingsTabs.CurrentTab = _phone.HasPlayableInstall ? 0 : 2;
-        _infoTabs.AddTab("Installation");
+        _settingsTabs!.CurrentTab = _phone!.HasPlayableInstall ? 0 : 2;
+        _infoTabs!.AddTab("Installation");
         _infoTabs.CurrentTab = _infoTabs.TabCount - 1;
-        _settingsTitle.Text = "Launch options";
+        _settingsTitle!.Text = "Launch options";
         Resized += ApplyLayout;
         ApplyLayout();
         Resized += DrawPhoneGlyphs;
@@ -143,10 +146,57 @@ public partial class LauncherApp
     /// <summary>Adds the active title's installation controls to the settings drawer and resolves its config's paths.</summary>
     private void AddAndroidInstallation()
     {
-        _phone = new AndroidPhoneLauncher { Hosted = true, SizeFlagsHorizontal = SizeFlags.ExpandFill,
-            SizeFlagsVertical = SizeFlags.ExpandFill };
-        _reinstallPanel.GetParent().AddChild(_phone);
+        if (_phoneContainer == null)
+        {
+            _phoneContainer = new VBoxContainer
+            {
+                SizeFlagsHorizontal = SizeFlags.ExpandFill,
+                SizeFlagsVertical = SizeFlags.ExpandFill,
+            };
+            _phoneContainer.AddThemeConstantOverride("separation", 8);
+
+            _phoneScope = new GameScopeSelector(Engine_Title.Active);
+            _phoneScope.TitleSelected += title => SetSelectedManageTitle(title);
+            _phoneContainer.AddChild(_phoneScope);
+            _reinstallPanel.GetParent().AddChild(_phoneContainer);
+        }
+
+        _phone = new AndroidPhoneLauncher
+        {
+            Hosted = true,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+        };
+        _phoneContainer.AddChild(_phone);
         AndroidLauncherSettings.Prepare(Engine_AppRoot.Path, _phone.InstalledGameRoot);
+    }
+
+    /// <summary>Handles segmented game-scope switches on Android by switching the active phone title when idle.</summary>
+    private bool OnPhoneManageTitleSelected(Engine_Title title)
+    {
+        if (_phone == null) return false;
+        if (AndroidInstalling)
+        {
+            _phoneScope?.SetSelectedTitle(Engine_Title.Active, notify: false);
+            _moddingPanel.SetTitle(Engine_Title.Active);
+            _savesPanel.SetTitle(Engine_Title.Active);
+            Log("Finish or cancel the running installation before switching to " + title.Name + ".");
+            return true;
+        }
+
+        _selectedManageTitle = title;
+        _phoneScope?.SetSelectedTitle(title, notify: false);
+        _moddingPanel.SetTitle(title);
+        _savesPanel.SetTitle(title);
+        if (title != Engine_Title.Active)
+        {
+            SwitchTitle(title);
+        }
+        else
+        {
+            RefreshDebugDrawer();
+        }
+        return true;
     }
 
     /// <summary>Whether the phone's installer is running, which a title switch waits for.</summary>
@@ -160,6 +210,7 @@ public partial class LauncherApp
     private void ReloadAndroidTitle()
     {
         if (_phone == null) return;
+        int currentTab = _settingsTabs.CurrentTab;
         SeedAndroidConfig();
         // Godot's thread model is the app's and fixed when it starts, so renderer.cfg states the next
         // launch's: the title just chosen's (AndroidRenderThread), not the last one played.
@@ -170,9 +221,13 @@ public partial class LauncherApp
         _phone.QueueFree();
         _phone.GetParent().RemoveChild(_phone);
         AddAndroidInstallation();
+        _selectedManageTitle = Engine_Title.Active;
+        _phoneScope?.SetSelectedTitle(Engine_Title.Active, notify: false);
+        _moddingPanel.SetTitle(Engine_Title.Active);
+        _savesPanel.SetTitle(Engine_Title.Active);
         _infoTabs.AddTab("Installation");
         _infoTabs.Visible = true;
-        _settingsTabs.CurrentTab = _phone.HasPlayableInstall ? 0 : 2;
+        _settingsTabs.CurrentTab = currentTab;
         _settingsPanel.ReloadForTitle();
         ApplyLayout();
         RefreshState();
@@ -184,6 +239,9 @@ public partial class LauncherApp
     {
         if (_phone == null) return;
         bool running = _phone.IsInstalling;
+        if (_phoneScope != null) _phoneScope.Interactive = !running;
+        _moddingPanel.SetScopeInteractive(!running);
+        _savesPanel.SetScopeInteractive(!running);
         _primaryButton.Text = AndroidLauncherProgress.Label(running, _phone.HasPlayableInstall, _phone.Status, _phone.NeedsBuild);
         _primaryButton.Disabled = running;
         _progressTrack.Visible = running;
@@ -251,6 +309,7 @@ public partial class LauncherApp
         if (_phone == null) return false;
         _settingsPanel.Visible = _settingsTabs.CurrentTab == 0;
         _moddingPanel.Visible = _settingsTabs.CurrentTab == 1;
+        if (_phoneContainer != null) _phoneContainer.Visible = _settingsTabs.CurrentTab == 2;
         _phone.Visible = _settingsTabs.CurrentTab == 2;
         _savesPanel.Visible = _settingsTabs.CurrentTab == 3;
         if (_savesPanel.Visible) _savesPanel.Refresh(_launch.GameIsRunning);
@@ -288,6 +347,7 @@ public partial class LauncherApp
     private bool ScaleAndroidInstallation(int body)
     {
         if (_phone == null) return false;
+        _phoneScope?.Configure(null, body);
         StyleAndroidInstallation(_phone, body);
         return true;
     }

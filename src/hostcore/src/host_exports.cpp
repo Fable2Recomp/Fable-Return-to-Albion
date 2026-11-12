@@ -703,6 +703,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capac
     return 1;
 }
 
+}  // extern "C"
+
 namespace {
 
 /// The running title's savegame folder of the signed-in profile, for the player state's save
@@ -727,6 +729,8 @@ const bool g_player_state_rooted = [] {
 }();
 
 }  // namespace
+
+extern "C" {
 
 /// The players' mod values and the relayed mod events this machine owes the co-op peer, one
 /// message per line (see core/player_state.h, core/event_relay.h). Called every frame; the caller

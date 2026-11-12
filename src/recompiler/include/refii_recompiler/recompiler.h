@@ -13,6 +13,18 @@
 extern "C" {
 #endif
 
+#ifndef REFII_RECOMPILER_EXPORT
+#if defined(_WIN32)
+#if defined(refii_recompiler_EXPORTS)
+#define REFII_RECOMPILER_EXPORT __declspec(dllexport)
+#else
+#define REFII_RECOMPILER_EXPORT __declspec(dllimport)
+#endif
+#else
+#define REFII_RECOMPILER_EXPORT __attribute__((visibility("default")))
+#endif
+#endif
+
 // Bumped when a signature or an event's meaning changes. The launcher checks it before
 // the first call so a stale library beside a new launcher fails with a message rather
 // than a wrong argument.
@@ -50,10 +62,10 @@ typedef int32_t (*refii_recompiler_progress_fn)(void* user, int32_t event, const
 
 // The ABI version this library was built with; compare against
 // REFII_RECOMPILER_ABI_VERSION.
-int32_t refii_recompiler_v1_abi_version(void);
+REFII_RECOMPILER_EXPORT int32_t refii_recompiler_v1_abi_version(void);
 
 // The SDK version the generator was built from ("0.10.0-dev"). Static storage.
-const char* refii_recompiler_v1_sdk_version(void);
+REFII_RECOMPILER_EXPORT const char* refii_recompiler_v1_sdk_version(void);
 
 // Generates the sources the manifest describes, writing wherever it says. Everything the
 // manifest holds is taken as written: the launcher produces the effective manifest with
@@ -63,9 +75,10 @@ const char* refii_recompiler_v1_sdk_version(void);
 // on that same thread. Returns REFII_RECOMPILER_OK on success and REFII_RECOMPILER_STOPPED
 // when the callback asked it to stop. On failure, writes a UTF-8 message into `error`
 // (NUL-terminated, truncated to `error_capacity`) and returns REFII_RECOMPILER_FAILED.
-int32_t refii_recompiler_v1_codegen(const char* manifest_path,
-                                    refii_recompiler_progress_fn progress, void* user,
-                                    char* error, size_t error_capacity);
+REFII_RECOMPILER_EXPORT int32_t refii_recompiler_v1_codegen(const char* manifest_path,
+                                                            refii_recompiler_progress_fn progress,
+                                                            void* user, char* error,
+                                                            size_t error_capacity);
 
 #ifdef __cplusplus
 }

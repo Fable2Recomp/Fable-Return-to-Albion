@@ -15,12 +15,13 @@ public static class AndroidLauncherSettings
     {
         "fullscreen", "monitor", "borderless", "display_aspect", "display_resolution", "vsync_mode",
         "rendering_driver", "msaa", "taa", "render_scaler", "fsr_quality", "fsr_sharpness",
+        DesktopGraphicsPresets.Key, DesktopGraphicsPresets.RevisionKey,
     };
 
-    /// <summary>Whether the launcher's settings list shows <paramref name="name"/>: not, on a phone, a
-    /// setting the phone ignores, which only made the list longer and looked like it should do something.</summary>
+    /// <summary>Whether the launcher's settings list shows <paramref name="name"/>: on a phone, hides
+    /// desktop-only window/upscaler rows; on desktop, hides every phone-only row in <see cref="RuntimeCVarsAndroid.AllKeys"/>.</summary>
     public static bool Shows(string name) =>
-        GraphicsPresets.Offered ? !DesktopOnly.Contains(name) : name != AndroidBakedShadows.Key && name != AndroidStartup.SkipVideosKey;
+        GraphicsPresets.Offered ? !DesktopOnly.Contains(name) : !RuntimeCVarsAndroid.AllKeys.Contains(name);
 
     /// <summary>What a phone player sets in the launcher without ticking Advanced: the graphics preset
     /// and the frame cap with the two settings beside them, the camera and vibration, and online and

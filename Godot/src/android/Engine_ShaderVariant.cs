@@ -61,12 +61,19 @@ public static class Engine_ShaderVariant
     /// <summary>Lite under the modern model: the lite/modern/ builds, which also drop the bakes.</summary>
     public static bool ModernBuilds => Chosen.Value.Modern;
 
+    /// <summary>
+    /// Desktop full surface shaders compiled with <c>FABLE_MODERN_DIRECT</c> when running the Modern
+    /// lighting model without lighting debug overrides: strips dead Classic PRT/vertex/lightmap bakes
+    /// at compile time while keeping full weather, cloud shadows, ORM, and HDR active.
+    /// </summary>
+    public static bool ModernDirect => Chosen.Value.ModernDirect;
+
     public static bool Lite => Current != Mode.Full;
 
     /// <summary>"lite_flat": the terrain draws without its layer normal maps and cavity.</summary>
     public static bool FlatTerrain => Current == Mode.LiteFlat;
 
-    private static readonly Lazy<(Mode Mode, bool Modern)> Chosen = new(Choose, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<(Mode Mode, bool Modern, bool ModernDirect)> Chosen = new(Choose, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>The key's value, as written; unknown spellings are "full".</summary>
     public static Mode Parse(string value) => value.Trim().Trim('"').ToLowerInvariant() switch
@@ -90,7 +97,31 @@ public static class Engine_ShaderVariant
         return refusal.Length == 0 ? wanted : Mode.Full;
     }
 
-    private static (Mode, bool) Choose()
+    /// <summary>
+    /// Pure policy for Desktop <c>FABLE_MODERN_DIRECT</c> specialization: enabled when running the
+    /// full shader set under the Modern lighting model with no lighting debug view override.
+    /// </summary>
+    public static bool DecideModernDirect(bool runtime, bool modernLighting, int debugView) =>
+        runtime && modernLighting && debugView == 0;
+
+    private static int ConfiguredDebugView()
+    {
+        if (!string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("REFII_LEVEL_DEBUG")))
+        {
+            return 1;
+        }
+
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Int(Refii.Core.Engine_RefiiConfig.Read(out _), "lighting_debug_view", 0);
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    private static (Mode, bool, bool) Choose()
     {
         string forced = System.Environment.GetEnvironmentVariable("REFII_SHADER_VARIANT") ?? string.Empty;
         string value;
@@ -108,7 +139,11 @@ public static class Engine_ShaderVariant
         Mode wanted = Parse(value);
         if (wanted == Mode.Full)
         {
-            return (Mode.Full, false);
+            bool modernDirect = DecideModernDirect(
+                !Refii.Core.Engine_AppRoot.IsTestHost,
+                Refii.Lighting.Engine_LightingFrame.ModernModel,
+                ConfiguredDebugView());
+            return (Mode.Full, false, modernDirect);
         }
 
         bool surfaceWeather;
@@ -130,10 +165,14 @@ public static class Engine_ShaderVariant
             cloudShadows,
             out string refusal);
         bool modern = mode != Mode.Full && Refii.Lighting.Engine_LightingFrame.ModernModel;
+        bool fallbackModernDirect = mode == Mode.Full && DecideModernDirect(
+            !Refii.Core.Engine_AppRoot.IsTestHost,
+            Refii.Lighting.Engine_LightingFrame.ModernModel,
+            ConfiguredDebugView());
         GD.Print(refusal.Length == 0
             ? $"[shader] variant {value}: lite surface shaders, {(modern ? "modern" : "fable")} model builds (relaunch to change)"
             : $"[shader] variant {value} refused, drawing full: {refusal}");
-        return (mode, modern);
+        return (mode, modern, fallbackModernDirect);
     }
 
     /// <summary>A lite path in the build set this process uses: lite/ or lite/modern/.</summary>
@@ -231,6 +270,19 @@ public static class Engine_ShaderVariant
 
     /// <summary>Whether <paramref name="path"/> names a lite build (made in code, not a file).</summary>
     public static bool IsBuild(string path) => Builds.ContainsKey(path);
+
+    /// <summary>
+    /// Whether <paramref name="path"/> is a full surface or terrain shader that should be compiled
+    /// with <c>FABLE_MODERN_DIRECT</c> in this process.
+    /// </summary>
+    public static bool ShouldComposeModernDirect(string path) =>
+        ModernDirect && (Models.ContainsKey(path) || path == TerrainFullPath);
+
+    /// <summary>
+    /// Prepends <c>#define FABLE_MODERN_DIRECT</c> ahead of <paramref name="fullCode"/>'s body <c>#include</c>. Pure.
+    /// </summary>
+    public static string ComposeModernDirect(string fullCode) =>
+        Refii.Fx.Engine_FxDepthReads.Compose(fullCode, "FABLE_MODERN_DIRECT");
 
     /// <summary>
     /// The text of the lite build <paramref name="path"/>: <paramref name="fullCode"/> (its full

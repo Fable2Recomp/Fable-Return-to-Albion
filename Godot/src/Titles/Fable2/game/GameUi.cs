@@ -3823,7 +3823,10 @@ public partial class GameUi : Node, IGameTitleUi
 			_worldIconsTwo.StatedTitles = split ? _titlesTwo : null;
 		}
 
-		_worldIcons.StatedTitles = split ? _titlesOne : null;
+		if (_worldIcons is not null && GodotObject.IsInstanceValid(_worldIcons))
+		{
+			_worldIcons.StatedTitles = split ? _titlesOne : null;
+		}
 
 		_worldSprites.Place ??= PlaceWorldSprite;
 		if (rebuildSprites)
@@ -9459,7 +9462,7 @@ public partial class GameUi : Node, IGameTitleUi
 	/// argument — GuiElement_SetTexture by name, the wheel, d-pad, spell and charge icons, the
 	/// image registry) under a mod's icon overrides, into ONE array refilled in place.
 	/// </summary>
-	private uint[]? HudTextures(Engine_UiHudStand stand)
+	private uint[] HudTextures(Engine_UiHudStand stand)
 	{
 		if (_hudTextures is null || _hudTextures.Length != stand.Count)
 		{

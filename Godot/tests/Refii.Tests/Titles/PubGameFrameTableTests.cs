@@ -2,6 +2,7 @@ namespace Refii.Tests.Titles;
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using GdUnit4;
 using Godot;
 using static GdUnit4.Assertions;
@@ -77,12 +78,13 @@ public class PubGameFrameTableTests
 	/// frame 3 swaps depth 1 to 11 and names a character with no template, which places nothing.
 	/// </summary>
 	[TestCase, RequireGodotRuntime]
-	public void TestAStageClipPlacesMovesSwapsAndRemovesAsItsFramesSay()
+	public async Task TestAStageClipPlacesMovesSwapsAndRemovesAsItsFramesSay()
 	{
 		Node2D stage = Stage(out Node2D board);
+		SwfSceneUi? scene = null;
 		try
 		{
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			var clip = (SwfSceneClip)scene.Root.GetChild("board")!;
 			AssertThat(clip.TotalFrames).IsEqual(3);
 			AssertThat(board.HasMeta(Engine_SwfScene.TimelineMeta)).IsTrue();
@@ -117,17 +119,18 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
 		}
 	}
 
 	[TestCase, RequireGodotRuntime]
-	public void TestAPlayingClipStepsAtTheStageRateAndWraps()
+	public async Task TestAPlayingClipStepsAtTheStageRateAndWraps()
 	{
 		Node2D stage = Stage(out _);
+		SwfSceneUi? scene = null;
 		try
 		{
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			var clip = (SwfSceneClip)scene.Root.GetChild("board")!;
 			clip.GotoAndPlay(1);
 			double step = 1.0 / scene.FrameRate;
@@ -142,19 +145,20 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
 		}
 	}
 
 	/// <summary>A library sprite's timeline leaves its template, and every clip of it reads the one table.</summary>
 	[TestCase, RequireGodotRuntime]
-	public void TestALibrarySpritesClipsShareOneTable()
+	public async Task TestALibrarySpritesClipsShareOneTable()
 	{
 		Node2D stage = Stage(out _);
+		SwfSceneUi? scene = null;
 		try
 		{
 			Node2D spinner = stage.GetNode<Node2D>($"{Engine_SwfScene.LibraryName}/spinner");
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			AssertThat(spinner.HasMeta(Engine_SwfScene.TimelineMeta)).IsFalse();
 			AssertThat(spinner.HasMeta(Engine_SwfScene.LabelsMeta)).IsFalse();
 			SwfFrameTable? shared = scene.TimelineOf(60)?.Table;
@@ -184,7 +188,7 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
 		}
 	}
 
@@ -193,9 +197,10 @@ public class PubGameFrameTableTests
 	/// copy attached, the first and the later ones; a template without one wakes nothing.
 	/// </summary>
 	[TestCase, RequireGodotRuntime]
-	public void TestATimelineInsideAnAttachedCopyWakesInEveryCopy()
+	public async Task TestATimelineInsideAnAttachedCopyWakesInEveryCopy()
 	{
 		Node2D stage = Stage(out _);
+		SwfSceneUi? scene = null;
 		try
 		{
 			var holder = new Node2D { Name = "holder" };
@@ -210,7 +215,7 @@ public class PubGameFrameTableTests
 			holder.AddChild(inner);
 			stage.GetNode(Engine_SwfScene.LibraryName).AddChild(holder);
 
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			foreach (string name in new[] { "first", "second" })
 			{
 				var copy = (SwfSceneClip)scene.Root.AttachMovie("holder", name, name.Length)!;
@@ -228,7 +233,7 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
 		}
 	}
 
@@ -238,12 +243,13 @@ public class PubGameFrameTableTests
 	/// 3 places 11 at depth 1.
 	/// </summary>
 	[TestCase, RequireGodotRuntime]
-	public void TestAStaticCopyLetGoIsPlacedAgainAsTheTemplateStands()
+	public async Task TestAStaticCopyLetGoIsPlacedAgainAsTheTemplateStands()
 	{
 		Node2D stage = Stage(out _);
+		SwfSceneUi? scene = null;
 		try
 		{
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			var clip = (SwfSceneClip)scene.Root.GetChild("board")!;
 			clip.GotoAndStop(1);
 			Node2D tinted = clip.ChildrenUnshared().ToArray()[1].Node;
@@ -270,18 +276,19 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
 		}
 	}
 
 	/// <summary>A clip the game was handed, or a copy made before a tint, is freed, never placed again.</summary>
 	[TestCase, RequireGodotRuntime]
-	public void TestACopyTheGameSawOrATintReachedIsNotKept()
+	public async Task TestACopyTheGameSawOrATintReachedIsNotKept()
 	{
 		Node2D stage = Stage(out _);
+		SwfSceneUi? scene = null;
 		try
 		{
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			var clip = (SwfSceneClip)scene.Root.GetChild("board")!;
 			clip.GotoAndStop(1);
 			Node2D seen = ((SwfSceneClip)clip.GetChild("d2")!).Node;
@@ -298,15 +305,16 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
 		}
 	}
 
 	/// <summary>Only a template nothing under changes by itself is kept: not a sprite with a timeline, frames to play or text.</summary>
 	[TestCase, RequireGodotRuntime]
-	public void TestOnlyStaticTemplatesAreKept()
+	public async Task TestOnlyStaticTemplatesAreKept()
 	{
 		Node2D stage = Stage(out _);
+		SwfSceneUi? scene = null;
 		try
 		{
 			var labelled = new Node2D { Name = "labelled" };
@@ -319,7 +327,7 @@ public class PubGameFrameTableTests
 			library.AddChild(labelled);
 			library.AddChild(framed);
 
-			SwfSceneUi scene = SwfSceneUi.FromStage("Test", stage);
+			scene = SwfSceneUi.FromStage("Test", stage);
 			AssertThat(scene.Spare(scene.Template(10)!)).IsTrue();
 			AssertThat(scene.Spare(scene.Template(60)!)).IsFalse();
 			AssertThat(scene.Spare(scene.Template(80)!)).IsFalse();
@@ -327,7 +335,26 @@ public class PubGameFrameTableTests
 		}
 		finally
 		{
-			stage.Free();
+			await CleanupStageAsync(stage, scene);
+		}
+	}
+
+	/// <summary>
+	/// Releases detached spare copies, frees the stage root, and advances across an end-of-frame
+	/// delete-queue flush so nodes queued via <see cref="Node.QueueFree"/> are destroyed before
+	/// GdUnit4's orphan-node detector runs.
+	/// </summary>
+	private static async Task CleanupStageAsync(Node2D stage, SwfSceneUi? scene)
+	{
+		scene?.ReleaseOnPredelete((int)GodotObject.NotificationPredelete);
+		stage.Free();
+		if (Engine.GetMainLoop() is SceneTree tree)
+		{
+			// GdUnit4 invokes tests inside _Process (before SceneTree emits process_frame and before
+			// _flush_delete_queue runs at the end of the frame), so awaiting two process_frame signals
+			// guarantees a full end-of-frame delete-queue flush in between.
+			await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
+			await tree.ToSignal(tree, SceneTree.SignalName.ProcessFrame);
 		}
 	}
 

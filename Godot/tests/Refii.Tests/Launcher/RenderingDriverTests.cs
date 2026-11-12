@@ -103,8 +103,26 @@ public class RenderingDriverTests
         if (projectGodotPath != null)
         {
             string content = System.IO.File.ReadAllText(projectGodotPath);
-            AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors=1000000", StringComparison.Ordinal)).IsTrue();
+            AssertThat(content.Contains($"rendering_device/d3d12/max_resource_descriptors={GameChildProcess.DefaultD3D12MaxResourceDescriptors}", StringComparison.Ordinal)).IsTrue();
             AssertThat(content.Contains("rendering_device/d3d12/max_sampler_descriptors=2048", StringComparison.Ordinal)).IsTrue();
         }
+    }
+
+    [TestCase]
+    public void TestDirect3D12UsesSafeRenderThreadWhileVulkanHonorsSeparateSetting()
+    {
+        var enabledConfig = new Dictionary<string, string>
+        {
+            ["render_thread"] = "true",
+        };
+        var disabledConfig = new Dictionary<string, string>
+        {
+            ["render_thread"] = "false",
+        };
+
+        AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(enabledConfig, "d3d12")).IsFalse();
+        AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(disabledConfig, "d3d12")).IsFalse();
+        AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(enabledConfig, "vulkan")).IsTrue();
+        AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(disabledConfig, "vulkan")).IsFalse();
     }
 }

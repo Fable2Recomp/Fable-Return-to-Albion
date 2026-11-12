@@ -39,7 +39,7 @@ const int S_MATERIAL_EXPOSURE = 28;
 
 void main() {
 	ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
-	if (coord.x >= push.size.x || coord.y >= push.size.y) {
+	if (coord.x >= push.size.x || coord.y >= push.size.y || push.gain <= 1e-6) {
 		return;
 	}
 
@@ -62,10 +62,17 @@ void main() {
 	}
 
 	vec3 layer = mix(mix(taps[0], taps[1], f.x), mix(taps[2], taps[3], f.x), f.y);
+	if (max(layer.r, max(layer.g, layer.b)) <= 1e-6) {
+		return;
+	}
+
 	// DOWNSCALECOMPOSITE (0162) adds the layer × c31.x, the frame's pre-exposure
 	// (P+0x41AC, the value the materials' c20.w carried). An exposed scene takes it here; an
 	// unexposed one is multiplied by E downstream with the layer already inside it.
 	float gain = push.gain * (push.exposed > 0.5 ? state.v[S_MATERIAL_EXPOSURE] : 1.0);
+	if (gain <= 1e-6) {
+		return;
+	}
 	vec4 c = imageLoad(color_image, coord);
 	imageStore(color_image, coord, vec4(c.rgb + layer * gain, c.a));
 }

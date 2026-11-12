@@ -111,6 +111,7 @@ if(REFII_HOOK_SOURCES)
             OUTPUT "${_refii_abi_stamp}"
             COMMAND ${CMAKE_COMMAND}
                 -DOBJECT_LIST=${_refii_abi_objects}
+                -DCACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/abi_cache_$<CONFIG>
                 -DNM=${REFII_NM}
                 -DCXXFILT=${REFII_CXXFILT}
                 -DUNDNAME=${REFII_UNDNAME}

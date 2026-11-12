@@ -271,7 +271,7 @@ public partial class GameUi
 				uint.TryParse(call.Argument(1).Text, out uint hash) &&
 				int.TryParse(call.Argument(2).Text, out int slide))
 			{
-				_hud.Values.StateRegistrySlide(registry, hash, slide, call.Argument(3).Text == "1");
+				_hud?.Values.StateRegistrySlide(registry, hash, slide, call.Argument(3).Text == "1");
 			}
 		});
 
@@ -280,7 +280,7 @@ public partial class GameUi
 			if (uint.TryParse(call.Argument(0).Text, out uint hash) &&
 				uint.TryParse(call.Argument(1).Text, out uint texture))
 			{
-				_hud.Values.StateRegistryImage(hash, texture);
+				_hud?.Values.StateRegistryImage(hash, texture);
 			}
 		});
 

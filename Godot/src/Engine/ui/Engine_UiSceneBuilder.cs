@@ -626,6 +626,8 @@ public sealed class Engine_UiSceneBuilder
 		material.SetShaderParameter("contrast_floor", contract.ContrastFloor);
 		material.SetShaderParameter("coverage_gamma", contract.CoverageGamma);
 		material.SetShaderParameter("alpha_floor", contract.AlphaFloor);
+		material.SetShaderParameter("has_uv2_modes", contract.ColourRunsReplace || contract.Outlines);
+		material.SetShaderParameter("outline", contract.Outlines);
 		if (atlas is not null)
 		{
 			material.SetShaderParameter(AtlasName, atlas);
@@ -634,6 +636,11 @@ public sealed class Engine_UiSceneBuilder
 			{
 				material.SetShaderParameter("distance_field", field);
 				material.SetShaderParameter("use_distance_field", true);
+			}
+			else
+			{
+				material.SetShaderParameter("distance_field", atlas);
+				material.SetShaderParameter("use_distance_field", false);
 			}
 		}
 

@@ -20,7 +20,7 @@ global uniform float fx_scene_depth_valid;
 global uniform sampler2D fx_scene_depth_second;
 uniform int sight_view = 0;
 
-uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable;
+uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;
 uniform vec4 tint = vec4(1.0);
 
 // `tex` is a glyph atlas: coverage in alpha, colour from the tint and the run's vertex colour.
@@ -63,17 +63,17 @@ void vertex() {
 
 void fragment() {
 	vec4 texel = texture(tex, UV);
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
+	vec2 tex_size = max(vec2(textureSize(tex, 0)), vec2(1.0));
 	vec4 colour = glyphs
 		? vec4(tint.rgb * COLOR.rgb, texel.a * tint.a * COLOR.a)
 		: texel * tint;
-	if (outline) {
-		vec2 uv_dx = dFdx(UV);
-		vec2 uv_dy = dFdy(UV);
-		if (glyphs && UV2.x > 1.5) {
-			colour = vec4(tint.rgb * COLOR.rgb * texel.a,
-				ui_text_outline_cover(tex, tex, UV, texel.a, uv_dx, uv_dy, false, 1e-4, 0.0, supersample) *
-					tint.a * COLOR.a);
-		}
+	if (outline && glyphs && UV2.x > 1.5) {
+		vec2 texel_step = max(supersample, 1.0) / tex_size;
+		colour = vec4(tint.rgb * COLOR.rgb * texel.a,
+			ui_text_outline_cover(tex, tex, UV, texel.a, uv_dx, uv_dy, false, 1e-4, 0.0, texel_step) *
+				tint.a * COLOR.a);
 	}
 	float alpha = colour.a * smoothstep(0.1, 0.5, seen);
 	if (alpha < 0.01) {

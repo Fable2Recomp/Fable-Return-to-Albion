@@ -21,7 +21,7 @@ using Refii.Models;
 public class MdlVersion47Tests
 {
 	private const string Fable3Game =
-		"/home/loreaxe/Fable 2/refii-clean/refii/out/package/Fable 2 Return to Albion/assets/Fable3/game";
+		"/home/loreaxe/Fable 2/refii-clean/refii/out/package/Fable Return to Albion/assets/Fable3/game";
 
 	private sealed record PartExpect(
 		uint VertexCount, uint IndexCount, int Batches, uint Material,

@@ -361,10 +361,12 @@ public static class AndroidPhoneCompiler
             File.Copy(header, header + ".process-lock", false);
             File.WriteAllText(header, lockDepth);
         }
+        string initUnitPath = Path.Combine(generated, "refii_init.cpp");
+        string? initUnitSource = File.Exists(initUnitPath) ? File.ReadAllText(initUnitPath) : null;
         foreach (string unit in units.Where(path => Path.GetFileName(path) == "refii_register.cpp"))
         {
             string original = File.ReadAllText(unit);
-            string bounded = BoundRegistration(original);
+            string bounded = Refii.Recompile.CodegenTransforms.OptimizeRegistration(original, initUnitSource);
             if (bounded != original)
             {
                 // Retain the generator's exact output beside the rewritten private attempt file.
@@ -398,7 +400,7 @@ public static class AndroidPhoneCompiler
         {
             progress("Precompiling game headers");
             string pchDependencies = pch + ".d";
-            await Run("librefii_clang.so", flags.Concat(Dependencies(cache, pchDependencies)).Concat(new[] { "-x", "c++-header",
+            await Run("librefii_clang.so", flags.Concat(Dependencies(cache, pchDependencies)).Concat(new[] { "-Xclang", "-fno-pch-timestamp", "-x", "c++-header",
                 Path.Combine(generated, "refii_pch.h"), "-o", pch }).ToArray()).ConfigureAwait(false);
             cache?.StorePch(pchDependencies, pch);
         }
@@ -421,8 +423,11 @@ public static class AndroidPhoneCompiler
             if (++finished < all.Length) progress($"Compiling game code {finished + 1}/{all.Length}");
         }
         int jobs = request.Jobs > 0 ? request.Jobs : execute == null ? PlanJobs(Environment.ProcessorCount, AvailableMemory()) : 1;
+        IReadOnlyList<int> scheduledUnits = jobs > 1
+            ? Refii.Recompile.CompileScheduler.OrderUnitsLargestFirst(toCompile, all)
+            : toCompile;
         File.WriteAllText(Path.Combine(attempt, "compile-plan.txt"), $"{all.Length - toCompile.Count} of {all.Length} units reused; {jobs} compilers at once\n");
-        await RunUnitsAsync(toCompile, jobs, execute == null ? AvailableMemory : () => long.MaxValue, Compile, Compiled,
+        await RunUnitsAsync(scheduledUnits, jobs, execute == null ? AvailableMemory : () => long.MaxValue, Compile, Compiled,
             (i, status) => new InvalidDataException($"librefii_clang.so exited {status}; diagnostic files: {attempt}"), cancellation).ConfigureAwait(false);
         progress("Linking game module");
         string module = Path.Combine(attempt, "librefii_generated.so");
@@ -464,7 +469,7 @@ public static class AndroidPhoneCompiler
     }
 
     /// <summary>The generator's file of which recompiled unit each guest function goes in.</summary>
-    internal const string PartitionFile = "codegen.partition.json";
+    internal const string PartitionFile = Refii.Recompile.CodegenTransforms.PartitionFile;
 
     /// <summary>Runs the generator with the last build's function placement, and keeps this one's for the next.</summary>
     /// <param name="request">The cache directory, if any, holds the placement.</param>
@@ -474,28 +479,8 @@ public static class AndroidPhoneCompiler
     /// folder is always new, so it divided the code afresh: with the desktop generator, adding one function
     /// name to the config changed 271 of 295 sources, and only 5 with the placement kept. A first build has
     /// none and is unchanged. A generator run that fails with one is retried without it, in case it is the cause.</remarks>
-    private static async Task GenerateAsync(Request request, string generated, Func<Task> generate)
-    {
-        string? kept = request.ObjectCache == null ? null : Path.Combine(request.ObjectCache, PartitionFile);
-        if (kept != null && File.Exists(kept))
-        {
-            Directory.CreateDirectory(generated);
-            File.Copy(kept, Path.Combine(generated, PartitionFile), true);
-            try { await generate().ConfigureAwait(false); }
-            catch (InvalidDataException)
-            {
-                File.Delete(kept);
-                Directory.Delete(generated, true);
-                await generate().ConfigureAwait(false);
-            }
-        }
-        else await generate().ConfigureAwait(false);
-        string made = Path.Combine(generated, PartitionFile);
-        if (kept == null || !File.Exists(made)) return;
-        Directory.CreateDirectory(request.ObjectCache!);
-        File.Copy(made, kept + ".tmp", true);
-        File.Move(kept + ".tmp", kept, true);
-    }
+    private static Task GenerateAsync(Request request, string generated, Func<Task> generate) =>
+        Refii.Recompile.CodegenTransforms.RunWithPartitionSeedAsync(request.ObjectCache, generated, generate);
 
     /// <summary>The arguments that make Clang report what a unit read, when the cache will use it.</summary>
     private static string[] Dependencies(AndroidCompileCache? cache, string file) =>
@@ -503,41 +488,22 @@ public static class AndroidPhoneCompiler
 
     /// <summary>Memory one compiler is planned at. Measured on the PC replica, whose Clang is the same LLVM:
     /// 214 MB for a typical generated unit, 264 MB for a hook, 522 MB for the largest (refii_register.cpp).</summary>
-    internal const long JobMemoryBytes = 512L * 1024 * 1024;
+    internal const long JobMemoryBytes = Refii.Recompile.CompileScheduler.AndroidJobMemoryBytes;
 
     /// <summary>Memory left to everything else while compilers run.</summary>
-    internal const long FreeMemoryFloorBytes = 1024L * 1024 * 1024;
+    internal const long FreeMemoryFloorBytes = Refii.Recompile.CompileScheduler.AndroidFreeMemoryFloorBytes;
 
     /// <summary>Most compilers at once; no phone has more cores worth using.</summary>
-    internal const int MostJobs = 8;
-
-    /// <summary>How long a held job waits before looking at free memory again.</summary>
-    private const int MemoryRecheckMilliseconds = 1000;
-
-    /// <summary>How often one unit is tried again after being killed by a signal.</summary>
-    private const int KilledUnitRetries = 3;
+    internal const int MostJobs = Refii.Recompile.CompileScheduler.AndroidMostJobs;
 
     /// <summary>How many compilers to start with.</summary>
     /// <param name="cores">CPUs this process may use.</param>
     /// <param name="available">Free memory in bytes (MemAvailable); negative when unknown, which runs one.</param>
-    internal static int PlanJobs(int cores, long available) => available < 0 ? 1
-        : (int)Math.Clamp((available - FreeMemoryFloorBytes) / JobMemoryBytes, 1, Math.Max(1, Math.Min(cores, MostJobs)));
+    internal static int PlanJobs(int cores, long available) =>
+        Refii.Recompile.CompileScheduler.PlanAndroidJobs(cores, available);
 
     /// <summary>/proc/meminfo's MemAvailable in bytes, or -1 when unreadable.</summary>
-    private static long AvailableMemory()
-    {
-        try
-        {
-            foreach (string line in File.ReadLines("/proc/meminfo"))
-            {
-                if (!line.StartsWith("MemAvailable:", StringComparison.Ordinal)) continue;
-                string[] parts = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-                return parts.Length > 1 && long.TryParse(parts[1], out long kb) ? kb * 1024 : -1;
-            }
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-        return -1;
-    }
+    private static long AvailableMemory() => Refii.Recompile.CompileScheduler.AvailableMemoryBytes();
 
     /// <summary>Compiles units side by side, holding back while memory is short and backing off if the system kills one.</summary>
     /// <param name="units">The units to compile, started in this order.</param>
@@ -549,53 +515,10 @@ public static class AndroidPhoneCompiler
     /// <param name="cancellation">Stops running children.</param>
     /// <remarks>lmkd answers memory pressure with SIGKILL (exit 137), and a unit it stopped is not a
     /// compile error, so it runs again with half the jobs. A real failure stops the rest.</remarks>
-    internal static async Task RunUnitsAsync(IReadOnlyList<int> units, int jobs, Func<long> memory,
+    internal static Task RunUnitsAsync(IReadOnlyList<int> units, int jobs, Func<long> memory,
         Func<int, CancellationToken, Task<int>> compile, Action<int> completed, Func<int, int, Exception> failure,
-        CancellationToken cancellation)
-    {
-        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
-        var waiting = new LinkedList<int>(units);
-        var running = new Dictionary<Task<int>, int>();
-        var killed = new Dictionary<int, int>();
-        int limit = Math.Max(1, jobs);
-        Exception? error = null;
-        while (running.Count > 0 || (waiting.Count > 0 && error == null))
-        {
-            bool held = false;
-            while (error == null && waiting.Count > 0 && running.Count < limit)
-            {
-                cancellation.ThrowIfCancellationRequested();
-                if (running.Count > 0 && memory() < FreeMemoryFloorBytes + JobMemoryBytes) { held = true; break; }
-                int unit = waiting.First!.Value;
-                waiting.RemoveFirst();
-                running[compile(unit, stop.Token)] = unit;
-            }
-            Task any = Task.WhenAny(running.Keys);
-            if (held) await Task.WhenAny(any, Task.Delay(MemoryRecheckMilliseconds, stop.Token)).ConfigureAwait(false);
-            else await any.ConfigureAwait(false);
-            foreach (Task<int> task in running.Keys.Where(task => task.IsCompleted).ToList())
-            {
-                int unit = running[task];
-                running.Remove(task);
-                try
-                {
-                    int status = await task.ConfigureAwait(false);
-                    if (status == 0) completed(unit);
-                    else if (status >= 128 && !stop.IsCancellationRequested && killed.GetValueOrDefault(unit) < KilledUnitRetries)
-                    {
-                        killed[unit] = killed.GetValueOrDefault(unit) + 1;
-                        limit = Math.Max(1, limit / 2);
-                        waiting.AddFirst(unit);
-                    }
-                    else error ??= failure(unit, status);
-                }
-                catch (Exception thrown) { error ??= thrown; }
-                if (error != null) stop.Cancel();
-            }
-        }
-        cancellation.ThrowIfCancellationRequested();
-        if (error != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
-    }
+        CancellationToken cancellation) =>
+        Refii.Recompile.CompileScheduler.RunUnitsAsync(units, jobs, memory, compile, completed, failure, cancellation);
 
     /// <summary>Linker options that hold for every module, before its objects.</summary>
     private static string[] LinkOptions(Request request) => new[] { "-shared", "-Wl,--no-undefined", "-Wl,-z,max-page-size=16384",
@@ -611,7 +534,7 @@ public static class AndroidPhoneCompiler
     /// <summary>Bump when this file changes what a build makes in a way the flags and sources do not show.</summary>
     /// <remarks>The rewrites of generated files are covered at unit level by hashing their results, but
     /// <see cref="StillCurrent"/> decides without generating anything.</remarks>
-    internal const int RecipeRevision = 1;
+    internal const int RecipeRevision = 2;
 
     /// <summary>Native files in a bundle that are tools, not libraries a module can bind.</summary>
     private static readonly string[] BuildTools = { "librefii_clang.so", "librefii_lld.so", "librefii_codegen.so", "librefii_phone_bridge.so" };
@@ -828,34 +751,8 @@ public static class AndroidPhoneCompiler
     /// <remarks>Large games contain tens of thousands of virtual calls in this one function.
     /// Helpers retain full optimization while preventing inlining from rebuilding that enormous graph.
     /// Unknown generated layouts fail closed; this never rewrites guest arithmetic or hook code.</remarks>
-    public static string BoundRegistration(string source)
-    {
-        var match = Regex.Match(source,
-            @"\A(?<head>.*?)void refii_RegisterFunctions\(rex::runtime::IModuleRegistrar\* registrar\)\s*\{(?<body>.*?)\}\s*\z",
-            RegexOptions.Singleline);
-        if (!match.Success) throw new InvalidDataException("Unexpected generated registration function");
-        string[] calls = match.Groups["body"].Value.Split('\n')
-            .Select(line => line.Trim()).Where(line => line.Length != 0).ToArray();
-        foreach (string call in calls)
-            if (!Regex.IsMatch(call, @"\Aregistrar->SetFunction\(0x[0-9a-fA-F]{8},\s*[A-Za-z_][A-Za-z0-9_]*\);\z"))
-                throw new InvalidDataException("Unexpected generated registration statement");
-        const int perPart = 512;
-        if (calls.Length <= perPart) return source;
-        var text = new StringBuilder(match.Groups["head"].Value);
-        int parts = (calls.Length + perPart - 1) / perPart;
-        for (int part = 0; part < parts; part++)
-        {
-            text.Append("static __attribute__((noinline)) void refii_RegisterFunctions_PhonePart_")
-                .Append(part).Append("(rex::runtime::IModuleRegistrar* registrar) {\n");
-            for (int index = part * perPart; index < Math.Min(calls.Length, (part + 1) * perPart); index++)
-                text.Append("  ").Append(calls[index]).Append('\n');
-            text.Append("}\n\n");
-        }
-        text.Append("void refii_RegisterFunctions(rex::runtime::IModuleRegistrar* registrar) {\n");
-        for (int part = 0; part < parts; part++)
-            text.Append("  refii_RegisterFunctions_PhonePart_").Append(part).Append("(registrar);\n");
-        return text.Append("}\n").ToString();
-    }
+    public static string BoundRegistration(string source) =>
+        Refii.Recompile.CodegenTransforms.BoundRegistration(source);
 
     /// <summary>The guest's floating-point model: IEEE round-to-nearest without contraction.</summary>
     /// <remarks>This is the x86_64 desktop build's model with contraction pinned off, because simde's
@@ -903,22 +800,8 @@ public static class AndroidPhoneCompiler
     /// <param name="list">Generator's sources.cmake file.</param>
     /// <param name="root">Private generation root.</param>
     /// <returns>Validated unique C++ translation units, without executing CMake.</returns>
-    public static string[] ReadSources(string list, string root)
-    {
-        var block = Regex.Match(File.ReadAllText(list), @"set\(GENERATED_SOURCES\s+([^)]*)\)", RegexOptions.Singleline);
-        if (!block.Success) throw new InvalidDataException("Generator produced no source list");
-        string[] sources = block.Groups[1].Value.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-            .Select(line => line.Trim().Trim('"').Replace("${CMAKE_CURRENT_LIST_DIR}", root, StringComparison.Ordinal))
-            .Where(line => line.Length > 0 && !line.StartsWith('#')).ToArray();
-        if (sources.Length == 0 || sources.Distinct(StringComparer.Ordinal).Count() != sources.Length)
-            throw new InvalidDataException("Missing or duplicate generated sources");
-        foreach (string source in sources)
-            if (!source.EndsWith(".cpp", StringComparison.Ordinal) || !File.Exists(source) ||
-                !Path.GetFullPath(source).StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar,
-                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-                throw new InvalidDataException("Generated source escapes its private root: " + source);
-        return sources.Select(Path.GetFullPath).ToArray();
-    }
+    public static string[] ReadSources(string list, string root) =>
+        Refii.Recompile.CodegenTransforms.ReadGeneratedSources(list, root);
 
     /// <summary>Rejects host modules, malformed ELF tables and unsafe 16KiB LOAD layouts before publication.</summary>
     /// <param name="data">Completed private module bytes.</param>
@@ -976,61 +859,10 @@ public static class AndroidPhoneCompiler
     }
 
     /// <summary>The interrupt-lock block generators before the thread-local depth emitted into refii_pch.h.</summary>
-    internal const string ProcessWideGuestLock = """
-        inline std::atomic<i32>& ppc_global_lock_count_() {
-          static std::atomic<i32> count{0};
-          return count;
-        }
-
-        #define REX_CHECK_GLOBAL_LOCK()                                        \
-          ([&]() -> u64 {                                                      \
-            auto lock_ = rex::thread::global_critical_region::AcquireDirect(); \
-            return ppc_global_lock_count_().load() ? 0 : 0x8000;               \
-          }())
-
-        #define REX_ENTER_GLOBAL_LOCK()                          \
-          do {                                                   \
-            rex::thread::global_critical_region::mutex().lock(); \
-            ppc_global_lock_count_().fetch_add(1);               \
-          } while (0)
-
-        #define REX_LEAVE_GLOBAL_LOCK()                                                           \
-          do {                                                                                    \
-            auto old_count_ = ppc_global_lock_count_().fetch_sub(1);                              \
-            assert(old_count_ >= 1 && "LeaveGlobalLock called without matching EnterGlobalLock"); \
-            rex::thread::global_critical_region::mutex().unlock();                                \
-          } while (0)
-
-        """;
+    internal const string ProcessWideGuestLock = Refii.Recompile.CodegenTransforms.ProcessWideGuestLock;
 
     /// <summary>The same block as the SDK shadow's pch_h.inja now emits it.</summary>
-    internal const string ThreadLocalGuestLock = """
-        // The guest's own interrupt-disable depth on THIS thread. mfmsr only asks whether the
-        // calling thread is inside such a section, and only the thread holding the global critical
-        // region can be, so its own depth answers without taking the lock. A process-wide count read
-        // under the lock gave the same answer for a mutex round trip per guest interlocked operation.
-        inline i32& ppc_global_lock_depth_() {
-          static thread_local i32 depth = 0;
-          return depth;
-        }
-
-        #define REX_CHECK_GLOBAL_LOCK() (ppc_global_lock_depth_() ? u64(0) : u64(0x8000))
-
-        #define REX_ENTER_GLOBAL_LOCK()                          \
-          do {                                                   \
-            rex::thread::global_critical_region::mutex().lock(); \
-            ++ppc_global_lock_depth_();                          \
-          } while (0)
-
-        #define REX_LEAVE_GLOBAL_LOCK()                                                    \
-          do {                                                                             \
-            assert(ppc_global_lock_depth_() >= 1 &&                                        \
-                   "LeaveGlobalLock called without matching EnterGlobalLock");             \
-            --ppc_global_lock_depth_();                                                    \
-            rex::thread::global_critical_region::mutex().unlock();                         \
-          } while (0)
-
-        """;
+    internal const string ThreadLocalGuestLock = Refii.Recompile.CodegenTransforms.ThreadLocalGuestLock;
 
     /// <summary>Gives an older generator's header the thread-local interrupt-lock depth.</summary>
     /// <param name="header">Fresh generator output for refii_pch.h.</param>
@@ -1039,13 +871,8 @@ public static class AndroidPhoneCompiler
     /// critical region (two runtime calls and a recursive mutex) for every guest interlocked
     /// operation, about 5% of guest CPU at the 30 fps cap. A header without the exact old block
     /// (a newer generator, or one already rewritten) keeps the generator's own correct code.</remarks>
-    public static string ThreadLocalLockDepth(string header)
-    {
-        string old = ProcessWideGuestLock.ReplaceLineEndings("\n");
-        int at = header.IndexOf(old, StringComparison.Ordinal);
-        if (at < 0 || header.IndexOf(old, at + 1, StringComparison.Ordinal) >= 0) return header;
-        return header.Remove(at, old.Length).Insert(at, ThreadLocalGuestLock.ReplaceLineEndings("\n"));
-    }
+    public static string ThreadLocalLockDepth(string header) =>
+        Refii.Recompile.CodegenTransforms.ThreadLocalLockDepth(header);
 
     /// <summary>Runs one tool with bounded lifetime, real exit status and cancellation cleanup.</summary>
     /// <param name="command">APK-native executable and private working/log paths.</param>

@@ -73,6 +73,10 @@ public static class Engine_TexCache
 	/// </remarks>
 	public const int ConverterVersion = 3;
 
+	/// <summary>Where converted textures live for <paramref name="title"/>: <c>&lt;app&gt;/cache/&lt;Title&gt;/textures</c>.</summary>
+	public static string CacheRootFor(Refii.Core.Engine_Title title) =>
+		System.IO.Path.Combine(title.CacheDirectory, "textures");
+
 	/// <summary>Where converted textures live: <c>&lt;app&gt;/cache/&lt;Title&gt;/textures</c>.</summary>
 	/// <remarks>
 	/// THE APP'S OWN CACHE CONTAINER, NOT <c>user://</c> and NOT under assets/save. user:// put it
@@ -85,7 +89,7 @@ public static class Engine_TexCache
 	/// GlobalizePath returns an absolute path unchanged, so every existing call site still works.
 	/// </remarks>
 	public static string CacheRoot =>
-		System.IO.Path.Combine(Refii.Core.Engine_Title.Active.CacheDirectory, "textures");
+		CacheRootFor(Refii.Core.Engine_Title.Active);
 
 	/// <summary>
 	/// The epoch directory: everything the current decode pipeline produced.

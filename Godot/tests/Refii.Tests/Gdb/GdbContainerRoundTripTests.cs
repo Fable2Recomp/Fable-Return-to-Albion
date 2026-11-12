@@ -22,6 +22,8 @@ public class GdbContainerRoundTripTests
     /// <summary>The installed package's copy: its title folder, or the flat layout it had before.</summary>
     private static readonly string[] ShippedGlobals =
     {
+        "out/package/windows-x86_64/Fable Return to Albion/assets/Fable2/game/data/Globals/globals.gdb",
+        "out/package/Fable Return to Albion/assets/Fable2/game/data/Globals/globals.gdb",
         "out/package/Fable 2 Return to Albion/assets/Fable2/game/data/Globals/globals.gdb",
         "out/package/Fable 2 Return to Albion/assets/game/data/Globals/globals.gdb",
     };

@@ -110,8 +110,9 @@ global uniform float fable_interior_bake = 1.0;
 global uniform sampler2D fable_light_table;
 
 /// Pre-baked static world shadow atlas (octahedral R16F depth in metres), published by
-/// Engine_LightTable when a level's `.shadows` container is loaded.
-global uniform sampler2DArray fable_static_shadow_atlas : filter_nearest;
+/// Engine_LightTable when a level's `.shadows` container is loaded. Hardware bilinear filtering
+/// (`filter_linear`) pairs with each octahedral tile's 1-texel wrapped border gutter.
+global uniform sampler2DArray fable_static_shadow_atlas : filter_linear;
 
 /// The fragment's world position, assigned at the end of every including shader's vertex().
 varying vec3 fable_world;
@@ -354,7 +355,9 @@ global uniform float fable_emission_boost = 1.0;
 /// `LightmapColour`; the rest is the ambient the GI traces. See `ModernFloorShare`.
 global uniform vec3 fable_fill_floor = vec3(0.0);
 
-/// Pre-baked 2D world-space terrain & ground contact AO map (RG8 UNORM: R = contact AO, G = normalized terrain height).
+/// Pre-baked 2D world-space ground contact AO + walkable-floor height map
+/// (RGBA8 UNORM: R = terrain AO, G = walkable-floor AO, B/A = little-endian 16-bit normalized walkable height).
+/// fable_terrain_ao_height carries (minH, spanH, texWidth, texHeight); texWidth > 1.5 indicates an active bake.
 global uniform sampler2D fable_terrain_contact_ao : filter_linear, repeat_disable, hint_default_white;
 global uniform vec4 fable_terrain_ao_rect = vec4(0.0);
 global uniform vec4 fable_terrain_ao_height = vec4(0.0, 1.0, 0.0, 0.0);
@@ -365,41 +368,114 @@ global uniform float fable_ao_light_affect = 0.25;
 instance uniform float instance_baked_ao : instance_index(9) = 1.0;
 
 vec2 fable_sample_terrain_ao_and_height(vec3 world_pos) {
-	if (fable_terrain_ao_rect.z <= 0.0 || fable_terrain_ao_rect.w <= 0.0) {
+	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001 ||
+	    fable_terrain_ao_rect.z <= 0.0 || fable_terrain_ao_rect.w <= 0.0) {
 		return vec2(1.0, world_pos.y);
 	}
-	vec2 uv = vec2(
+	vec2 grid_uv = vec2(
 		(-world_pos.x - fable_terrain_ao_rect.x) * fable_terrain_ao_rect.z,
 		(world_pos.z - fable_terrain_ao_rect.y) * fable_terrain_ao_rect.w);
-	if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+	if (grid_uv.x < 0.0 || grid_uv.x > 1.0 || grid_uv.y < 0.0 || grid_uv.y > 1.0) {
 		return vec2(1.0, world_pos.y);
 	}
-	vec2 raw = texture(fable_terrain_contact_ao, uv).rg;
-	float ground_y = fable_terrain_ao_height.z > 0.5
-		? (fable_terrain_ao_height.x + raw.g * fable_terrain_ao_height.y)
+	vec2 dim = max(fable_terrain_ao_height.zw, vec2(2.0));
+	vec2 tex_uv = (grid_uv * (dim - 1.0) + 0.5) / dim;
+	vec4 raw = textureLod(fable_terrain_contact_ao, tex_uv, 0.0);
+	float norm_h = (raw.b * 255.0 + raw.a * 65280.0) * (1.0 / 65535.0);
+	float ground_y = fable_terrain_ao_height.z > 1.5
+		? (fable_terrain_ao_height.x + norm_h * fable_terrain_ao_height.y)
 		: world_pos.y;
 	return vec2(raw.r, ground_y);
 }
 
 float fable_sample_terrain_ao(vec3 world_pos) {
-	return fable_sample_terrain_ao_and_height(world_pos).x;
+	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001 ||
+	    fable_terrain_ao_rect.z <= 0.0 || fable_terrain_ao_rect.w <= 0.0) {
+		return 1.0;
+	}
+	vec2 grid_uv = vec2(
+		(-world_pos.x - fable_terrain_ao_rect.x) * fable_terrain_ao_rect.z,
+		(world_pos.z - fable_terrain_ao_rect.y) * fable_terrain_ao_rect.w);
+	if (grid_uv.x < 0.0 || grid_uv.x > 1.0 || grid_uv.y < 0.0 || grid_uv.y > 1.0) {
+		return 1.0;
+	}
+	vec2 dim = max(fable_terrain_ao_height.zw, vec2(2.0));
+	vec2 tex_uv = (grid_uv * (dim - 1.0) + 0.5) / dim;
+	return textureLod(fable_terrain_contact_ao, tex_uv, 0.0).r;
 }
 
 float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
+	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001) {
+		return 1.0;
+	}
 	float vertex_ao = color_alpha > 0.001 ? color_alpha : 1.0;
 	float inst_ao = instance_baked_ao > 0.001 ? instance_baked_ao : 1.0;
-	vec2 terrain_sample = fable_sample_terrain_ao_and_height(world_pos);
-	float height_above_ground = max(0.0, world_pos.y - terrain_sample.y);
-	float height_weight = fable_terrain_ao_height.z > 0.5
-		? (1.0 - smoothstep(0.05, 0.55, height_above_ground))
-		: 0.0;
-	float ground_contact_ao = mix(1.0, terrain_sample.x, height_weight);
+	if (fable_terrain_ao_height.z <= 1.5 ||
+	    fable_terrain_ao_rect.z <= 0.0 || fable_terrain_ao_rect.w <= 0.0) {
+		return vertex_ao * inst_ao;
+	}
+	float min_h = fable_terrain_ao_height.x;
+	float span_h = fable_terrain_ao_height.y;
+	if (world_pos.y < min_h - 0.45 || world_pos.y > min_h + span_h + 0.45) {
+		return vertex_ao * inst_ao;
+	}
+	vec2 grid_uv = vec2(
+		(-world_pos.x - fable_terrain_ao_rect.x) * fable_terrain_ao_rect.z,
+		(world_pos.z - fable_terrain_ao_rect.y) * fable_terrain_ao_rect.w);
+	if (grid_uv.x < 0.0 || grid_uv.x > 1.0 || grid_uv.y < 0.0 || grid_uv.y > 1.0) {
+		return vertex_ao * inst_ao;
+	}
+
+	vec2 max_coord_f = fable_terrain_ao_height.zw - vec2(1.0);
+	vec2 st = grid_uv * max_coord_f;
+	vec2 base_f = floor(st);
+	vec2 f = st - base_f;
+	ivec2 max_c = ivec2(max_coord_f);
+	ivec2 c00 = max(ivec2(0), min(ivec2(base_f), max_c));
+	ivec2 c10 = min(c00 + ivec2(1, 0), max_c);
+	ivec2 c01 = min(c00 + ivec2(0, 1), max_c);
+	ivec2 c11 = min(c00 + ivec2(1, 1), max_c);
+
+	vec4 t00 = texelFetch(fable_terrain_contact_ao, c00, 0);
+	vec4 t10 = texelFetch(fable_terrain_contact_ao, c10, 0);
+	vec4 t01 = texelFetch(fable_terrain_contact_ao, c01, 0);
+	vec4 t11 = texelFetch(fable_terrain_contact_ao, c11, 0);
+
+	float h_scale = span_h * (1.0 / 65535.0);
+	float h00 = min_h + (t00.b * 255.0 + t00.a * 65280.0) * h_scale;
+	float h10 = min_h + (t10.b * 255.0 + t10.a * 65280.0) * h_scale;
+	float h01 = min_h + (t01.b * 255.0 + t01.a * 65280.0) * h_scale;
+	float h11 = min_h + (t11.b * 255.0 + t11.a * 65280.0) * h_scale;
+
+	float hw00 = 1.0 - smoothstep(0.06, 0.42, abs(world_pos.y - h00));
+	float hw10 = 1.0 - smoothstep(0.06, 0.42, abs(world_pos.y - h10));
+	float hw01 = 1.0 - smoothstep(0.06, 0.42, abs(world_pos.y - h01));
+	float hw11 = 1.0 - smoothstep(0.06, 0.42, abs(world_pos.y - h11));
+
+	float b00 = (1.0 - f.x) * (1.0 - f.y);
+	float b10 = f.x * (1.0 - f.y);
+	float b01 = (1.0 - f.x) * f.y;
+	float b11 = f.x * f.y;
+
+	float w00 = b00 * hw00;
+	float w10 = b10 * hw10;
+	float w01 = b01 * hw01;
+	float w11 = b11 * hw11;
+	float sum_w = w00 + w10 + w01 + w11;
+
+	float matched_ao = (w00 * t00.g + w10 * t10.g + w01 * t01.g + w11 * t11.g) / max(sum_w, 1e-4);
+	float max_hw = max(max(hw00, hw10), max(hw01, hw11));
+	float fade = max_hw * smoothstep(0.0, 0.12, sum_w);
+	float ground_contact_ao = mix(1.0, matched_ao, fade);
 	return vertex_ao * min(inst_ao, ground_contact_ao);
 }
 
 float fable_apply_ao_strength(float raw_ao) {
-	if (fable_ao_strength <= 0.001) {
+	if (fable_ao_strength <= 0.001 || raw_ao >= 0.999) {
 		return 1.0;
+	}
+	if (abs(fable_ao_strength - 1.0) < 0.01) {
+		return max(raw_ao, 1e-4);
 	}
 	return pow(max(raw_ao, 1e-4), fable_ao_strength);
 }
@@ -407,6 +483,23 @@ float fable_apply_ao_strength(float raw_ao) {
 float fable_direct_ao(float combined_ao) {
 	float w = max(0.0, min(1.0, fable_unified * fable_ao_light_affect));
 	return mix(1.0, max(combined_ao, 0.0), w);
+}
+
+float fable_direct_ao_for_light(float combined_ao, bool directional) {
+	if (directional) {
+		return fable_direct_ao(combined_ao);
+	}
+	float ao_c = max(0.0, min(1.0, combined_ao));
+	float occ = 1.0 - ao_c;
+	float active_gate = step(0.001, fable_ao_light_affect);
+	float local_w = max(0.0, min(0.82, fable_unified * active_gate * max(fable_ao_light_affect * 2.2, 0.58)));
+	return 1.0 - local_w * occ * mix(0.55, 1.0, occ);
+}
+
+float fable_specular_ao(float combined_ao) {
+	float ao_c = max(0.0, min(1.0, combined_ao));
+	float spec_occ = max(0.0, min(1.0, ao_c * ao_c + 0.15 * ao_c));
+	return mix(1.0, spec_occ, max(0.0, min(1.0, fable_unified)));
 }
 
 vec3 fable_ambient(vec3 bake) {
@@ -504,37 +597,13 @@ vec2 fable_octahedral_uv(vec3 dir) {
 	return oct * 0.5 + 0.5;
 }
 
-float fable_sample_static_shadow_bilinear(vec2 uv, vec2 texel_size, vec2 uv_min, vec2 uv_max, float layer, float receiver, float penumbra) {
-	vec2 clamped = clamp(uv, uv_min, uv_max);
-	vec2 st = clamped / texel_size - 0.5;
-	vec2 f = fract(st);
-	vec2 base_uv = (floor(st) + 0.5) * texel_size;
-
-	vec3 uv00 = vec3(base_uv, layer);
-	vec3 uv10 = vec3(base_uv + vec2(texel_size.x, 0.0), layer);
-	vec3 uv01 = vec3(base_uv + vec2(0.0, texel_size.y), layer);
-	vec3 uv11 = vec3(base_uv + texel_size, layer);
-
-	float d00 = textureLod(fable_static_shadow_atlas, uv00, 0.0).r;
-	float d10 = textureLod(fable_static_shadow_atlas, uv10, 0.0).r;
-	float d01 = textureLod(fable_static_shadow_atlas, uv01, 0.0).r;
-	float d11 = textureLod(fable_static_shadow_atlas, uv11, 0.0).r;
-
-	float s00 = smoothstep(receiver - penumbra, receiver, d00);
-	float s10 = smoothstep(receiver - penumbra, receiver, d10);
-	float s01 = smoothstep(receiver - penumbra, receiver, d01);
-	float s11 = smoothstep(receiver - penumbra, receiver, d11);
-
-	return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
-}
-
 float fable_sample_static_shadow_tap(vec2 uv, vec2 uv_min, vec2 uv_max, float layer, float receiver, float penumbra) {
 	vec2 clamped = clamp(uv, uv_min, uv_max);
 	float d0 = textureLod(fable_static_shadow_atlas, vec3(clamped, layer), 0.0).r;
 	return smoothstep(receiver - penumbra, receiver, d0);
 }
 
-float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect, float layer) {
+float fable_sample_static_shadow_tiered(vec3 light_to_world, float d, float atten, vec3 atlas_rect, float layer) {
 	if (atlas_rect.z <= 0.0 || d <= 1e-4) {
 		return 1.0;
 	}
@@ -548,21 +617,29 @@ float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect, 
 	float penumbra = max(0.09, d * 0.055);
 	float receiver = d - bias;
 
-	// Clamp filter taps inside the tile's 1-texel wrapped gutter so multi-tap PCF never bleeds into adjacent tiles.
+	// Clamp hardware-bilinear filter taps inside the tile's 1-texel wrapped gutter so multi-tap PCF never bleeds into adjacent tiles.
 	vec2 uv_min = atlas_rect.xy - texel_size * 0.45;
 	vec2 uv_max = atlas_rect.xy + vec2(atlas_rect.z) + texel_size * 0.45;
-	vec2 step_uv = texel_size * 0.85;
 
-	float c  = fable_sample_static_shadow_bilinear(uv, texel_size, uv_min, uv_max, layer, receiver, penumbra);
-	float k0 = fable_sample_static_shadow_tap(uv + vec2(-step_uv.x, -step_uv.y * 0.5), uv_min, uv_max, layer, receiver, penumbra);
-	float k1 = fable_sample_static_shadow_tap(uv + vec2( step_uv.x * 0.5, -step_uv.y), uv_min, uv_max, layer, receiver, penumbra);
-	float k2 = fable_sample_static_shadow_tap(uv + vec2( step_uv.x,  step_uv.y * 0.5), uv_min, uv_max, layer, receiver, penumbra);
-	float k3 = fable_sample_static_shadow_tap(uv + vec2(-step_uv.x * 0.5,  step_uv.y), uv_min, uv_max, layer, receiver, penumbra);
+	float c = fable_sample_static_shadow_tap(uv, uv_min, uv_max, layer, receiver, penumbra);
+	if (d >= 7.5 || atten <= 0.12) {
+		return c;
+	}
 
-	return c * 0.44 + (k0 + k1 + k2 + k3) * 0.14;
+	// Close, high-contribution pools (< 7.5m, atten > 0.12) add 3 rotated hardware-bilinear PCF taps (4 fetches total vs 8 previously).
+	vec2 step_uv = texel_size * 0.75;
+	float k0 = fable_sample_static_shadow_tap(uv + vec2(-step_uv.x, -step_uv.y * 0.45), uv_min, uv_max, layer, receiver, penumbra);
+	float k1 = fable_sample_static_shadow_tap(uv + vec2( step_uv.x * 0.85, -step_uv.y * 0.55), uv_min, uv_max, layer, receiver, penumbra);
+	float k2 = fable_sample_static_shadow_tap(uv + vec2( step_uv.x * 0.15,  step_uv.y), uv_min, uv_max, layer, receiver, penumbra);
+
+	return c * 0.34 + (k0 + k1 + k2) * 0.22;
 }
 
-float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {
+float fable_sample_static_shadow(vec3 light_to_world, float d, vec3 atlas_rect, float layer) {
+	return fable_sample_static_shadow_tiered(light_to_world, d, 1.0, atlas_rect, layer);
+}
+
+float fable_attenuation_weighted(float godot_attenuation, bool directional, float specular_amount, vec3 world, float surface_weight) {
 	if (directional) {
 #ifdef FABLE_LITE
 		return godot_attenuation;
@@ -575,7 +652,7 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 	// so surfaces closer than 1m (`1/d > 1`) never blow out, while distances >= 1m follow Godot's
 	// native `((1 - (d/R)^4)^2) / d` falloff and dynamic entity shadow map.
 	float atten = clamp(godot_attenuation, 0.0, 1.0);
-	if (atten <= 1e-4) {
+	if (atten <= 1e-4 || atten * surface_weight <= 1e-4) {
 		return 0.0;
 	}
 
@@ -599,17 +676,21 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 			float w_n = 1.0 - (r_n * r_n * r_n * r_n);
 			w_n *= w_n;
 			atten *= clamp(w_s / max(w_n, 1e-4), 0.0, 1.0);
-			if (atten <= 1e-4) {
+			if (atten <= 1e-4 || atten * surface_weight <= 1e-4) {
 				return 0.0;
 			}
 		}
 
 		vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
-		float static_shadow = fable_sample_static_shadow(world - record.xyz, d, row1.yzw, row2.x);
+		float static_shadow = fable_sample_static_shadow_tiered(world - record.xyz, d, atten, row1.yzw, row2.x);
 		return atten * static_shadow;
 	}
 
 	return atten;
+}
+
+float fable_attenuation(float godot_attenuation, bool directional, float specular_amount, vec3 world) {
+	return fable_attenuation_weighted(godot_attenuation, directional, specular_amount, world, 1.0);
 }
 
 /// +1 when the interpolated normal is on the side of the surface THE CAMERA SEES, -1 when it is

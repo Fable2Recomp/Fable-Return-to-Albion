@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Godot;
 using Refii.Launcher.Core;
 using Refii.Launcher.Editing;
+using Refii.Launcher.Native;
 using Refii.Mods;
 
 namespace Refii.Launcher;
@@ -22,10 +23,13 @@ public partial class ModdingPanel : VBoxContainer
 	private Label _rootLabel = null!;
 	private Label _statusLabel = null!;
 	private VBoxContainer _list = null!;
+	private GameScopeSelector? _scopeSelector;
 	private bool _built;
+	private bool _scopeInteractive = true;
 
 	private Button _editorButton = null!;
 	private bool _editorBusy;
+	private Refii.Core.Engine_Title _selectedTitle = Refii.Core.Engine_Title.Active;
 	private string _modsRoot = string.Empty;
 	private string _statusMessage = string.Empty;
 	private List<ModInstall> _mods = new();
@@ -35,6 +39,64 @@ public partial class ModdingPanel : VBoxContainer
 	private List<ModNativeChain> _nativeChains = new();
 	private List<ModDependencyProblem> _dependencyProblems = new();
 	private readonly Dictionary<string, ModTally> _tallies = new();
+
+	/// <summary>The game title currently scoped in the Modding tab.</summary>
+	public Refii.Core.Engine_Title SelectedTitle => _selectedTitle;
+
+	/// <summary>Raised when the user selects another title in the segmented scope bar.</summary>
+	public event Action<Refii.Core.Engine_Title>? TitleChanged;
+
+	/// <summary>Raised whenever mod installs or enabled load order change on disk.</summary>
+	public event Action? ModsChanged;
+
+	/// <summary>Switches the Modding panel's scoped game title without firing <see cref="TitleChanged"/>.</summary>
+	public void SetTitle(Refii.Core.Engine_Title title)
+	{
+		if (_selectedTitle == title)
+		{
+			_scopeSelector?.SetSelectedTitle(title, notify: false);
+			_scopeSelector?.Refresh();
+			return;
+		}
+
+		_selectedTitle = title;
+		_statusMessage = string.Empty;
+		ReloadForTitle();
+	}
+
+	/// <summary>Enables or disables user title switching on the top scope selector.</summary>
+	public void SetScopeInteractive(bool interactive)
+	{
+		_scopeInteractive = interactive;
+		if (_scopeSelector is not null)
+		{
+			_scopeSelector.Interactive = interactive;
+		}
+	}
+
+	private static string DescribeTitleModBadge(Refii.Core.Engine_Title title)
+	{
+		try
+		{
+			string root = ModWorkspace.GetDefaultModsRoot(title.AssetsDirectory);
+			List<ModInstall> installed = ModWorkspace.DiscoverModInstalls(root, title.ModExtension);
+			if (installed.Count == 0)
+			{
+				return "0 mods";
+			}
+
+			ModLoadOrder order = ModLoadOrder.Read(root);
+			var names = new HashSet<string>(installed.Select(m => m.Name), StringComparer.OrdinalIgnoreCase);
+			int enabledCount = order.Enabled.Count(name => names.Contains(name));
+			return enabledCount > 0
+				? $"{enabledCount}/{installed.Count} active"
+				: (installed.Count == 1 ? "1 mod" : $"{installed.Count} mods");
+		}
+		catch (Exception)
+		{
+			return string.Empty;
+		}
+	}
 
 	public void Configure(Font? font, int fontSize, SmartStyle style)
 	{
@@ -49,6 +111,7 @@ public partial class ModdingPanel : VBoxContainer
 				child.QueueFree();
 			}
 
+			_scopeSelector = null;
 			_built = false;
 		}
 
@@ -56,8 +119,8 @@ public partial class ModdingPanel : VBoxContainer
 	}
 
 	/// <summary>
-	/// Rebuilds the panel for the title now active: its mods folder, its packages and its
-	/// extension in every label. The launcher calls it on a title switch.
+	/// Rebuilds the panel for <see cref="SelectedTitle"/>: its mods folder, its packages and its
+	/// extension in every label.
 	/// </summary>
 	public void ReloadForTitle()
 	{
@@ -77,12 +140,25 @@ public partial class ModdingPanel : VBoxContainer
 		_built = true;
 		AddThemeConstantOverride("separation", 6);
 
+		_scopeSelector = new GameScopeSelector(_selectedTitle)
+		{
+			BadgeProvider = DescribeTitleModBadge,
+			Interactive = _scopeInteractive,
+		};
+		_scopeSelector.Configure(_font, _fontSize);
+		_scopeSelector.TitleSelected += title =>
+		{
+			SetTitle(title);
+			TitleChanged?.Invoke(title);
+		};
+		AddChild(_scopeSelector);
+
 		_rootLabel = MakeLabel(string.Empty);
 		_rootLabel.AutowrapMode = TextServer.AutowrapMode.WordSmart;
 		_rootLabel.Visible = !Phone;
 		AddChild(_rootLabel);
 
-		string extension = Refii.Core.Engine_Title.Active.ModExtension;
+		string extension = _selectedTitle.ModExtension;
 		Label help = MakeLabel(Phone ? PhoneHelp(extension) :
 			$"Install a mod package ({extension}) from a file or a link, or drop packages into this " +
 			"folder. A mod is installed disabled: tick it to turn it on. Enabled mods override " +
@@ -97,7 +173,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var installFile = new Button { Text = "Install from file…" };
 		Apply(installFile);
-		installFile.TooltipText = $"Install a {Refii.Core.Engine_Title.Active.ModExtension} package from this computer.";
+		installFile.TooltipText = $"Install a {extension} package from this computer.";
 		installFile.Pressed += OnInstallFromFile;
 		installRow.AddChild(installFile);
 
@@ -105,7 +181,7 @@ public partial class ModdingPanel : VBoxContainer
 
 		var installUrl = new Button { Text = "Install from URL…" };
 		Apply(installUrl);
-		installUrl.TooltipText = $"Download and install a {Refii.Core.Engine_Title.Active.ModExtension} package from an https link.";
+		installUrl.TooltipText = $"Download and install a {extension} package from an https link.";
 		installUrl.Pressed += OnInstallFromUrl;
 		installRow.AddChild(installUrl);
 
@@ -168,9 +244,18 @@ public partial class ModdingPanel : VBoxContainer
 		};
 		AddChild(scroll);
 
+		var scrollMargin = new MarginContainer
+		{
+			SizeFlagsHorizontal = SizeFlags.ExpandFill,
+			SizeFlagsVertical = SizeFlags.ExpandFill,
+		};
+		scrollMargin.AddThemeConstantOverride("margin_right", LauncherScale.Px(12));
+		scrollMargin.AddThemeConstantOverride("margin_bottom", LauncherScale.Px(4));
+		scroll.AddChild(scrollMargin);
+
 		_list = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		_list.AddThemeConstantOverride("separation", 3);
-		scroll.AddChild(_list);
+		scrollMargin.AddChild(_list);
 
 		RefreshState();
 	}
@@ -185,8 +270,8 @@ public partial class ModdingPanel : VBoxContainer
 	/// </summary>
 	private void RefreshState()
 	{
-		_modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
-		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
+		_modsRoot = ModWorkspace.GetDefaultModsRoot(_selectedTitle.AssetsDirectory);
+		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot, _selectedTitle.ModExtension);
 		_order = ModLoadOrder.Read(_modsRoot);
 
 		// Synchronize _order.Order and _order.Enabled with installed mods:
@@ -234,6 +319,9 @@ public partial class ModdingPanel : VBoxContainer
 				var overlays = Refii.Mods.ModIndex.ResolveOverlays(_modsRoot, _order, _mods);
 				Refii.Gdb.GdbPatchCompositor.Apply(null, overlays, _modsRoot);
 			}
+
+			Recompile.GameCodeBuild.InvalidateStatus();
+			ModsChanged?.Invoke();
 		}
 
 		_tallies.Clear();
@@ -251,9 +339,9 @@ public partial class ModdingPanel : VBoxContainer
 			.Where(name => _native.ContainsKey(name))
 			.Select(name => _native[name])
 			.ToList();
-		Dictionary<string, string> refiiOverrides = enabledNative.Count == 0
+		Dictionary<string, string> refiiOverrides = enabledNative.Count == 0 || !_selectedTitle.HasHardMods
 			? new Dictionary<string, string>()
-			: NativeModConsent.RefiiOverrides();
+			: NativeModConsent.RefiiOverrides(_selectedTitle);
 		_nativeConflicts = enabledNative.Count == 0
 			? new List<ModNativeConflict>()
 			: ModNative.FindConflicts(enabledNative, refiiOverrides);
@@ -271,6 +359,7 @@ public partial class ModdingPanel : VBoxContainer
 			_tallies[name] = tally;
 		}
 
+		_scopeSelector?.Refresh();
 		Rebuild();
 	}
 
@@ -285,7 +374,7 @@ public partial class ModdingPanel : VBoxContainer
 
 			_order.Enabled.RemoveAll(name => string.Equals(name, mod.Name, StringComparison.OrdinalIgnoreCase));
 			_order.Order.RemoveAll(name => string.Equals(name, mod.Name, StringComparison.OrdinalIgnoreCase));
-			_statusMessage = $"Deleted '{mod.Name}{Refii.Core.Engine_Title.Active.ModExtension}'.";
+			_statusMessage = $"Deleted '{mod.Name}{_selectedTitle.ModExtension}'.";
 			SaveEnabledMods();
 		}
 		catch (System.Exception ex)
@@ -319,7 +408,7 @@ public partial class ModdingPanel : VBoxContainer
 			? status ?? "Updated enabled mods."
 			: "Failed to update enabled mods: " + error;
 
-		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot);
+		_mods = ModWorkspace.DiscoverModInstalls(_modsRoot, _selectedTitle.ModExtension);
 		if (_order.Enabled.Count == 0)
 		{
 			Refii.Gdb.GdbPatchCompositor.PurgeCache(_modsRoot);
@@ -329,33 +418,34 @@ public partial class ModdingPanel : VBoxContainer
 			var overlays = Refii.Mods.ModIndex.ResolveOverlays(_modsRoot, _order, _mods);
 			Refii.Gdb.GdbPatchCompositor.Apply(null, overlays, _modsRoot);
 		}
+
+		Recompile.GameCodeBuild.InvalidateStatus();
+		ModsChanged?.Invoke();
 		RefreshState();
 	}
 
 
-	/// <summary>Picks a .f2mod on this computer and shows what it is before installing it.</summary>
+	/// <summary>Picks a mod package on this computer and shows what it is before installing it.</summary>
 	private void OnInstallFromFile()
 	{
 		if (Phone) { OnInstallFromPhone(); return; }
 
-		var picker = new FileDialog
-		{
-			FileMode = FileDialog.FileModeEnum.OpenFile,
-			Access = FileDialog.AccessEnum.Filesystem,
-			Title = "Install Mod Package",
-			Filters = new[] { $"*{Refii.Core.Engine_Title.Active.ModExtension} ; Refii mod package" },
-			Size = new Vector2I(820, 560),
-		};
-		picker.FileSelected += path => ConfirmInstall(ModInstaller.Inspect(path, _modsRoot), downloaded: false);
-		picker.VisibilityChanged += () =>
-		{
-			if (!picker.Visible)
+		string ext = _selectedTitle.ModExtension;
+		string modsRootSnapshot = _modsRoot;
+		NativeFilePicker.OpenFile(
+			$"Install {_selectedTitle.Name} Mod Package",
+			new[] { $"*{ext} ; {_selectedTitle.Name} mod package" },
+			currentPathHint: null,
+			iniKey: "LastModBrowseDir",
+			path =>
 			{
-				picker.QueueFree();
-			}
-		};
-		DialogHost().AddChild(picker);
-		picker.PopupCentered();
+				if (!IsInstanceValid(this))
+				{
+					return;
+				}
+
+				ConfirmInstall(ModInstaller.Inspect(path, modsRootSnapshot, ext), downloaded: false);
+			});
 	}
 
 	/// <summary>
@@ -364,9 +454,10 @@ public partial class ModdingPanel : VBoxContainer
 	/// </summary>
 	private void OnInstallFromUrl()
 	{
+		string ext = _selectedTitle.ModExtension;
 		var dialog = new ConfirmationDialog
 		{
-			Title = "Install Mod from URL",
+			Title = $"Install {_selectedTitle.Name} Mod from URL",
 			OkButtonText = "Download",
 			CancelButtonText = "Cancel",
 			DialogHideOnOk = false,
@@ -375,12 +466,12 @@ public partial class ModdingPanel : VBoxContainer
 
 		var box = new VBoxContainer();
 		box.AddThemeConstantOverride("separation", 6);
-		var prompt = new Label { Text = $"Paste an https link to a {Refii.Core.Engine_Title.Active.ModExtension} package:" };
+		var prompt = new Label { Text = $"Paste an https link to a {ext} package:" };
 		Apply(prompt);
 		box.AddChild(prompt);
 		var link = new LineEdit
 		{
-			PlaceholderText = $"https://example.com/my_mod{Refii.Core.Engine_Title.Active.ModExtension}",
+			PlaceholderText = $"https://example.com/my_mod{ext}",
 			SizeFlagsHorizontal = SizeFlags.ExpandFill,
 		};
 		Apply(link);
@@ -462,9 +553,10 @@ public partial class ModdingPanel : VBoxContainer
 				}
 			});
 			string root = _modsRoot;
+			string downloadExt = ext;
 			_ = Task.Run(async () =>
 			{
-				ModInstallResult result = await ModInstaller.DownloadAsync(url, progress, token, root);
+				ModInstallResult result = await ModInstaller.DownloadAsync(url, progress, token, root, downloadExt);
 				Callable.From(() => Finished(result)).CallDeferred();
 			});
 		}
@@ -506,10 +598,11 @@ public partial class ModdingPanel : VBoxContainer
 			return;
 		}
 
+		string ext = _selectedTitle.ModExtension;
 		var dialog = new ConfirmationDialog
 		{
 			Title = preview.HardMod ? "Install a hard mod (native code)" : "Install mod",
-			DialogText = ModInstaller.Describe(preview),
+			DialogText = ModInstaller.Describe(preview, ext),
 			OkButtonText = "Install",
 			CancelButtonText = "Cancel",
 			DialogAutowrap = true,
@@ -536,7 +629,7 @@ public partial class ModdingPanel : VBoxContainer
 
 	private void Install(string packagePath, bool downloaded)
 	{
-		ModInstallResult result = ModInstaller.InstallFromFile(packagePath, _modsRoot);
+		ModInstallResult result = ModInstaller.InstallFromFile(packagePath, _modsRoot, _selectedTitle.ModExtension);
 		if (downloaded)
 		{
 			ModInstaller.DiscardDownload(packagePath, _modsRoot);
@@ -604,7 +697,7 @@ public partial class ModdingPanel : VBoxContainer
 			return;
 		}
 
-		EditorReadiness readiness = EditorWorkspace.Readiness(out string missing);
+		EditorReadiness readiness = EditorWorkspace.Readiness(_selectedTitle, out string missing);
 		if (readiness is EditorReadiness.NoGame or EditorReadiness.NoSdk or EditorReadiness.NoDotnet)
 		{
 			_statusMessage = missing;
@@ -614,8 +707,8 @@ public partial class ModdingPanel : VBoxContainer
 
 		if (readiness == EditorReadiness.Ready)
 		{
-			_statusMessage = EditorWorkspace.Launch(out string error)
-				? "Opening the editor..."
+			_statusMessage = EditorWorkspace.Launch(_selectedTitle, out string error)
+				? $"Opening the editor for {_selectedTitle.Name}..."
 				: "The editor did not start: " + error;
 			Rebuild();
 			return;
@@ -652,18 +745,19 @@ public partial class ModdingPanel : VBoxContainer
 		try
 		{
 			Directory.CreateDirectory(_modsRoot);
+			string ext = _selectedTitle.ModExtension;
 			string baseName = "NewMod";
 			string modName = baseName;
 			int counter = 1;
-			while (File.Exists(Path.Combine(_modsRoot, modName + ModWorkspace.PackageExtension)))
+			while (File.Exists(Path.Combine(_modsRoot, modName + ext)))
 			{
 				counter++;
 				modName = $"{baseName}{counter}";
 			}
 
-			if (ModWorkspace.CreateModPackage(_modsRoot, modName, out string pkgPath, out string error))
+			if (ModWorkspace.CreateModPackage(_selectedTitle, _modsRoot, modName, out string pkgPath, out string error))
 			{
-				_statusMessage = $"Created '{modName}{Refii.Core.Engine_Title.Active.ModExtension}'.";
+				_statusMessage = $"Created '{modName}{ext}'.";
 				_order.RegisterMod(modName, enabled: true);
 				SaveEnabledMods();
 				return;
@@ -768,6 +862,14 @@ public partial class ModdingPanel : VBoxContainer
 			}
 
 			if (pressed && RefuseNativeModOnPhone(check, captured)) return;
+
+			if (pressed && !_selectedTitle.HasHardMods && _native.ContainsKey(captured.Name))
+			{
+				check.SetPressedNoSignal(false);
+				_statusMessage = $"'{captured.Name}' has native code, which {_selectedTitle.Name} does not support yet.";
+				Rebuild();
+				return;
+			}
 
 			if (pressed && _native.TryGetValue(captured.Name, out ModNativeSources? native) &&
 				!NativeModConsent.IsGranted(native))
@@ -908,6 +1010,14 @@ public partial class ModdingPanel : VBoxContainer
 		{
 			statusControl = NotOnPhoneLabel();
 		}
+		else if (!_selectedTitle.HasHardMods && nativeSources != null)
+		{
+			var unsupportedLabel = MakeLabel("⛔ native");
+			unsupportedLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
+			unsupportedLabel.HorizontalAlignment = HorizontalAlignment.Center;
+			unsupportedLabel.TooltipText = $"{_selectedTitle.Name} does not support native code mods yet.";
+			statusControl = unsupportedLabel;
+		}
 		else if (enabled && nativeSources != null && !NativeModConsent.IsGranted(nativeSources))
 		{
 			// ENABLED BUT NOT CONSENTED: enabled before it carried native code, or before an update
@@ -1031,7 +1141,7 @@ public partial class ModdingPanel : VBoxContainer
 		var deleteBtn = new Button { Text = "🗑" };
 		Apply(deleteBtn);
 		deleteBtn.CustomMinimumSize = Hit(new Vector2(28, 22));
-		deleteBtn.TooltipText = $"Delete '{mod.Name}{Refii.Core.Engine_Title.Active.ModExtension}' package.";
+		deleteBtn.TooltipText = $"Delete '{mod.Name}{_selectedTitle.ModExtension}' package.";
 		ModInstall targetMod = mod;
 		deleteBtn.Pressed += () => OnDeleteMod(targetMod);
 		actionsBox.AddChild(deleteBtn);
@@ -1092,7 +1202,7 @@ public partial class ModdingPanel : VBoxContainer
 			return;
 		}
 
-		EditorReadiness readiness = EditorWorkspace.Readiness(out string missing);
+		EditorReadiness readiness = EditorWorkspace.Readiness(_selectedTitle, out string missing);
 		_editorButton.Disabled = readiness is EditorReadiness.NoGame or EditorReadiness.NoSdk;
 		_editorButton.Text = readiness switch
 		{
@@ -1102,7 +1212,7 @@ public partial class ModdingPanel : VBoxContainer
 			_ => "Editor Unavailable",
 		};
 		_editorButton.TooltipText = readiness == EditorReadiness.Ready
-			? "Opens this install in Godot, with the mod tools loaded."
+			? $"Opens {_selectedTitle.Name}'s install in Godot, with the mod tools loaded."
 			: missing;
 	}
 

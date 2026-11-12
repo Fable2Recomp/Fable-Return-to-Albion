@@ -620,6 +620,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         UInt128 drawn = UInt128.Zero;
         bool packed = false;
         int joined = 0;
+        Span<double> stamps = stackalloc double[4];
         for (int i = 0; i < _pieces.Count; i++)
         {
             ClothPiece piece = _pieces[i];
@@ -648,7 +649,6 @@ public partial class Engine_ClothBody : MeshInstance3D
             bool fresh = (stated.Key != pose.Key || stated.Sequence != pose.Sequence) && Fetch(pose, stated);
 
             // Sampled at the draw point between the two poses stamped around it, as a body's ring is.
-            Span<double> stamps = stackalloc double[4];
             for (int p = 0; p < pose.PoseCount; p++)
             {
                 stamps[p] = Refii.Core.Engine_TickClock.StampOfGuestFrame(pose.Frames[p]);

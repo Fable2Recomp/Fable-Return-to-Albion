@@ -11,6 +11,10 @@
     <AssemblyName>refii-launcher</AssemblyName>
     <Optimize>true</Optimize>
     <DebugType>portable</DebugType>
+    <!-- CA2255: refii-launcher is the dynamically loaded Godot host application assembly
+         (EnableDynamicLoading=true emits a DLL), where [ModuleInitializer] is intentionally
+         used to register title descriptors at assembly load time. -->
+    <NoWarn>$(NoWarn);CA2255</NoWarn>
 
     <!--
       THE ROSLYN BUILD SERVER HANGS AN AUTOMATED PACKAGE BUILD.
@@ -56,17 +60,31 @@
   <ItemGroup>
     <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../tools/godot/Godot_v*_mono_linux.x86_64" />
     <RefiiPinnedGodot Include="$(MSBuildThisFileDirectory)../tools/godot/Godot_v*_mono_win64_console.exe" />
+    <RefiiBuildCacheSources Include="$(MSBuildThisFileDirectory)../tools/build_cache/*.cs" />
+    <RefiiBuildCacheSources Include="$(MSBuildThisFileDirectory)../tools/build_cache/Refii.BuildCache.csproj" />
   </ItemGroup>
-  <Target Name="RunTestsAfterBuild" AfterTargets="Build" Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true' and '$(Configuration)' != 'ExportDebug' and '$(Configuration)' != 'ExportRelease'">
+  <PropertyGroup>
+    <RefiiBuildCacheOutDir>$(MSBuildThisFileDirectory)../out/cache/build-tool/bin</RefiiBuildCacheOutDir>
+    <RefiiBuildCacheDll>$(RefiiBuildCacheOutDir)/Refii.BuildCache.dll</RefiiBuildCacheDll>
+  </PropertyGroup>
+  <Target Name="EnsureRefiiBuildCacheTool"
+          Inputs="@(RefiiBuildCacheSources)"
+          Outputs="$(RefiiBuildCacheDll)">
+    <Exec Command="dotnet build &quot;$(MSBuildThisFileDirectory)../tools/build_cache/Refii.BuildCache.csproj&quot; -c Release -o &quot;$(RefiiBuildCacheOutDir)&quot; --nologo -v q"
+          StandardOutputImportance="Normal"
+          StandardErrorImportance="High" />
+  </Target>
+  <Target Name="RunTestsAfterBuild"
+          AfterTargets="Build"
+          DependsOnTargets="EnsureRefiiBuildCacheTool"
+          Condition="'$(REFII_NO_TESTS)' != '1' and '$(IsTesting)' != 'true' and '$(VSTestSessionCorrelationId)' == '' and '$(Configuration)' != 'ExportDebug' and '$(Configuration)' != 'ExportRelease'">
     <PropertyGroup>
       <RefiiGodotBin Condition="'$(GODOT_BIN)' != ''">$(GODOT_BIN)</RefiiGodotBin>
       <RefiiGodotBin Condition="'$(RefiiGodotBin)' == ''">@(RefiiPinnedGodot->'%(FullPath)')</RefiiGodotBin>
     </PropertyGroup>
-    <Message Importance="high" Text="================= [RUNNING UNIT TESTS] (GODOT_BIN=$(RefiiGodotBin)) =================" />
-    <Exec Command="dotnet test &quot;$(MSBuildThisFileDirectory)tests\Refii.Tests\Refii.Tests.csproj&quot; -c $(Configuration) -p:IsTesting=true -p:REFII_NO_TESTS=1 --logger &quot;console;verbosity=minimal&quot;"
-          EnvironmentVariables="GODOT_BIN=$(RefiiGodotBin)"
+    <Exec Command="dotnet &quot;$(RefiiBuildCacheDll)&quot; test-gate --repo-root &quot;$(MSBuildThisFileDirectory)..&quot; --project-dir &quot;$(MSBuildThisFileDirectory).&quot; --test-csproj &quot;$(MSBuildThisFileDirectory)tests/Refii.Tests/Refii.Tests.csproj&quot; --config &quot;$(Configuration)&quot; --godot-bin &quot;$(RefiiGodotBin)&quot;"
+          EnvironmentVariables="GODOT_BIN=$(RefiiGodotBin);REFII_NO_TESTS=1"
           StandardOutputImportance="High"
           StandardErrorImportance="High" />
-    <Message Importance="high" Text="========================================================" />
   </Target>
 </Project>

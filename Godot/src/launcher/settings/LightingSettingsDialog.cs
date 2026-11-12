@@ -274,6 +274,13 @@ public partial class LightingSettingsDialog : Control
 			"Placed Fixture Shadows",
 			"Enable dynamic shadow casting for torches, lanterns, and braziers based on the active shadow budget (default: on)."));
 
+		contentCol.AddChild(BuildOptionRow(
+			"omni_shadow_mode",
+			"Point Light Shadow Mode",
+			"Shadow projection for dynamic point lights: Dual Paraboloid renders 2 passes per lamp instead of 6 cubemap faces (default: Dual Paraboloid).",
+			new[] { "dual_paraboloid", "cube" },
+			new[] { "Dual Paraboloid (Fast)", "Cubemap (Ultra)" }));
+
 		contentCol.AddChild(BuildCheckBoxRow(
 			"placed_light_fade",
 			"Distance Cutoff Fading",
@@ -331,6 +338,11 @@ public partial class LightingSettingsDialog : Control
 
 		// ==================== SECTION D: ILLUMINATION & TONE MAPPING ====================
 		contentCol.AddChild(MakeSectionHeader("Illumination & Tone Mapping"));
+
+		contentCol.AddChild(BuildCheckBoxRow(
+			"sdfgi_enabled",
+			"Global Illumination (SDFGI)",
+			"Real-time bounced sky and surface global illumination in Modern mode. Disabling keeps Modern direct lighting and AO while saving GPU time on integrated GPUs (default: on)."));
 
 		contentCol.AddChild(BuildCheckBoxRow(
 			"gi_half_resolution",
@@ -630,6 +642,8 @@ public partial class LightingSettingsDialog : Control
 				_model.Values[cvarName] = step < 1.0
 					? val.ToString("0.00", CultureInfo.InvariantCulture)
 					: ((int)Math.Round(val)).ToString(CultureInfo.InvariantCulture);
+				_model.RefreshDesktopPreset(cvarName);
+				_model.RefreshGraphicsPreset(cvarName);
 				_model.Save();
 				_onSave();
 			});
@@ -672,6 +686,8 @@ public partial class LightingSettingsDialog : Control
 		{
 			if (_updating) return;
 			_model.Values[cvarName] = state ? "true" : "false";
+			_model.RefreshDesktopPreset(cvarName);
+			_model.RefreshGraphicsPreset(cvarName);
 			_model.Save();
 			_onSave();
 		};
@@ -732,6 +748,8 @@ public partial class LightingSettingsDialog : Control
 			if (idx >= 0 && idx < options.Length)
 			{
 				_model.Values[cvarName] = options[idx];
+				_model.RefreshDesktopPreset(cvarName);
+				_model.RefreshGraphicsPreset(cvarName);
 				_model.Save();
 				_onSave();
 			}
@@ -761,6 +779,8 @@ public partial class LightingSettingsDialog : Control
 		_model.Values["placed_light_range"] = _lightRangeSpin.Value.ToString("0.0", CultureInfo.InvariantCulture);
 		_model.Values["placed_shadow_range"] = _shadowRangeSpin.Value.ToString("0.0", CultureInfo.InvariantCulture);
 		_model.Values["lighting_preset"] = _model.CurrentLightingPreset();
+		_model.RefreshDesktopPreset();
+		_model.RefreshGraphicsPreset();
 
 		_model.Save();
 		UpdateMetrics();
@@ -804,6 +824,7 @@ public partial class LightingSettingsDialog : Control
 			"sun_light_scale",
 			"tree_shadow_reach",
 			"placed_light_shadows",
+			"omni_shadow_mode",
 			"placed_light_fade",
 			"placed_light_limit",
 			"placed_light_scale",
@@ -813,6 +834,7 @@ public partial class LightingSettingsDialog : Control
 			"building_interior_reach_scale",
 			"static_shadow_resolution",
 			"terrain_ao_resolution",
+			"sdfgi_enabled",
 			"gi_half_resolution",
 			"ambient_light_scale",
 			"bloom_scale",
@@ -841,6 +863,8 @@ public partial class LightingSettingsDialog : Control
 			}
 		}
 
+		_model.RefreshDesktopPreset();
+		_model.RefreshGraphicsPreset();
 		_model.Save();
 
 		// 3. Re-sync all UI widgets

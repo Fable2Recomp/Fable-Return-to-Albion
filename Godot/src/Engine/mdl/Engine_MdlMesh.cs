@@ -265,13 +265,19 @@ public static int SurfacesWithLods;
         float[] modelSelfAo = System.Array.Empty<float>();
         if (modernStaticAo)
         {
-            if (Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, sourceVertexTotal, virtualPath, out float[] fastSelfAo))
+            if (Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, surfaces, sourceVertexTotal, virtualPath, out float[] fastSelfAo))
             {
                 modelSelfAo = fastSelfAo;
             }
-            else if (sourceVertexTotal <= 2048)
+            else if (sourceVertexTotal <= 4096)
             {
                 modelSelfAo = Engine_ModelSelfAo.GetOrComputeModelSelfAo(data, info, surfaces, sourceVertexTotal, virtualPath);
+            }
+            else
+            {
+                bool includeGround = info.SkinnedCount == 0 && info.MovementMode != 1;
+                modelSelfAo = Engine_ModelSelfAo.ComputeFastCreviceAndBaseAo(surfaces, sourceVertexTotal, includeGround);
+                Engine_ModelSelfAo.QueueBackgroundSelfAoBake(surfaces, sourceVertexTotal, includeGround, virtualPath);
             }
         }
         var pendingSurfaces = new List<(Godot.Collections.Array Arrays, Godot.Collections.Dictionary? Lods, float[]? LevelTable, string Name, Material? Material)>(surfaces.Count);

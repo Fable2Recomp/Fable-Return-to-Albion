@@ -14,16 +14,31 @@ namespace Refii.Mods;
 /// </remarks>
 public static class ModEntries
 {
-	public static List<(string Mod, string Text)> ReadEnabledText(string entryPath)
+	public static List<(string Mod, string Text)> ReadEnabledText(string entryPath) =>
+		ReadEnabledText(
+			Refii.Assets.Engine_GameAssets.ModsRoot,
+			Refii.Core.Engine_Title.Active.ModExtension,
+			entryPath);
+
+	/// <summary>
+	/// Reads <paramref name="entryPath"/> from every enabled mod in <paramref name="modsRoot"/> matching
+	/// <paramref name="packageExtension"/>, lowest priority first.
+	/// </summary>
+	public static List<(string Mod, string Text)> ReadEnabledText(
+		string modsRoot, string packageExtension, string entryPath)
 	{
 		var result = new List<(string Mod, string Text)>();
-		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
-		if (string.IsNullOrEmpty(modsRoot) || (!System.IO.Directory.Exists(modsRoot) && !ModSession.IsActive))
+		bool useSession = ModSession.IsActive &&
+			string.Equals(modsRoot, Refii.Assets.Engine_GameAssets.ModsRoot, StringComparison.OrdinalIgnoreCase) &&
+			string.Equals(packageExtension, Refii.Core.Engine_Title.Active.ModExtension, StringComparison.OrdinalIgnoreCase);
+		if (string.IsNullOrEmpty(modsRoot) || (!System.IO.Directory.Exists(modsRoot) && !useSession))
 		{
 			return result;
 		}
 
-		(ModLoadOrder order, List<ModInstall> found) = ModSession.Resolve(modsRoot);
+		(ModLoadOrder order, List<ModInstall> found) = useSession
+			? ModSession.Resolve(modsRoot)
+			: (ModLoadOrder.Read(modsRoot), ModWorkspace.DiscoverModInstalls(modsRoot, packageExtension));
 		var installs = new Dictionary<string, ModInstall>(StringComparer.OrdinalIgnoreCase);
 		foreach (ModInstall install in found)
 		{

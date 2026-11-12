@@ -16,6 +16,122 @@ public static class Engine_VolumetricLightShafts
 	public const int MaxCapsules = 32;
 	public const float MaxFogRangeMetres = 80.0f;
 
+	/// <summary>
+	/// Maximum local volumetric shaft lights uploaded per frame (scored by camera-apparent flux with
+	/// hysteresis so distant low-energy background lights do not inflate tile raymarching).
+	/// </summary>
+	public static int MaxActiveShaftLights = 16;
+
+	/// <summary>
+	/// Sticky score multiplier granted to a fixture that already emitted volumetric shafts on the
+	/// previous pass so near-tied lights never flicker in and out across frames.
+	/// </summary>
+	public const float ActiveHysteresisMultiplier = 1.15f;
+
+	/// <summary>
+	/// Candidate light descriptor used for pure, allocation-free camera-apparent flux ranking.
+	/// </summary>
+	public readonly record struct ShaftCandidateSpec(
+		Vector3 Position,
+		float Range,
+		Vector3 LinearColor,
+		float Energy,
+		float FogEnergyScale,
+		bool WasActive);
+
+	/// <summary>
+	/// Computes the camera-apparent volumetric scattering priority score for a candidate local light.
+	/// Higher score wins; <c>0</c> indicates the light contributes no visible shaft energy.
+	/// </summary>
+	public static float ScoreCandidateLight(
+		Vector3 eye,
+		Vector3 lightPos,
+		float range,
+		Vector3 linearColor,
+		float energy,
+		float fogEnergyScale,
+		bool wasActive)
+	{
+		if (range <= 1e-3f || energy <= 1e-4f || fogEnergyScale <= 1e-4f)
+		{
+			return 0.0f;
+		}
+
+		float r = MathF.Max(linearColor.X, 0.0f);
+		float g = MathF.Max(linearColor.Y, 0.0f);
+		float b = MathF.Max(linearColor.Z, 0.0f);
+		float lum = (0.2126f * r) + (0.7152f * g) + (0.0722f * b);
+		if (lum <= 1e-5f)
+		{
+			return 0.0f;
+		}
+
+		float distSq = MathF.Max(eye.DistanceSquaredTo(lightPos), 4.0f);
+		float reachWeight = MathF.Min(range, 16.0f);
+		float flux = (lum * energy * fogEnergyScale * reachWeight) / distSq;
+		return wasActive ? flux * ActiveHysteresisMultiplier : flux;
+	}
+
+	/// <summary>
+	/// Ranks <paramref name="candidates"/> by camera-apparent flux (with hysteresis) into
+	/// <paramref name="selectedIndices"/> up to <paramref name="maxSelected"/> without heap allocation.
+	/// Returns the number of selected indices written in descending score order.
+	/// </summary>
+	public static int SelectTopCandidates(
+		Vector3 eye,
+		ReadOnlySpan<ShaftCandidateSpec> candidates,
+		int maxSelected,
+		Span<int> selectedIndices)
+	{
+		int cap = Math.Min(Math.Max(0, maxSelected), selectedIndices.Length);
+		if (cap == 0 || candidates.IsEmpty)
+		{
+			return 0;
+		}
+
+		Span<float> bestScores = stackalloc float[Math.Min(cap, MaxShaftLights)];
+		cap = bestScores.Length;
+		int count = 0;
+
+		for (int i = 0; i < candidates.Length; i++)
+		{
+			ref readonly ShaftCandidateSpec c = ref candidates[i];
+			float score = ScoreCandidateLight(
+				eye, c.Position, c.Range, c.LinearColor, c.Energy, c.FogEnergyScale, c.WasActive);
+			if (score <= 0.0f)
+			{
+				continue;
+			}
+
+			if (count < cap)
+			{
+				int pos = count++;
+				while (pos > 0 && score > bestScores[pos - 1])
+				{
+					bestScores[pos] = bestScores[pos - 1];
+					selectedIndices[pos] = selectedIndices[pos - 1];
+					pos--;
+				}
+				bestScores[pos] = score;
+				selectedIndices[pos] = i;
+			}
+			else if (score > bestScores[cap - 1])
+			{
+				int pos = cap - 1;
+				while (pos > 0 && score > bestScores[pos - 1])
+				{
+					bestScores[pos] = bestScores[pos - 1];
+					selectedIndices[pos] = selectedIndices[pos - 1];
+					pos--;
+				}
+				bestScores[pos] = score;
+				selectedIndices[pos] = i;
+			}
+		}
+
+		return count;
+	}
+
 	public readonly record struct ShaftLightInput(
 		Vector3 Position,
 		float StatedRange,

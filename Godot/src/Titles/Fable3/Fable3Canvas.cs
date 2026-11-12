@@ -21,7 +21,7 @@ public abstract partial class Fable3Canvas : SubViewportContainer
 	protected Camera3D CanvasCamera { get; private set; } = null!;
 
 	/// <summary>The title's theme for the current culture; null until the strings and fonts are up.</summary>
-	public Engine_UiTheme? Theme { get; private set; }
+	public new Engine_UiTheme? Theme { get; private set; }
 
 	private Vector2 _fittedTo;
 	private int _cameraReports;
@@ -71,7 +71,7 @@ public abstract partial class Fable3Canvas : SubViewportContainer
 	protected abstract void Frame(double delta);
 
 	/// <summary>The theme changed (first load or a culture switch).</summary>
-	protected virtual void ThemeChanged()
+	protected new virtual void ThemeChanged()
 	{
 	}
 

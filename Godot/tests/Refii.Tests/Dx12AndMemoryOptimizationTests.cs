@@ -204,4 +204,40 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(buildCallIdx).IsGreater(firstLockIdx);
 		AssertThat(secondLockIdx).IsGreater(buildCallIdx);
 	}
+
+	/// <summary>
+	/// Guards against the Intel Arc D3D12 title-screen GPU TDR regression (`0x887a0005`):
+	/// UI text and world-marker shaders must declare explicit `hint_default_*` sampler fallbacks,
+	/// gate `UV2` and `ui_text_outline_cover` behind uniform booleans for Fable 2 meshes without UV2,
+	/// and keep `ui_text_outline.gdshaderinc` free of dual-sampler branches or `textureSize` inside loops.
+	/// </summary>
+	[TestCase]
+	public void UiTextAndOutlineShadersMaintainD3D12SamplerAndUniformInvariants()
+	{
+		string godotRoot = FindRepoRoot();
+		string uiDir = Path.Combine(godotRoot, "src", "Engine", "ui");
+
+		string uiText = File.ReadAllText(Path.Combine(uiDir, "ui_text.gdshader"));
+		AssertThat(uiText.Contains("uniform sampler2D atlas : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("uniform sampler2D distance_field : filter_linear_mipmap, repeat_disable, hint_default_black;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("uniform bool has_uv2_modes = false;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("uniform bool outline = false;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("if (has_uv2_modes)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiText.Contains("if (outline && outlined)", StringComparison.Ordinal)).IsTrue();
+
+		string uiWorldMarker = File.ReadAllText(Path.Combine(uiDir, "ui_world_marker.gdshader"));
+		AssertThat(uiWorldMarker.Contains("uniform sampler2D tex : source_color, filter_linear_mipmap, repeat_disable, hint_default_transparent;", StringComparison.Ordinal)).IsTrue();
+
+		string uiOutlineInc = File.ReadAllText(Path.Combine(uiDir, "ui_text_outline.gdshaderinc"));
+		AssertThat(uiOutlineInc.Contains("textureSize(", StringComparison.Ordinal)).IsFalse();
+		int fromFieldIdx = uiOutlineInc.IndexOf("if (from_field)", StringComparison.Ordinal);
+		int firstForIdx = uiOutlineInc.IndexOf("for (int y = -1;", StringComparison.Ordinal);
+		AssertThat(fromFieldIdx).IsGreater(0);
+		AssertThat(firstForIdx).IsGreater(fromFieldIdx);
+
+		// Verify project.godot's configured application icon exists so startup never logs a missing icon error.
+		string projectGodot = File.ReadAllText(Path.Combine(godotRoot, "project.godot"));
+		AssertThat(projectGodot.Contains("config/icon=\"res://assets/launcher/fable.png\"", StringComparison.Ordinal)).IsTrue();
+		AssertThat(File.Exists(Path.Combine(godotRoot, "assets", "launcher", "fable.png"))).IsTrue();
+	}
 }

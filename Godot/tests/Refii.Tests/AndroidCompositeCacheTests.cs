@@ -64,16 +64,17 @@ public sealed class AndroidCompositeCacheTests
             Layer[] none = Array.Empty<Layer>();
             string? name = AndroidCompositeCache.Name("key", a, layers, none);
             AssertThat(name).IsNotNull();
-            AssertThat(AndroidCompositeCache.Name("key", a, layers, none)).IsEqual(name);
-            AssertThat(AndroidCompositeCache.Name("other", a, layers, none)).IsNotEqual(name);
+            AssertThat(AndroidCompositeCache.Name("key", a, layers, none)).IsEqual(name!);
+            AssertThat(AndroidCompositeCache.Name("other", a, layers, none)).IsNotEqual(name!);
 
             // A file that changes under the same name, as a live remount does, renames at once.
             files[second] = new byte[] { 3 };
             string? changed = AndroidCompositeCache.Name("key", a, layers, none);
-            AssertThat(changed).IsNotEqual(name);
+            AssertThat(changed).IsNotNull();
+            AssertThat(changed).IsNotEqual(name!);
             files.Remove(second);
-            AssertThat(AndroidCompositeCache.Name("key", a, layers, none)).IsNotEqual(name);
-            AssertThat(AndroidCompositeCache.Name("key", a, layers, none)).IsNotEqual(changed);
+            AssertThat(AndroidCompositeCache.Name("key", a, layers, none)).IsNotEqual(name!);
+            AssertThat(AndroidCompositeCache.Name("key", a, layers, none)).IsNotEqual(changed!);
         }
         finally
         {
@@ -119,21 +120,23 @@ public sealed class AndroidCompositeCacheTests
             Bank(1);
             mount = Refii.Bnk.BnkFileSystem.Mount(game);
             string? shipped = AndroidCompositeCache.Name("key", t, layers, Array.Empty<Layer>());
+            AssertThat(shipped).IsNotNull();
             AssertThat(reads).IsEqual(0);
-            AssertThat(AndroidCompositeCache.Name("key", t, layers, Array.Empty<Layer>())).IsEqual(shipped);
+            AssertThat(AndroidCompositeCache.Name("key", t, layers, Array.Empty<Layer>())).IsEqual(shipped!);
 
             mount.Dispose();
             Bank(2);
             mount = Refii.Bnk.BnkFileSystem.Mount(game);
             string? remounted = AndroidCompositeCache.Name("key", t, layers, Array.Empty<Layer>());
-            AssertThat(remounted).IsNotEqual(shipped);
+            AssertThat(remounted).IsNotNull();
+            AssertThat(remounted).IsNotEqual(shipped!);
 
             mount.Dispose();
             File.WriteAllBytes(Path.Combine(mod, texture), new byte[] { 9 });
             mount = Refii.Bnk.BnkFileSystem.Mount(game, overlays: new[] { ("mod", mod) });
             long hashed = AndroidCompositeCache.SourcesHashed;
             string? modded = AndroidCompositeCache.Name("key", t, layers, Array.Empty<Layer>());
-            AssertThat(modded).IsNotEqual(remounted);
+            AssertThat(modded).IsNotEqual(remounted!);
             AssertThat(reads).IsGreater(0);
             AssertThat(AndroidCompositeCache.SourcesHashed).IsGreater(hashed);
         }

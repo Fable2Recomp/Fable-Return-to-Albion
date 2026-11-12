@@ -1,17 +1,18 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics.X86;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Refii.Launcher.Core;
 using Refii.Mods;
+using Refii.Recompile;
 
 namespace Refii.Launcher.Recompile;
 
@@ -25,24 +26,96 @@ namespace Refii.Launcher.Recompile;
 /// our own libraries and a bundled Zig under <c>recompile/</c>; this drives them.
 ///
 /// Five phases, in order:
-///   1. generate  — the generator reads assets/game/default.xex and writes C++ to
-///                  assets/generated, in this process (see <see cref="Recompiler"/>)
-///   2. precompile — the ~61,000-line generated header, once instead of ~148 times
-///   3. compile   — ~150k functions, JobCount() translation units at a time
-///   4. link      — one shared module, next to the other native libraries
-///   5. clean     — the generated sources and the object tree are deleted
-///
-/// NO BUILD SYSTEM. Phase 5 deletes the sources after every successful build, so the
-/// payload is never rebuilt incrementally and there is no dependency graph worth keeping —
-/// cmake and ninja were maintaining one for a build that is always clean. Driving the
-/// compiler directly also means the progress a player sees is the real count of finished
-/// translation units rather than a parsed line of someone else's output.
-///
-/// Phase 5 is why nothing this writes may live under assets/generated: the sources and
-/// their objects are several gigabytes and are worthless once the module exists.
+///   1. generate  — the generator reads assets/&lt;Title&gt;/game/default.xex and writes C++ to
+///                  cache/&lt;Title&gt;/compile/generated, skipped on warm builds via <see cref="CodegenCache"/>
+///   2. precompile — the generated PCH header, cached across builds via <see cref="CompileCache"/>
+///   3. compile   — ~150k functions, <see cref="JobCount"/> translation units at a time,
+///                  LPT largest-first and content-addressed via <see cref="CompileCache"/>
+///   4. link      — one shared module, next to the title's instance native libraries
+///   5. prune     — generational cache retention (last 3 builds, 512 MB cap) and scratch cleanup
 /// </remarks>
 public static class GameCodeBuild
 {
+	/// <summary>Maximum number of build generations retained in a title's object cache.</summary>
+	public const int ObjectCacheMaxGenerations = 3;
+
+	/// <summary>Byte budget applied to older-generation artifacts in a title's object cache (512 MiB).</summary>
+	public const long ObjectCacheMaxBytes = 512L * 1024 * 1024;
+
+	private const string ModuleInputsPrefix = "module-inputs:";
+
+	/// <summary>
+	/// Internal execution seam used by automated feature tests to run the full game-code build pipeline
+	/// against synthetic generator/compiler callbacks and isolated temp directories without touching workspace outputs.
+	/// </summary>
+	internal sealed class Driver
+	{
+		/// <summary>Optional root directory overriding <c>cache/&lt;Title&gt;/compile</c> and launcher log location.</summary>
+		public string? CacheRootOverride { get; init; }
+
+		/// <summary>Optional callback overriding <see cref="GetGameExecutablePath(Refii.Core.Engine_Title)"/>.</summary>
+		public Func<Refii.Core.Engine_Title, string>? GameExecutablePathOverride { get; init; }
+
+		/// <summary>Optional callback overriding the native hard-mods workspace directory for a title.</summary>
+		public Func<Refii.Core.Engine_Title, string>? ModsRootOverride { get; init; }
+
+		/// <summary>When true, skips the editor-only Windows CMake bootstrap step.</summary>
+		public bool SkipWindowsBootstrap { get; init; } = true;
+
+		/// <summary>Optional callback overriding bundled Zig toolchain resolution.</summary>
+		public Func<(bool Ok, Toolchain Toolchain, string Error)>? ResolveToolchain { get; init; }
+
+		/// <summary>Optional callback overriding <c>zig version</c> queries.</summary>
+		public Func<Toolchain, string>? ToolchainVersion { get; init; }
+
+		/// <summary>Optional callback overriding <c>Recompiler.SdkVersion()</c>.</summary>
+		public Func<string>? SdkVersion { get; init; }
+
+		/// <summary>Optional callback overriding in-process <c>Recompiler.Generate</c>.</summary>
+		public Func<string, BuildControl, Action<string>, Action<string>, Result>? GenerateCode { get; init; }
+
+		/// <summary>Optional callback overriding child process execution (<c>zig c++</c> compile and link invocations).</summary>
+		public Func<string, IReadOnlyList<string>, string, IReadOnlyDictionary<string, string>, BuildControl, CancellationToken, Task<(int Code, string Output)>>? RunProcessAsync { get; init; }
+
+		/// <summary>Optional override for available physical memory in bytes.</summary>
+		public Func<long>? AvailableMemoryBytesOverride { get; init; }
+
+		/// <summary>Optional override for logical processor count.</summary>
+		public int? ProcessorCountOverride { get; init; }
+	}
+
+	private static readonly AsyncLocal<Driver?> CurrentDriver = new();
+
+	/// <summary>Gets the active test driver for the current asynchronous execution flow, if any.</summary>
+	internal static Driver? ActiveDriver => CurrentDriver.Value;
+
+	/// <summary>Installs <paramref name="driver"/> for the duration of the returned scope.</summary>
+	/// <param name="driver">Driver configuration to activate.</param>
+	/// <returns>Disposable scope that restores the previous driver on disposal.</returns>
+	internal static IDisposable PushDriver(Driver driver)
+	{
+		Driver? previous = CurrentDriver.Value;
+		CurrentDriver.Value = driver;
+		return new DriverScope(previous);
+	}
+
+	private sealed class DriverScope : IDisposable
+	{
+		private readonly Driver? _previous;
+		private bool _disposed;
+
+		public DriverScope(Driver? previous) => _previous = previous;
+
+		public void Dispose()
+		{
+			if (!_disposed)
+			{
+				_disposed = true;
+				CurrentDriver.Value = _previous;
+			}
+		}
+	}
+
 	/// <summary>
 	/// Where the native libraries live.
 	/// </summary>
@@ -61,19 +134,37 @@ public static class GameCodeBuild
 	public static string RecompileDirectory => Path.Combine(BinDirectory, "recompile");
 
 	/// <summary>
+	/// <c>bin/recompile/&lt;Folder&gt;</c> for <paramref name="title"/>: its own hook sources and list.
+	/// </summary>
+	public static string GetTitleRecompileDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(RecompileDirectory, title.Folder);
+
+	/// <summary>
 	/// <c>bin/recompile/&lt;Folder&gt;</c>: the active title's own build inputs — its hook sources
 	/// (<c>hooks/</c>) and their list (<c>hook_sources.cmake</c>), staged per title so a build
 	/// never compiles another title's.
 	/// </summary>
 	public static string TitleRecompileDirectory =>
-		Path.Combine(RecompileDirectory, Refii.Core.Engine_Title.Active.Folder);
+		GetTitleRecompileDirectory(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Staged hook list for <paramref name="title"/>.</summary>
+	public static string GetHookSourcesPath(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetTitleRecompileDirectory(title), "hook_sources.cmake");
 
 	/// <summary>The active title's staged hook list, <c>bin/recompile/&lt;Folder&gt;/hook_sources.cmake</c>.</summary>
-	public static string HookSourcesPath => Path.Combine(TitleRecompileDirectory, "hook_sources.cmake");
+	public static string HookSourcesPath => GetHookSourcesPath(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Title update path beside <paramref name="title"/>'s installed executable.</summary>
+	public static string GetGameTitleUpdatePath(Refii.Core.Engine_Title title) =>
+		Path.Combine(Path.GetDirectoryName(GetGameExecutablePath(title)) ?? string.Empty, "default.xexp");
 
 	/// <summary>The title update beside the installed executable, when the player installed one.</summary>
 	public static string GameTitleUpdatePath =>
-		Path.Combine(Path.GetDirectoryName(GameExecutablePath) ?? string.Empty, "default.xexp");
+		GetGameTitleUpdatePath(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Version folder name for <paramref name="title"/>.</summary>
+	public static string GetGameVersionName(Refii.Core.Engine_Title title) =>
+		title.VersionFolder(File.Exists(GetGameTitleUpdatePath(title)));
 
 	/// <summary>
 	/// Which <c>versions/</c> folder describes the installed game: the patched executable or
@@ -87,36 +178,90 @@ public static class GameCodeBuild
 	/// title names its own folders (<see cref="Refii.Core.Engine_Title.VersionFolder"/>).
 	/// </remarks>
 	public static string GameVersionName =>
-		Refii.Core.Engine_Title.Active.VersionFolder(File.Exists(GameTitleUpdatePath));
+		GetGameVersionName(Refii.Core.Engine_Title.Active);
+
+	/// <summary>The ReXGlue manifest and config directory for <paramref name="title"/>'s installed version.</summary>
+	public static string GetVersionDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(RecompileDirectory, "versions", GetGameVersionName(title));
 
 	/// <summary>The ReXGlue manifest and config for the installed game's version.</summary>
 	public static string VersionDirectory =>
-		Path.Combine(RecompileDirectory, "versions", GameVersionName);
+		GetVersionDirectory(Refii.Core.Engine_Title.Active);
 
 	/// <summary>
-	/// A file of the version folder, named by the title's key: <c>refii_config.toml</c> for
-	/// Fable 2, <c>refiii_config.toml</c> for Fable 3.
+	/// A file of the version folder for <paramref name="title"/>, named by the title's key:
+	/// <c>refii_config.toml</c> for Fable 2, <c>refiii_config.toml</c> for Fable 3.
 	/// </summary>
-	private static string VersionFile(string kind) =>
-		Path.Combine(VersionDirectory, Refii.Core.Engine_Title.Active.Key + "_" + kind + ".toml");
+	private static string GetVersionFile(Refii.Core.Engine_Title title, string kind) =>
+		Path.Combine(GetVersionDirectory(title), title.Key + "_" + kind + ".toml");
 
-	private static string VersionConfigPath => VersionFile("config");
+	private static string GetVersionConfigPath(Refii.Core.Engine_Title title) => GetVersionFile(title, "config");
 
-	private static string VersionManifestPath => VersionFile("manifest");
+	private static string GetVersionManifestPath(Refii.Core.Engine_Title title) => GetVersionFile(title, "manifest");
 
-	/// <summary>The generator's output. Deleted once the module is built.</summary>
-	public static string GeneratedDirectory => Installer.GetGeneratedCodeDirectoryPath();
+	private static string VersionConfigPath => GetVersionConfigPath(Refii.Core.Engine_Title.Active);
 
-	private static string BuildDirectory => Path.Combine(GeneratedDirectory, "build");
+	private static string VersionManifestPath => GetVersionManifestPath(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Persistent compile cache root (<c>cache/&lt;Folder&gt;/compile</c>) for <paramref name="title"/>.</summary>
+	/// <param name="title">Target title.</param>
+	/// <returns>Full path to <paramref name="title"/>'s compile cache root.</returns>
+	public static string GetCompileCacheRoot(Refii.Core.Engine_Title title) =>
+		ActiveDriver?.CacheRootOverride is { Length: > 0 } cacheOverride
+			? Path.Combine(cacheOverride, title.Folder, "compile")
+			: Installer.GetCompileCacheDirectoryPath(title);
+
+	/// <summary>The generator's persistent output directory (<c>cache/&lt;Folder&gt;/compile/generated</c>) for <paramref name="title"/>.</summary>
+	/// <param name="title">Target title.</param>
+	/// <returns>Full path to <paramref name="title"/>'s generated C++ cache directory.</returns>
+	public static string GetGeneratedDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetCompileCacheRoot(title), "generated");
+
+	/// <summary>The generator's persistent output directory for the active title.</summary>
+	public static string GeneratedDirectory => GetGeneratedDirectory(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Content-addressed <c>.o</c> and <c>.pch</c> cache directory for <paramref name="title"/>.</summary>
+	/// <param name="title">Target title.</param>
+	/// <returns>Full path to <paramref name="title"/>'s object cache directory.</returns>
+	public static string GetObjectCacheDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetCompileCacheRoot(title), "objects");
+
+	/// <summary>Persistent Zig runtime/CRT cache directory for <paramref name="title"/>.</summary>
+	/// <param name="title">Target title.</param>
+	/// <returns>Full path to <paramref name="title"/>'s Zig cache directory.</returns>
+	public static string GetZigCacheDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetCompileCacheRoot(title), "zig-cache");
+
+	/// <summary>Ephemeral per-build staging directory for extracted native hard-mod sources.</summary>
+	private static string GetModsStagingDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetCompileCacheRoot(title), "mods");
+
+	/// <summary>Ephemeral per-build scratch directory for fresh compiler/linker outputs before caching.</summary>
+	private static string GetWorkDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetCompileCacheRoot(title), "work");
+
+	/// <summary>The executable the installer wrote for <paramref name="title"/>.</summary>
+	public static string GetGameExecutablePath(Refii.Core.Engine_Title title) =>
+		ActiveDriver?.GameExecutablePathOverride is { } custom
+			? custom(title)
+			: Installer.GetGameExecutablePath(title);
 
 	/// <summary>The executable the installer wrote, not a path of our own.</summary>
-	public static string GameExecutablePath => Installer.GetGameExecutablePath();
+	public static string GameExecutablePath => GetGameExecutablePath(Refii.Core.Engine_Title.Active);
+
+	/// <summary>ReXGlue instance bin directory for <paramref name="title"/> (<c>bin/&lt;Folder&gt;</c>).</summary>
+	public static string GetTitleBinDirectory(Refii.Core.Engine_Title title) =>
+		Path.Combine(BinDirectory, title.Folder);
 
 	/// <summary>
 	/// The active title's ReXGlue instance: <c>bin/&lt;Folder&gt;/</c>, its host bridge and vfs beside
 	/// the module built here, the shared natives one directory up.
 	/// </summary>
-	public static string TitleBinDirectory => Path.Combine(BinDirectory, Refii.Core.Engine_Title.Active.Folder);
+	public static string TitleBinDirectory => GetTitleBinDirectory(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Compiled guest payload module path for <paramref name="title"/>.</summary>
+	public static string GetModulePath(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetTitleBinDirectory(title), Refii.Core.Engine_NativeLibraries.FileNameFor(title.ModuleName));
 
 	/// <summary>
 	/// The active title's module, in its instance folder where the payload loader looks for it,
@@ -124,22 +269,34 @@ public static class GameCodeBuild
 	/// <c>refiii_generated</c> for Fable 3.
 	/// </summary>
 	public static string ModulePath =>
-		Path.Combine(TitleBinDirectory, Refii.Core.Engine_NativeLibraries.FileNameFor(Refii.Core.Engine_Title.Active.ModuleName));
+		GetModulePath(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Build metadata record path for <paramref name="title"/>.</summary>
+	public static string GetBuildInfoPath(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetTitleBinDirectory(title), "build-info.json");
 
 	/// <summary>What the active title's module was built from, beside it.</summary>
-	public static string BuildInfoPath => Path.Combine(TitleBinDirectory, "build-info.json");
+	public static string BuildInfoPath => GetBuildInfoPath(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Fine-grained tracked dependency closure path (<c>module-inputs.txt</c>) for <paramref name="title"/>.</summary>
+	/// <param name="title">Target title.</param>
+	/// <returns>Full path to <paramref name="title"/>'s <c>module-inputs.txt</c> beside its module.</returns>
+	public static string GetModuleInputsPath(Refii.Core.Engine_Title title) =>
+		Path.Combine(GetTitleBinDirectory(title), "module-inputs.txt");
+
+	/// <summary>Fine-grained tracked dependency closure path for the active title.</summary>
+	public static string ModuleInputsPath => GetModuleInputsPath(Refii.Core.Engine_Title.Active);
 
 	private const string SettingsSection = "Recompile";
 	private const string UseAllCoresKey = "BuildUseAllCores";
 
 	/// <summary>
-	/// Whether to compile with every thread rather than half of them.
+	/// Whether to compile with every logical thread rather than leaving two threads for desktop UI.
 	/// </summary>
 	/// <remarks>
-	/// DEFAULTS OFF. Compiling ~150,000 functions saturates every thread for the length of
-	/// the build, and an install that makes the machine unusable while it runs is a worse
-	/// default than one that takes longer — the player did not ask to stop using their PC.
-	/// Turning it on roughly halves the wait and costs them the machine while it does.
+	/// DEFAULTS OFF. By default <see cref="JobCount"/> runs <c>ProcessorCount - 2</c> workers at
+	/// <c>BelowNormal</c> OS priority (bounded by free RAM) so the machine stays responsive while
+	/// utilizing nearly the full CPU; turning this on targets all logical threads.
 	/// </remarks>
 	public static bool UseAllCores
 	{
@@ -152,17 +309,17 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Compile jobs to run at once. At least one, however few threads are reported.
+	/// Compile jobs to run at once, bounded by logical core count, <see cref="UseAllCores"/>, and available RAM.
 	/// </summary>
+	/// <returns>Planned worker count of at least 1.</returns>
 	public static int JobCount()
 	{
-		int threads = Environment.ProcessorCount;
-		if (UseAllCores)
-		{
-			return Math.Max(1, threads);
-		}
-
-		return Math.Max(1, threads / 2);
+		Driver? driver = ActiveDriver;
+		int cores = driver?.ProcessorCountOverride ?? Environment.ProcessorCount;
+		long availableMemory = driver?.AvailableMemoryBytesOverride != null
+			? driver.AvailableMemoryBytesOverride()
+			: CompileScheduler.AvailableMemoryBytes();
+		return CompileScheduler.PlanDesktopJobs(cores, availableMemory, UseAllCores);
 	}
 
 	public readonly record struct Progress(string Status, float Fraction);
@@ -172,43 +329,51 @@ public static class GameCodeBuild
 
 	private static Result StoppedResult => new(false, "stopped", Stopped: true);
 
+	/// <summary>True when <paramref name="title"/>'s module exists on disk.</summary>
+	public static bool IsBuilt(Refii.Core.Engine_Title title) => File.Exists(GetModulePath(title));
+
 	/// <summary>True when a module exists at all.</summary>
-	public static bool IsBuilt() => File.Exists(ModulePath);
+	public static bool IsBuilt() => IsBuilt(Refii.Core.Engine_Title.Active);
 
 	private const long StatusTtlMs = 2000;
-	private static bool _cachedNeedsBuild = true;
-	private static string _cachedReason = string.Empty;
-	private static bool _cacheValid;
-	private static long _cacheStamp;
+	private static readonly Dictionary<string, (bool NeedsBuild, string Reason, long Stamp)> _statusCache =
+		new(StringComparer.Ordinal);
 
-	public static void InvalidateStatus() => _cacheValid = false;
+	public static void InvalidateStatus() => _statusCache.Clear();
 
 	/// <summary>
-	/// Cached <see cref="NeedsBuild"/>, for the UI.
+	/// Cached <see cref="NeedsBuild(out string)"/>, for the UI.
 	/// </summary>
 	/// <remarks>
-	/// The uncached check hashes a 21 MB executable, and the panel that shows this
-	/// refreshes continuously — reading and hashing that file on every frame would be a
-	/// self-inflicted stall on a question whose answer changes only when an install runs.
+	/// The uncached check hashes the executable and read inputs, and the panel that shows this
+	/// refreshes continuously — caching per title keeps UI redraws completely free.
 	/// </remarks>
-	public static bool NeedsBuildCached(out string reason)
+	public static bool NeedsBuildCached(out string reason) =>
+		NeedsBuildCached(Refii.Core.Engine_Title.Active, out reason);
+
+	/// <summary>Cached <see cref="NeedsBuild(Refii.Core.Engine_Title, out string)"/> per title for dual-card UI refresh.</summary>
+	public static bool NeedsBuildCached(Refii.Core.Engine_Title title, out string reason)
 	{
 		long now = Environment.TickCount64;
-		if (_cacheValid && now - _cacheStamp < StatusTtlMs)
+		if (_statusCache.TryGetValue(title.Key, out var cached) && now - cached.Stamp < StatusTtlMs)
 		{
-			reason = _cachedReason;
-			return _cachedNeedsBuild;
+			reason = cached.Reason;
+			return cached.NeedsBuild;
 		}
 
-		_cachedNeedsBuild = NeedsBuild(out _cachedReason);
-		_cacheValid = true;
-		_cacheStamp = now;
-		reason = _cachedReason;
-		return _cachedNeedsBuild;
+		bool needs = NeedsBuild(title, out reason);
+		_statusCache[title.Key] = (needs, reason, now);
+		return needs;
 	}
 
 	/// <summary>
 	/// Whether the module has to be produced again, and why.
+	/// </summary>
+	public static bool NeedsBuild(out string reason) =>
+		NeedsBuild(Refii.Core.Engine_Title.Active, out reason);
+
+	/// <summary>
+	/// Whether <paramref name="title"/>'s module has to be produced again, and why.
 	/// </summary>
 	/// <remarks>
 	/// The game hash is the load-bearing check: a module built from a different image than
@@ -217,9 +382,10 @@ public static class GameCodeBuild
 	/// against what the build recorded is what catches a player reinstalling from a
 	/// different disc or applying a title update.
 	/// </remarks>
-	public static bool NeedsBuild(out string reason)
+	public static bool NeedsBuild(Refii.Core.Engine_Title title, out string reason)
 	{
-		if (!File.Exists(ModulePath))
+		string modulePath = GetModulePath(title);
+		if (!File.Exists(modulePath))
 		{
 			reason = "The recompiled game module has not been built yet.";
 			return true;
@@ -232,15 +398,20 @@ public static class GameCodeBuild
 		// failure the input fingerprint below exists to prevent.
 		if (File.Exists(Path.Combine(RecompileDirectory, "dev-skip-rebuild")))
 		{
-			Godot.GD.Print(
-				"[gamecode] dev-skip-rebuild is present: using the module already in bin/ " +
-				"without checking it against the installed game or the shipped sources. " +
-				"Turn REFII_DEV_SKIP_GAMECODE_REBUILD off to restore the real check.");
+			if (!Refii.Core.Engine_AppRoot.IsTestHost)
+			{
+				Godot.GD.Print(
+					"[gamecode] dev-skip-rebuild is present: using the module already in bin/ " +
+					"without checking it against the installed game or the shipped sources. " +
+					"Turn REFII_DEV_SKIP_GAMECODE_REBUILD off to restore the real check.");
+			}
+
 			reason = string.Empty;
 			return false;
 		}
 
-		if (!File.Exists(BuildInfoPath))
+		string buildInfoPath = GetBuildInfoPath(title);
+		if (!File.Exists(buildInfoPath))
 		{
 			reason = "The recompiled game module has no build record beside it.";
 			return true;
@@ -251,7 +422,7 @@ public static class GameCodeBuild
 		string recordedMods;
 		try
 		{
-			using FileStream stream = File.OpenRead(BuildInfoPath);
+			using FileStream stream = File.OpenRead(buildInfoPath);
 			using JsonDocument document = JsonDocument.Parse(stream);
 			recordedHash = document.RootElement.TryGetProperty("game_hash", out JsonElement value)
 				? value.GetString() ?? string.Empty
@@ -272,7 +443,7 @@ public static class GameCodeBuild
 			return true;
 		}
 
-		string currentHash = HashGameExecutable();
+		string currentHash = HashGameExecutable(title);
 		if (currentHash.Length == 0)
 		{
 			reason = "The installed game executable could not be read.";
@@ -287,32 +458,45 @@ public static class GameCodeBuild
 
 		// OUR OWN CODE, which the game hash cannot see. A record with no `build_inputs` at all
 		// was written by a build from before this check existed, and there is no way to know
-		// what it compiled — so it rebuilds rather than being assumed current. That costs one
-		// rebuild, once, on the update that introduces this.
+		// what it compiled — so it rebuilds rather than being assumed current.
 		if (recordedInputs.Length == 0)
 		{
 			reason = "The build record does not say what sources the module was built from.";
 			return true;
 		}
 
-		string currentInputs = HashBuildInputs();
-		if (currentInputs.Length == 0)
+		if (recordedInputs.StartsWith(ModuleInputsPrefix, StringComparison.Ordinal))
 		{
-			reason = "The build inputs beside the module could not be read.";
-			return true;
+			string expectedDigest = recordedInputs[ModuleInputsPrefix.Length..];
+			if (!ModuleInputsHold(title, expectedDigest))
+			{
+				reason = "The shipped game code has changed since the module was built — " +
+					"unpacking an update over an install is exactly this, and running the old " +
+					"module would silently keep every fix in that update out of the game.";
+				return true;
+			}
 		}
-
-		if (!string.Equals(recordedInputs, currentInputs, StringComparison.OrdinalIgnoreCase))
+		else
 		{
-			reason = "The shipped game code has changed since the module was built — " +
-				"unpacking an update over an install is exactly this, and running the old " +
-				"module would silently keep every fix in that update out of the game.";
-			return true;
+			string currentInputs = HashBuildInputs(title);
+			if (currentInputs.Length == 0)
+			{
+				reason = "The build inputs beside the module could not be read.";
+				return true;
+			}
+
+			if (!string.Equals(recordedInputs, currentInputs, StringComparison.OrdinalIgnoreCase))
+			{
+				reason = "The shipped game code has changed since the module was built — " +
+					"unpacking an update over an install is exactly this, and running the old " +
+					"module would silently keep every fix in that update out of the game.";
+				return true;
+			}
 		}
 
 		// HARD MODS ARE COMPILED IN, so the module is only current for the native code it was
 		// built with. Enabling, disabling, reordering or updating one changes this hash.
-		string currentMods = HashNativeMods();
+		string currentMods = HashNativeMods(title);
 		if (!string.Equals(recordedMods, currentMods, StringComparison.OrdinalIgnoreCase))
 		{
 			reason = currentMods.Length == 0
@@ -325,35 +509,43 @@ public static class GameCodeBuild
 		return false;
 	}
 
+	private static string GetModsRoot(Refii.Core.Engine_Title title) =>
+		ActiveDriver?.ModsRootOverride is { } custom
+			? custom(title)
+			: title == Refii.Core.Engine_Title.Active
+				? Refii.Assets.Engine_GameAssets.ModsRoot
+				: ModWorkspace.GetDefaultModsRoot(title.AssetsDirectory);
+
 	/// <summary>
 	/// The hard mods a build compiles: enabled, consented to, highest priority first.
 	/// </summary>
-	/// <remarks>
-	/// None for a title without hard mods: a hard mod is written against Fable 2's seams.
-	/// </remarks>
-	private static List<ModNativeSources> NativeModsForBuild(out List<string> withheld)
+	private static List<ModNativeSources> NativeModsForBuild(out List<string> withheld) =>
+		NativeModsForBuild(Refii.Core.Engine_Title.Active, out withheld);
+
+	private static List<ModNativeSources> NativeModsForBuild(Refii.Core.Engine_Title title, out List<string> withheld)
 	{
-		if (!Refii.Core.Engine_Title.Active.HasHardMods)
+		if (!title.HasHardMods)
 		{
 			withheld = new List<string>();
 			return new List<ModNativeSources>();
 		}
 
-		return NativeModConsent.ForBuild(Refii.Assets.Engine_GameAssets.ModsRoot, out withheld);
+		return NativeModConsent.ForBuild(GetModsRoot(title), out withheld);
 	}
 
 	/// <summary>
 	/// The fingerprint of the native code mods add to this build; empty when they add none.
 	/// </summary>
-	/// <remarks>
-	/// An unreadable mods folder hashes to a value no build records, so it reads as stale and
-	/// the build that follows reports the real error, rather than passing as "no mods".
-	/// </remarks>
-	public static string HashNativeMods()
+	public static string HashNativeMods() => HashNativeMods(Refii.Core.Engine_Title.Active);
+
+	/// <summary>
+	/// The fingerprint of the native code mods add to <paramref name="title"/>'s build; empty when none.
+	/// </summary>
+	public static string HashNativeMods(Refii.Core.Engine_Title title)
 	{
 		try
 		{
-			return ModNative.HashSet(NativeModsForBuild(out _));
+			return ModNative.HashSet(NativeModsForBuild(title, out _));
 		}
 		catch (Exception exception)
 		{
@@ -362,8 +554,8 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Extracts every enabled, consented hard mod's native sources beside the generated code and
-	/// appends the compiled ones to <paramref name="sources"/>.
+	/// Extracts every enabled, consented hard mod's native sources into the ephemeral per-build mods
+	/// staging directory and appends the compiled ones to <paramref name="sources"/>.
 	/// </summary>
 	/// <remarks>
 	/// Four refusals, all before a single unit compiles, each naming the mod:
@@ -379,7 +571,10 @@ public static class GameCodeBuild
 	/// Runs after generation, so the declared set is this install's own.
 	/// </remarks>
 	private static Result AddNativeModSources(
-		List<string> sources, Dictionary<string, List<string>> arguments, IReadOnlyList<string> hookSources,
+		Refii.Core.Engine_Title title,
+		List<string> sources,
+		Dictionary<string, List<string>> arguments,
+		IReadOnlyList<string> hookSources,
 		out string modsHash)
 	{
 		modsHash = string.Empty;
@@ -387,7 +582,7 @@ public static class GameCodeBuild
 		List<string> withheld;
 		try
 		{
-			mods = NativeModsForBuild(out withheld);
+			mods = NativeModsForBuild(title, out withheld);
 		}
 		catch (Exception exception)
 		{
@@ -405,7 +600,7 @@ public static class GameCodeBuild
 			return new Result(true, string.Empty);
 		}
 
-		string modsRoot = Refii.Assets.Engine_GameAssets.ModsRoot;
+		string modsRoot = GetModsRoot(title);
 		List<ModDependencyProblem> unmet = ModDependencies.Check(
 			ModLoadOrder.Read(modsRoot), ModWorkspace.DiscoverModInstalls(modsRoot),
 			mods.Select(mod => mod.ModName));
@@ -417,7 +612,7 @@ public static class GameCodeBuild
 				"\nEnable or install what it needs in the launcher's Mods panel.");
 		}
 
-		Dictionary<string, string> refiiOverrides = NativeModConsent.RefiiOverrides();
+		Dictionary<string, string> refiiOverrides = NativeModConsent.RefiiOverrides(title);
 		List<ModNativeConflict> conflicts = ModNative.FindConflicts(mods, refiiOverrides);
 		if (conflicts.Count > 0)
 		{
@@ -429,14 +624,14 @@ public static class GameCodeBuild
 				"\nDisable one of the mods named in the launcher's Mods panel.");
 		}
 
-		HashSet<string> declared = ReadDeclaredFunctions();
+		HashSet<string> declared = ReadDeclaredFunctions(title);
 		if (declared.Count == 0)
 		{
 			return new Result(false,
 				"The generated code declares no functions, so the mods' hooks cannot be checked.");
 		}
 
-		Dictionary<uint, string> configNames = ReadConfigFunctionNames();
+		Dictionary<uint, string> configNames = ReadConfigFunctionNames(title);
 		var unknown = new List<string>();
 		foreach (ModNativeSources mod in mods)
 		{
@@ -464,7 +659,7 @@ public static class GameCodeBuild
 				"would never run:\n" + string.Join("\n", unknown));
 		}
 
-		string extracted = Path.Combine(GeneratedDirectory, "mods");
+		string extracted = GetModsStagingDirectory(title);
 		var compiledBy = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 		foreach (ModNativeSources mod in mods)
 		{
@@ -473,8 +668,10 @@ public static class GameCodeBuild
 			foreach (ModNativeFile file in mod.Files)
 			{
 				string target = Path.GetFullPath(Path.Combine(root, file.Path));
-				if (!target.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar,
-					StringComparison.Ordinal))
+				StringComparison pathComparison = OperatingSystem.IsWindows()
+					? StringComparison.OrdinalIgnoreCase
+					: StringComparison.Ordinal;
+				if (!target.StartsWith(Path.GetFullPath(root) + Path.DirectorySeparatorChar, pathComparison))
 				{
 					return new Result(false, $"mod '{mod.ModName}': '{file.Path}' leaves the mod's folder.");
 				}
@@ -603,12 +800,18 @@ public static class GameCodeBuild
 		}
 	}
 
-	/// <summary>Every function the generator emitted, from its <c>DECLARE_REX_FUNC(name)</c> lines.</summary>
-	private static HashSet<string> ReadDeclaredFunctions()
+	/// <summary>Every function the generator emitted for <paramref name="title"/>, from its <c>DECLARE_REX_FUNC(name)</c> lines.</summary>
+	private static HashSet<string> ReadDeclaredFunctions(Refii.Core.Engine_Title title)
 	{
 		var declared = new HashSet<string>(StringComparer.Ordinal);
 		const string marker = "DECLARE_REX_FUNC(";
-		foreach (string header in Directory.EnumerateFiles(GeneratedDirectory, "*.h"))
+		string generatedDir = GetGeneratedDirectory(title);
+		if (!Directory.Exists(generatedDir))
+		{
+			return declared;
+		}
+
+		foreach (string header in Directory.EnumerateFiles(generatedDir, "*.h"))
 		{
 			foreach (string line in File.ReadLines(header))
 			{
@@ -630,11 +833,11 @@ public static class GameCodeBuild
 		return declared;
 	}
 
-	/// <summary>The config's function names by address (<c>0x8272A270 = { name = "rex_…" }</c>).</summary>
-	private static Dictionary<uint, string> ReadConfigFunctionNames()
+	/// <summary>The config's function names by address (<c>0x8272A270 = { name = "rex_…" }</c>) for <paramref name="title"/>.</summary>
+	private static Dictionary<uint, string> ReadConfigFunctionNames(Refii.Core.Engine_Title title)
 	{
 		var names = new Dictionary<uint, string>();
-		string config = VersionConfigPath;
+		string config = GetVersionConfigPath(title);
 		if (!File.Exists(config))
 		{
 			return names;
@@ -784,7 +987,10 @@ public static class GameCodeBuild
 	/// Measured at ~0.8 s over 2,825 files. Paid once per launch, and only when there is already
 	/// a module to judge.
 	/// </remarks>
-	public static string HashBuildInputs()
+	public static string HashBuildInputs() => HashBuildInputs(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Hashes the staged build inputs and compile flags for <paramref name="title"/>.</summary>
+	public static string HashBuildInputs(Refii.Core.Engine_Title title)
 	{
 		try
 		{
@@ -792,10 +998,10 @@ public static class GameCodeBuild
 
 			var files = new List<string>();
 
-			// The active title's own hooks, never another title's.
+			// The title's own hooks, never another title's.
 			foreach (string directory in new[]
 				{
-					Path.Combine(TitleRecompileDirectory, "hooks"),
+					Path.Combine(GetTitleRecompileDirectory(title), "hooks"),
 					Path.Combine(RecompileDirectory, "payload_core"),
 					Path.Combine(RecompileDirectory, "include"),
 					Path.Combine(RecompileDirectory, "stdcxx"),
@@ -810,7 +1016,7 @@ public static class GameCodeBuild
 
 			foreach (string file in new[]
 				{
-					HookSourcesPath,
+					GetHookSourcesPath(title),
 					Path.Combine(RecompileDirectory, "payload_core_sources.cmake"),
 					Path.Combine(RecompileDirectory, "include_dirs.cmake"),
 				})
@@ -824,10 +1030,11 @@ public static class GameCodeBuild
 			// The manifest and config the generator reads for THIS install's version. They
 			// decide which functions exist and what they are called, so a config change is a
 			// code change even when no hook source moved.
-			if (Directory.Exists(VersionDirectory))
+			string versionDirectory = GetVersionDirectory(title);
+			if (Directory.Exists(versionDirectory))
 			{
 				files.AddRange(Directory.EnumerateFiles(
-					VersionDirectory, "*", SearchOption.AllDirectories));
+					versionDirectory, "*", SearchOption.AllDirectories));
 			}
 
 			if (files.Count == 0)
@@ -865,7 +1072,7 @@ public static class GameCodeBuild
 			// The compile flags are an input too: a module built for instructions this CPU
 			// lacks would otherwise stay until some source happened to change. Paths are left
 			// out, as above, so moving the install does not move the fingerprint.
-			List<string> compileFlags = CompileFlags(Array.Empty<string>());
+			List<string> compileFlags = CompileFlags(title, Array.Empty<string>());
 			var options = new StringBuilder();
 			for (int i = 0; i < compileFlags.Count; i++)
 			{
@@ -905,25 +1112,502 @@ public static class GameCodeBuild
 		}
 	}
 
-	public static string HashGameExecutable()
+	private static readonly ConcurrentDictionary<string, (long XexLen, long XexTicks, bool HasXexp, long XexpLen, long XexpTicks, string Hash)> GameExeHashCache =
+		new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+	private static readonly ConcurrentDictionary<string, (long Length, long Ticks, string Version)> ToolchainVersionCache =
+		new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+	public static string HashGameExecutable() => HashGameExecutable(Refii.Core.Engine_Title.Active);
+
+	/// <summary>Hashes <paramref name="title"/>'s installed <c>default.xex</c> and optional <c>default.xexp</c>.</summary>
+	public static string HashGameExecutable(Refii.Core.Engine_Title title)
 	{
 		try
 		{
+			string xexPath = Path.GetFullPath(GetGameExecutablePath(title));
+			var xexInfo = new FileInfo(xexPath);
+			if (!xexInfo.Exists)
+			{
+				return string.Empty;
+			}
+
+			string updatePath = Path.GetFullPath(GetGameTitleUpdatePath(title));
+			var updateInfo = new FileInfo(updatePath);
+			bool hasUpdate = updateInfo.Exists;
+			long updateLen = hasUpdate ? updateInfo.Length : 0;
+			long updateTicks = hasUpdate ? updateInfo.LastWriteTimeUtc.Ticks : 0;
+
+			long nowTicks = DateTime.UtcNow.Ticks;
+			bool safeTimestamps = nowTicks - xexInfo.LastWriteTimeUtc.Ticks > TimeSpan.TicksPerSecond * 2 &&
+				(!hasUpdate || nowTicks - updateTicks > TimeSpan.TicksPerSecond * 2);
+			if (safeTimestamps &&
+				GameExeHashCache.TryGetValue(xexPath, out var cached) &&
+				cached.XexLen == xexInfo.Length &&
+				cached.XexTicks == xexInfo.LastWriteTimeUtc.Ticks &&
+				cached.HasXexp == hasUpdate &&
+				cached.XexpLen == updateLen &&
+				cached.XexpTicks == updateTicks)
+			{
+				return cached.Hash;
+			}
+
 			// The executable AND its title update: the generator recompiles the patched image
 			// when the patch is present, so adding or removing it changes the code produced
 			// without changing a byte of default.xex.
 			using var sha = Refii.Core.Engine_Hash.CreateSha256();
-			byte[] executable = File.ReadAllBytes(GameExecutablePath);
-			sha.TransformBlock(executable, 0, executable.Length, null, 0);
-			byte[] update = File.Exists(GameTitleUpdatePath)
-				? File.ReadAllBytes(GameTitleUpdatePath)
-				: Array.Empty<byte>();
-			sha.TransformFinalBlock(update, 0, update.Length);
-			return Convert.ToHexString(sha.Hash ?? Array.Empty<byte>());
+			byte[] buffer = new byte[64 * 1024];
+			using (FileStream xexStream = File.OpenRead(xexPath))
+			{
+				int read;
+				while ((read = xexStream.Read(buffer, 0, buffer.Length)) > 0)
+				{
+					sha.TransformBlock(buffer, 0, read, null, 0);
+				}
+			}
+
+			if (hasUpdate)
+			{
+				using FileStream updateStream = File.OpenRead(updatePath);
+				int read;
+				while ((read = updateStream.Read(buffer, 0, buffer.Length)) > 0)
+				{
+					sha.TransformBlock(buffer, 0, read, null, 0);
+				}
+			}
+
+			sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+			string digest = Convert.ToHexString(sha.Hash ?? Array.Empty<byte>());
+			if (safeTimestamps)
+			{
+				GameExeHashCache[xexPath] = (xexInfo.Length, xexInfo.LastWriteTimeUtc.Ticks, hasUpdate, updateLen, updateTicks, digest);
+			}
+			else
+			{
+				GameExeHashCache.TryRemove(xexPath, out _);
+			}
+
+			return digest;
 		}
 		catch (Exception)
 		{
 			return string.Empty;
+		}
+	}
+
+	private static string GetToolchainVersion(Toolchain zig)
+	{
+		if (ActiveDriver?.ToolchainVersion is { } custom)
+		{
+			return custom(zig);
+		}
+
+		try
+		{
+			string full = Path.GetFullPath(zig.Zig);
+			var info = new FileInfo(full);
+			if (info.Exists &&
+				ToolchainVersionCache.TryGetValue(full, out var cached) &&
+				cached.Length == info.Length &&
+				cached.Ticks == info.LastWriteTimeUtc.Ticks)
+			{
+				return cached.Version;
+			}
+
+			string version = Toolchain.Version(zig);
+			if (info.Exists && version.Length > 0)
+			{
+				ToolchainVersionCache[full] = (info.Length, info.LastWriteTimeUtc.Ticks, version);
+			}
+
+			return version;
+		}
+		catch (Exception)
+		{
+			return Toolchain.Version(zig);
+		}
+	}
+
+	private static string GetSdkVersion() =>
+		ActiveDriver?.SdkVersion is { } custom ? custom() : Recompiler.SdkVersion();
+
+	private static string GeneratorIdentity()
+	{
+		string generator = Path.Combine(BinDirectory, Refii.Core.Engine_NativeLibraries.FileNameFor("refii_recompiler"));
+		return CompileCache.HashFileMemoized(generator) ?? "missing";
+	}
+
+	private static string ToolchainBinaryIdentity(Toolchain? resolved = null)
+	{
+		if (ActiveDriver != null)
+		{
+			Toolchain tc;
+			if (resolved.HasValue)
+			{
+				tc = resolved.Value;
+			}
+			else if (ActiveDriver.ResolveToolchain != null)
+			{
+				var res = ActiveDriver.ResolveToolchain();
+				if (!res.Ok)
+				{
+					return "missing";
+				}
+
+				tc = res.Toolchain;
+			}
+			else if (Toolchain.TryResolve(out Toolchain bundled, out _))
+			{
+				tc = bundled;
+			}
+			else
+			{
+				return "missing";
+			}
+
+			string ver = GetToolchainVersion(tc);
+			string binHash = !string.IsNullOrEmpty(tc.Zig) && File.Exists(tc.Zig)
+				? CompileCache.HashFileMemoized(tc.Zig) ?? "unreadable"
+				: "virtual";
+			return ver + ":" + binHash;
+		}
+
+		string zigPath = resolved.HasValue
+			? resolved.Value.Zig
+			: Path.Combine(Toolchain.BundleDirectory, OperatingSystem.IsWindows() ? "zig.exe" : "zig");
+		return CompileCache.HashFileMemoized(zigPath) ?? "missing";
+	}
+
+	private static string DesktopCompileRecipe(Refii.Core.Engine_Title title, string toolchainIdentity)
+	{
+		var text = new StringBuilder();
+		text.Append("toolchain=").Append(toolchainIdentity).Append('\n');
+		text.Append("rid=").Append(RuntimeInformation.RuntimeIdentifier).Append('\n');
+
+		List<string> compileFlags = CompileFlags(title, Array.Empty<string>());
+		for (int i = 0; i < compileFlags.Count; i++)
+		{
+			if (compileFlags[i] == "-include")
+			{
+				i++;
+				text.Append("-include:src/libcxx_chrono_shim.h\n");
+				continue;
+			}
+
+			if (compileFlags[i].StartsWith("-I", StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			text.Append("flag=").Append(compileFlags[i]).Append('\n');
+		}
+
+		string orderPath = Path.Combine(StdCxxDirectory, "order.txt");
+		if (File.Exists(orderPath))
+		{
+			text.Append("stdcxx=").Append(CompileCache.HashFileMemoized(orderPath) ?? "missing").Append('\n');
+		}
+
+		if (X86Base.IsSupported)
+		{
+			(_, _, int ecx1, int edx1) = X86Base.CpuId(1, 0);
+			(_, int ebx7, int ecx7, int edx7) = X86Base.CpuId(7, 0);
+			(_, _, int ecxExt, int edxExt) = X86Base.CpuId(unchecked((int)0x80000001), 0);
+			text.Append($"cpu={ecx1:X8}:{edx1:X8}:{ebx7:X8}:{ecx7:X8}:{edx7:X8}:{ecxExt:X8}:{edxExt:X8}\n");
+		}
+
+		return CompileCache.HashText(text.ToString());
+	}
+
+	private static string DesktopEnvironmentRecipe(Refii.Core.Engine_Title title, Toolchain? resolved = null)
+	{
+		var text = new StringBuilder();
+		text.Append("compile=").Append(DesktopCompileRecipe(title, ToolchainBinaryIdentity(resolved))).Append('\n');
+		text.Append("generator=").Append(GeneratorIdentity()).Append('\n');
+		text.Append("sdk=").Append(GetSdkVersion()).Append('\n');
+		foreach (string targetFlag in TargetFlags())
+		{
+			text.Append("link=").Append(targetFlag).Append('\n');
+		}
+
+		if (!OperatingSystem.IsWindows())
+		{
+			text.Append("link=-mcmodel=large\nlink=-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/lib\n");
+		}
+
+		if (File.Exists(Path.Combine(StdCxxDirectory, "order.txt")))
+		{
+			text.Append("link=-nostdlib++\nlink=-lstdc++\n");
+		}
+
+		return CompileCache.HashText(text.ToString());
+	}
+
+	private static List<string> EnumerateRecompileRelativePaths()
+	{
+		string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(RecompileDirectory));
+		var results = new List<string>();
+		if (!Directory.Exists(root))
+		{
+			return results;
+		}
+
+		string zigPrefix = Path.Combine(root, "zig") + Path.DirectorySeparatorChar;
+		StringComparison comparison = OperatingSystem.IsWindows()
+			? StringComparison.OrdinalIgnoreCase
+			: StringComparison.Ordinal;
+		foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+		{
+			if (file.StartsWith(zigPrefix, comparison))
+			{
+				continue;
+			}
+
+			results.Add(Path.GetRelativePath(root, file).Replace('\\', '/'));
+		}
+
+		results.Sort(StringComparer.Ordinal);
+		return results;
+	}
+
+	private static List<string> GetRelativeIncludeDirectories(IReadOnlyList<string> includeDirectories)
+	{
+		string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(RecompileDirectory));
+		StringComparison comparison = OperatingSystem.IsWindows()
+			? StringComparison.OrdinalIgnoreCase
+			: StringComparison.Ordinal;
+		var relative = new List<string>();
+		foreach (string dir in includeDirectories)
+		{
+			string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir));
+			if (full.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+			{
+				relative.Add(Path.GetRelativePath(root, full).Replace('\\', '/'));
+			}
+		}
+
+		string order = Path.Combine(StdCxxDirectory, "order.txt");
+		if (File.Exists(order))
+		{
+			foreach (string slot in File.ReadAllLines(order))
+			{
+				string trimmed = slot.Trim();
+				if (trimmed.Length > 0)
+				{
+					string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(StdCxxDirectory, trimmed)));
+					if (full.StartsWith(root + Path.DirectorySeparatorChar, comparison))
+					{
+						relative.Add(Path.GetRelativePath(root, full).Replace('\\', '/'));
+					}
+				}
+			}
+		}
+
+		return relative;
+	}
+
+	private static IEnumerable<string> LinkedLibraryNames(Refii.Core.Engine_Title title) =>
+		new[] { "rexruntime", "refii_core", "refii_runtime", "refii_vfs" }
+			.Where(name => name != "refii_vfs" || title.Instance.Contains(name));
+
+	private static string? WriteModuleInputs(
+		Refii.Core.Engine_Title title,
+		Toolchain resolved,
+		CompileCache cache,
+		IReadOnlyList<string> allRecompileRelativePaths,
+		IReadOnlyList<string> relativeIncludeDirs)
+	{
+		if (!cache.Complete)
+		{
+			return null;
+		}
+
+		try
+		{
+			string recompileRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(RecompileDirectory));
+			string binRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(BinDirectory));
+			var tracked = cache.TrackedInputs.OrderBy(path => path, StringComparer.Ordinal).ToList();
+			var filesToHash = new SortedSet<string>(tracked, StringComparer.Ordinal);
+
+			foreach (string orchestrationFile in new[]
+			{
+				GetHookSourcesPath(title),
+				Path.Combine(RecompileDirectory, "payload_core_sources.cmake"),
+				Path.Combine(RecompileDirectory, "include_dirs.cmake"),
+				Path.Combine(StdCxxDirectory, "order.txt"),
+			})
+			{
+				if (File.Exists(orchestrationFile))
+				{
+					filesToHash.Add(Path.GetRelativePath(recompileRoot, orchestrationFile).Replace('\\', '/'));
+				}
+			}
+
+			string versionDir = GetVersionDirectory(title);
+			if (Directory.Exists(versionDir))
+			{
+				foreach (string file in Directory.EnumerateFiles(versionDir, "*", SearchOption.AllDirectories))
+				{
+					filesToHash.Add(Path.GetRelativePath(recompileRoot, file).Replace('\\', '/'));
+				}
+			}
+
+			var body = new StringBuilder();
+			body.Append("env ").Append(DesktopEnvironmentRecipe(title, resolved)).Append('\n');
+			body.Append("names ")
+				.Append(CompileCache.SameNames(
+					tracked,
+					CompileCache.FileNameIndex(allRecompileRelativePaths),
+					relativeIncludeDirs))
+				.Append('\n');
+
+			foreach (string rel in tracked)
+			{
+				body.Append("tracked ").Append(rel).Append('\n');
+			}
+
+			foreach (string rel in filesToHash)
+			{
+				string diskPath = Path.Combine(recompileRoot, rel.Replace('/', Path.DirectorySeparatorChar));
+				string? hash = CompileCache.HashFileMemoized(diskPath);
+				if (hash == null)
+				{
+					return null;
+				}
+
+				body.Append("file ").Append(hash).Append(' ').Append(rel).Append('\n');
+			}
+
+			foreach (string libName in LinkedLibraryNames(title))
+			{
+				string libPath = FindShippedLibrary(title, libName);
+				string? libHash = libPath.Length == 0 ? null : CompileCache.HashFileMemoized(libPath);
+				if (libHash == null)
+				{
+					return null;
+				}
+
+				string relLib = Path.GetRelativePath(binRoot, libPath).Replace('\\', '/');
+				body.Append("lib ").Append(libHash).Append(' ').Append(libName).Append(' ').Append(relLib).Append('\n');
+			}
+
+			string content = body.ToString();
+			string targetPath = GetModuleInputsPath(title);
+			string tempPath = targetPath + ".tmp";
+			File.WriteAllText(tempPath, content);
+			File.Move(tempPath, targetPath, overwrite: true);
+			return CompileCache.HashText(content);
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
+	private static bool ModuleInputsHold(Refii.Core.Engine_Title title, string expectedDigest)
+	{
+		try
+		{
+			PurgeStaleRecompileArtifacts(RecompileDirectory);
+			string path = GetModuleInputsPath(title);
+			if (!File.Exists(path))
+			{
+				return false;
+			}
+
+			string content = File.ReadAllText(path);
+			if (!string.Equals(CompileCache.HashText(content), expectedDigest, StringComparison.OrdinalIgnoreCase))
+			{
+				return false;
+			}
+
+			string recompileRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(RecompileDirectory));
+			string binRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(BinDirectory));
+			string expectedNames = string.Empty;
+			var tracked = new List<string>();
+			int fileCount = 0;
+
+			foreach (string line in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+			{
+				if (line.StartsWith("env ", StringComparison.Ordinal))
+				{
+					if (line[4..] != DesktopEnvironmentRecipe(title))
+					{
+						return false;
+					}
+				}
+				else if (line.StartsWith("names ", StringComparison.Ordinal))
+				{
+					expectedNames = line[6..];
+				}
+				else if (line.StartsWith("tracked ", StringComparison.Ordinal))
+				{
+					tracked.Add(line[8..]);
+				}
+				else if (line.StartsWith("file ", StringComparison.Ordinal))
+				{
+					int secondSpace = line.IndexOf(' ', 5);
+					if (secondSpace <= 5)
+					{
+						return false;
+					}
+
+					string recordedHash = line[5..secondSpace];
+					string relPath = line[(secondSpace + 1)..];
+					string diskPath = Path.Combine(recompileRoot, relPath.Replace('/', Path.DirectorySeparatorChar));
+					if (CompileCache.HashFileMemoized(diskPath) != recordedHash)
+					{
+						return false;
+					}
+
+					fileCount++;
+				}
+				else if (line.StartsWith("lib ", StringComparison.Ordinal))
+				{
+					string[] parts = line.Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
+					if (parts.Length != 4)
+					{
+						return false;
+					}
+
+					string recordedHash = parts[1];
+					string libName = parts[2];
+					string expectedRelLib = parts[3];
+					string currentLib = FindShippedLibrary(title, libName);
+					if (currentLib.Length == 0)
+					{
+						return false;
+					}
+
+					string currentRelLib = Path.GetRelativePath(binRoot, currentLib).Replace('\\', '/');
+					if (!string.Equals(currentRelLib, expectedRelLib, StringComparison.Ordinal) ||
+						CompileCache.HashFileMemoized(currentLib) != recordedHash)
+					{
+						return false;
+					}
+				}
+				else
+				{
+					return false;
+				}
+			}
+
+			if (fileCount == 0 || expectedNames.Length == 0)
+			{
+				return false;
+			}
+
+			List<string> includeDirs = ReadCMakeList(
+				Path.Combine(RecompileDirectory, "include_dirs.cmake"), "REFII_PAYLOAD_INCLUDE_DIRS");
+			string currentNames = CompileCache.SameNames(
+				tracked,
+				CompileCache.FileNameIndex(EnumerateRecompileRelativePaths()),
+				GetRelativeIncludeDirectories(includeDirs));
+			return currentNames == expectedNames;
+		}
+		catch (Exception)
+		{
+			return false;
 		}
 	}
 
@@ -1410,22 +2094,32 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Runs the whole pipeline. Reports progress as a status line and a 0..1 fraction.
+	/// Runs the whole pipeline for the active title. Reports progress as a status line and a 0..1 fraction.
+	/// </summary>
+	/// <param name="progress">Progress callback receiving status text and completion fraction.</param>
+	/// <param name="control">Pause/stop controller for the build.</param>
+	/// <returns>Outcome of the build.</returns>
+	public static Task<Result> RunAsync(Action<Progress> progress, BuildControl control) =>
+		RunAsync(Refii.Core.Engine_Title.Active, progress, control);
+
+	/// <summary>
+	/// Runs the whole pipeline for <paramref name="title"/>. Reports progress as a status line and a 0..1 fraction.
 	/// </summary>
 	/// <remarks>
 	/// <paramref name="control"/> is where a pause holds the build and a stop abandons it; see
 	/// <see cref="BuildControl"/> for exactly where each takes effect. A stop comes back as a
-	/// <see cref="Result"/> with <c>Stopped</c> set, never as an error: the partial output is
-	/// deleted here, the module was removed before generation started, and the next build is a
-	/// full build regardless.
+	/// <see cref="Result"/> with <c>Stopped</c> set, never as an error: ephemeral scratch output is
+	/// deleted here while cached codegen and already-compiled objects remain intact so the next build
+	/// resumes cleanly from where this one stopped.
 	/// </remarks>
-	public static async Task<Result> RunAsync(Action<Progress> progress, BuildControl control)
+	public static async Task<Result> RunAsync(
+		Refii.Core.Engine_Title title, Action<Progress> progress, BuildControl control)
 	{
 		CancellationToken cancellation = control.StopToken;
 		Result result;
 		try
 		{
-			result = await RunPipelineAsync(progress, control, cancellation).ConfigureAwait(false);
+			result = await RunPipelineAsync(title, progress, control, cancellation).ConfigureAwait(false);
 		}
 		catch (OperationCanceledException)
 		{
@@ -1442,41 +2136,54 @@ public static class GameCodeBuild
 		LogPhase("stopped");
 		progress(new Progress("Game code build stopped.", 0.0f));
 
-		// The sources and objects of a build that will never finish. Best effort: on Windows a
-		// killed compiler can still hold a handle for a moment, and the next build's clean step
-		// removes whatever this could not, loudly if it cannot either.
-		try
-		{
-			if (Directory.Exists(GeneratedDirectory))
-			{
-				Directory.Delete(GeneratedDirectory, recursive: true);
-			}
-		}
-		catch (Exception exception)
-		{
-			LogWrite("could not remove the stopped build's output: " + exception.Message);
-		}
+		// Remove only ephemeral per-build scratch directories (mods/ and work/), preserving
+		// verified generated sources and cached objects so the next run picks up immediately.
+		CleanScratchDirectoriesBestEffort(title);
 
 		InvalidateStatus();
 		return StoppedResult;
 	}
 
+	private static void CleanScratchDirectoriesBestEffort(Refii.Core.Engine_Title title)
+	{
+		foreach (string dir in new[] { GetModsStagingDirectory(title), GetWorkDirectory(title) })
+		{
+			try
+			{
+				if (Directory.Exists(dir))
+				{
+					Directory.Delete(dir, recursive: true);
+				}
+			}
+			catch (Exception exception)
+			{
+				LogWrite("could not remove scratch directory " + dir + ": " + exception.Message);
+			}
+		}
+	}
+
 	private static async Task<Result> RunPipelineAsync(
-		Action<Progress> progress, BuildControl control, CancellationToken cancellation)
+		Refii.Core.Engine_Title title,
+		Action<Progress> progress,
+		BuildControl control,
+		CancellationToken cancellation)
 	{
 		if (BinDirectory.Length == 0)
 		{
 			return new Result(false, "The native library directory has not been resolved.");
 		}
 
-		if (!File.Exists(GameExecutablePath))
+		string gameExecutablePath = GetGameExecutablePath(title);
+		if (!File.Exists(gameExecutablePath))
 		{
 			return new Result(false,
-				"No game executable at " + GameExecutablePath +
+				"No game executable at " + gameExecutablePath +
 				". Install the game before building its code.");
 		}
 
-		if (OperatingSystem.IsWindows() && !Refii.Core.Engine_AppRoot.IsExported)
+		if (OperatingSystem.IsWindows() &&
+			!Refii.Core.Engine_AppRoot.IsExported &&
+			ActiveDriver?.SkipWindowsBootstrap != true)
 		{
 			Result prepared = await EnsureWindowsInstallInputsAsync(
 				progress, cancellation).ConfigureAwait(false);
@@ -1503,7 +2210,7 @@ public static class GameCodeBuild
 				missing.Add("the code generator (" + generator + ")");
 			}
 
-			if (FindShippedLibrary("rexruntime").Length == 0)
+			if (FindShippedLibrary(title, "rexruntime").Length == 0)
 			{
 				missing.Add("the link libraries (" + BinDirectory + ")");
 			}
@@ -1523,98 +2230,266 @@ public static class GameCodeBuild
 				"executable on its own, copy the whole exported folder instead.");
 		}
 
-		if (!Toolchain.TryResolve(out Toolchain resolved, out string toolchainError))
+		Toolchain resolved;
+		string toolchainError;
+		if (ActiveDriver?.ResolveToolchain is { } customToolchain)
+		{
+			var tcResult = customToolchain();
+			if (!tcResult.Ok)
+			{
+				return new Result(false, tcResult.Error);
+			}
+
+			resolved = tcResult.Toolchain;
+		}
+		else if (!Toolchain.TryResolve(out resolved, out toolchainError))
 		{
 			return new Result(false, toolchainError);
 		}
 
-		// 0. CLEAN. EVERY BUILD IS A FULL BUILD, BY DELETING THE ONLY THING THAT COULD BE
-		//    REUSED. GeneratedDirectory holds the generated sources, and build/ under it holds
-		//    the objects, the precompiled header and zig's compilation cache — so one delete
-		//    puts the whole pipeline back to nothing and codegen, the PCH and all ~167 TUs
-		//    genuinely re-run. Without it zig serves objects from cache by content hash and a
-		//    "rebuild" can complete in seconds having compiled nothing, which is how a stale
-		//    precompiled header survived across builds and only surfaced when one TU changed.
-		//
-		//    HARD FAILURE, not best effort: if the old output cannot be removed then the build
-		//    that follows is partly the previous one, and that is the outcome this step exists
-		//    to make impossible.
-		LogPhase("clean");
-		progress(new Progress("Cleaning the previous game code build...", 0.02f));
+		using IDisposable logScope = BeginLogScope();
+
+		// 0. PREPARE SCRATCH & REMOVE PREVIOUS OUTPUT MODULE.
+		//    Persistent caches (generated/, objects/, zig-cache/) live under cache/<Folder>/compile
+		//    and are verified by content SHA-256; only ephemeral per-build folders (mods/, work/)
+		//    and any pre-cache legacy assets/<Folder>/generated directory are cleared up front.
+		LogPhase("prepare");
+		progress(new Progress("Preparing the game code build...", 0.02f));
 		PurgeStaleRecompileArtifacts(RecompileDirectory);
+
 		try
 		{
-			if (Directory.Exists(GeneratedDirectory))
+			if (ActiveDriver == null)
 			{
-				Directory.Delete(GeneratedDirectory, recursive: true);
+				string legacyGenerated = Installer.GetGeneratedCodeDirectoryPath(title);
+				if (Directory.Exists(legacyGenerated))
+				{
+					Directory.Delete(legacyGenerated, recursive: true);
+				}
 			}
 		}
-		catch (Exception exception)
+		catch (Exception)
 		{
-			return new Result(false,
-				"Could not remove the previous game code build at " + GeneratedDirectory +
-				": " + exception.Message +
-				"\nEvery build is a full build, so this has to be cleared first. Close anything " +
-				"reading that folder and try again.");
+		}
+
+		string generatedDir = GetGeneratedDirectory(title);
+		string objectCacheDir = GetObjectCacheDirectory(title);
+		string zigCacheDir = GetZigCacheDirectory(title);
+		string modsStagingDir = GetModsStagingDirectory(title);
+		string workDir = GetWorkDirectory(title);
+		string modulePath = GetModulePath(title);
+		string moduleInputsPath = GetModuleInputsPath(title);
+
+		foreach (string ephemeralDir in new[] { modsStagingDir, workDir })
+		{
+			try
+			{
+				if (Directory.Exists(ephemeralDir))
+				{
+					Directory.Delete(ephemeralDir, recursive: true);
+				}
+			}
+			catch (Exception exception)
+			{
+				return new Result(false,
+					"Could not clear temporary build directory at " + ephemeralDir +
+					": " + exception.Message +
+					"\nClose anything reading that folder and try again.");
+			}
 		}
 
 		// The module itself is output too. A failed build must not leave the previous one in
 		// place looking current, and IsBuilt()/NeedsBuild() key off exactly this file.
 		try
 		{
-			if (File.Exists(ModulePath))
+			if (File.Exists(modulePath))
 			{
-				File.Delete(ModulePath);
+				File.Delete(modulePath);
+			}
+
+			if (File.Exists(moduleInputsPath))
+			{
+				File.Delete(moduleInputsPath);
 			}
 		}
 		catch (Exception exception)
 		{
 			return new Result(false,
-				"Could not remove the previous game module at " + ModulePath + ": " + exception.Message);
+				"Could not remove the previous game module at " + modulePath + ": " + exception.Message);
 		}
 
 		InvalidateStatus();
 
 		try
 		{
-			Directory.CreateDirectory(GeneratedDirectory);
+			Directory.CreateDirectory(generatedDir);
+			Directory.CreateDirectory(objectCacheDir);
+			Directory.CreateDirectory(zigCacheDir);
+			Directory.CreateDirectory(workDir);
 		}
 		catch (Exception exception)
 		{
-			return new Result(false, "Could not create " + GeneratedDirectory + ": " + exception.Message);
+			return new Result(false, "Could not create build cache directories: " + exception.Message);
 		}
 
-		string manifest = WriteEffectiveManifest(out string manifestError);
-		if (manifest.Length == 0)
-		{
-			return new Result(false, manifestError);
-		}
-
-		// 1. Generate, in this process. The fraction advances only per phase because the
-		//    generator does not report a count we could scale. Its log lines go to the
-		//    launcher log, as the executable's output did; its phases drive the status line.
-		LogPhase("generate");
-		Result generated = await Task.Run(
-			() => Recompiler.Generate(
-				manifest,
-				control,
-				line => progress(new Progress("Generating game code... " + line, 0.05f)),
-				LogWrite),
-			cancellation).ConfigureAwait(false);
-		if (!generated.Ok)
-		{
-			LogWrite("generate failed: " + generated.Error);
-			return new Result(false, "Code generation failed: " + generated.Error);
-		}
-
-		if (!File.Exists(Path.Combine(GeneratedDirectory, "sources.cmake")))
+		// 1. CODEGEN (skipped via CodegenCache when XEX, XEXP, manifest/configs, and generator match).
+		string sourceManifest = GetVersionManifestPath(title);
+		if (!File.Exists(sourceManifest))
 		{
 			return new Result(false,
-				"The generator finished without producing sources.cmake in " + GeneratedDirectory + ".");
+				"The code generation manifest for " + GetGameVersionName(title) +
+				" is missing from this install (" + sourceManifest + ").");
 		}
 
-		List<string> sources = ReadCMakeList(
-			Path.Combine(GeneratedDirectory, "sources.cmake"), "GENERATED_SOURCES");
+		string gameHash = HashGameExecutable(title);
+		if (gameHash.Length == 0)
+		{
+			return new Result(false, "The installed game executable could not be read.");
+		}
+
+		var tomlInputs = new List<(string Name, byte[] Bytes)>();
+		try
+		{
+			string versionDir = GetVersionDirectory(title);
+			if (Directory.Exists(versionDir))
+			{
+				foreach (string tomlFile in Directory.EnumerateFiles(versionDir, "*", SearchOption.AllDirectories))
+				{
+					string relName = Path.GetRelativePath(versionDir, tomlFile).Replace('\\', '/');
+					tomlInputs.Add((relName, File.ReadAllBytes(tomlFile)));
+				}
+			}
+		}
+		catch (Exception exception)
+		{
+			return new Result(false, "Could not read version configuration files: " + exception.Message);
+		}
+
+		string effectiveManifestName = title.Key + "_manifest.effective.toml";
+		var ignoredGeneratedFiles = new HashSet<string>(StringComparer.Ordinal) { effectiveManifestName };
+		string codegenDigest = CodegenCache.ComputeInputDigest(
+			gameHash, tomlInputs, GeneratorIdentity(), GetSdkVersion());
+
+		LogPhase("generate");
+		if (CodegenCache.TryReuse(generatedDir, codegenDigest, ignoredGeneratedFiles))
+		{
+			LogWrite("codegen cache hit (" + codegenDigest[..16] + ")");
+			progress(new Progress("Reusing cached generated game code...", 0.30f));
+		}
+		else
+		{
+			try
+			{
+				if (Directory.Exists(generatedDir))
+				{
+					Directory.Delete(generatedDir, recursive: true);
+				}
+
+				Directory.CreateDirectory(generatedDir);
+			}
+			catch (Exception exception)
+			{
+				return new Result(false, "Could not reset " + generatedDir + ": " + exception.Message);
+			}
+
+			Result lastGenFailure = default;
+			string manifestSetupError = string.Empty;
+			string partitionSeedPath = Path.Combine(objectCacheDir, CodegenTransforms.PartitionFile);
+
+			try
+			{
+				await CodegenTransforms.RunWithPartitionSeedAsync(
+					objectCacheDir,
+					generatedDir,
+					async () =>
+					{
+						Directory.CreateDirectory(generatedDir);
+						string manifest = WriteEffectiveManifest(title, out string manifestError);
+						if (manifest.Length == 0)
+						{
+							manifestSetupError = manifestError;
+							return;
+						}
+
+						bool seededRun = File.Exists(partitionSeedPath);
+						Result generated = await Task.Run(
+							() => ActiveDriver?.GenerateCode is { } customGen
+								? customGen(
+									manifest,
+									control,
+									line => progress(new Progress("Generating game code... " + line, 0.05f)),
+									LogWrite)
+								: Recompiler.Generate(
+									manifest,
+									control,
+									line => progress(new Progress("Generating game code... " + line, 0.05f)),
+									LogWrite),
+							cancellation).ConfigureAwait(false);
+
+						if (generated.Stopped || cancellation.IsCancellationRequested)
+						{
+							throw new OperationCanceledException(cancellation);
+						}
+
+						if (!generated.Ok)
+						{
+							lastGenFailure = generated;
+							if (seededRun)
+							{
+								throw new InvalidDataException(generated.Error);
+							}
+						}
+					},
+					prepareBeforeRetry: () =>
+					{
+						lastGenFailure = default;
+						Directory.CreateDirectory(generatedDir);
+					}).ConfigureAwait(false);
+			}
+			catch (InvalidDataException)
+			{
+				// Clean retry also failed; lastGenFailure holds the underlying generator error.
+			}
+
+			if (manifestSetupError.Length > 0)
+			{
+				return new Result(false, manifestSetupError);
+			}
+
+			if (!lastGenFailure.Ok && lastGenFailure.Error != null && lastGenFailure.Error.Length > 0)
+			{
+				LogWrite("generate failed: " + lastGenFailure.Error);
+				return new Result(false, "Code generation failed: " + lastGenFailure.Error);
+			}
+
+			if (!File.Exists(Path.Combine(generatedDir, "sources.cmake")))
+			{
+				return new Result(false,
+					"The generator finished without producing sources.cmake in " + generatedDir + ".");
+			}
+
+			// Apply shared post-codegen transforms (thread-local interrupt lock depth + chunked SetFunction registration).
+			ApplyPostCodegenTransforms(generatedDir);
+			CodegenCache.Record(generatedDir, codegenDigest, ignoredGeneratedFiles);
+		}
+
+		string sourcesCmake = Path.Combine(generatedDir, "sources.cmake");
+		if (!File.Exists(sourcesCmake))
+		{
+			return new Result(false,
+				"The generator finished without producing sources.cmake in " + generatedDir + ".");
+		}
+
+		List<string> sources;
+		try
+		{
+			sources = CodegenTransforms.ReadGeneratedSources(sourcesCmake, generatedDir).ToList();
+		}
+		catch (InvalidDataException)
+		{
+			sources = ReadCMakeList(sourcesCmake, "GENERATED_SOURCES");
+		}
+
 		if (sources.Count == 0)
 		{
 			return new Result(false,
@@ -1623,7 +2498,14 @@ public static class GameCodeBuild
 
 		// The host ABI entry point, the one hand-written TU in the module. Compiled here
 		// exactly as our own build compiles it.
-		sources.Add(Path.Combine(RecompileDirectory, "src", "payload_export.cpp"));
+		string payloadExport = Path.Combine(RecompileDirectory, "src", "payload_export.cpp");
+		if (!File.Exists(payloadExport))
+		{
+			return new Result(false,
+				"The payload export entry point is missing (" + payloadExport + ").");
+		}
+
+		sources.Add(payloadExport);
 
 		// THE PAYLOAD CORE, every title's: the rex:: bridge to the host runtime and the guest
 		// yield backoff. Compiled like the hooks, by the player's compiler, into the module.
@@ -1636,26 +2518,17 @@ public static class GameCodeBuild
 				"/payload_core_sources.cmake). Copy the whole extracted folder, not just the executable.");
 		}
 
-		// THE HOOKS ARE COMPILED, NOT LINKED. They are strong PPC overrides that belong
-		// inside the payload, and an archive of them built by OUR compiler cannot link into
-		// a module built by the player's — on Windows those are MSVC and MinGW, whose C++
-		// objects do not mix. Building them from source here makes the whole payload one
-		// compiler's output. See cmake/refii_stage_hook_sources.cmake.
-		// Every title has its own, staged under bin/recompile/<Folder>.
-		List<string> hookSources = ReadCMakeList(HookSourcesPath, "REFII_HOOK_SOURCES");
+		// THE HOOKS ARE COMPILED, NOT LINKED. Every title has its own, staged under bin/recompile/<Folder>.
+		string hookSourcesPath = GetHookSourcesPath(title);
+		List<string> hookSources = ReadCMakeList(hookSourcesPath, "REFII_HOOK_SOURCES");
 		if (hookSources.Count == 0)
 		{
 			return new Result(false,
-				"The hook sources are missing from this install (" + HookSourcesPath +
+				"The hook sources are missing from this install (" + hookSourcesPath +
 				"). Copy the whole extracted folder, not just the executable.");
 		}
 
-		// EVERY LISTED SOURCE MUST BE ON DISK. The manifest and the sources are extracted
-		// separately, and a zip unpacked part-way (one file skipped, an extraction stopped early)
-		// leaves a name in the list with nothing behind it. zig reports that as
-		// "<file>:1:1: error: CacheCheckFailed" — its cache check could not open the input — which
-		// reads as a compiler fault in the hook. A fresh Windows install hit exactly this on one
-		// hook source of 85. Named here instead, with the fix.
+		// EVERY LISTED SOURCE MUST BE ON DISK.
 		var absentSources = new List<string>();
 		foreach (string source in coreSources.Concat(hookSources))
 		{
@@ -1679,7 +2552,7 @@ public static class GameCodeBuild
 		// HARD MODS: their native sources compile in this same step, after refii's hooks, with the
 		// same compiler and flags. The link takes every object by index, so it needs nothing more.
 		var modArguments = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-		Result modded = AddNativeModSources(sources, modArguments, hookSources, out string compiledModsHash);
+		Result modded = AddNativeModSources(title, sources, modArguments, hookSources, out string compiledModsHash);
 		if (!modded.Ok)
 		{
 			return modded;
@@ -1693,84 +2566,166 @@ public static class GameCodeBuild
 				"The staged include list (" + RecompileDirectory + "/include_dirs.cmake) is empty.");
 		}
 
-		List<string> flags = CompileFlags(includeDirectories);
-		flags.AddRange(StandardLibraryFlags());
+		List<string> flags = CompileFlags(title, includeDirectories);
+		flags.AddRange(StandardLibraryFlags(resolved));
+		flags.AddRange(MacroPrefixFlags(title));
 
-		try
+		// Build content-addressed CompileCache over ordered roots (nested toolchain/ before parent recompile/).
+		var inputRoots = new List<CompileInputRoot>();
+		if (!string.IsNullOrEmpty(resolved.Root) && Directory.Exists(resolved.Root))
 		{
-			Directory.CreateDirectory(ObjectDirectory);
-		}
-		catch (Exception exception)
-		{
-			return new Result(false, "Could not create " + ObjectDirectory + ": " + exception.Message);
-		}
-
-		// 2. Precompile the generated header.
-		//
-		//    THE GENERATED HEADER IS THE COST. refii_init.h is ~61,000 lines and every one of
-		//    the ~148 generated TUs includes it — measured at 6.25s of each TU's 17.7s, so
-		//    the same header is parsed 148 times, about 15 minutes of pure CPU on a player's
-		//    machine. Precompiling takes a TU from 17.7s to 10.6s, a 40% cut, and the object
-		//    files come out byte-identical.
-		await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
-		LogPhase("precompile");
-		progress(new Progress("Preparing the game code build...", 0.36f));
-
-		// ReXGlue 0.10 splits the surface: every recomp TU includes refii_pch.h (config, SDK
-		// headers, the function macros) plus a per-file declaration header, and refii_init.h
-		// is the full surface only the init/register TUs and our hooks take. The pch header
-		// is what precompiles; refii_init.h stays as the fallback for an older generator.
-		string header = Path.Combine(GeneratedDirectory, "refii_pch.h");
-		if (!File.Exists(header))
-		{
-			header = Path.Combine(GeneratedDirectory, "refii_init.h");
+			inputRoots.Add(CompileInputRoot.ImmutableToolchain("toolchain/", resolved.Root));
 		}
 
-		string pch = Path.Combine(BuildDirectory, Path.GetFileNameWithoutExtension(header) + ".pch");
-		string pchUsed = string.Empty;
-
-		if (File.Exists(header))
+		if (!OperatingSystem.IsWindows())
 		{
-			// -fno-pch-timestamp: DO NOT VALIDATE refii_init.h's MTIME FROM THE PCH.
-			// Codegen rewrites the header every run, so its mtime always moves even when the
-			// content is identical — while zig caches the PCH by CONTENT and hands back the
-			// artifact built the first time, whose embedded mtime is then permanently stale.
-			// Every other TU hides this by being a cache hit, so clang never runs to check;
-			// the moment one source actually changes it compiles for real and dies on
-			// "file has been modified since the precompiled header was built". Content
-			// correctness still comes from zig's own content hash, which is the real check.
-			var pchArguments = new List<string>(flags)
+			foreach (var (prefix, sysDir) in new[]
 			{
-				"-Xclang", "-fno-pch-timestamp",
-				"-x", "c++-header", header, "-o", pch,
-			};
-
-			(int pchCode, string pchOutput) = await RunCaptureAsync(
-				resolved.Zig, Prefixed("c++", pchArguments), control, cancellation);
-
-			// NOT FATAL. A precompiled header is a speed optimisation, and the TUs include the
-			// header themselves regardless — so if clang refuses it, the right outcome is a
-			// slower build rather than a failed install.
-			if (pchCode == 0 && File.Exists(pch))
+				("sysusrlocal/", "/usr/local/include"),
+				("sysusr/", "/usr/include"),
+				("sysusrlib/", "/usr/lib"),
+			})
 			{
-				pchUsed = pch;
+				if (Directory.Exists(sysDir))
+				{
+					inputRoots.Add(CompileInputRoot.ImmutableToolchain(prefix, sysDir));
+				}
+			}
+		}
+
+		inputRoots.Add(CompileInputRoot.DiskHashed("recompile/", RecompileDirectory, trackInputsAndShadowing: true));
+		inputRoots.Add(CompileInputRoot.DiskHashed("mods/", modsStagingDir, trackInputsAndShadowing: false));
+		inputRoots.Add(CompileInputRoot.DiskHashed("generated/", generatedDir, trackInputsAndShadowing: false));
+
+		List<string> allRecompileRelativePaths = EnumerateRecompileRelativePaths();
+		List<string> relativeIncludeDirs = GetRelativeIncludeDirectories(includeDirectories);
+		string compileRecipe = DesktopCompileRecipe(title, ToolchainBinaryIdentity(resolved));
+		var cache = new CompileCache(
+			objectCacheDir,
+			inputRoots,
+			allRecompileRelativePaths,
+			relativeIncludeDirs,
+			compileRecipe);
+
+		// Determine per-unit raw and normalized extra flags up front so we know which units miss the cache
+		// and whether any cache-miss unit needs the precompiled header.
+		var rawExtraFlags = new IReadOnlyList<string>[sources.Count];
+		var normalizedExtraFlags = new IReadOnlyList<string>[sources.Count];
+		for (int i = 0; i < sources.Count; i++)
+		{
+			List<string>? unitFlags = null;
+			if (Path.GetFileName(sources[i]) == "rex_bridge_payload.cpp")
+			{
+				unitFlags = new List<string> { "-fvisibility=hidden" };
+			}
+
+			if (modArguments.TryGetValue(sources[i], out List<string>? extra) && extra.Count > 0)
+			{
+				unitFlags ??= new List<string>();
+				unitFlags.AddRange(extra);
+			}
+
+			if (unitFlags == null || unitFlags.Count == 0)
+			{
+				rawExtraFlags[i] = Array.Empty<string>();
+				normalizedExtraFlags[i] = Array.Empty<string>();
 			}
 			else
 			{
-				progress(new Progress(
-					"Preparing the game code build... (no precompiled header; this will be slower)",
-					0.36f));
-				Godot.GD.PushWarning(
-					"Precompiled header unavailable, continuing without it: " + pchOutput);
+				rawExtraFlags[i] = unitFlags;
+				normalizedExtraFlags[i] = NormalizeExtraFlagsForCache(unitFlags, modsStagingDir);
 			}
 		}
 
-		// 3. Compile, JobCount() at a time.
-		//
-		//    Explicitly limited: left unbounded this takes every core for however long the
-		//    build runs, and the player cannot use their machine meanwhile. See JobCount.
+		var objectPaths = new string[sources.Count];
+		var missIndices = new List<int>();
+		for (int i = 0; i < sources.Count; i++)
+		{
+			if (cache.Find(sources[i], normalizedExtraFlags[i]) is { } hit)
+			{
+				objectPaths[i] = hit;
+			}
+			else
+			{
+				missIndices.Add(i);
+			}
+		}
+
+		// 2. Precompile (or load cached) generated header only when at least one PCH-eligible unit missed cache.
+		//    Units with per-unit extra flags (-fvisibility=hidden, mod -I/-D) skip -include-pch so Clang never
+		//    rejects the PCH due to macro or visibility differences.
+		string header = Path.Combine(generatedDir, "refii_pch.h");
+		if (!File.Exists(header))
+		{
+			header = Path.Combine(generatedDir, "refii_init.h");
+		}
+
+		bool needsPch = File.Exists(header) && missIndices.Any(index => rawExtraFlags[index].Count == 0);
+		string pchUsed = string.Empty;
+
+		if (needsPch)
+		{
+			await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
+			LogPhase("precompile");
+			progress(new Progress("Preparing the game code build...", 0.36f));
+
+			string pchPathSalt = Path.GetFullPath(generatedDir) + "\0" + Path.GetFullPath(RecompileDirectory);
+			if (cache.FindPchArtifact(header, pchPathSalt) is { } cachedPch)
+			{
+				pchUsed = cachedPch;
+				LogWrite("pch cache hit: " + Path.GetFileName(cachedPch));
+			}
+			else
+			{
+				string pchWorkPath = Path.Combine(workDir, Path.GetFileNameWithoutExtension(header) + ".pch");
+				string pchDepPath = pchWorkPath + ".d";
+				var pchArguments = new List<string>(flags)
+				{
+					"-MD", "-MF", pchDepPath,
+					"-Xclang", "-fno-pch-timestamp",
+					"-x", "c++-header", header, "-o", pchWorkPath,
+				};
+
+				(int pchCode, string pchOutput) = await RunCaptureAsync(
+					title, resolved.Zig, Prefixed("c++", pchArguments), control, cancellation).ConfigureAwait(false);
+
+				// NOT FATAL. A precompiled header is a speed optimisation, and the TUs include the
+				// header themselves regardless — so if clang refuses it, the right outcome is a
+				// slower build rather than a failed install.
+				if (pchCode == 0 && File.Exists(pchWorkPath))
+				{
+					pchUsed = cache.StorePch(pchDepPath, pchWorkPath, header, pchPathSalt);
+				}
+				else
+				{
+					progress(new Progress(
+						"Preparing the game code build... (no precompiled header; this will be slower)",
+						0.36f));
+					string warning = "Precompiled header unavailable, continuing without it: " + pchOutput;
+					LogWrite(warning);
+					if (!Refii.Core.Engine_AppRoot.IsTestHost)
+					{
+						Godot.GD.PushWarning(warning);
+					}
+				}
+			}
+		}
+
+		// 3. Compile missed units, LPT largest-first, JobCount() at a time.
 		Result compiled = await CompileAllAsync(
-			resolved, sources, flags, modArguments, pchUsed, progress, control, cancellation);
+			title,
+			resolved,
+			sources,
+			flags,
+			rawExtraFlags,
+			normalizedExtraFlags,
+			missIndices,
+			objectPaths,
+			cache,
+			pchUsed,
+			progress,
+			control,
+			cancellation).ConfigureAwait(false);
 		if (!compiled.Ok)
 		{
 			return new Result(false, "Compiling the game code failed: " + compiled.Error);
@@ -1780,34 +2735,114 @@ public static class GameCodeBuild
 		await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
 		LogPhase("link");
 		progress(new Progress("Linking the game module...", 0.95f));
-		Result linked = await LinkAsync(resolved, sources.Count, control, cancellation);
+		Result linked = await LinkAsync(title, resolved, objectPaths, control, cancellation).ConfigureAwait(false);
 		if (!linked.Ok)
 		{
 			return new Result(false, "Linking the game module failed: " + linked.Error);
 		}
 
-		if (!File.Exists(ModulePath))
+		if (!File.Exists(modulePath))
 		{
 			return new Result(false,
-				"The build reported success but produced no module at " + ModulePath + ".");
+				"The build reported success but produced no module at " + modulePath + ".");
 		}
 
-		WriteBuildInfo(resolved, compiledModsHash);
+		string? moduleInputsDigest = WriteModuleInputs(
+			title, resolved, cache, allRecompileRelativePaths, relativeIncludeDirs);
+		WriteBuildInfo(title, resolved, compiledModsHash, moduleInputsDigest);
 
-		// 4. Clean up. Best effort by design: the module is already built and usable, so
-		//    failing to reclaim the space must not fail the install.
-		progress(new Progress("Cleaning up generated sources...", 0.97f));
+		// 5. Generational cache prune (retain last 3 generations up to 512 MB) & clean ephemeral scratch.
+		progress(new Progress("Finalizing game code cache...", 0.98f));
 		try
 		{
-			Directory.Delete(GeneratedDirectory, recursive: true);
+			cache.KeepOnlyUsed(maxGenerations: ObjectCacheMaxGenerations, maxBytes: ObjectCacheMaxBytes);
 		}
-		catch (Exception)
+		catch (Exception exception)
 		{
+			LogWrite("cache prune warning: " + exception.Message);
 		}
+
+		CleanScratchDirectoriesBestEffort(title);
 
 		LogPhase("done");
 		progress(new Progress("Game code ready.", 1.0f));
 		return new Result(true, string.Empty);
+	}
+
+	private static void ApplyPostCodegenTransforms(string generatedDir)
+	{
+		string pchHeader = Path.Combine(generatedDir, "refii_pch.h");
+		if (File.Exists(pchHeader))
+		{
+			string original = File.ReadAllText(pchHeader);
+			string updated = CodegenTransforms.ThreadLocalLockDepth(original);
+			if (!string.Equals(original, updated, StringComparison.Ordinal))
+			{
+				File.WriteAllText(pchHeader, updated);
+			}
+		}
+
+		foreach (string regFile in Directory.EnumerateFiles(generatedDir, "*_register.cpp", SearchOption.TopDirectoryOnly))
+		{
+			string stem = Path.GetFileNameWithoutExtension(regFile);
+			if (!stem.EndsWith("_register", StringComparison.Ordinal) || stem.Length <= "_register".Length)
+			{
+				continue;
+			}
+
+			string prefix = stem[..^"_register".Length];
+			string functionName = prefix + "_RegisterFunctions";
+			string initFile = Path.Combine(generatedDir, prefix + "_init.cpp");
+			string? initSource = File.Exists(initFile) ? File.ReadAllText(initFile) : null;
+			try
+			{
+				string original = File.ReadAllText(regFile);
+				string optimized = CodegenTransforms.OptimizeRegistration(original, initSource, functionName);
+				if (!string.Equals(original, optimized, StringComparison.Ordinal))
+				{
+					File.WriteAllText(regFile, optimized);
+				}
+			}
+			catch (InvalidDataException exception)
+			{
+				LogWrite("skipping registration optimization for " + Path.GetFileName(regFile) + ": " + exception.Message);
+			}
+		}
+	}
+
+	private static IReadOnlyList<string> NormalizeExtraFlagsForCache(
+		IReadOnlyList<string> extraFlags,
+		string modsStagingDir)
+	{
+		string modsRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(modsStagingDir));
+		StringComparison comparison = OperatingSystem.IsWindows()
+			? StringComparison.OrdinalIgnoreCase
+			: StringComparison.Ordinal;
+		var normalized = new List<string>(extraFlags.Count);
+		foreach (string flag in extraFlags)
+		{
+			if (flag.StartsWith("-I", StringComparison.Ordinal) && flag.Length > 2)
+			{
+				string rawPath = flag[2..];
+				string fullPath = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rawPath));
+				if (string.Equals(fullPath, modsRoot, comparison))
+				{
+					normalized.Add("-Imods");
+					continue;
+				}
+
+				if (fullPath.StartsWith(modsRoot + Path.DirectorySeparatorChar, comparison))
+				{
+					string rel = Path.GetRelativePath(modsRoot, fullPath).Replace('\\', '/');
+					normalized.Add("-Imods/" + rel);
+					continue;
+				}
+			}
+
+			normalized.Add(flag);
+		}
+
+		return normalized;
 	}
 
 	/// <summary>
@@ -1819,15 +2854,19 @@ public static class GameCodeBuild
 	/// sources somewhere inside the application directory. Only the launcher knows where
 	/// the player's game and the output belong, so it states both absolutely here.
 	/// </remarks>
-	private static string WriteEffectiveManifest(out string error)
+	private static string WriteEffectiveManifest(Refii.Core.Engine_Title title, out string error)
 	{
-		string source = VersionManifestPath;
+		string source = GetVersionManifestPath(title);
 		if (!File.Exists(source))
 		{
-			error = "The code generation manifest for " + GameVersionName +
+			error = "The code generation manifest for " + GetGameVersionName(title) +
 					" is missing from this install (" + source + ").";
 			return string.Empty;
 		}
+
+		string generatedDir = GetGeneratedDirectory(title);
+		string versionDir = GetVersionDirectory(title);
+		string gameExe = GetGameExecutablePath(title);
 
 		try
 		{
@@ -1850,7 +2889,7 @@ public static class GameCodeBuild
 					if (line.Contains(']'))
 					{
 						insideIncludes = false;
-						AppendIncludes(rewritten, includeNames);
+						AppendIncludes(rewritten, versionDir, includeNames);
 					}
 
 					continue;
@@ -1860,14 +2899,14 @@ public static class GameCodeBuild
 
 				if (trimmed.StartsWith("file_path", StringComparison.Ordinal))
 				{
-					rewritten.AppendLine("file_path = \"" + Escape(GameExecutablePath) + "\"");
+					rewritten.AppendLine("file_path = \"" + Escape(gameExe) + "\"");
 					sawFilePath = true;
 					continue;
 				}
 
 				if (trimmed.StartsWith("out_directory_path", StringComparison.Ordinal))
 				{
-					rewritten.AppendLine("out_directory_path = \"" + Escape(GeneratedDirectory) + "\"");
+					rewritten.AppendLine("out_directory_path = \"" + Escape(generatedDir) + "\"");
 					sawOutDirectory = true;
 					continue;
 				}
@@ -1882,7 +2921,7 @@ public static class GameCodeBuild
 					insideIncludes = line.Contains('[') && !line.Contains(']');
 					if (!insideIncludes)
 					{
-						AppendIncludes(rewritten, includeNames);
+						AppendIncludes(rewritten, versionDir, includeNames);
 					}
 
 					continue;
@@ -1898,10 +2937,8 @@ public static class GameCodeBuild
 				return string.Empty;
 			}
 
-			// Inside the generated directory: it is created before this runs and removed
-			// with the sources afterwards, so nothing of the player's install is left behind.
 			string destination = Path.Combine(
-				GeneratedDirectory, Refii.Core.Engine_Title.Active.Key + "_manifest.effective.toml");
+				generatedDir, title.Key + "_manifest.effective.toml");
 			File.WriteAllText(destination, rewritten.ToString());
 			error = string.Empty;
 			return destination;
@@ -1948,7 +2985,7 @@ public static class GameCodeBuild
 	/// <summary>
 	/// Writes the includes array, each entry repointed at its staged copy.
 	/// </summary>
-	private static void AppendIncludes(StringBuilder rewritten, List<string> names)
+	private static void AppendIncludes(StringBuilder rewritten, string versionDirectory, List<string> names)
 	{
 		var absolute = new List<string>();
 		foreach (string name in names)
@@ -1957,7 +2994,7 @@ public static class GameCodeBuild
 			// version's folder, and the repo path it is written as does not exist on a
 			// player's machine.
 			absolute.Add("\"" +
-				Escape(Path.Combine(VersionDirectory, Path.GetFileName(name))) + "\"");
+				Escape(Path.Combine(versionDirectory, Path.GetFileName(name))) + "\"");
 		}
 
 		rewritten.AppendLine("includes = [" + string.Join(", ", absolute) + "]");
@@ -2034,20 +3071,13 @@ public static class GameCodeBuild
 		return values;
 	}
 
-	private static string ObjectDirectory => Path.Combine(BuildDirectory, "obj");
-
-	/// <summary>Zig's compilation cache, pinned inside the build directory.</summary>
-	/// <remarks>
-	/// DELIBERATELY NOT THE DEFAULT (~/.cache/zig). Zig keys cached objects on content, so a
-	/// rebuild reuses them across runs and across installs — the opposite of what the build
-	/// step promises. Pinned here it lives under GeneratedDirectory, which step 0 deletes, so
-	/// every build compiles every TU for real. It also keeps a few GB of build cache inside
-	/// the app's own working directory rather than growing in the player's home.
-	/// </remarks>
-	private static string CompileCacheDirectory => Path.Combine(BuildDirectory, "zig-cache");
-
-	private static string ObjectPath(int index) =>
-		Path.Combine(ObjectDirectory, index.ToString("D4") + ".o");
+	private static List<string> MacroPrefixFlags(Refii.Core.Engine_Title title) =>
+		new()
+		{
+			"-fmacro-prefix-map=" + Path.TrimEndingDirectorySeparator(Path.GetFullPath(GetGeneratedDirectory(title))) + "=/generated",
+			"-fmacro-prefix-map=" + Path.TrimEndingDirectorySeparator(Path.GetFullPath(RecompileDirectory)) + "=/recompile",
+			"-fmacro-prefix-map=" + Path.TrimEndingDirectorySeparator(Path.GetFullPath(GetModsStagingDirectory(title))) + "=/mods",
+		};
 
 	/// <summary>
 	/// The flags every translation unit is compiled with.
@@ -2093,7 +3123,10 @@ public static class GameCodeBuild
 			? new[] { "-target", "aarch64-windows-gnu" }
 			: Array.Empty<string>();
 
-	private static List<string> CompileFlags(IReadOnlyList<string> includeDirectories)
+	private static List<string> CompileFlags(IReadOnlyList<string> includeDirectories) =>
+		CompileFlags(Refii.Core.Engine_Title.Active, includeDirectories);
+
+	private static List<string> CompileFlags(Refii.Core.Engine_Title title, IReadOnlyList<string> includeDirectories)
 	{
 		var flags = new List<string>
 		{
@@ -2139,7 +3172,7 @@ public static class GameCodeBuild
 
 		// Which executable this payload is recompiled from. guest_build_stamp.cpp states it to
 		// the runtime at load, which is how the hooks and the host bridge pick per-build values.
-		if (Refii.Core.Engine_Title.Active.IsUnpatched(GameVersionName))
+		if (title.IsUnpatched(GetGameVersionName(title)))
 		{
 			flags.Add("-DREFII_GUEST_BUILD_UNPATCHED=1");
 		}
@@ -2183,7 +3216,7 @@ public static class GameCodeBuild
 			flags.Add(chronoShim);
 		}
 
-		flags.Add("-I" + GeneratedDirectory);
+		flags.Add("-I" + GetGeneratedDirectory(title));
 		foreach (string directory in includeDirectories)
 		{
 			flags.Add("-I" + directory);
@@ -2220,7 +3253,7 @@ public static class GameCodeBuild
 	/// Returns empty when nothing is staged, which is the Windows case: that build links
 	/// MSVC's runtime and this question does not arise.
 	/// </remarks>
-	private static List<string> StandardLibraryFlags()
+	private static List<string> StandardLibraryFlags(Toolchain? resolved = null)
 	{
 		var flags = new List<string>();
 
@@ -2242,7 +3275,10 @@ public static class GameCodeBuild
 			flags.Add(Path.Combine(StdCxxDirectory, slot.Trim()));
 		}
 
-		string libc = Path.Combine(Toolchain.BundleDirectory, "lib", "libc", "include");
+		string toolchainRoot = resolved.HasValue && !string.IsNullOrEmpty(resolved.Value.Root)
+			? resolved.Value.Root
+			: Toolchain.BundleDirectory;
+		string libc = Path.Combine(toolchainRoot, "lib", "libc", "include");
 		bool arm = RuntimeInformation.OSArchitecture == Architecture.Arm64;
 		foreach (string variant in new[]
 		{
@@ -2264,67 +3300,89 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Compiles every translation unit, <see cref="JobCount"/> at a time.
+	/// Compiles all cache-miss translation units in LPT largest-first order, <see cref="JobCount"/> at a time,
+	/// storing newly built objects and their <c>clang -MD</c> dependencies into <paramref name="cache"/>.
 	/// </summary>
-	/// <remarks>
-	/// The first failure stops the rest from starting. A broken generated source fails the
-	/// same way in all 148 units, and letting them all run turns one compiler error into
-	/// several minutes of waiting and megabytes of duplicate output.
-	/// </remarks>
 	private static async Task<Result> CompileAllAsync(
+		Refii.Core.Engine_Title title,
 		Toolchain zig,
 		IReadOnlyList<string> sources,
 		IReadOnlyList<string> flags,
-		IReadOnlyDictionary<string, List<string>> sourceArguments,
+		IReadOnlyList<IReadOnlyList<string>> rawExtraFlags,
+		IReadOnlyList<IReadOnlyList<string>> normalizedExtraFlags,
+		IReadOnlyList<int> missIndices,
+		string[] objectPaths,
+		CompileCache cache,
 		string precompiledHeader,
 		Action<Progress> progress,
 		BuildControl control,
 		CancellationToken cancellation)
 	{
 		int total = sources.Count;
-		int done = 0;
+		int cachedCount = total - missIndices.Count;
+		if (missIndices.Count == 0)
+		{
+			LogWrite($"compile cache hit for all {total} translation unit(s)");
+			progress(new Progress($"Reusing cached game code objects ({total}/{total})...", 0.94f));
+			return new Result(true, string.Empty);
+		}
+
+		int done = cachedCount;
 		string failure = string.Empty;
 		object failureLock = new();
-
-		// THE PRECOMPILED HEADER IS NOT ALWAYS USABLE. zig 0.16.0 on windows-arm64 crashes
-		// clang on -include-pch: measured 6-13 of every 16 units, sequentially as well as in
-		// parallel, with and without -fno-pch-timestamp, while the same units compiled without
-		// it crash 0 of 16. It is only a speed optimisation and every unit includes the header
-		// itself, so a build that hits this drops the PCH and carries on rather than failing.
 		int pchBroken = 0;
 
-		// ONE UNIT ALONE FIRST, then the rest in parallel.
-		//
-		// ZIG CRASHES ON A COLD SHARED CACHE. Step 0 deletes the build directory and
-		// CompileCacheDirectory lives inside it, so every build starts with an empty
-		// ZIG_GLOBAL_CACHE_DIR/ZIG_LOCAL_CACHE_DIR. Several zig processes populating that at
-		// once intermittently die with an access violation, heap corruption or a stack buffer
-		// overrun -- measured at 2-3 of every 16 units on windows-arm64, against 0-1 once a
-		// single compile has populated it. Costs nothing: unit 0 is work the build had to do.
-		var warmed = new TaskCompletionSource<bool>(
-			TaskCreationOptions.RunContinuationsAsynchronously);
+		int jobs = JobCount();
+		List<int> dispatchOrder = jobs > 1
+			? CompileScheduler.OrderUnitsLargestFirst(missIndices, sources)
+			: missIndices.ToList();
 
-		using var gate = new SemaphoreSlim(JobCount());
-		var running = new List<Task>(total);
-
-		for (int index = 0; index < total; index++)
+		// Persistent zig-cache only needs a single solo warmup unit on its very first cold run for a
+		// given toolchain binary; pick the SMALLEST unit so the solo probe finishes in ~0.15s instead of
+		// stalling all other cores behind the largest shard.
+		string zigCacheDir = GetZigCacheDirectory(title);
+		string toolchainStampKey = CompileCache.HashText(ToolchainBinaryIdentity(zig))[..16];
+		string warmedStampPath = Path.Combine(zigCacheDir, "zig-warmed-" + toolchainStampKey + ".stamp");
+		bool needsSoloWarmup = !File.Exists(warmedStampPath) && dispatchOrder.Count > 1 && jobs > 1;
+		if (needsSoloWarmup)
 		{
-			int slot = index;
+			int smallestUnit = dispatchOrder[^1];
+			dispatchOrder.RemoveAt(dispatchOrder.Count - 1);
+			dispatchOrder.Insert(0, smallestUnit);
+		}
+
+		var warmed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+		if (!needsSoloWarmup)
+		{
+			warmed.TrySetResult(true);
+		}
+
+		string workDir = GetWorkDirectory(title);
+		Directory.CreateDirectory(workDir);
+
+		if (cachedCount > 0)
+		{
+			LogWrite($"compile cache hit {cachedCount}/{total}; compiling {missIndices.Count} unit(s) across {jobs} job(s)");
+			progress(new Progress(
+				"Compiling game code... " + done + "/" + total,
+				0.40f + 0.55f * Math.Clamp((float)done / total, 0.0f, 1.0f)));
+		}
+
+		using var gate = new SemaphoreSlim(jobs);
+		var running = new List<Task>(dispatchOrder.Count);
+
+		for (int orderPos = 0; orderPos < dispatchOrder.Count; orderPos++)
+		{
+			bool isWarmupProbe = needsSoloWarmup && orderPos == 0;
+			int slot = dispatchOrder[orderPos];
 			running.Add(Task.Run(async () =>
 			{
-				// OUTSIDE THE GATE, deliberately. Waiting on unit 0 while holding a permit lets the
-				// other units take every permit and leaves unit 0 unable to acquire one.
-				if (slot != 0)
+				if (!isWarmupProbe)
 				{
 					await warmed.Task.WaitAsync(cancellation).ConfigureAwait(false);
 				}
 
-				// BEFORE THE PERMIT. The compilers already running are frozen by the pause
-				// itself (RunCaptureOnceAsync attaches each to the control); this keeps new ones
-				// from starting, and waiting with a permit held would keep that permit from a
-				// resumed unit for no reason.
 				await control.WaitWhilePausedAsync(cancellation).ConfigureAwait(false);
-
 				await gate.WaitAsync(cancellation).ConfigureAwait(false);
 				try
 				{
@@ -2336,50 +3394,44 @@ public static class GameCodeBuild
 						}
 					}
 
+					string workObjPath = Path.Combine(workDir, slot.ToString("D4") + ".o");
+					string workDepPath = workObjPath + ".d";
+					IReadOnlyList<string> unitExtra = rawExtraFlags[slot];
+
 					List<string> BuildArguments(bool withPch)
 					{
-						var arguments = new List<string>(flags);
+						var arguments = new List<string>(flags)
+						{
+							"-MD", "-MF", workDepPath,
+						};
 						if (withPch)
 						{
 							arguments.Add("-include-pch");
 							arguments.Add(precompiledHeader);
 						}
 
-						// PAYLOAD-INTERNAL BY CONSTRUCTION. rex_bridge_payload.cpp defines the
-						// rex:: symbols librexruntime also defines; exported, the payload's copies
-						// capture the host's own lazily-bound references through the RTLD_GLOBAL
-						// scope and each forwarder recurses into itself until the stack ends.
-						// Mirrors the source-file property in Fable2/src/hooks/CMakeLists.txt.
-						if (Path.GetFileName(sources[slot]) == "rex_bridge_payload.cpp")
+						if (unitExtra.Count > 0)
 						{
-							arguments.Add("-fvisibility=hidden");
-						}
-
-						// Per-source: a hard mod's own and required headers, and the chain defines
-						// that rename a hook shared with another owner (AddNativeModSources).
-						if (sourceArguments.TryGetValue(sources[slot], out List<string>? extra))
-						{
-							arguments.AddRange(extra);
+							arguments.AddRange(unitExtra);
 						}
 
 						arguments.Add("-c");
 						arguments.Add(sources[slot]);
 						arguments.Add("-o");
-						arguments.Add(ObjectPath(slot));
+						arguments.Add(workObjPath);
 						return arguments;
 					}
 
+					// Units carrying per-unit extra flags (-fvisibility=hidden or mod -I/-D) skip -include-pch
+					// because Clang rejects PCHs whose preprocessor macros or visibility differ.
 					bool usePch = precompiledHeader.Length != 0
+						&& unitExtra.Count == 0
 						&& Volatile.Read(ref pchBroken) == 0;
 
 					(int code, string output) = await RunCaptureAsync(
-						zig.Zig, Prefixed("c++", BuildArguments(usePch)), control, cancellation)
+						title, zig.Zig, Prefixed("c++", BuildArguments(usePch)), control, cancellation)
 						.ConfigureAwait(false);
 
-					// A CRASH WITH THE PCH IS THE PCH'S FAULT until shown otherwise, so this unit is
-					// compiled again without it and every later unit skips it too. A real compile error
-					// is exit 1 and is left alone -- dropping the header would not change it, and the
-					// second attempt would only bury the diagnostic the player needs to see.
 					if (code != 0 && usePch && IsCrashExit(code))
 					{
 						if (Interlocked.Exchange(ref pchBroken, 1) == 0)
@@ -2388,8 +3440,9 @@ public static class GameCodeBuild
 								+ "compiling the rest without it");
 						}
 
+						usePch = false;
 						(code, output) = await RunCaptureAsync(
-							zig.Zig, Prefixed("c++", BuildArguments(false)), control, cancellation)
+							title, zig.Zig, Prefixed("c++", BuildArguments(false)), control, cancellation)
 							.ConfigureAwait(false);
 					}
 
@@ -2406,6 +3459,24 @@ public static class GameCodeBuild
 						return;
 					}
 
+					if (isWarmupProbe)
+					{
+						try
+						{
+							File.WriteAllText(warmedStampPath, toolchainStampKey + "\n");
+						}
+						catch (Exception)
+						{
+						}
+					}
+
+					objectPaths[slot] = cache.Store(
+						sources[slot],
+						workObjPath,
+						workDepPath,
+						usePch,
+						normalizedExtraFlags[slot]);
+
 					int finished = Interlocked.Increment(ref done);
 					progress(new Progress(
 						"Compiling game code... " + finished + "/" + total,
@@ -2414,10 +3485,7 @@ public static class GameCodeBuild
 				finally
 				{
 					gate.Release();
-
-					// ALWAYS, even when unit 0 failed or threw: everything else is waiting on this
-					// and never signalling would hang the build instead of reporting the failure.
-					if (slot == 0)
+					if (isWarmupProbe)
 					{
 						warmed.TrySetResult(true);
 					}
@@ -2440,86 +3508,51 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Links the objects, the hook archive and the shipped libraries into the module.
+	/// Links the compiled and cached translation unit objects plus shipped libraries into <paramref name="title"/>'s module.
 	/// </summary>
-	/// <remarks>
-	/// WHOLE-ARCHIVE FOR THE HOOKS. They are strong PPC overrides of functions the generator
-	/// emits WEAK, and a weak definition creates no undefined reference — so a normal archive
-	/// link pulls in no member at all and every hook silently disappears. The module builds,
-	/// runs, and behaves as though none of refii's native overrides existed.
-	/// </remarks>
 	private static async Task<Result> LinkAsync(
-		Toolchain zig, int objectCount, BuildControl control, CancellationToken cancellation)
+		Refii.Core.Engine_Title title,
+		Toolchain zig,
+		IReadOnlyList<string> objectPaths,
+		BuildControl control,
+		CancellationToken cancellation)
 	{
-		Directory.CreateDirectory(TitleBinDirectory);
-		var arguments = new List<string> { "-shared", "-o", ModulePath };
+		string titleBinDir = GetTitleBinDirectory(title);
+		string modulePath = GetModulePath(title);
+		Directory.CreateDirectory(titleBinDir);
+		var arguments = new List<string> { "-shared", "-o", modulePath };
 		arguments.InsertRange(0, TargetFlags());
 		if (!OperatingSystem.IsWindows())
 		{
 			arguments.Add("-mcmodel=large");
-
-			// RUNPATH, WITHOUT WHICH THE MODULE CANNOT BE LOADED AT ALL.
-			//
-			// The module is dlopen'd by name and needs librexruntime, librefii_vfs and
-			// librefii_lua beside it. CMake used to emit this automatically from the linked
-			// library paths, and driving the linker directly means stating it — a module
-			// linked without it builds, verifies clean under `ldd -r` with LD_LIBRARY_PATH
-			// set, and then fails at runtime with
-			//   "librexruntimed.so: cannot open shared object file".
-			//
-			// Both entries, matching the dev build: an exported app has the whole native
-			// closure in one directory, a dev tree splits bin/ and lib/.
-			// $ORIGIN/.. for the shared natives: the module sits in the title's bin/<Folder>/.
 			arguments.Add("-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/lib");
 		}
 
-		for (int index = 0; index < objectCount; index++)
+		for (int index = 0; index < objectPaths.Count; index++)
 		{
-			arguments.Add(ObjectPath(index));
+			arguments.Add(objectPaths[index]);
 		}
 
-		// NO WHOLE-ARCHIVE, AND NO HOOK ARCHIVE AT ALL. The hooks are among the objects
-		// compiled above, so their strong PPC overrides are already in the link as ordinary
-		// members rather than weak-definition members an archive link would skip.
-
-		// Already loaded in the process by the time the payload is; linking them here only
-		// resolves the references.
-		// NO refii_lua. Its sources are staged and compiled beside the generated code instead
-		// (see REFII_LUA_HOOK_SOURCES): they call the recompiled guest, so they cannot ship as a
-		// library the payload links -- and linking the MSVC-built static one is what dragged
-		// /DEFAULTLIB:msvcrtd into a MinGW link. The refii_bridge_lua_* entry points the payload
-		// needs are among those sources, so they are defined in the payload itself now.
-		// refii_vfs is a title's instance library, linked from bin/<Folder>/ when the active
-		// title's instance names it (each title's is its own: Fable2/src/vfs, Fable3/src/vfs).
-		foreach (string name in new[] { "rexruntime", "refii_core", "refii_runtime", "refii_vfs" }
-			.Where(name => name != "refii_vfs" || Refii.Core.Engine_Title.Active.Instance.Contains(name)))
+		foreach (string name in LinkedLibraryNames(title))
 		{
-			string found = FindShippedLibrary(name);
+			string found = FindShippedLibrary(title, name);
 			if (found.Length == 0)
 			{
 				return new Result(false,
-					"the " + name + " library is missing from " + ShippedLibraryDirectory(name));
+					"the " + name + " library is missing from " + ShippedLibraryDirectory(title, name));
 			}
 
 			arguments.Add(found);
 		}
 
-		// libstdc++, NOT libc++. The translation units were compiled against the staged
-		// libstdc++ headers, so every std:: reference in the module is a GNU one; zig would
-		// otherwise link its own libc++ beside them and put two C++ runtimes, with two
-		// operator new, in one process.
-		//
-		// libstdc++.so.6 does not appear in the module's DT_NEEDED even so — --as-needed
-		// drops it because librexruntime already carries it — which is the same shape the
-		// GCC-built payload has. `ldd -r` resolves the module with 0 undefined symbols.
-		if (StandardLibraryFlags().Count > 0)
+		if (StandardLibraryFlags(zig).Count > 0)
 		{
 			arguments.Add("-nostdlib++");
 			arguments.Add("-lstdc++");
 		}
 
 		(int code, string output) = await RunCaptureAsync(
-			zig.Zig, Prefixed("c++", LinkArguments(arguments)), control, cancellation)
+			title, zig.Zig, Prefixed("c++", LinkArguments(title, arguments)), control, cancellation)
 			.ConfigureAwait(false);
 
 		return code == 0
@@ -2528,27 +3561,11 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// The link arguments, moved into a response file on Windows.
+	/// The link arguments, moved into a response file on Windows to stay well below CreateProcess's 32,767-char limit.
 	/// </summary>
-	/// <remarks>
-	/// CreateProcess TAKES AT MOST 32767 CHARACTERS for the whole command line, and this link
-	/// names every object by absolute path -- about 150 characters apiece in a real install, so
-	/// a few hundred translation units clear the limit between them. .NET then raises Win32
-	/// error 206, "The filename or extension is too long", from Process.Start before zig is
-	/// reached at all, which reads as the build crashing with nothing compiled wrong.
-	///
-	/// Linux has no comparable ceiling -- ARG_MAX is megabytes -- so the same link has always
-	/// been fine there and is handed through untouched.
-	///
-	/// EVERY ENTRY IS QUOTED: the install path routinely contains spaces. Backslashes inside
-	/// the quotes are literal to zig's parser rather than escapes, so Windows paths need
-	/// nothing further, and a double quote cannot occur in a Windows filename.
-	///
-	/// The file goes in BuildDirectory, which phase 0 clears and a successful build deletes, so
-	/// it outlives the build only when the link failed. Its contents are logged too, because
-	/// the command line no longer carries them.
-	/// </remarks>
-	private static IReadOnlyList<string> LinkArguments(IReadOnlyList<string> arguments)
+	private static IReadOnlyList<string> LinkArguments(
+		Refii.Core.Engine_Title title,
+		IReadOnlyList<string> arguments)
 	{
 		if (!OperatingSystem.IsWindows())
 		{
@@ -2561,38 +3578,30 @@ public static class GameCodeBuild
 			body.Append('"').Append(argument).Append('"').Append('\n');
 		}
 
-		string path = Path.Combine(BuildDirectory, "link.rsp");
-		Directory.CreateDirectory(BuildDirectory);
+		string workDir = GetWorkDirectory(title);
+		string path = Path.Combine(workDir, "link.rsp");
+		Directory.CreateDirectory(workDir);
 		File.WriteAllText(path, body.ToString());
 		LogWrite("link response file " + path + ":");
 		LogWrite(body.ToString());
 		return new[] { "@" + path };
 	}
 
-	/// <summary>
-	/// Finds a shipped library by base name in bin/, or "".
-	/// </summary>
-	/// <remarks>
-	/// bin/ is the ONE directory for natives: the host loads the runtime and the refii
-	/// libraries from it, the generator library imports the runtime from it, and the
-	/// payload links the same files. There used to be a second copy of each under
-	/// recompile/lib for the link, and the two drifting apart is how the payload once
-	/// imported a four-hour-old runtime while the host loaded the current one.
-	/// </remarks>
-	private static string FindShippedLibrary(string name) => FindLibrary(ShippedLibraryDirectory(name), name);
+	/// <summary>Finds a shipped library by base name in bin/ (or the active title's instance folder), or "".</summary>
+	private static string FindShippedLibrary(string name) =>
+		FindShippedLibrary(Refii.Core.Engine_Title.Active, name);
+
+	/// <summary>Finds a shipped library by base name for <paramref name="title"/>, or "".</summary>
+	private static string FindShippedLibrary(Refii.Core.Engine_Title title, string name) =>
+		FindLibrary(ShippedLibraryDirectory(title, name), name);
 
 	/// <summary>A title's instance library is in its folder; every other native is shared, in bin/.</summary>
-	private static string ShippedLibraryDirectory(string name) =>
-		Refii.Core.Engine_Title.InstanceLibraries.Contains(name) ? TitleBinDirectory : BinDirectory;
+	private static string ShippedLibraryDirectory(Refii.Core.Engine_Title title, string name) =>
+		Refii.Core.Engine_Title.InstanceLibraries.Contains(name) ? GetTitleBinDirectory(title) : BinDirectory;
 
 	/// <summary>
 	/// Finds a library by base name in one directory, in either build configuration.
 	/// </summary>
-	/// <remarks>
-	/// Both the plain and the "d"-suffixed name: a Debug-configured release stages
-	/// librexruntimed, a Release one stages librexruntime, and the payload has to link
-	/// whichever this install actually shipped.
-	/// </remarks>
 	private static string FindLibrary(string directory, string name)
 	{
 		var found = new List<string>();
@@ -2605,9 +3614,6 @@ public static class GameCodeBuild
 				"lib" + name + suffix + ".a",
 				name + suffix + ".lib",
 				"lib" + name + suffix + ".dll.a",
-				// LAST, so a real import library wins if one was staged. A Windows SHARED target
-				// stages $<TARGET_FILE>, which is the DLL and not the .lib, and lld links against a
-				// DLL directly -- verified against the staged runtime.
 				name + suffix + ".dll",
 				"lib" + name + suffix + ".dll",
 			})
@@ -2625,12 +3631,6 @@ public static class GameCodeBuild
 			return string.Empty;
 		}
 
-		// ONE CONFIGURATION SHOULD BE PRESENT, and the staging prunes bin/ so that it is.
-		// When more than one is anyway -- an older tree, or a hand-copied file -- the newest is
-		// the one this install just built, and taking it on name order instead is how the
-		// payload ended up importing a four-hour-old rexruntimerd.dll while the host loaded
-		// rexruntimed.dll. Two runtimes, two sets of globals, and a null deref in the guest.
-		// Logged rather than silent: picking between configurations is never routine.
 		if (found.Count > 1)
 		{
 			found.Sort((left, right) =>
@@ -2651,32 +3651,40 @@ public static class GameCodeBuild
 	}
 
 	/// <summary>
-	/// Writes the record the launcher reads to decide whether the module is still current.
+	/// Writes the record the launcher reads to decide whether <paramref name="title"/>'s module is still current.
 	/// </summary>
-	/// <remarks>
-	/// Beside the module, NOT beside the sources, which are deleted after a successful build.
-	/// </remarks>
-	private static void WriteBuildInfo(Toolchain zig, string modsHash)
+	private static void WriteBuildInfo(
+		Refii.Core.Engine_Title title,
+		Toolchain zig,
+		string modsHash,
+		string? moduleInputsDigest)
 	{
 		try
 		{
+			string buildInputsValue = !string.IsNullOrEmpty(moduleInputsDigest)
+				? ModuleInputsPrefix + moduleInputsDigest
+				: HashBuildInputs(title);
+
 			var record = new Dictionary<string, string>
 			{
-				["game_hash"] = HashGameExecutable(),
-				["build_inputs"] = HashBuildInputs(),
+				["game_hash"] = HashGameExecutable(title),
+				["build_inputs"] = buildInputsValue,
 				["mods_hash"] = modsHash,
-				["compiler"] = "zig " + Toolchain.Version(zig),
-				["generator"] = "rexglue " + Recompiler.SdkVersion(),
+				["compiler"] = "zig " + GetToolchainVersion(zig),
+				["generator"] = "rexglue " + GetSdkVersion(),
 				["platform"] = RuntimeInformation.RuntimeIdentifier,
 				["built_utc"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ"),
 			};
 
-			File.WriteAllText(BuildInfoPath, JsonSerializer.Serialize(
+			string buildInfoPath = GetBuildInfoPath(title);
+			string tempPath = buildInfoPath + ".tmp";
+			File.WriteAllText(tempPath, JsonSerializer.Serialize(
 				record, new JsonSerializerOptions
 				{
 					WriteIndented = true,
 					TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
 				}));
+			File.Move(tempPath, buildInfoPath, overwrite: true);
 		}
 		catch (Exception)
 		{
@@ -2686,15 +3694,6 @@ public static class GameCodeBuild
 	/// <summary>
 	/// Windows status codes that mean zig DIED rather than rejecting the source.
 	/// </summary>
-	/// <remarks>
-	/// A CRASH IS NOT A DIAGNOSTIC. clang reports a bad translation unit as exit 1 with a
-	/// message on stderr; these exit with an NTSTATUS and stderr EMPTY, so the install used to
-	/// fail with a filename, a colon and nothing after it. Retrying only these codes leaves a
-	/// genuine compile error failing on the spot, which is what it should do.
-	///
-	/// Seen on windows-arm64 while several zig processes populate one cold cache directory.
-	/// The object file is usually already written when it happens, so the retry is cheap.
-	/// </remarks>
 	private static bool IsCrashExit(int code) =>
 		code == unchecked((int)0xC0000005)   // STATUS_ACCESS_VIOLATION
 			|| code == unchecked((int)0xC0000374)   // STATUS_HEAP_CORRUPTION
@@ -2709,13 +3708,16 @@ public static class GameCodeBuild
 	/// always safe.
 	/// </summary>
 	private static async Task<(int Code, string Output)> RunCaptureAsync(
-		string executable, IReadOnlyList<string> arguments, BuildControl control,
+		Refii.Core.Engine_Title title,
+		string executable,
+		IReadOnlyList<string> arguments,
+		BuildControl control,
 		CancellationToken cancellation)
 	{
 		for (int attempt = 0; ; attempt++)
 		{
 			(int Code, string Output) result = await RunCaptureOnceAsync(
-				executable, arguments, control, cancellation).ConfigureAwait(false);
+				title, executable, arguments, control, cancellation).ConfigureAwait(false);
 
 			if (!IsCrashExit(result.Code) || attempt >= CrashRetries
 					|| cancellation.IsCancellationRequested)
@@ -2734,9 +3736,39 @@ public static class GameCodeBuild
 	/// <paramref name="control"/> while it runs, so a pause freezes it and a resume thaws it.
 	/// </summary>
 	private static async Task<(int Code, string Output)> RunCaptureOnceAsync(
-		string executable, IReadOnlyList<string> arguments, BuildControl control,
+		Refii.Core.Engine_Title title,
+		string executable,
+		IReadOnlyList<string> arguments,
+		BuildControl control,
 		CancellationToken cancellation)
 	{
+		string zigCacheDir = GetZigCacheDirectory(title);
+		Directory.CreateDirectory(zigCacheDir);
+
+		if (ActiveDriver?.RunProcessAsync is { } customProcess)
+		{
+			var env = new Dictionary<string, string>(StringComparer.Ordinal)
+			{
+				["ZIG_GLOBAL_CACHE_DIR"] = zigCacheDir,
+				["ZIG_LOCAL_CACHE_DIR"] = zigCacheDir,
+			};
+			Log(executable, arguments);
+			try
+			{
+				(int code, string output) = await customProcess(
+					executable, arguments, RecompileDirectory, env, control, cancellation).ConfigureAwait(false);
+				return (code, LogResult(code, output));
+			}
+			catch (OperationCanceledException)
+			{
+				return (-1, LogResult(-1, "cancelled"));
+			}
+			catch (Exception exception)
+			{
+				return (-1, LogResult(-1, exception.ToString()));
+			}
+		}
+
 		var startInfo = new ProcessStartInfo
 		{
 			FileName = executable,
@@ -2744,21 +3776,13 @@ public static class GameCodeBuild
 			UseShellExecute = false,
 			RedirectStandardOutput = true,
 			RedirectStandardError = true,
-
-			// NO CONSOLE WINDOW. Redirecting both streams is not enough on Windows: the
-			// launcher is a GUI-subsystem process and zig is a console one, so
-			// each child gets a console allocated and flashed on screen even though nothing
-			// is ever drawn in it. The compile phase runs one per batch across ~150k
-			// functions, which is a window appearing and vanishing for the whole build.
-			// Meaningless on Linux, where there is no such thing to suppress.
 			CreateNoWindow = true,
 		};
 
-		// Both, because zig consults a global and a local cache and either would carry work
-		// over from the last build. Pointed inside the build directory so the clean in step 0
-		// removes them with everything else.
-		startInfo.EnvironmentVariables["ZIG_GLOBAL_CACHE_DIR"] = CompileCacheDirectory;
-		startInfo.EnvironmentVariables["ZIG_LOCAL_CACHE_DIR"] = CompileCacheDirectory;
+		// Persistent per-title Zig cache directory so built libc++, compiler_rt, and import libs
+		// survive across rebuilds instead of being compiled from scratch on every run.
+		startInfo.EnvironmentVariables["ZIG_GLOBAL_CACHE_DIR"] = zigCacheDir;
+		startInfo.EnvironmentVariables["ZIG_LOCAL_CACHE_DIR"] = zigCacheDir;
 
 		foreach (string argument in arguments)
 		{
@@ -2785,11 +3809,6 @@ public static class GameCodeBuild
 			catch (OperationCanceledException)
 			{
 				control.Detach(process);
-				// KILL THE CHILD, as RunStepAsync does. WaitForExitAsync only stops WAITING; the
-				// zig process carries on. On Windows the survivors keep handles open on the
-				// object files and the cache, so step 0's delete of the build directory fails
-				// with a sharing violation and the NEXT build cannot start either. On Linux the
-				// unlink succeeds regardless, which is why this only ever bites on Windows.
 				try
 				{
 					process.Kill(entireProcessTree: true);
@@ -2815,41 +3834,133 @@ public static class GameCodeBuild
 		}
 	}
 
-	/// <summary>
-	/// The build's own log, because until now it had none.
-	/// </summary>
-	/// <remarks>
-	/// THIS RUNS ON THE PLAYER'S MACHINE and it can fail there for reasons no developer will
-	/// reproduce — a game image we have not seen, a full disk, an antivirus holding an object
-	/// file open. Every phase's real output used to exist only as a truncated line on the
-	/// progress bar and a string in a <see cref="Result"/>, so a failed install left NOTHING
-	/// behind to send back. LauncherPaths.GetLauncherLogPath() had been written for this and
-	/// was never called from anywhere.
-	///
-	/// BEST EFFORT, ALWAYS. Logging is a diagnostic, not a feature: if the path is
-	/// unwritable the build carries on rather than failing for want of somewhere to complain.
-	/// </remarks>
-	private static void LogWrite(string text)
+	private static readonly object s_logGate = new();
+	private static StringBuilder? s_logBuffer;
+	private static string? s_logBufferPath;
+	private static int s_logScopeDepth;
+
+	private sealed class LogBufferScope : IDisposable
 	{
+		private int _disposed;
+
+		public void Dispose()
+		{
+			if (Interlocked.Exchange(ref _disposed, 1) != 0)
+			{
+				return;
+			}
+
+			lock (s_logGate)
+			{
+				if (s_logScopeDepth > 0)
+				{
+					s_logScopeDepth--;
+				}
+
+				FlushLogBufferLocked();
+				if (s_logScopeDepth == 0)
+				{
+					s_logBuffer = null;
+					s_logBufferPath = null;
+				}
+			}
+		}
+	}
+
+	private static IDisposable BeginLogScope()
+	{
+		lock (s_logGate)
+		{
+			s_logScopeDepth++;
+			s_logBuffer ??= new StringBuilder(16 * 1024);
+			return new LogBufferScope();
+		}
+	}
+
+	private static string CurrentLogPath() =>
+		ActiveDriver?.CacheRootOverride is { Length: > 0 } cacheOverride
+			? Path.Combine(cacheOverride, "logs", "refii-launcher.log")
+			: LauncherPaths.GetLauncherLogPath();
+
+	private static void FlushLogBufferLocked()
+	{
+		if (s_logBuffer == null || s_logBuffer.Length == 0 || string.IsNullOrEmpty(s_logBufferPath))
+		{
+			return;
+		}
+
 		try
 		{
-			string path = LauncherPaths.GetLauncherLogPath();
-			string? directory = Path.GetDirectoryName(path);
+			string? directory = Path.GetDirectoryName(s_logBufferPath);
 			if (!string.IsNullOrEmpty(directory))
 			{
 				Directory.CreateDirectory(directory);
 			}
 
-			File.AppendAllText(path,
-				DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + text + Environment.NewLine);
+			File.AppendAllText(s_logBufferPath, s_logBuffer.ToString());
 		}
 		catch (Exception)
 		{
 		}
+		finally
+		{
+			s_logBuffer.Clear();
+		}
 	}
 
-	/// <summary>Records a phase boundary, so a log shows how far a failed build reached.</summary>
-	internal static void LogPhase(string phase) => LogWrite("=== " + phase);
+	/// <summary>
+	/// The build's own log, synchronized and buffered during active pipeline runs so concurrent
+	/// compiler workers and P/Invoke codegen callbacks never race or contend on file handles.
+	/// </summary>
+	private static void LogWrite(string text)
+	{
+		string formatted = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff") + "  " + text + Environment.NewLine;
+		lock (s_logGate)
+		{
+			string path = CurrentLogPath();
+			if (s_logScopeDepth > 0 && s_logBuffer != null)
+			{
+				if (!string.IsNullOrEmpty(s_logBufferPath) &&
+				    !string.Equals(s_logBufferPath, path, StringComparison.Ordinal))
+				{
+					FlushLogBufferLocked();
+				}
+
+				s_logBufferPath = path;
+				s_logBuffer.Append(formatted);
+				if (s_logBuffer.Length >= 64 * 1024)
+				{
+					FlushLogBufferLocked();
+				}
+
+				return;
+			}
+
+			try
+			{
+				string? directory = Path.GetDirectoryName(path);
+				if (!string.IsNullOrEmpty(directory))
+				{
+					Directory.CreateDirectory(directory);
+				}
+
+				File.AppendAllText(path, formatted);
+			}
+			catch (Exception)
+			{
+			}
+		}
+	}
+
+	/// <summary>Records a phase boundary and flushes buffered log lines so disk logs reflect active phase progress.</summary>
+	internal static void LogPhase(string phase)
+	{
+		LogWrite("=== " + phase);
+		lock (s_logGate)
+		{
+			FlushLogBufferLocked();
+		}
+	}
 
 	/// <summary>
 	/// Records the command line. Arguments are logged one per line rather than joined: the

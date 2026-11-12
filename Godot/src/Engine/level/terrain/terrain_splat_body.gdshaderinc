@@ -368,9 +368,13 @@ void fragment() {
 	vec2 par_dir = vec2(0.0);
 #ifndef FABLE_LITE
 	if (has_height && parallax_scale > 0.0) {
-		vec3 tangent_view = normalize(vec3(
-			dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL)));
-		par_dir = tangent_view.xy * parallax_scale / max(tangent_view.z, 0.4);
+		float view_dist_sq = dot(VERTEX, VERTEX);
+		if (view_dist_sq < 324.0) {
+			float par_fade = clamp((18.0 - sqrt(view_dist_sq)) * (1.0 / 6.0), 0.0, 1.0);
+			vec3 tangent_view = normalize(vec3(
+				dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL)));
+			par_dir = tangent_view.xy * (parallax_scale * par_fade) / max(tangent_view.z, 0.4);
+		}
 	}
 #endif
 
@@ -689,7 +693,7 @@ void fragment() {
 	}
 #endif
 
-#ifdef FABLE_LITE_MODERN
+#if defined(FABLE_LITE_MODERN) || defined(FABLE_MODERN_DIRECT)
 	// THE MODERN MODEL EMITS NONE OF IT. The ground is never amb3, so `fable_ambient` scales the
 	// whole authored term below by max(1 - fable_unified, 0) = 0: the lightmap fetch and the tether
 	// are compiled out, and the flat floor is what reaches EMISSION. The cavity and contact AO
@@ -697,6 +701,10 @@ void fragment() {
 	EMISSION = final * fable_ambient_occluded(vec3(0.0), combined_ao, darken);
 	AO = combined_ao;
 #else
+	if (fable_unified > 0.999) {
+		EMISSION = final * fable_ambient_occluded(vec3(0.0), combined_ao, darken);
+		AO = combined_ao;
+	} else {
 	vec2 lm_dim = vec2(textureSize(lightmap, 0));
 	vec2 lm_uv = (chunk_clamped * 32.0) / max(lm_dim, vec2(1.0));
 	vec3 bake = has_lightmap
@@ -751,6 +759,7 @@ void fragment() {
 	EMISSION = final * fable_ambient_occluded(authored * ao, combined_ao, darken);
 	// Godot's ambient and GI take the AO the guest's fill took above; 1 in the fable model.
 	AO = mix(1.0, combined_ao, fable_unified);
+	}
 #endif
 
 	// LAST, because it attenuates everything above it. Exact here: the ground is
@@ -827,6 +836,7 @@ void light() {
 	// `saturate(dot(N, PrimaryLightDirection) * 8.0)` (blob 0189, c255.x = 8.0) — a hard
 	// shutter over the last ~7 degrees before the terminator, multiplied with plain NdotL.
 	// For the directional light LIGHT is that primary direction, so the gate reuses it.
+	float ndotl = dot(NORMAL, LIGHT);
 #ifndef FABLE_LITE
 	if (fable_light_debug == 6) {
 		// VIEW 6 — the raw directional shadow term; see standard_material's light().
@@ -836,16 +846,16 @@ void light() {
 	} else if (fable_light_debug == 7) {
 		// VIEW 7 — SIGNED NdotL, the term view 2 cannot separate from the rest.
 		if (LIGHT_IS_DIRECTIONAL) {
-			DIFFUSE_LIGHT = vec3((dot(NORMAL, LIGHT) * 0.5) + 0.5);
+			DIFFUSE_LIGHT = vec3((ndotl * 0.5) + 0.5);
 		}
 	} else
 #endif
-	if (dot(NORMAL, LIGHT) > 0.0) {
+	if (ndotl > 1e-4) {
 		// Facing away the term is exactly zero (saturate(NdotL) scales finite factors): skipped.
-		float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world) * fable_direct_ao(v_combined_ao);
+		float atten = fable_attenuation_weighted(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world, ndotl) * fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL);
 		if (atten > 0.0) {
 			float gate = LIGHT_IS_DIRECTIONAL
-				? clamp(8.0 * dot(NORMAL, LIGHT), 0.0, 1.0)
+				? clamp(8.0 * ndotl, 0.0, 1.0)
 				: 1.0;
 			DIFFUSE_LIGHT += gate * fable_direct(
 				NORMAL, LIGHT,
@@ -854,7 +864,7 @@ void light() {
 #ifndef FABLE_LITE
 			if (v_weather_specular > 0.001) {
 				SPECULAR_LIGHT += fable_specular(NORMAL, LIGHT, VIEW,
-					atten,
+					atten * fable_specular_ao(v_combined_ao),
 					LIGHT_COLOR, vec3(0.04 * v_weather_specular), v_weather_power);
 			}
 #endif

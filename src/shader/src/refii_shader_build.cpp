@@ -11,12 +11,6 @@
 #include "shader/shader_sbk_pipeline.h"
 #include "shader_sbk_titles.h"
 
-#if defined(_WIN32)
-#define REFII_SHADER_BUILD_EXPORT __declspec(dllexport)
-#else
-#define REFII_SHADER_BUILD_EXPORT __attribute__((visibility("default")))
-#endif
-
 namespace {
 
 namespace fs = std::filesystem;

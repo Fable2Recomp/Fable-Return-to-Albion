@@ -971,6 +971,11 @@ public static class Engine_LevelShadowMaps
 
 	public readonly struct BvhTriangle
 	{
+		public const uint FlagShadowCaster = 1u;
+		public const uint FlagTerrain = 2u;
+		public const uint FlagAoOccluder = 4u;
+		public const uint DefaultFlags = FlagShadowCaster | FlagAoOccluder;
+
 		public readonly Vector3 V0;
 		public readonly Vector3 Edge1;
 		public readonly Vector3 Edge2;
@@ -978,8 +983,9 @@ public static class Engine_LevelShadowMaps
 		public readonly Vector3 Min;
 		public readonly Vector3 Max;
 		public readonly Vector3 Centroid;
+		public readonly uint Flags;
 
-		public BvhTriangle(Vector3 a, Vector3 b, Vector3 c)
+		public BvhTriangle(Vector3 a, Vector3 b, Vector3 c, uint flags = DefaultFlags)
 		{
 			V0 = a;
 			Edge1 = b - a;
@@ -996,6 +1002,7 @@ public static class Engine_LevelShadowMaps
 				MathF.Max(a.Y, MathF.Max(b.Y, c.Y)),
 				MathF.Max(a.Z, MathF.Max(b.Z, c.Z)));
 			Centroid = (a + b + c) * (1.0f / 3.0f);
+			Flags = flags;
 		}
 	}
 
@@ -1046,6 +1053,7 @@ public static class Engine_LevelShadowMaps
 
 			triBytes = new byte[_triangles.Length * 64];
 			Span<float> tFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(triBytes.AsSpan());
+			Span<uint> tUints = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(triBytes.AsSpan());
 			for (int i = 0; i < _triangles.Length; i++)
 			{
 				ref readonly BvhTriangle t = ref _triangles[i];
@@ -1065,7 +1073,7 @@ public static class Engine_LevelShadowMaps
 				tFloats[o + 12] = t.Normal.X;
 				tFloats[o + 13] = t.Normal.Y;
 				tFloats[o + 14] = t.Normal.Z;
-				tFloats[o + 15] = 0.0f;
+				tUints[o + 15] = t.Flags;
 			}
 		}
 
@@ -1167,7 +1175,7 @@ public static class Engine_LevelShadowMaps
 		/// Collects all triangles whose AABB intersects the axis-aligned bounding box [boxMin, boxMax].
 		/// Used to build a tiny per-light local BVH before tracing that light's octahedral tile.
 		/// </summary>
-		public void CollectInBounds(Vector3 boxMin, Vector3 boxMax, List<BvhTriangle> into)
+		public void CollectInBounds(Vector3 boxMin, Vector3 boxMax, List<BvhTriangle> into, uint requiredFlags = 0u)
 		{
 			if (_triangles.Length == 0)
 			{
@@ -1194,6 +1202,11 @@ public static class Engine_LevelShadowMaps
 					for (int i = node.LeftOrFirst; i < end; i++)
 					{
 						ref readonly BvhTriangle tri = ref _triangles[i];
+						if (requiredFlags != 0u && (tri.Flags & requiredFlags) != requiredFlags)
+						{
+							continue;
+						}
+
 						if (tri.Max.X >= boxMin.X && tri.Min.X <= boxMax.X &&
 						    tri.Max.Y >= boxMin.Y && tri.Min.Y <= boxMax.Y &&
 						    tri.Max.Z >= boxMin.Z && tri.Min.Z <= boxMax.Z)
@@ -1212,7 +1225,8 @@ public static class Engine_LevelShadowMaps
 
 		/// <summary>
 		/// Traces a ray from <paramref name="origin"/> along unit <paramref name="dir"/> over
-		/// [tMin, tMax] and returns the closest hit distance and geometric surface normal.
+		/// [tMin, tMax] and returns the closest hit distance and geometric surface normal for triangles
+		/// satisfying <c>(tri.Flags &amp; flagMask) == flagExpected</c>.
 		/// </summary>
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public bool TraceClosestHit(
@@ -1221,11 +1235,13 @@ public static class Engine_LevelShadowMaps
 			float tMin,
 			float tMax,
 			out float hitDist,
-			out Vector3 hitNormal)
+			out Vector3 hitNormal,
+			uint flagMask = BvhTriangle.FlagShadowCaster,
+			uint flagExpected = BvhTriangle.FlagShadowCaster)
 		{
 			hitDist = tMax;
 			hitNormal = Vector3.Up;
-			if (_triangles.Length == 0)
+			if (_triangles.Length == 0 || _nodeCount <= 0)
 			{
 				return false;
 			}
@@ -1234,25 +1250,31 @@ public static class Engine_LevelShadowMaps
 			float invY = MathF.Abs(dir.Y) > 1e-8f ? 1.0f / dir.Y : MathF.CopySign(1e8f, dir.Y);
 			float invZ = MathF.Abs(dir.Z) > 1e-8f ? 1.0f / dir.Z : MathF.CopySign(1e8f, dir.Z);
 
+			if (!IntersectAabb(origin, invX, invY, invZ, _nodes[0].Min, _nodes[0].Max, tMin, hitDist, out _))
+			{
+				return false;
+			}
+
 			Span<int> stack = stackalloc int[64];
+			Span<float> tstack = stackalloc float[64];
 			int sp = 0;
-			stack[sp++] = 0;
+			int nodeIdx = 0;
 			bool anyHit = false;
 
-			while (sp > 0)
+			while (true)
 			{
-				ref readonly Node node = ref _nodes[stack[--sp]];
-				if (!IntersectAabb(origin, invX, invY, invZ, node.Min, node.Max, tMin, hitDist))
-				{
-					continue;
-				}
-
+				ref readonly Node node = ref _nodes[nodeIdx];
 				if (node.Count > 0)
 				{
 					int end = node.LeftOrFirst + node.Count;
 					for (int i = node.LeftOrFirst; i < end; i++)
 					{
 						ref readonly BvhTriangle tri = ref _triangles[i];
+						if ((tri.Flags & flagMask) != flagExpected)
+						{
+							continue;
+						}
+
 						if (IntersectTriangleTwoSided(origin, dir, in tri, tMin, hitDist, out float t))
 						{
 							hitDist = t;
@@ -1261,10 +1283,66 @@ public static class Engine_LevelShadowMaps
 						}
 					}
 				}
-				else if (sp + 2 <= stack.Length)
+				else
 				{
-					stack[sp++] = node.LeftOrFirst + 1;
-					stack[sp++] = node.LeftOrFirst;
+					int leftIdx = node.LeftOrFirst;
+					int rightIdx = leftIdx + 1;
+					bool hitL = IntersectAabb(origin, invX, invY, invZ, _nodes[leftIdx].Min, _nodes[leftIdx].Max, tMin, hitDist, out float tminL);
+					bool hitR = IntersectAabb(origin, invX, invY, invZ, _nodes[rightIdx].Min, _nodes[rightIdx].Max, tMin, hitDist, out float tminR);
+
+					if (hitL && hitR)
+					{
+						if (tminL <= tminR)
+						{
+							if (sp < stack.Length)
+							{
+								stack[sp] = rightIdx;
+								tstack[sp] = tminR;
+								sp++;
+							}
+							nodeIdx = leftIdx;
+						}
+						else
+						{
+							if (sp < stack.Length)
+							{
+								stack[sp] = leftIdx;
+								tstack[sp] = tminL;
+								sp++;
+							}
+							nodeIdx = rightIdx;
+						}
+						continue;
+					}
+
+					if (hitL)
+					{
+						nodeIdx = leftIdx;
+						continue;
+					}
+
+					if (hitR)
+					{
+						nodeIdx = rightIdx;
+						continue;
+					}
+				}
+
+				bool popped = false;
+				while (sp > 0)
+				{
+					--sp;
+					if (tstack[sp] < hitDist)
+					{
+						nodeIdx = stack[sp];
+						popped = true;
+						break;
+					}
+				}
+
+				if (!popped)
+				{
+					break;
 				}
 			}
 
@@ -1280,7 +1358,8 @@ public static class Engine_LevelShadowMaps
 			Vector3 bMin,
 			Vector3 bMax,
 			float tMin,
-			float tMax)
+			float tMax,
+			out float entryT)
 		{
 			float tx1 = (bMin.X - origin.X) * invX;
 			float tx2 = (bMax.X - origin.X) * invX;
@@ -1297,6 +1376,7 @@ public static class Engine_LevelShadowMaps
 			tmin = MathF.Max(tmin, MathF.Min(tz1, tz2));
 			tmax = MathF.Min(tmax, MathF.Max(tz1, tz2));
 
+			entryT = tmin;
 			return tmax >= tmin;
 		}
 
@@ -1462,7 +1542,7 @@ public static class Engine_LevelShadowMaps
 			BakeLightSpec light = lights[i];
 			Vector3 rangeVec = new(light.MaxRange, light.MaxRange, light.MaxRange);
 			var localTris = new List<BvhTriangle>(256);
-			worldBvh.CollectInBounds(light.WorldOrigin - rangeVec, light.WorldOrigin + rangeVec, localTris);
+			worldBvh.CollectInBounds(light.WorldOrigin - rangeVec, light.WorldOrigin + rangeVec, localTris, BvhTriangle.FlagShadowCaster);
 			if (localTris.Count == 0)
 			{
 				return;
@@ -1691,21 +1771,25 @@ public static class Engine_LevelShadowMaps
 		// 1. Add main terrain triangles.
 		AppendTerrainTriangles(level, manifest, read, worldTriangles, terrainHeights);
 
-		// 2. Add static shadow-casting prop triangles.
+		// 2. Add static world prop triangles (lamp shadow casters carry FlagShadowCaster | FlagAoOccluder;
+		// light-fixture / brazier / candelabra hosts and non-lamp-shadow props carry FlagAoOccluder so
+		// fire pits, candelabras, pedestals, and decorative statues ground cleanly into floor AO without
+		// blocking their own hosted lamps).
 		foreach (Engine_LevelProps.StaticShadowPropBlock block in propBlocks)
 		{
-			if (block.Foliage || fixtureModelPaths.Contains(block.ModelPath))
+			if (block.Foliage)
 			{
 				continue;
 			}
 
 			bool isTree = block.ModelClass == PropModelClass.Tree;
 			string casterPath = isTree ? block.ShadowModelPath : block.ModelPath;
-			if (casterPath.Length == 0 || IsLightFixtureModel(casterPath))
+			if (casterPath.Length == 0)
 			{
 				continue;
 			}
 
+			bool isFixtureModel = fixtureModelPaths.Contains(block.ModelPath) || IsLightFixtureModel(casterPath);
 			Vector3[]? modelVerts = GetShadowCasterTriangles(casterPath, read, isTreeShadowModel: isTree);
 			if (modelVerts is null || modelVerts.Length < 3)
 			{
@@ -1717,16 +1801,11 @@ public static class Engine_LevelShadowMaps
 				byte casting = i < block.InstanceCasting.Count
 					? block.InstanceCasting[i]
 					: Engine_ClassicShadows.CastsDefault;
-				if (casting == 0)
-				{
-					continue;
-				}
-
 				uint instanceHash = i < block.InstanceHashes.Count ? block.InstanceHashes[i] : 0u;
-				if (instanceHash != 0u && lightHosts.Contains(instanceHash))
-				{
-					continue;
-				}
+				bool castsLampShadow = casting != 0 &&
+					!isFixtureModel &&
+					!(instanceHash != 0u && lightHosts.Contains(instanceHash));
+				uint triFlags = BvhTriangle.FlagAoOccluder | (castsLampShadow ? BvhTriangle.FlagShadowCaster : 0u);
 
 				Transform3D inst = block.Instances[i];
 				for (int v = 0; v < modelVerts.Length; v += 3)
@@ -1734,7 +1813,7 @@ public static class Engine_LevelShadowMaps
 					Vector3 a = MirrorX(inst * modelVerts[v]);
 					Vector3 b = MirrorX(inst * modelVerts[v + 1]);
 					Vector3 c = MirrorX(inst * modelVerts[v + 2]);
-					worldTriangles.Add(new BvhTriangle(a, b, c));
+					worldTriangles.Add(new BvhTriangle(a, b, c, triFlags));
 				}
 			}
 		}
@@ -1887,7 +1966,7 @@ public static class Engine_LevelShadowMaps
 				Vector3 a = new(-pos[i0], pos[i0 + 1], pos[i0 + 2]);
 				Vector3 b = new(-pos[i1], pos[i1 + 1], pos[i1 + 2]);
 				Vector3 c = new(-pos[i2], pos[i2 + 1], pos[i2 + 2]);
-				into.Add(new BvhTriangle(a, b, c));
+				into.Add(new BvhTriangle(a, b, c, BvhTriangle.FlagShadowCaster | BvhTriangle.FlagTerrain | BvhTriangle.FlagAoOccluder));
 			}
 		}
 	}

@@ -73,15 +73,17 @@ public partial class ModdingPanel
 	}
 
 	/// <summary>
-	/// Picks a .f2mod in Android's document picker, copies it into <c>.cache/downloads/</c> (the
+	/// Picks a mod package in Android's document picker, copies it into <c>.cache/downloads/</c> (the
 	/// picker gives a content URI, not a path) and shows what it is before installing it.
 	/// </summary>
 	private void OnInstallFromPhone()
 	{
-		Error error = DisplayServer.FileDialogShow("Install Mod Package", "", "", false,
+		string ext = _selectedTitle.ModExtension;
+		Error error = DisplayServer.FileDialogShow(
+			$"Install {_selectedTitle.Name} Mod Package", "", "", false,
 			DisplayServer.FileDialogMode.OpenFile,
-			// A .f2mod has no MIME type Android knows: show every document and let the installer check it.
-			new[] { "*.f2mod;Refii mod package;*/*" },
+			// Mod packages have no MIME type Android knows: show every document and let the installer check it.
+			new[] { $"*{ext};{_selectedTitle.Name} mod package;*/*" },
 			Callable.From<bool, string[], int>((selected, paths, _) =>
 			{
 				if (!selected || paths.Length != 1)
@@ -92,7 +94,7 @@ public partial class ModdingPanel
 				string uri = paths[0];
 				Callable.From(() => ConfirmInstall(
 					Refii.AndroidRuntime.AndroidModPicker.Fetch(uri, _modsRoot,
-						target => Refii.AndroidRuntime.AndroidModPicker.CopyDocument(uri, target)),
+						target => Refii.AndroidRuntime.AndroidModPicker.CopyDocument(uri, target), ext),
 					downloaded: true)).CallDeferred();
 			}));
 		if (error != Error.Ok)

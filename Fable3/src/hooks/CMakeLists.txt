@@ -136,6 +136,7 @@ if(REFII_CHECK_PAYLOAD_ABI AND REFII_NM)
         OUTPUT "${_refiii_abi_stamp}"
         COMMAND ${CMAKE_COMMAND}
             -DOBJECT_LIST=${_refiii_abi_objects}
+            -DCACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/abi_cache_$<CONFIG>
             -DNM=${REFII_NM}
             -DCXXFILT=${REFII_CXXFILT}
             -DUNDNAME=${REFII_UNDNAME}

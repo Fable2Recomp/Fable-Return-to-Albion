@@ -40,7 +40,18 @@ public static class GameChildProcess
 	/// </summary>
 	/// <param name="elevated">Run the game as Administrator, through <see cref="GameElevatedLaunch"/>
 	/// (Windows; Tracy's advanced data). The handle is then the relay's, which exits with the game.</param>
-	public static bool Spawn(bool elevated, out Refii.Launcher.Core.ProcessHandle handle, out string error)
+	public static bool Spawn(bool elevated, out Refii.Launcher.Core.ProcessHandle handle, out string error) =>
+		Spawn(Refii.Core.Engine_Title.Active, elevated, out handle, out error);
+
+	/// <summary>
+	/// Starts <paramref name="title"/> as a child of this launcher process, passing its own
+	/// log path, runtime config settings, <c>REFII_TITLE</c>, and <c>REFII_PAYLOAD_MODULE</c>.
+	/// </summary>
+	public static bool Spawn(
+		Refii.Core.Engine_Title title,
+		bool elevated,
+		out Refii.Launcher.Core.ProcessHandle handle,
+		out string error)
 	{
 		var arguments = new List<string>();
 		if (OS.HasFeature("editor"))
@@ -51,18 +62,11 @@ public static class GameChildProcess
 
 		// The game's Godot log in the title's own logs folder, beside its guest logs (logs/Fable2,
 		// logs/Fable3): two titles' runs never share one file. Engine flags go ahead of the rest.
-		try { System.IO.Directory.CreateDirectory(Refii.Core.Engine_Title.Active.LogsDirectory); }
+		try { System.IO.Directory.CreateDirectory(title.LogsDirectory); }
 		catch (System.Exception) { }
 		arguments.Add("--log-file");
-		arguments.Add(Refii.Core.Engine_Title.Active.GodotLogPath);
-		// `render_thread` is a Godot start-up option, not a runtime setting: the renderer's
-		// thread model is fixed before the game's own code runs, so it rides the command line.
-		IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.Read(out _);
-		if (Refii.Core.Engine_RefiiConfig.Bool(config, "render_thread", true))
-		{
-			arguments.Add("--render-thread");
-			arguments.Add("separate");
-		}
+		arguments.Add(title.GodotLogPath);
+		IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.ReadFor(title, out _);
 
 		// The graphics API is fixed when the rendering device is created, so it rides the command
 		// line too. Direct3D 12 is Windows-only; everywhere else the driver is Vulkan whatever
@@ -77,6 +81,18 @@ public static class GameChildProcess
 		{
 			GD.Print("[launch] HDR output is enabled: using Direct3D 12 rendering driver on Windows (Vulkan does not support HDR swapchains in Godot)");
 		}
+
+		// `render_thread` is a Godot start-up option, not a runtime setting: the renderer's
+		// thread model is fixed before the game's own code runs, so it rides the command line.
+		// Direct3D 12 keeps Godot's default thread-safe ("safe") render model because Godot 4.7's
+		// experimental "--render-thread separate" races main-thread RenderingServer/RenderingDevice
+		// updates against D3D12 command-list recording and descriptor-heap rotation.
+		if (ShouldUseSeparateRenderThread(config, driver))
+		{
+			arguments.Add("--render-thread");
+			arguments.Add("separate");
+		}
+
 		arguments.Add("--rendering-driver");
 		arguments.Add(driver);
 
@@ -93,8 +109,8 @@ public static class GameChildProcess
 		var environment = new Dictionary<string, string>
 		{
 			[Marker] = "1",
-			[Refii.Core.Engine_Title.EnvironmentVariable] = Refii.Core.Engine_Title.Active.Key,
-			[Refii.Core.Engine_Title.PayloadEnvironmentVariable] = Refii.Core.Engine_Title.Active.ModuleName,
+			[Refii.Core.Engine_Title.EnvironmentVariable] = title.Key,
+			[Refii.Core.Engine_Title.PayloadEnvironmentVariable] = title.ModuleName,
 		};
 
 		// Gen0 budget (32 MB). A gen1 pause is proportional to what survives it, so a smaller
@@ -166,9 +182,26 @@ public static class GameChildProcess
 	/// <summary>Where `application/config/project_settings_override` points (project.godot).</summary>
 	private const string RendererSettingsPath = "user://renderer.cfg";
 
+	/// <summary>Maximum staging buffer size in megabytes for upload pacing on unified memory GPUs.</summary>
 	public const int DefaultStagingBufferMaxSizeMb = 128;
+
+	/// <summary>Total D3D12 CBV/SRV/UAV descriptor heap capacity.</summary>
+	public const int DefaultD3D12MaxResourceDescriptors = 262144;
+
+	/// <summary>Per-frame D3D12 CBV/SRV/UAV descriptor ring budget.</summary>
 	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 131072;
-	public const int DefaultD3D12MaxSamplerDescriptorsPerFrame = 4096;
+
+	/// <summary>
+	/// Shader-visible D3D12 sampler heap limit. Must never exceed Direct3D 12's architectural ceiling
+	/// (<c>D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE = 2048</c>), or spec-strict drivers (such as Intel Arc)
+	/// fail <c>ID3D12Device::CreateDescriptorHeap</c> with <c>0x80070057</c> (<c>E_INVALIDARG</c>).
+	/// </summary>
+	public const int DefaultD3D12MaxSamplerDescriptors = 2048;
+
+	/// <summary>Per-frame shader-visible D3D12 sampler descriptor limit (capped at 2048 per D3D12 spec).</summary>
+	public const int DefaultD3D12MaxSamplerDescriptorsPerFrame = 2048;
+
+	/// <summary>Per-frame non-shader-visible RTV/DSV descriptor capacity.</summary>
 	public const int DefaultD3D12MaxMiscDescriptorsPerFrame = 4096;
 
 	/// <summary>
@@ -190,6 +223,8 @@ public static class GameChildProcess
 		string common =
 			"[rendering]\n\n" +
 			$"rendering_device/staging_buffer/max_size_mb={DefaultStagingBufferMaxSizeMb}\n" +
+			$"rendering_device/d3d12/max_resource_descriptors={DefaultD3D12MaxResourceDescriptors}\n" +
+			$"rendering_device/d3d12/max_sampler_descriptors={DefaultD3D12MaxSamplerDescriptors}\n" +
 			$"rendering_device/d3d12/max_resource_descriptors_per_frame={DefaultD3D12MaxResourceDescriptorsPerFrame}\n" +
 			$"rendering_device/d3d12/max_sampler_descriptors_per_frame={DefaultD3D12MaxSamplerDescriptorsPerFrame}\n" +
 			$"rendering_device/d3d12/max_misc_descriptors_per_frame={DefaultD3D12MaxMiscDescriptorsPerFrame}\n";
@@ -235,4 +270,12 @@ public static class GameChildProcess
 
 		return configured == "d3d12" ? "d3d12" : "vulkan";
 	}
+
+	/// <summary>
+	/// Whether to pass <c>--render-thread separate</c> to the spawned game process.
+	/// Disabled on Direct3D 12, where Godot 4.7's experimental separate render thread is unstable
+	/// under concurrent main-thread texture/RD mutations and GPU timestamp queries.
+	/// </summary>
+	public static bool ShouldUseSeparateRenderThread(IReadOnlyDictionary<string, string> config, string resolvedDriver) =>
+		resolvedDriver != "d3d12" && Refii.Core.Engine_RefiiConfig.Bool(config, "render_thread", true);
 }

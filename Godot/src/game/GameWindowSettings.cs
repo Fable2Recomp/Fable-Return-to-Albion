@@ -84,6 +84,12 @@ public readonly partial struct GameWindowSettings
 	/// <summary>Whether the window drops its title bar and border.</summary>
 	public bool Borderless { get; init; }
 
+	/// <summary>
+	/// True when <c>display_resolution</c> is set to <c>"native"</c>, allowing 3D internal resolution
+	/// to grow with maximized or resized OS windows instead of anchoring to <see cref="Size"/>.
+	/// </summary>
+	public bool MatchWindowResolution { get; init; }
+
 	/// <summary>Where the values came from, for the log line that explains the window.</summary>
 	public string Source { get; init; }
 
@@ -131,9 +137,10 @@ public readonly partial struct GameWindowSettings
 		// were the window, `video_mode_*` the guest's video mode.
 		int width = 0;
 		int height = 0;
-		string chosen = Engine_RefiiConfig.String(values, "display_resolution", string.Empty);
+		string chosen = Engine_RefiiConfig.String(values, "display_resolution", string.Empty).Trim();
+		bool matchWindow = chosen.Equals("native", StringComparison.OrdinalIgnoreCase);
 		int cross = chosen.IndexOf('x');
-		if (cross > 0 &&
+		if (!matchWindow && cross > 0 &&
 			int.TryParse(chosen[..cross], out int pickedWidth) &&
 			int.TryParse(chosen[(cross + 1)..], out int pickedHeight))
 		{
@@ -196,8 +203,33 @@ public readonly partial struct GameWindowSettings
 			HdrReferenceNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_reference_nits", 0f)),
 			HdrPeakNits = Math.Max(0f, Engine_RefiiConfig.Float(values, "hdr_peak_nits", 0f)),
 			Borderless = Engine_RefiiConfig.Bool(values, "borderless", false),
+			MatchWindowResolution = matchWindow,
 			Source = source,
 		}.WithAndroidHostValues(values); // hdr_2d and canvas_lean: GameWindowSettings.Android.cs
+	}
+
+	/// <summary>
+	/// Computes the 3D internal resolution scale and mesh LOD threshold for the live OS window size,
+	/// keeping 3D pixel count anchored to <see cref="Size"/> when maximized, resized larger, or fullscreen
+	/// unless <see cref="MatchWindowResolution"/> is enabled.
+	/// </summary>
+	/// <param name="actualWindowSize">Live root viewport / OS window dimensions in pixels.</param>
+	/// <returns>Clamped <c>Scaling3DScale</c> and height-proportional <c>MeshLodThreshold</c>.</returns>
+	public (float Scaling3D, float MeshLodThreshold) ComputeViewport3DParameters(Vector2I actualWindowSize)
+	{
+		float windowScale = !MatchWindowResolution
+			&& actualWindowSize.Y > 0
+			&& Size.Y > 0
+			&& actualWindowSize.Y > Size.Y
+			? (float)Size.Y / actualWindowSize.Y
+			: 1f;
+		float scaling3D = Mathf.Clamp(RenderScale * windowScale, 0.25f, 2.0f);
+		float hostHeight = actualWindowSize.Y > 0 ? actualWindowSize.Y : Size.Y;
+		float effective3DHeight = !MatchWindowResolution && Size.Y > 0 && hostHeight > Size.Y
+			? Size.Y
+			: hostHeight;
+		float lodThreshold = MeshLodPixels * (effective3DHeight / Refii.Models.Engine_MdlLods.ReferenceHeight);
+		return (scaling3D, lodThreshold);
 	}
 
 	/// <summary>

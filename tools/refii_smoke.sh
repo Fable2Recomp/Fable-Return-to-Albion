@@ -12,10 +12,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # The packaged tree to run. The export's output path has moved before (it is now under
 # out/package/<platform>/), and a stale tree tests old code silently — so this is overridable
 # rather than fixed, and the preflight prints the build time it actually found.
-PKG="${REFII_SMOKE_PKG:-$ROOT/out/package/Fable 2 Return to Albion}"
-EXE="$PKG/Fable 2 Return to Albion.x86_64"
+if [ -z "${REFII_SMOKE_PKG:-}" ]; then
+  if [ -d "$ROOT/out/package/linux-x86_64/Fable Return to Albion" ]; then
+    PKG="$ROOT/out/package/linux-x86_64/Fable Return to Albion"
+  else
+    PKG="$ROOT/out/package/Fable Return to Albion"
+  fi
+else
+  PKG="$REFII_SMOKE_PKG"
+fi
+EXE="$PKG/Fable Return to Albion.x86_64"
 GUEST_LOGS="$PKG/logs"
-GODOT_LOG="$HOME/.local/share/godot/app_userdata/Fable 2 Launcher/logs/godot.log"
+GODOT_LOG="$HOME/.local/share/godot/app_userdata/Fable Return to Albion/logs/godot.log"
 OUT="$HOME/.cache/refii-scratch/smoke"      # NEVER the root partition
 SECONDS_BUDGET=180
 DROP_CORE=0
@@ -52,7 +60,7 @@ game_pids() {
   for pid in $(pgrep -f 'Albion' 2>/dev/null); do
     exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || continue
     case "$exe" in
-      */"Fable 2 Return to Albion.x86_64") printf '%s\n' "$pid" ;;
+      */"Fable Return to Albion.x86_64"|*/"Fable 2 Return to Albion.x86_64") printf '%s\n' "$pid" ;;
     esac
   done
 }

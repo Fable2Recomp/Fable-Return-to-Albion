@@ -59,7 +59,9 @@ public partial class Engine_ShaderWarmup : Node
 	private SpinnerArc? _spinner;
 	private ArrayMesh _mesh = null!;
 	private QuadMesh _quadMesh = null!;
+	private ArrayMesh _uiIconQuadMesh = null!;
 	private ArrayMesh _uiTextMesh = null!;
+	private ArrayMesh _uiTextUv2Mesh = null!;
 
 	/// <summary>Fable's gold — the loading screen's lettering and seal tone.</summary>
 	private static readonly Color Gold = new(0.78f, 0.63f, 0.35f);
@@ -384,7 +386,9 @@ public partial class Engine_ShaderWarmup : Node
 		}
 		_mesh = null!;
 		_quadMesh = null!;
+		_uiIconQuadMesh = null!;
 		_uiTextMesh = null!;
+		_uiTextUv2Mesh = null!;
 		_label.Text = "Preparing Albion...";
 		Done = true;
 	}
@@ -433,10 +437,11 @@ public partial class Engine_ShaderWarmup : Node
 				CastShadow = GeometryInstance3D.ShadowCastingSetting.On,
 			});
 
-			// 3D UI shaders (`ui_quad.gdshader`, `ui_text.gdshader`) draw on `QuadMesh` and
-			// indexed `(Vertex, Normal, Color, TexUV)` glyph meshes without tangents or UV2.
-			// Warming those exact vertex formats prevents draw-time PSO compilation spikes when
-			// `frontendmainmenu` or the title screen first renders in D3D12/Vulkan.
+			// 3D UI shaders (`ui_quad.gdshader`, `ui_text.gdshader`, `ui_world_marker.gdshader`)
+			// draw on `QuadMesh`, `IconQuad` `(Vertex, Normal, TexUV)`, Fable 2 glyph meshes
+			// `(Vertex, Normal, Color, TexUV)`, and Fable 3 run-mode glyph meshes with `TexUV2`.
+			// Warming all exact UI vertex formats prevents draw-time PSO compilation spikes when
+			// `frontendstartupscreen` or `frontendmainmenu` first renders in D3D12/Vulkan.
 			if (path.Contains("/ui/", System.StringComparison.Ordinal))
 			{
 				_spatialRoot.AddChild(new MeshInstance3D
@@ -447,7 +452,19 @@ public partial class Engine_ShaderWarmup : Node
 				});
 				_spatialRoot.AddChild(new MeshInstance3D
 				{
+					Mesh = _uiIconQuadMesh,
+					MaterialOverride = material,
+					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+				});
+				_spatialRoot.AddChild(new MeshInstance3D
+				{
 					Mesh = _uiTextMesh,
+					MaterialOverride = material,
+					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+				});
+				_spatialRoot.AddChild(new MeshInstance3D
+				{
+					Mesh = _uiTextUv2Mesh,
 					MaterialOverride = material,
 					CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
 				});
@@ -686,14 +703,43 @@ public partial class Engine_ShaderWarmup : Node
 
 		_mesh = FullAttributeMesh();
 		_quadMesh = new QuadMesh { Size = Vector2.One };
-		_uiTextMesh = UiTextAttributeMesh();
+		_uiIconQuadMesh = UiIconQuadAttributeMesh();
+		_uiTextMesh = UiTextAttributeMesh(includeUv2: false);
+		_uiTextUv2Mesh = UiTextAttributeMesh(includeUv2: true);
 	}
 
 	/// <summary>
-	/// Matches the exact vertex format emitted by <see cref="Refii.Ui.Engine_UiTextMesh"/>:
-	/// indexed triangles with Vertex, Normal, Color, and TexUV1 (no Tangent or TexUV2).
+	/// Matches the exact vertex format emitted by <see cref="Refii.Ui.Engine_UiTheme.IconQuad"/>:
+	/// indexed triangles with Vertex, Normal, and TexUV1 (no Tangent, Color, or TexUV2).
 	/// </summary>
-	private static ArrayMesh UiTextAttributeMesh()
+	private static ArrayMesh UiIconQuadAttributeMesh()
+	{
+		var arrays = new Godot.Collections.Array();
+		arrays.Resize((int)Mesh.ArrayType.Max);
+		arrays[(int)Mesh.ArrayType.Vertex] = new Vector3[]
+		{
+			new(0, 0, 0), new(0, -1, 0), new(1, -1, 0), new(1, 0, 0),
+		};
+		arrays[(int)Mesh.ArrayType.Normal] = new Vector3[]
+		{
+			Vector3.Back, Vector3.Back, Vector3.Back, Vector3.Back,
+		};
+		arrays[(int)Mesh.ArrayType.TexUV] = new Vector2[]
+		{
+			new(0, 0), new(0, 1), new(1, 1), new(1, 0),
+		};
+		arrays[(int)Mesh.ArrayType.Index] = new int[] { 0, 1, 2, 0, 2, 3 };
+
+		var mesh = new ArrayMesh();
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays);
+		return mesh;
+	}
+
+	/// <summary>
+	/// Matches the exact vertex formats emitted by <see cref="Refii.Ui.Engine_UiTextMesh"/>:
+	/// indexed triangles with Vertex, Normal, Color, TexUV1, and optional TexUV2 (no Tangent).
+	/// </summary>
+	private static ArrayMesh UiTextAttributeMesh(bool includeUv2)
 	{
 		var arrays = new Godot.Collections.Array();
 		arrays.Resize((int)Mesh.ArrayType.Max);
@@ -713,6 +759,13 @@ public partial class Engine_ShaderWarmup : Node
 		{
 			new(0, 0), new(1, 0), new(1, 1), new(0, 1),
 		};
+		if (includeUv2)
+		{
+			arrays[(int)Mesh.ArrayType.TexUV2] = new Vector2[]
+			{
+				Vector2.Zero, Vector2.Zero, Vector2.Zero, Vector2.Zero,
+			};
+		}
 		arrays[(int)Mesh.ArrayType.Index] = new int[] { 0, 1, 2, 0, 2, 3 };
 
 		var mesh = new ArrayMesh();
