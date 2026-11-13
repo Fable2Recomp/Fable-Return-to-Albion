@@ -372,7 +372,7 @@ public static class Engine_LevelLights
 		bool isBuildingInterior = !isCaveLevel && isIndoorLight;
 
 		float modernBaseEnergy = Engine_LightingFrame.ModernModel ? ModernBaseEnergyScale : 1.0f;
-		float modernBaseReach = Engine_LightingFrame.ModernModel ? ModernBaseReachScale : 1.0f;
+		float modernBaseReach = Engine_LightingFrame.ModernModel ? Refii.AndroidRuntime.AndroidLeanModern.LampReach(ModernBaseReachScale) : 1.0f;
 		float energyScale = modernBaseEnergy * PlacedScale * (isBuildingInterior ? BuildingInteriorLightScale : 1.0f);
 		float reachScale = modernBaseReach * PlacedRange * (isBuildingInterior ? BuildingInteriorReachScale : 1.0f);
 
@@ -420,6 +420,7 @@ public static class Engine_LevelLights
 		{
 			authoredReach *= ModernBaseReachScale;
 		}
+		authoredReach *= Refii.AndroidRuntime.AndroidLeanModern.BakeReachLift(Engine_LightingFrame.ModernModel, ModernBaseReachScale);
 
 		float flickerEnvelope = 1.0f + MathF.Max(0.0f, item.Light.FlickerRadiusRange);
 		return authoredReach * flickerEnvelope * MathF.Max(1.0f, RangeScale);
@@ -494,11 +495,14 @@ public static class Engine_LevelLights
 					: (Engine_LightingFrame.ModernModel
 						? rawFadeDistance * 2.0f * PlacedRange * rangePresetScale
 						: rawFadeDistance);
+				cutoff = Refii.AndroidRuntime.AndroidLeanModern.LampFadeCutoff(cutoff, authored);
 				float ramp = authored ? MathF.Max(rawFadeRange, 0.01f) : 15.0f;
 				if (Engine_LightingFrame.ModernModel)
 				{
 					ramp = MathF.Max(ramp * 2.0f, cutoff * 0.5f);
 				}
+
+				ramp = Refii.AndroidRuntime.AndroidLeanModern.LampFadeRamp(cutoff, ramp);
 
 				node.DistanceFadeEnabled = true;
 				node.DistanceFadeBegin = MathF.Max(cutoff - ramp, 0.0f);

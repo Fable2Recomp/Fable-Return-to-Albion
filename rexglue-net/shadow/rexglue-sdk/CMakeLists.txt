@@ -309,6 +309,10 @@ if(NOT ANDROID)
     add_subdirectory(src/codegen)
     add_subdirectory(src/rexglue)
 else()
+    # The phone's own generator (cmake/refii_android.cmake, REFII_ANDROID_PHONE_TOOLS) links this.
+    if(REFII_ANDROID_PHONE_TOOLS)
+        add_subdirectory(src/codegen)
+    endif()
     # PC preparation owns generation; an Android target binary cannot run on this host.
     add_executable(rexglue IMPORTED GLOBAL)
     set_property(TARGET rexglue PROPERTY IMPORTED_LOCATION "${REFII_ANDROID_HOST_CODEGEN}")

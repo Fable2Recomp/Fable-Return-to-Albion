@@ -52,7 +52,8 @@ public static class Engine_ShaderSpecialisation
     /// varying dropped (see <see cref="VegetationDefines"/>).</summary>
     public const string VegetationFoldsKey = "lite_vegetation_folds";
 
-    private readonly record struct Keys(bool Shadowless, bool BakeVariants, FoldScope Folds, bool TerrainSingleFetch, bool VegetationFolds = false);
+    private readonly record struct Keys(bool Shadowless, bool BakeVariants, FoldScope Folds, bool TerrainSingleFetch, bool VegetationFolds = false,
+        TerrainLevers Terrain = default);
 
     private static readonly Lazy<Keys> Read = new(ReadKeys, System.Threading.LazyThreadSafetyMode.ExecutionAndPublication);
 
@@ -75,10 +76,12 @@ public static class Engine_ShaderSpecialisation
                     : Refii.Game.AndroidMemoryRelease.LowRamMode ? ParseFoldScope(Refii.Core.Engine_RefiiConfig.String(values, MaterialFoldsLowRamKey, "off"))
                     : FoldScope.All,
                 TerrainSingleFetch: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainSingleFetchKey, false),
-                VegetationFolds: Refii.Core.Engine_RefiiConfig.Bool(values, VegetationFoldsKey, false));
+                VegetationFolds: Refii.Core.Engine_RefiiConfig.Bool(values, VegetationFoldsKey, false),
+                Terrain: ReadTerrainLevers(values));
             GD.Print($"[shader] specialisations: {ShadowlessKey}={keys.Shadowless}, " +
                 $"{BakeVariantsKey}={keys.BakeVariants}, {MaterialFoldsKey}={keys.Folds != FoldScope.Off} ({keys.Folds}), " +
-                $"{TerrainSingleFetchKey}={keys.TerrainSingleFetch}, {VegetationFoldsKey}={keys.VegetationFolds} (relaunch to change)");
+                $"{TerrainSingleFetchKey}={keys.TerrainSingleFetch}, {VegetationFoldsKey}={keys.VegetationFolds}, " +
+                $"ground {keys.Terrain} (relaunch to change)");
             return keys;
         }
         catch (Exception)
@@ -122,18 +125,29 @@ public static class Engine_ShaderSpecialisation
             {
                 return hit;
             }
+        }
 
-            if (GD.Load<Shader>(Engine_ShaderVariant.FullPathOf(path)) is not { } full)
+        // NOT UNDER THE GATE: Godot's loader can wait for the main thread, and the main thread takes
+        // the gate when it runs a worker's material upload (ServerSyncs.GpuUploadPacer). Holding it
+        // here left a level build and the main thread waiting on each other.
+        if (GD.Load<Shader>(Engine_ShaderVariant.FullPathOf(path)) is not { } full)
+        {
+            return null;
+        }
+
+        string code = isLiteBuild
+            ? Engine_ShaderVariant.Compose(full.Code, path)
+            : Engine_ShaderVariant.ComposeModernDirect(full.Code);
+        lock (Gate)
+        {
+            if (LiteBuilds.TryGetValue(path, out Shader? raced))
             {
-                return null;
+                return raced;
             }
 
-            string code = isLiteBuild
-                ? Engine_ShaderVariant.Compose(full.Code, path)
-                : Engine_ShaderVariant.ComposeModernDirect(full.Code);
             var shader = new Shader { Code = code };
             LiteBuilds[path] = shader;
-            ByShader.Add(shader, new Built { Path = path, Source = shader.Code, Defines = Array.Empty<string>(), Shader = shader });
+            ByShader.Add(shader, new Built { Path = path, Source = code, Defines = Array.Empty<string>(), Shader = shader });
             return shader;
         }
     }
@@ -154,7 +168,8 @@ public static class Engine_ShaderSpecialisation
         shader is not null && ByShader.TryGetValue(shader, out Built? built) ? built.Defines : Array.Empty<string>();
 
     /// <summary>Whether any specialisation can apply in this process.</summary>
-    public static bool Any => Read.Value.Shadowless || MaterialFolds || Read.Value.TerrainSingleFetch || Read.Value.VegetationFolds;
+    public static bool Any => Read.Value.Shadowless || MaterialFolds || Read.Value.TerrainSingleFetch || Read.Value.VegetationFolds ||
+        Refii.AndroidRuntime.AndroidCharacterCull.On || Refii.AndroidRuntime.AndroidCharacterShading.On.Any;
 
     /// <summary>Whether `lite_vegetation_folds` is on (and the lite set drawn).</summary>
     public static bool VegetationFolds => Read.Value.VegetationFolds;
@@ -184,11 +199,97 @@ public static class Engine_ShaderSpecialisation
 
     /// <summary>
     /// The defines for the lite terrain splat (not the vista page, which has no loop):
-    /// FABLE_SPEC_TERRAIN_ONE_SAMPLE under `lite_terrain_single_fetch`.
+    /// FABLE_SPEC_TERRAIN_ONE_SAMPLE under `lite_terrain_single_fetch`, then the ground levers
+    /// (<see cref="TerrainLeverDefines"/>).
     /// </summary>
-    public static string[] TerrainDefines => Read.Value.TerrainSingleFetch
-        ? new[] { "FABLE_SPEC_TERRAIN_ONE_SAMPLE" }
-        : Array.Empty<string>();
+    public static string[] TerrainDefines => TerrainLeverDefines(Read.Value.TerrainSingleFetch, Read.Value.Terrain);
+
+    /// <summary>`lite_terrain_bit_loop`: the splat loop visits only the layers that can weigh a pixel (the same picture).</summary>
+    public const string TerrainBitLoopKey = "lite_terrain_bit_loop";
+
+    /// <summary>`lite_terrain_max_layers`: at most this many of a pixel's layers sampled, the strongest; 0 samples all.</summary>
+    public const string TerrainMaxLayersKey = "lite_terrain_max_layers";
+
+    /// <summary>`lite_terrain_min_weight`: a layer weighing less than this is not sampled; 0 samples every one.</summary>
+    public const string TerrainMinWeightKey = "lite_terrain_min_weight";
+
+    /// <summary>`lite_terrain_cliff_sharpness`: how much of a cliff's two-plane blend is given to one plane; 0 blends as the title.</summary>
+    public const string TerrainCliffSharpnessKey = "lite_terrain_cliff_sharpness";
+
+    /// <summary>`lite_terrain_trilinear`: the ground's layer textures filtered without anisotropy.</summary>
+    public const string TerrainTrilinearKey = "lite_terrain_trilinear";
+
+    /// <summary>`lite_terrain_vertex_fog`: the ground's fog worked out per vertex instead of per pixel.</summary>
+    public const string TerrainVertexFogKey = "lite_terrain_vertex_fog";
+
+    /// <summary>The largest <see cref="TerrainMaxLayersKey"/> that cuts anything: more is all layers.</summary>
+    public const int TerrainMaxLayersCap = 4;
+
+    /// <summary>
+    /// The ground levers, as read: <see cref="TerrainBitLoopKey"/> and the rest. Max layers 0 and the
+    /// two weights 0 are off.
+    /// </summary>
+    public readonly record struct TerrainLevers(bool BitLoop, int MaxLayers, double MinWeight, double CliffSharpness, bool Trilinear, bool VertexFog);
+
+    /// <summary>The levers in <paramref name="values"/>, each clamped to what it can mean; unset keys are their defaults (only the bit loop on). Pure.</summary>
+    public static TerrainLevers ReadTerrainLevers(IReadOnlyDictionary<string, string> values)
+    {
+        int maxLayers = Refii.Core.Engine_RefiiConfig.Int(values, TerrainMaxLayersKey, 0);
+        double minWeight = Refii.Core.Engine_RefiiConfig.Float(values, TerrainMinWeightKey, 0f);
+        double sharpness = Refii.Core.Engine_RefiiConfig.Float(values, TerrainCliffSharpnessKey, 0f);
+        return new TerrainLevers(
+            BitLoop: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainBitLoopKey, true),
+            MaxLayers: maxLayers >= 1 && maxLayers < TerrainMaxLayersCap + 1 ? maxLayers : 0,
+            MinWeight: minWeight > 0.0 ? Math.Min(minWeight, 0.5) : 0.0,
+            CliffSharpness: sharpness > 0.0 ? Math.Min(sharpness, 0.45) : 0.0,
+            Trilinear: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainTrilinearKey, false),
+            VertexFog: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainVertexFogKey, false));
+    }
+
+    /// <summary>
+    /// The lite terrain's defines for the settings given (terrain_splat_body.gdshaderinc and
+    /// android/terrain_lite_layers.gdshaderinc), in order: FABLE_SPEC_TERRAIN_ONE_SAMPLE, the bit loop,
+    /// the layer cap and the weight floor (each with its value), the cliff sharpening (with its
+    /// band), the trilinear filter, the vertex fog. A value is written as `NAME VALUE`, which the
+    /// composer states as `#define NAME VALUE`. Pure.
+    /// </summary>
+    /// <remarks>
+    /// The bit loop is the same picture bit for bit (the same layers, order and arithmetic). The cap
+    /// and the floor rescale the sampled layers to every layer's weight and change the picture only
+    /// where layers meet; the vertex fog differs by a level of 255 or two on metre-sized cells; the
+    /// sharpening and the trilinear filter change the cliffs and the far ground visibly.
+    /// </remarks>
+    public static string[] TerrainLeverDefines(bool singleFetch, TerrainLevers levers)
+    {
+        var defines = new List<string>(10);
+        if (singleFetch) defines.Add("FABLE_SPEC_TERRAIN_ONE_SAMPLE");
+        if (levers.BitLoop) defines.Add("FABLE_LITE_TERRAIN_BIT_LOOP");
+        if (levers.MaxLayers > 0)
+        {
+            defines.Add("FABLE_LITE_TERRAIN_MAX_LAYERS");
+            defines.Add("FABLE_LITE_TERRAIN_MAX_LAYERS_VALUE " + levers.MaxLayers.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        if (levers.MinWeight > 0.0)
+        {
+            defines.Add("FABLE_LITE_TERRAIN_MIN_WEIGHT");
+            defines.Add("FABLE_LITE_TERRAIN_MIN_WEIGHT_VALUE " + ShaderFloat(levers.MinWeight));
+        }
+
+        if (levers.CliffSharpness > 0.0)
+        {
+            defines.Add("FABLE_LITE_TERRAIN_CLIFF_SHARP");
+            defines.Add("FABLE_LITE_TERRAIN_CLIFF_SHARP_VALUE " + ShaderFloat(levers.CliffSharpness));
+        }
+
+        if (levers.Trilinear) defines.Add("FABLE_LITE_TERRAIN_TRILINEAR");
+        if (levers.VertexFog) defines.Add("FABLE_LITE_TERRAIN_VERTEX_FOG");
+        return defines.ToArray();
+    }
+
+    /// <summary><paramref name="value"/> as a shader float literal: invariant, always with a point.</summary>
+    private static string ShaderFloat(double value) =>
+        value.ToString("0.0#####", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>Whether `lite_material_folds` is on (and the lite set drawn).</summary>
     public static bool MaterialFolds => Read.Value.Folds != FoldScope.Off;
@@ -203,8 +304,11 @@ public static class Engine_ShaderSpecialisation
     /// <remarks>
     /// Not authored PBR, no ORM, no self-illumination map, not premultiplied, no grass normal
     /// gradient: exact, the uniform is false for the material's life. NO NORMAL MAP also removes
-    /// NORMAL_MAP from the build, so Godot stops carrying the tangent and binormal: the normal is
-    /// the interpolated one either way, to float rounding (Godot's flat-map path renormalises it).
+    /// every line naming TANGENT, BINORMAL or NORMAL_MAP from the build (the body's
+    /// `#ifndef FABLE_SPEC_NO_NORMAL_MAP` guards; the folded `if (false)` alone would keep them, as
+    /// Godot marks a built-in used wherever it is named), so Godot stops carrying the tangent
+    /// attribute and varyings and skips its own normal-map maths: the normal is the interpolated one
+    /// either way, to float rounding (Godot's flat-map path only renormalised it).
     /// </remarks>
     public static string[] FoldDefines(bool pbr, bool orm, bool emission, bool premultiplied, bool normalMap, bool grassBend)
     {
@@ -287,7 +391,8 @@ public static class Engine_ShaderSpecialisation
     /// </summary>
     public static Shader? Load(string path, IEnumerable<string>? defines = null, Shader? file = null)
     {
-        string[] sorted = Normalise(defines);
+        // A define every lite build states already (`lite_normal_maps = "off"`) would only split a build.
+        string[] sorted = Array.FindAll(Normalise(defines), d => !Engine_ShaderVariant.ProcessWide(d));
         bool shadowless = Shadowless;
         if (sorted.Length == 0 && !shadowless)
         {
@@ -301,14 +406,23 @@ public static class Engine_ShaderSpecialisation
             {
                 return hit.Shader;
             }
+        }
 
-            file ??= LoadFile(path);
-            if (file is null)
+        // Loaded outside the gate, as in LoadFile.
+        file ??= LoadFile(path);
+        if (file is null)
+        {
+            return null;
+        }
+
+        string source = file.Code;
+        lock (Gate)
+        {
+            if (ByKey.TryGetValue(key, out Built? raced))
             {
-                return null;
+                return raced.Shader;
             }
 
-            string source = file.Code;
             var shader = new Shader { Code = Compose(source, sorted, _shadowless == true) };
             var built = new Built { Path = path, Source = source, Defines = sorted, Shader = shader };
             ByKey[key] = built;
@@ -352,10 +466,13 @@ public static class Engine_ShaderSpecialisation
         string code = wrapper.Replace("\r\n", "\n", StringComparison.Ordinal);
         if (shadowless)
         {
-            Match mode = RenderMode.Match(code);
-            code = mode.Success
-                ? code.Remove(mode.Index, mode.Length).Insert(mode.Index, mode.Groups[1].Value + ", shadows_disabled;")
-                : code.Replace("shader_type spatial;", "shader_type spatial;\nrender_mode shadows_disabled;", StringComparison.Ordinal);
+            code = WithRenderMode(code, "shadows_disabled");
+        }
+
+        // `android_character_cull_back`: its marker turns the build's `cull_disabled` into `cull_back`.
+        if (System.Linq.Enumerable.Contains(defines, Refii.AndroidRuntime.AndroidCharacterCull.Define))
+        {
+            code = Refii.AndroidRuntime.AndroidCharacterCull.CullBack(code);
         }
 
         if (defines.Count != 0)
@@ -363,6 +480,8 @@ public static class Engine_ShaderSpecialisation
             var block = new StringBuilder();
             foreach (string define in Normalise(defines))
             {
+                // A name the code states already (lite_extra_defines) would fail the compile twice stated.
+                if (Engine_ShaderVariant.Defines(code, define)) continue;
                 block.Append("#define ").Append(define).Append('\n');
             }
 
@@ -371,6 +490,27 @@ public static class Engine_ShaderSpecialisation
         }
 
         return code;
+    }
+
+    /// <summary>
+    /// <paramref name="code"/> with <paramref name="word"/> added to the end of its render mode
+    /// (one made after `shader_type spatial;` when it has none); unchanged when the mode names it
+    /// already, as Godot refuses a word given twice. Pure.
+    /// </summary>
+    public static string WithRenderMode(string code, string word)
+    {
+        Match mode = RenderMode.Match(code);
+        if (!mode.Success)
+        {
+            return code.Replace("shader_type spatial;", "shader_type spatial;\nrender_mode " + word + ";", StringComparison.Ordinal);
+        }
+
+        if (Regex.IsMatch(mode.Groups[1].Value, @"[\s,]" + Regex.Escape(word) + @"\s*(,|$)", RegexOptions.CultureInvariant))
+        {
+            return code;
+        }
+
+        return code.Remove(mode.Index, mode.Length).Insert(mode.Index, mode.Groups[1].Value + ", " + word + ";");
     }
 
     // ---------------------------------------------------------------- shadows_disabled
@@ -665,7 +805,8 @@ public static class Engine_ShaderSpecialisation
 
     // ---------------------------------------------------------------- far builds
 
-    /// <summary>What a far build compiles out: the normal map (fetch, tangent frame, NORMAL_MAP).</summary>
+    /// <summary>What a far build compiles out: the normal map (fetch, tangent frame, NORMAL_MAP), every
+    /// TANGENT/BINORMAL/NORMAL_MAP line with it, as in <see cref="FoldDefines"/>.</summary>
     public static readonly string[] FarDefines = { "FABLE_SPEC_NO_NORMAL_MAP" };
 
     /// <summary>Per shared material, its far copy (itself when the far build is the same shader).</summary>

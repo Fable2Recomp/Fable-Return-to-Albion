@@ -7,8 +7,7 @@ namespace Refii.Launcher;
 public partial class ModdingPanel
 {
 	/// <summary>
-	/// The Android launcher. The phone has no folder to open, no editor and no Mod Studio, and its
-	/// phone compiler builds no mod's native code yet, so those mods cannot be enabled there.
+	/// The Android launcher. The phone has no folder to open, no editor and no Mod Studio.
 	/// </summary>
 	private static bool Phone => !Engine.IsEditorHint() && Refii.Core.Engine_Platform.IsAndroid;
 
@@ -52,8 +51,8 @@ public partial class ModdingPanel
 	private static string PhoneHelp(string extension) =>
 		$"Install a mod package ({extension}) from this phone's storage; the mods that come with " +
 		"the app are already listed. A mod is installed disabled: tick it to turn it on. " +
-		"Higher in the list wins a conflict. Changes apply the next time the game starts. " +
-		"Mods with native code cannot run on the phone yet.";
+		"Higher in the list wins a conflict. Changes apply the next time the game starts; " +
+		"a mod with native code builds the game code again first.";
 
 	/// <summary>
 	/// On a phone, finishes the panel after the install row: the refresh rides on the install row;
@@ -102,36 +101,6 @@ public partial class ModdingPanel
 			_statusMessage = "The Android document picker could not open: " + error;
 			Rebuild();
 		}
-	}
-
-	/// <summary>
-	/// Turns a native mod's tick back off on a phone, which cannot build its code into the game yet.
-	/// </summary>
-	/// <returns>True when the tick was refused.</returns>
-	private bool RefuseNativeModOnPhone(CheckBox check, ModInstall mod)
-	{
-		if (!Phone || !_native.ContainsKey(mod.Name))
-		{
-			return false;
-		}
-
-		check.SetPressedNoSignal(false);
-		_statusMessage = $"'{mod.Name}' has native code, which the phone cannot build into the game yet.";
-		Rebuild();
-		return true;
-	}
-
-	/// <summary>
-	/// A native mod's status on a phone. The phone compiler builds refii's own hooks only, so a native
-	/// mod's code would be missing from the game while its data and Lua loaded around it.
-	/// </summary>
-	private Label NotOnPhoneLabel()
-	{
-		var phoneLabel = MakeLabel("⛔ not on phone");
-		phoneLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));
-		phoneLabel.HorizontalAlignment = HorizontalAlignment.Center;
-		phoneLabel.TooltipText = "This mod has native code, which the phone cannot build into the game yet.";
-		return phoneLabel;
 	}
 
 	/// <summary>A row control's size, grown on the phone to a fingertip (twice the text height).</summary>

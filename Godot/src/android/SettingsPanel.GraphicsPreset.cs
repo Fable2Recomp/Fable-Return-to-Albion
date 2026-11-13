@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Launcher.Core;
@@ -12,31 +13,40 @@ public partial class SettingsPanel
 	private static bool ShowsConfigPath => !GraphicsPresets.Offered;
 
 	private OptionButton? _graphicsPresetOption;
+	private Label? _graphicsPresetSummary;
 	private List<RuntimeCVarOption> _graphicsPresetOptions = new();
 
 	/// <summary>
-	/// The graphics preset as a dropdown: picking one writes its settings, and Custom is shown,
-	/// not offered, once a setting it decides no longer matches.
+	/// The graphics preset as a dropdown on the preset card above the Display and Graphics tabs, in the
+	/// desktop's Performance Preset style: the name, the dropdown, and a line saying what the preset in use
+	/// gives. Picking one writes its settings, and Custom is shown, not offered, once a setting it decides
+	/// no longer matches.
 	/// </summary>
+	/// <remarks>The card hands over a grid; it becomes one column of the row and its line. No default
+	/// column: the tabbed panel has no header for one, and a lone "High" beside the dropdown read as the
+	/// far end of a Low-High slider.</remarks>
 	private void AddGraphicsPresetRow(GridContainer grid, RuntimeCVarDefinition definition)
 	{
-		Label name = MakeLabel(RuntimeSettingsModel.FormatDisplayName(definition));
-		name.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseNameColumnWidth), 0);
-		name.SizeFlagsHorizontal = SizeFlags.Fill;
+		grid.Columns = 1;
+		var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+		row.AddThemeConstantOverride("separation", 8);
+		grid.AddChild(row);
+
+		Label name = MakeLabel(DesktopSettingMetadata.Label(definition));
+		name.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 		name.VerticalAlignment = VerticalAlignment.Center;
 		name.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
 		name.TooltipText = RuntimeSettingsModel.FormatDescription(definition);
-		grid.AddChild(name);
+		row.AddChild(name);
 
 		_graphicsPresetOptions = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
 		var option = new OptionButton
 		{
 			FitToLongestItem = false,
 			TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
-			SizeFlagsHorizontal = SizeFlags.ExpandFill,
-			CustomMinimumSize = new Vector2(LauncherScale.Px(BaseEditorColumnWidth), 0),
+			CustomMinimumSize = new Vector2(Math.Max(LauncherScale.Px(140), ControlColumnWidth - 10), 0),
 		};
-		Apply(option);
+		StyleDropdown(option);
 		foreach (RuntimeCVarOption entry in _graphicsPresetOptions)
 		{
 			option.AddItem(entry.Label);
@@ -56,18 +66,17 @@ public partial class SettingsPanel
 			}
 			ApplyGraphicsPreset(chosen);
 		};
-		grid.AddChild(option);
+		row.AddChild(option);
 		_graphicsPresetOption = option;
-		ShowGraphicsPreset();
 
-		string defaultText = _graphicsPresetOptions.Find(o => o.Value == definition.DefaultValue)?.Label
-			?? definition.DefaultValue;
-		Label defaultLabel = MakeLabel(defaultText);
-		defaultLabel.CustomMinimumSize = new Vector2(LauncherScale.Px(BaseDefaultColumnWidth), 0);
-		defaultLabel.SizeFlagsHorizontal = SizeFlags.Fill;
-		defaultLabel.VerticalAlignment = VerticalAlignment.Center;
-		defaultLabel.AddThemeColorOverride("font_color", _style.TextDisabled);
-		grid.AddChild(defaultLabel);
+		Label summary = MakeLabel(string.Empty);
+		summary.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+		summary.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+		summary.AddThemeFontSizeOverride("font_size", Math.Max(11, _fontSize - 3));
+		summary.AddThemeColorOverride("font_color", LauncherTokens.SepiaInk);
+		grid.AddChild(summary);
+		_graphicsPresetSummary = summary;
+		ShowGraphicsPreset();
 	}
 
 	/// <summary>Writes <paramref name="preset"/>'s settings and shows the rows they changed.</summary>
@@ -124,6 +133,10 @@ public partial class SettingsPanel
 		if (index >= 0)
 		{
 			option.Selected = index;
+		}
+		if (_graphicsPresetSummary is { } summary && IsInstanceValid(summary))
+		{
+			summary.Text = Refii.AndroidRuntime.AndroidSettingsLayout.Summary(current);
 		}
 	}
 

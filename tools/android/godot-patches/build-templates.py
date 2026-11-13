@@ -14,12 +14,21 @@ is the only one the game ships.
 
 The build needs SCons on PATH (or --scons) and ANDROID_HOME pointing at an SDK with NDK r29.
 """
-import argparse, io, os, shutil, subprocess, sys, zipfile
+import argparse, hashlib, io, os, shutil, subprocess, sys, zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 AAR = "libs/debug/godot-lib.template_debug.aar"
 SO = "jni/arm64-v8a/libgodot_android.so"
+# Beside the templates: the patches they were built with. build-apk.py compares it with this folder's,
+# so a patch added later is not left out of every APK by templates built before it.
+PATCHES_RECORD = "patches.txt"
+
+
+def patch_record() -> str:
+    """This folder's patches as the templates record them: one "<sha256>  <name>" line each, in name order."""
+    return "".join(f"{hashlib.sha256(patch.read_bytes()).hexdigest()}  {patch.name}\n"
+                   for patch in sorted(HERE.glob("*.diff")))
 
 
 def apply_patches(source: Path) -> None:
@@ -78,6 +87,7 @@ def main() -> int:
     args = parser.parse_args()
     apply_patches(args.godot_source)
     wrap(build(args.godot_source, args.scons, args.jobs), args.official_templates, args.out)
+    (args.out / PATCHES_RECORD).write_text(patch_record(), encoding="utf-8")
     return 0
 
 

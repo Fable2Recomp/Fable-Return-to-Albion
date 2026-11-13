@@ -401,6 +401,7 @@ public partial class SettingsPanel : VBoxContainer
 			child.QueueFree();
 		}
 
+		if (Refii.AndroidRuntime.AndroidSettingsLayout.HidesTab(_model.ActiveTab)) _model.ActiveTab = SettingsTab.Display; // a phone hides Keys and Debug
 		SettingsTab active = _model.ActiveTab;
 		foreach (SettingsTab tab in Enum.GetValues<SettingsTab>())
 		{
@@ -408,6 +409,8 @@ public partial class SettingsPanel : VBoxContainer
 			{
 				continue;
 			}
+
+			if (Refii.AndroidRuntime.AndroidSettingsLayout.HidesTab(tab)) continue;
 
 			bool isSelected = tab == active;
 			var btn = new Button
@@ -948,6 +951,7 @@ public partial class SettingsPanel : VBoxContainer
 		List<RuntimeCVarOption> options = RuntimeSettingsModel.OptionsFor(definition, _model.Values);
 		Control editor = BuildModernEditor(definition, meta, current, options, resetBtn, baseline);
 		row.AddChild(editor);
+		AddSettingNote(parent, definition, current); // SettingsPanel.SettingNotes.cs
 	}
 
 	private void AddLightingPresetControls(HBoxContainer row, RuntimeCVarDefinition definition)
@@ -1314,6 +1318,7 @@ public partial class SettingsPanel : VBoxContainer
 
 	private static string BaselineFor(RuntimeCVarDefinition definition)
 	{
+		if (Refii.AndroidRuntime.AndroidSettingsLayout.Baseline(definition.Name) is { } phone) return phone; // a phone's High preset and 30 FPS cap
 		if (DesktopGraphicsPresets.Offered &&
 		    DesktopGraphicsPresets.Values(DesktopGraphicsPresets.DefaultPreset) is { } presetVals &&
 		    presetVals.TryGetValue(definition.Name, out string? presetDefault))
@@ -1349,6 +1354,7 @@ public partial class SettingsPanel : VBoxContainer
 			RefreshLook();
 		}
 		RefreshGraphicsPreset(definition.Name); // SettingsPanel.GraphicsPreset.cs
+		RefreshSettingNote(definition.Name, value); // SettingsPanel.SettingNotes.cs
 		UpdateStatusText(_model.StatusMessage);
 
 		bool contextualTrigger = definition.Name is

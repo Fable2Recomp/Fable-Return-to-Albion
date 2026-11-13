@@ -80,9 +80,9 @@ public partial class AndroidPadRemapMenu : CanvasLayer
     }
 
     /// <summary>While open, the whole screen: the touch controls leave every touch to the menu.</summary>
-    public IEnumerable<Rect2> Rects()
+    public void AddRects(List<Rect2> into)
     {
-        if (Visible) yield return GetViewport().GetVisibleRect();
+        if (Visible) into.Add(GetViewport().GetVisibleRect());
     }
 
     /// <summary>The next controller press goes to <paramref name="control"/>; tapped again, it stops waiting.</summary>

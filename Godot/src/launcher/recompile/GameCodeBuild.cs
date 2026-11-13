@@ -519,7 +519,7 @@ public static class GameCodeBuild
 	/// <summary>
 	/// The hard mods a build compiles: enabled, consented to, highest priority first.
 	/// </summary>
-	private static List<ModNativeSources> NativeModsForBuild(out List<string> withheld) =>
+	internal static List<ModNativeSources> NativeModsForBuild(out List<string> withheld) =>
 		NativeModsForBuild(Refii.Core.Engine_Title.Active, out withheld);
 
 	private static List<ModNativeSources> NativeModsForBuild(Refii.Core.Engine_Title title, out List<string> withheld)
@@ -589,9 +589,28 @@ public static class GameCodeBuild
 			return new Result(false, "The mods folder could not be read: " + exception.Message);
 		}
 
+		return AddNativeModSources(mods, withheld, () => NativeModConsent.RefiiOverrides(title), GetModsRoot(title),
+			GetGeneratedDirectory(title), GetVersionConfigPath(title), GetModsStagingDirectory(title),
+			sources, arguments, hookSources, LogWrite, out modsHash);
+	}
+
+	/// <summary>
+	/// <see cref="AddNativeModSources(Refii.Core.Engine_Title, List{string}, Dictionary{string, List{string}}, IReadOnlyList{string}, out string)"/>
+	/// for any build's folders: the phone build passes its own attempt's generated code, version
+	/// config, mods staging folder, hook sources and log. <paramref name="readRefiiOverrides"/> is called
+	/// only once a mod with native code is there and its dependencies are met, where the per-title
+	/// build always read it.
+	/// </summary>
+	internal static Result AddNativeModSources(
+		List<ModNativeSources> mods, IReadOnlyList<string> withheld, Func<Dictionary<string, string>> readRefiiOverrides,
+		string modsRoot, string generatedDirectory, string versionConfig, string modsStagingDirectory,
+		List<string> sources, Dictionary<string, List<string>> arguments, IReadOnlyList<string> hookSources,
+		Action<string> log, out string modsHash)
+	{
+		modsHash = string.Empty;
 		foreach (string name in withheld)
 		{
-			LogWrite($"mod '{name}': its native code is NOT compiled - its current sources were " +
+			log($"mod '{name}': its native code is NOT compiled - its current sources were " +
 				"never enabled in the launcher's Mods panel");
 		}
 
@@ -600,7 +619,6 @@ public static class GameCodeBuild
 			return new Result(true, string.Empty);
 		}
 
-		string modsRoot = GetModsRoot(title);
 		List<ModDependencyProblem> unmet = ModDependencies.Check(
 			ModLoadOrder.Read(modsRoot), ModWorkspace.DiscoverModInstalls(modsRoot),
 			mods.Select(mod => mod.ModName));
@@ -612,7 +630,7 @@ public static class GameCodeBuild
 				"\nEnable or install what it needs in the launcher's Mods panel.");
 		}
 
-		Dictionary<string, string> refiiOverrides = NativeModConsent.RefiiOverrides(title);
+		Dictionary<string, string> refiiOverrides = readRefiiOverrides();
 		List<ModNativeConflict> conflicts = ModNative.FindConflicts(mods, refiiOverrides);
 		if (conflicts.Count > 0)
 		{
@@ -624,14 +642,14 @@ public static class GameCodeBuild
 				"\nDisable one of the mods named in the launcher's Mods panel.");
 		}
 
-		HashSet<string> declared = ReadDeclaredFunctions(title);
+		HashSet<string> declared = ReadDeclaredFunctions(generatedDirectory);
 		if (declared.Count == 0)
 		{
 			return new Result(false,
 				"The generated code declares no functions, so the mods' hooks cannot be checked.");
 		}
 
-		Dictionary<uint, string> configNames = ReadConfigFunctionNames(title);
+		Dictionary<uint, string> configNames = ReadConfigFunctionNames(versionConfig);
 		var unknown = new List<string>();
 		foreach (ModNativeSources mod in mods)
 		{
@@ -659,7 +677,7 @@ public static class GameCodeBuild
 				"would never run:\n" + string.Join("\n", unknown));
 		}
 
-		string extracted = GetModsStagingDirectory(title);
+		string extracted = modsStagingDirectory;
 		var compiledBy = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 		foreach (ModNativeSources mod in mods)
 		{
@@ -698,7 +716,7 @@ public static class GameCodeBuild
 				}
 			}
 
-			LogWrite($"mod '{mod.ModName}': compiling {mod.CompiledFiles.Count()} native source(s), " +
+			log($"mod '{mod.ModName}': compiling {mod.CompiledFiles.Count()} native source(s), " +
 				$"hooking {string.Join(", ", mod.Overrides)}");
 		}
 
@@ -775,7 +793,7 @@ public static class GameCodeBuild
 			sources.Add(chainFile);
 			foreach (ModNativeChain chain in chains)
 			{
-				LogWrite($"chain {chain.Function}: {string.Join(" -> ", chain.Owners)} -> game");
+				log($"chain {chain.Function}: {string.Join(" -> ", chain.Owners)} -> game");
 			}
 		}
 
@@ -800,12 +818,11 @@ public static class GameCodeBuild
 		}
 	}
 
-	/// <summary>Every function the generator emitted for <paramref name="title"/>, from its <c>DECLARE_REX_FUNC(name)</c> lines.</summary>
-	private static HashSet<string> ReadDeclaredFunctions(Refii.Core.Engine_Title title)
+	/// <summary>Every function the generator emitted into <paramref name="generatedDir"/>, from its <c>DECLARE_REX_FUNC(name)</c> lines.</summary>
+	private static HashSet<string> ReadDeclaredFunctions(string generatedDir)
 	{
 		var declared = new HashSet<string>(StringComparer.Ordinal);
 		const string marker = "DECLARE_REX_FUNC(";
-		string generatedDir = GetGeneratedDirectory(title);
 		if (!Directory.Exists(generatedDir))
 		{
 			return declared;
@@ -833,11 +850,10 @@ public static class GameCodeBuild
 		return declared;
 	}
 
-	/// <summary>The config's function names by address (<c>0x8272A270 = { name = "rex_…" }</c>) for <paramref name="title"/>.</summary>
-	private static Dictionary<uint, string> ReadConfigFunctionNames(Refii.Core.Engine_Title title)
+	/// <summary>The config's function names by address (<c>0x8272A270 = { name = "rex_…" }</c>) in the config at <paramref name="config"/>.</summary>
+	private static Dictionary<uint, string> ReadConfigFunctionNames(string config)
 	{
 		var names = new Dictionary<uint, string>();
-		string config = GetVersionConfigPath(title);
 		if (!File.Exists(config))
 		{
 			return names;

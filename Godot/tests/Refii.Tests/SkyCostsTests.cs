@@ -27,6 +27,23 @@ public sealed class SkyCostsTests
     private const Godot.Environment.BGMode SkyBackground = Godot.Environment.BGMode.Sky;
 
     /// <summary>
+    /// Volumetric fog reads the radiance only where the renderer draws it: Forward+. On a phone's Mobile
+    /// renderer the modern model's fog leaves the map unread, so it can be held lean.
+    /// </summary>
+    [TestCase]
+    public void VolumetricFogReadsOnlyWhereItIsDrawn()
+    {
+        AssertThat(Engine_SkyCosts.VolumetricFogReads(true, "forward_plus")).IsTrue();
+        AssertThat(Engine_SkyCosts.VolumetricFogReads(true, "mobile")).IsFalse();
+        AssertThat(Engine_SkyCosts.VolumetricFogReads(true, "gl_compatibility")).IsFalse();
+        AssertThat(Engine_SkyCosts.VolumetricFogReads(false, "forward_plus")).IsFalse();
+        AssertThat(Engine_SkyCosts.SdfgiReads(true, "forward_plus")).IsTrue();
+        AssertThat(Engine_SkyCosts.SdfgiReads(true, "mobile")).IsFalse();
+        bool mobileFog = Engine_SkyCosts.VolumetricFogReads(true, "mobile");
+        AssertThat(Engine_SkyCosts.RadianceUnread(NoReflection, Godot.Environment.AmbientSource.Color, SkyBackground, false, mobileFog, 0.2f)).IsTrue();
+    }
+
+    /// <summary>
     /// The fable model on a phone: ambient and reflections off, no SDFGI, volumetric fog with no
     /// ambient energy to inject: nothing reads the map. The modern model's colour ambient does not
     /// either, but its SDFGI does.

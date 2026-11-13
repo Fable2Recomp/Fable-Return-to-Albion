@@ -23,12 +23,13 @@ public static class AndroidLauncherSettings
     public static bool Shows(string name) =>
         GraphicsPresets.Offered ? !DesktopOnly.Contains(name) : !RuntimeCVarsAndroid.AllKeys.Contains(name);
 
-    /// <summary>What a phone player sets in the launcher without ticking Advanced: the graphics preset
+    /// <summary>What a phone player sets in the launcher without opening Advanced: the graphics preset
     /// and the frame cap with the two settings beside them, the camera and vibration, and online and
     /// split-screen co-op. The rest of the list (the tuning dials the preset sets, the phone's own
-    /// experiments, keyboard and mouse bindings) stays under Advanced; the game's Options panel has
-    /// the graphics settings with an explanation each.</summary>
-    private static readonly System.Collections.Generic.HashSet<string> PlayerFacing = new(StringComparer.Ordinal)
+    /// experiments, keyboard and mouse bindings) stays under each tab's Advanced section
+    /// (<see cref="AndroidSettingsLayout"/>); the game's Options panel has the graphics settings with an
+    /// explanation each.</summary>
+    internal static readonly System.Collections.Generic.HashSet<string> PlayerFacing = new(StringComparer.Ordinal)
     {
         GraphicsPresets.Key, "max_fps", "fps_counter", "render_scale_percent", AndroidBakedShadows.Key, AndroidStartup.SkipVideosKey,
         "camera_invert_x", "camera_invert_y", "controller_vibration", AndroidQuickSettings.VibrationStrengthKey,
@@ -51,6 +52,7 @@ public static class AndroidLauncherSettings
         string root = AndroidRuntimeOptions.PhysicalPath(runtimeRoot, "runtime root");
         string config = Path.Combine(root, Refii.Core.Engine_Title.Active.ConfigFileName);
         var values = RuntimeConfig.ReadValues(config);
+        var before = new System.Collections.Generic.Dictionary<string, string>(values, StringComparer.Ordinal);
         bool changed = false;
         // Native automatic logging uses the executable folder, which is /system/bin
         // for Android's app_process64. Resolve that default before TOML overrides argv.
@@ -74,6 +76,92 @@ public static class AndroidLauncherSettings
         }
         if (changed && !RuntimeConfig.WriteValues(config, values, out string error))
             throw new IOException("Cannot prepare Android launcher paths: " + error);
+        ShareWithOtherTitles(config, before, values);
+    }
+
+    /// <summary>Settings a title's file keeps for itself even where the setting has no owning title: its
+    /// game, update, cache and save folders (the launcher's settings keep the same ones apart).</summary>
+    private static readonly System.Collections.Generic.HashSet<string> PerTitleKeys = new(StringComparer.Ordinal)
+    {
+        "game_data_root", "update_data_root", "cache_root", "user_data_root",
+    };
+
+    /// <summary>Keys RuntimeConfig writes to record that a one-shot migration ran; copied to a title's file that lacks them.</summary>
+    private static readonly string[] MigrationMarkers = { "placed_light_shadows_world" };
+
+    /// <summary>
+    /// Copies what changed in one title's runtime configuration to the other titles' beside it, for the
+    /// settings the titles share, as the launcher's unified settings do.
+    /// </summary>
+    /// <remarks>
+    /// WHY. The launcher's settings read refii.toml (Fable 2's) first for every shared setting and write
+    /// it to both titles' files (RuntimeSettingsModel.Save). The phone also writes the active title's file
+    /// alone: the first preset and its upgrades here, and Options in the game (AndroidQuickSettings). With
+    /// Fable 3 active those changes never reached refii.toml, so the launcher showed Fable 2's values and
+    /// its next save wrote them over Fable 3's choices; a phone that started on Fable 3 had a refii.toml of
+    /// desktop defaults (the launcher creates it) that replaced its phone preset and frame cap. So each
+    /// change is copied as it is made: a setting <paramref name="after"/> holds differently from
+    /// <paramref name="before"/>, with no owning title and read by the other title, and not one of
+    /// <see cref="PerTitleKeys"/>. A missing file is created with all the shared settings, and a file still
+    /// on an earlier revision of a named preset takes the current one (<see cref="GraphicsPresets.Upgrade"/>).
+    /// A file that cannot be written is left as it was: the change itself already stands.
+    /// </remarks>
+    /// <param name="config">The file just written: a title's configuration (refii.toml, refiii.toml); a file of
+    /// any other name has no siblings and nothing is copied.</param>
+    /// <param name="before">Its values before the change.</param>
+    /// <param name="after">Its values as written.</param>
+    /// <returns>Whether every other title's file is up to date.</returns>
+    public static bool ShareWithOtherTitles(string config, System.Collections.Generic.IReadOnlyDictionary<string, string> before,
+        System.Collections.Generic.IReadOnlyDictionary<string, string> after)
+    {
+        string directory = Path.GetDirectoryName(Path.GetFullPath(config)) ?? string.Empty;
+        string fileName = Path.GetFileName(config);
+        // Only a title's own file has siblings: a file of another name (a test's) is left alone.
+        if (!System.Linq.Enumerable.Any(Refii.Core.Engine_Title.All,
+                title => string.Equals(title.ConfigFileName, fileName, StringComparison.OrdinalIgnoreCase))) return true;
+        var definitions = new System.Collections.Generic.Dictionary<string, RuntimeCVarDefinition>(StringComparer.Ordinal);
+        foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All) definitions.TryAdd(definition.Name, definition);
+        bool ok = true;
+        foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
+        {
+            if (string.Equals(title.ConfigFileName, fileName, StringComparison.OrdinalIgnoreCase)) continue;
+            bool Shared(string key) => !PerTitleKeys.Contains(key) && definitions.TryGetValue(key, out var definition) &&
+                definition.OwnerTitle == null && definition.AppliesTo(title);
+            string other = Path.Combine(directory, title.ConfigFileName);
+            try
+            {
+                bool exists = File.Exists(other);
+                var values = exists ? RuntimeConfig.ReadValues(other)
+                    : new System.Collections.Generic.SortedDictionary<string, string>(StringComparer.Ordinal);
+                bool changed = !exists;
+                foreach ((string key, string value) in after)
+                {
+                    if (!Shared(key)) continue;
+                    bool changedHere = !exists || !before.TryGetValue(key, out string? was) || was != value;
+                    if (!changedHere || (values.TryGetValue(key, out string? there) && there == value)) continue;
+                    values[key] = value;
+                    changed = true;
+                }
+                // The record that RuntimeConfig's one-shot fixture-shadow migration has run, which is no
+                // setting: without it the launcher's next read turns placed_light_shadows back on, and a
+                // copied preset that leaves them off reads as Custom (ApplyPresetOnce).
+                foreach (string marker in MigrationMarkers)
+                {
+                    if (after.TryGetValue(marker, out string? done) && !values.ContainsKey(marker))
+                    {
+                        values[marker] = done;
+                        changed = true;
+                    }
+                }
+                changed |= GraphicsPresets.Upgrade(values);
+                if (changed && !RuntimeConfig.WriteValuesForTitle(title, other, values, out _)) ok = false;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+                ok = false;
+            }
+        }
+        return ok;
     }
 
     /// <summary>Gives a configuration that never chose a graphics preset the one for this phone's GPU

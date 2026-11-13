@@ -23,7 +23,10 @@ namespace Refii.Entities;
 /// main camera's transparent pass, composites it (mobile_highlight_composite.gdshader): there the
 /// scene depth is Godot's own copy, so each halo is occluded as the guest's is, and the glow is
 /// tone-mapped with the scene. The quad is hidden whenever nothing is lit, so its depth read never
-/// splits Mobile's render pass otherwise (Engine_FxDepthReads).
+/// splits Mobile's render pass otherwise (Engine_FxDepthReads). With android_highlight_depth_test
+/// the quad gives way to one quad per lit object at the depth its halo is tested at
+/// (mobile_highlight_composite_tested.gdshader), tested by the depth buffer itself: no depth
+/// texture, so not even a lit target splits the pass (AndroidTargetingHighlight.DepthTestKey).
 ///
 /// WHAT DIFFERS. The silhouette viewport has no scene depth either (the FX depth capture is a
 /// post-opaque effect, and Mobile runs none), so a silhouette is not clipped where the scene hides
@@ -34,6 +37,7 @@ public sealed partial class Engine_MobileHighlight : Node
 {
     private const string BleedShaderPath = "res://src/android/mobile_highlight_bleed.gdshader";
     private const string CompositeShaderPath = "res://src/android/mobile_highlight_composite.gdshader";
+    private const string TestedShaderPath = "res://src/android/mobile_highlight_composite_tested.gdshader";
 
     /// <summary>Half-res texels the guest pads each object's rect by (`sub_82A69BB0`).</summary>
     private const float PadTexels = 16f;
@@ -41,11 +45,13 @@ public sealed partial class Engine_MobileHighlight : Node
     private static readonly ConditionalWeakTable<Engine_EntityHighlightLayer, Engine_MobileHighlight> ByLayer = new();
 
     /// <summary>
-    /// Whether this draws the highlight: the post chain does not composite it this frame.
+    /// Whether this draws the highlight: the post chain does not composite it this frame, and the
+    /// phone draws it at all (<see cref="Refii.AndroidRuntime.AndroidTargetingHighlight"/>).
     /// The caller gates on Engine_Platform.IsAndroid.
     /// </summary>
-    public static bool Composites =>
-        !(Refii.Lighting.Engine_PostFxParams.Enabled && Refii.Lighting.Engine_PostFxRoute.LayersReachScreen);
+    public static bool Composites => Refii.AndroidRuntime.AndroidTargetingHighlight.Composites(
+        Refii.AndroidRuntime.AndroidTargetingHighlight.Enabled,
+        Refii.Lighting.Engine_PostFxParams.Enabled && Refii.Lighting.Engine_PostFxRoute.LayersReachScreen);
 
     private SubViewport _bleedH = null!;
     private SubViewport _bleedV = null!;
@@ -54,6 +60,13 @@ public sealed partial class Engine_MobileHighlight : Node
     private ShaderMaterial _composite = null!;
     private MeshInstance3D _quad = null!;
     private Vector2I _size;
+
+    /// <summary>
+    /// android_highlight_depth_test's quads, one per lit object, built on first use
+    /// (<see cref="Refii.AndroidRuntime.AndroidTargetingHighlight.DepthTest"/>).
+    /// </summary>
+    private MeshInstance3D[]? _tested;
+    private ShaderMaterial[]? _testedMaterials;
 
     private readonly Vector4[] _colours = new Vector4[Engine_EntityHighlightLayer.Slots];
     private readonly Vector4[] _rects = new Vector4[Engine_EntityHighlightLayer.Slots];
@@ -153,7 +166,14 @@ public sealed partial class Engine_MobileHighlight : Node
         SubViewport.UpdateMode mode = count > 0 ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
         _bleedH.RenderTargetUpdateMode = mode;
         _bleedV.RenderTargetUpdateMode = mode;
-        _quad.Visible = count > 0;
+        bool tested = count > 0 && Refii.AndroidRuntime.AndroidTargetingHighlight.DepthTest;
+        _quad.Visible = count > 0 && !tested;
+        int shownTested = tested ? count : 0;
+        if (_tested is not null || tested)
+        {
+            ShowTested(shownTested);
+        }
+
         if (count == 0)
         {
             return;
@@ -185,9 +205,69 @@ public sealed partial class Engine_MobileHighlight : Node
         _prep.SetShaderParameter("colours", _colours);
         _prep.SetShaderParameter("scale", scale);
         _vertical.SetShaderParameter("scale", scale);
+        if (tested && _tested is not null && _testedMaterials is not null)
+        {
+            for (int k = 0; k < count; ++k)
+            {
+                if (_tested[k].Layers != layer)
+                {
+                    _tested[k].Layers = layer;
+                }
+
+                _testedMaterials[k].SetShaderParameter("rect", _rects[k]);
+                _testedMaterials[k].SetShaderParameter("test",
+                    Refii.AndroidRuntime.AndroidTargetingHighlight.QuadDistance(_tests[k], camera.Near, camera.Far));
+            }
+
+            return;
+        }
+
         _composite.SetShaderParameter("count", count);
         _composite.SetShaderParameter("rects", _rects);
         _composite.SetShaderParameter("tests", _tests);
+    }
+
+    /// <summary>
+    /// Shows the first <paramref name="count"/> depth-tested quads and hides the rest, building them
+    /// on first use: the same textures as the composite, last of the transparent list as it is.
+    /// </summary>
+    private void ShowTested(int count)
+    {
+        if (_tested is null || _testedMaterials is null)
+        {
+            var shader = GD.Load<Shader>(TestedShaderPath);
+            var mesh = new QuadMesh { Size = new Vector2(2f, 2f) };
+            _tested = new MeshInstance3D[Engine_EntityHighlightLayer.Slots];
+            _testedMaterials = new ShaderMaterial[Engine_EntityHighlightLayer.Slots];
+            for (int k = 0; k < _tested.Length; ++k)
+            {
+                var material = new ShaderMaterial { Shader = shader, RenderPriority = (int)Material.RenderPriorityMax };
+                material.SetShaderParameter("layer_tex", _composite.GetShaderParameter("layer_tex"));
+                material.SetShaderParameter("glow_tex", _composite.GetShaderParameter("glow_tex"));
+                _testedMaterials[k] = material;
+                _tested[k] = new MeshInstance3D
+                {
+                    Name = "HighlightTested" + k,
+                    Mesh = mesh,
+                    MaterialOverride = material,
+                    CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                    GIMode = GeometryInstance3D.GIModeEnum.Disabled,
+                    ExtraCullMargin = 16384f,
+                    Layers = _quad.Layers,
+                    Visible = false,
+                };
+                AddChild(_tested[k]);
+            }
+        }
+
+        for (int k = 0; k < _tested.Length; ++k)
+        {
+            bool show = k < count;
+            if (_tested[k].Visible != show)
+            {
+                _tested[k].Visible = show;
+            }
+        }
     }
 
     /// <summary>

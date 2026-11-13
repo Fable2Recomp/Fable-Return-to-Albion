@@ -270,6 +270,7 @@ public static class Engine_EhfPages
         material.SetShaderParameter("mesh_xform", new Vector4(1f, 1f, 0f, 0f));
         material.SetShaderParameter("weight_size", new Vector4(1f, 1f, 1f, 1f));
         material.SetShaderParameter("splat_params", new Vector4(3f, 0.125f, 0f, 0f));
+        Refii.AndroidRuntime.AndroidOpaqueOrder.Terrain(material);
         return material;
     }
 

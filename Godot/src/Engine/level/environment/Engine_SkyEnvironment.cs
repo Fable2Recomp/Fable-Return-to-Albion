@@ -332,6 +332,7 @@ public static class Engine_SkyEnvironment
         Engine_NearFogKnots.Publish(nearFog,
             static (name, rgb) => RenderingServer.GlobalShaderParameterSet(name, new Vector3(rgb.Red, rgb.Green, rgb.Blue)),
             static (name, ready) => RenderingServer.GlobalShaderParameterSet(name, ready));
+        Refii.AndroidRuntime.AndroidLeanShading.Atmosphere(hasFog, beta, curve, range, nearFog);
 
         if (report)
         {

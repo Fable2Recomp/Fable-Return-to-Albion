@@ -23,6 +23,13 @@ namespace Refii.Launcher.Core;
 /// choice: "android_low" was labelled Performance and then Ultra Performance, "android_mid" Performance,
 /// "android" Quality and then Balanced, and "android_high" Quality. A setting outside the sets is untouched. On a desktop the preset is neither shown nor
 /// written, and changing a member setting records nothing.
+/// <para>Each preset sets its lighting model (<c>android_modern_lighting</c>): Low runs the modern model
+/// with the lite shaders' cheaper ways of drawing it, Medium, High and Ultra the fable model, and every
+/// preset names every setting Low's modern drawing decides, so picking one puts all of them back.</para>
+/// <para>Low (lean) (stored "android_low_lean", revisions 17 and 18, opt-in) was Low under the modern
+/// model; at revision 19 Low took its settings, with Low's normal maps off where it had them fast, and it
+/// was retired. A phone that stored it is on Low: it takes Low's values on its next start
+/// (<see cref="Upgrade"/>), and the name reads as Low wherever it is still found.</para>
 /// </remarks>
 public static class GraphicsPresets
 {
@@ -59,8 +66,12 @@ public static class GraphicsPresets
     /// draws small props to half their distances, three quarters of the undergrowth and the far trees'
     /// thinned crowns sooner; Medium renders at 45% with the far trees' crowns at Low's distance; Low,
     /// Medium and High stop trees past 150 m swaying. Ultra keeps what it had and gives back the trees,
-    /// the undergrowth and the sway. 16: every preset runs Godot's renderer on its own thread.</remarks>
-    public const int Revision = 16;
+    /// the undergrowth and the sway. 16: every preset runs Godot's renderer on its own thread.
+    /// 17: Low, Medium and High (and Ultra, which takes High's) skip the lighting maths for lights that add nothing (lite_skip_black_lights).
+    /// 18: Low turns normal maps off and Low (lean) the ground's contact shadow: looks traded for speed on
+    /// the lowest presets only; Medium and above keep them.
+    /// 19: Low takes Low (lean)'s settings and Low (lean) is gone; each preset sets its lighting model.</remarks>
+    public const int Revision = 19;
 
     /// <summary>High: the phone's default picture.</summary>
     public const string High = "android";
@@ -73,6 +84,20 @@ public static class GraphicsPresets
 
     /// <summary>Ultra: High with fewer compromises, for a phone with headroom at 30 FPS.</summary>
     public const string Ultra = "android_high";
+
+    /// <summary>Low (lean)'s stored name (revisions 17 and 18), retired at 19: Low now.</summary>
+    private const string RetiredLowLean = "android_low_lean";
+
+    /// <summary>The named presets.</summary>
+    private static readonly string[] Named = { Low, Medium, High, Ultra };
+
+    /// <summary>The preset a stored name stands for, unquoted and in lower case: a retired name is its
+    /// successor (<c>android_low_lean</c> is Low), any other name itself.</summary>
+    public static string Canonical(string preset)
+    {
+        string name = preset.Trim().Trim('"').ToLowerInvariant();
+        return name == RetiredLowLean ? Low : name;
+    }
 
     /// <summary>Whether this platform offers the presets: Android. Tests stand in for a phone with it.</summary>
     public static bool Offered { get; set; } = Refii.Core.Engine_Platform.IsAndroid;
@@ -172,6 +197,23 @@ public static class GraphicsPresets
             // -> 13.5 / 13.3 (nothing); an Adreno 640 8% and about 2%.
             ["lite_material_folds"] = "true",
             ["lite_terrain_single_fetch"] = "true",
+            // The lighting maths skipped for lights that add nothing (Godot's empty first slot per
+            // light type): about 5% of an Adreno 640's GPU time in town, nothing measurable on the S25+.
+            ["lite_skip_black_lights"] = "true",
+            // Normal maps drawn through the meshes' tangents, as on desktop (Low turns them off).
+            [Refii.Models.Engine_ShaderVariant.NormalMapsKey] = "full",
+            // The fable lighting model a phone has run since the preview, not Low's modern one: on the
+            // S10e High costs less under it.
+            ["android_modern_lighting"] = "false",
+            // Low's cheaper ways of drawing the modern model, at their own defaults, so that leaving Low
+            // puts them back: the fog's lean sums, the ground-contact shadow's exact fetch near the ground,
+            // objects' positions and indoor light map coordinates handed on by their vertices, the modern
+            // blend read per pixel.
+            [Refii.AndroidRuntime.AndroidLeanShading.FogKey] = "lean",
+            [Refii.AndroidRuntime.AndroidGroundShading.Key] = "near",
+            [Refii.AndroidRuntime.AndroidLeanVaryings.PropFragmentWorldKey] = "false",
+            [Refii.AndroidRuntime.AndroidLeanVaryings.PackLightmapUvKey] = "false",
+            [Refii.Models.Engine_ShaderVariant.FoldModernModelKey] = "false",
             // The touch controls in the UI layer's 2D pass, and the sky's unread radiance map held
             // small (the dome's sun on the 15 Hz atmosphere tick): S25+ 15.9 / 16.1 -> 15.8 / 15.5
             // (-2%); an Adreno 640 2% each.
@@ -286,6 +328,31 @@ public static class GraphicsPresets
             // Half the undergrowth's clumps, evenly: 7.5% off the S10e's frame at Bower Lake, where
             // the nettles are alpha-cut cards stacked up close. The trees stay whole.
             ["foliage_density"] = "0.5",
+            // Normal maps off (flatter stone and cloth, nothing missing): 6-12% of an Adreno 640's GPU
+            // work under the fable lighting (S10e, 2026-11-12). Low trades looks for speed; Medium keeps them.
+            // Low (lean) drew them fast (tangents per pixel); off is faster still.
+            [Refii.Models.Engine_ShaderVariant.NormalMapsKey] = "off",
+            // Low (lean)'s, since revision 19. The modern lighting model instead of the fable one; lean
+            // modern (android_lean_modern, on by default) keeps effects, crowds and lamps near the fable
+            // cost. On the S10e on 2026-11-12, GPU work in Mcycles a frame: Low under lean modern 17.7;
+            // with the fog table, fast normal maps, the modern fold and the ground's contact shadow at the
+            // vertices 15.2 (-14%).
+            ["android_modern_lighting"] = "true",
+            // The fog's thickness read from a small table built when the atmosphere changes, instead of a
+            // power and three exponentials per pixel: within a fifth of a level of 255. Under the modern
+            // model only (AndroidLeanShading.FogFor): under the fable one it cost the S10e 8%, where under
+            // the modern one it saves 8%.
+            [Refii.AndroidRuntime.AndroidLeanShading.FogKey] = "table",
+            // The modern model's fixed blend (and baked AO at its default strength) compiled in.
+            [Refii.Models.Engine_ShaderVariant.FoldModernModelKey] = "true",
+            // Objects work out their world position per pixel (the ground keeps its own), and solid
+            // objects' indoor light map coordinates ride the vertex colour: fewer values an object's pixel
+            // reads from its vertices (12 instead of 23 with fast normal maps; fewer still with them off).
+            [Refii.AndroidRuntime.AndroidLeanVaryings.PropFragmentWorldKey] = "true",
+            [Refii.AndroidRuntime.AndroidLeanVaryings.PackLightmapUvKey] = "true",
+            // No contact shadow under objects and walls (the stone keeps its bumps): 13.8 against the
+            // bundle's 14.7 Mcycles with it, 10.6% under Low lean modern's 15.5 (S10e, 2026-11-12, n=2).
+            [Refii.AndroidRuntime.AndroidGroundShading.Key] = "off",
         };
 
     /// <summary>
@@ -303,6 +370,16 @@ public static class GraphicsPresets
         {
             // The low-memory tier by the phone's memory, as High.
             ["android_low_ram_mode"] = "auto",
+            // Low's flat surfaces stay Low's: Medium keeps the normal maps.
+            [Refii.Models.Engine_ShaderVariant.NormalMapsKey] = "full",
+            // The fable lighting model, as High (Medium under lean modern is being measured).
+            ["android_modern_lighting"] = "false",
+            // Low's cheaper ways of drawing the modern model back at their defaults, as High has them.
+            [Refii.AndroidRuntime.AndroidLeanShading.FogKey] = "lean",
+            [Refii.AndroidRuntime.AndroidGroundShading.Key] = "near",
+            [Refii.AndroidRuntime.AndroidLeanVaryings.PropFragmentWorldKey] = "false",
+            [Refii.AndroidRuntime.AndroidLeanVaryings.PackLightmapUvKey] = "false",
+            [Refii.Models.Engine_ShaderVariant.FoldModernModelKey] = "false",
             // 45% of the screen's resolution, 1.27 times Low's pixels. 50% (revisions 1-14) cost an
             // Adreno 640 8.4% more GPU work in Oakfield, where Medium ran 14 FPS.
             ["render_scale_percent"] = "45",
@@ -367,13 +444,15 @@ public static class GraphicsPresets
             [Refii.Level.Engine_TreeSwayFar.Key] = "0",
             // The ground's bump, which High leaves out.
             ["terrain_normal_maps"] = "true",
+            // The fable lighting model, as High.
+            ["android_modern_lighting"] = "false",
         };
 
-    /// <summary>The settings a preset decides: exactly the High preset's keys.</summary>
+    /// <summary>The settings a preset decides: the High preset's keys, which every preset sets.</summary>
     public static IEnumerable<string> Members => HighValues.Keys;
 
     /// <summary>The name a player sees for a stored preset.</summary>
-    public static string Label(string preset) => preset.ToLowerInvariant() switch
+    public static string Label(string preset) => Canonical(preset) switch
     {
         High => "High",
         Low => "Low",
@@ -387,9 +466,11 @@ public static class GraphicsPresets
         ? "Ultra is not intended for casual use and has performance issues. Expect lower frame rates and a hotter phone. For normal play, use High or lower."
         : null;
 
-    /// <summary>The values a named preset writes; null for an unknown name or "custom".</summary>
+    /// <summary>The values a named preset writes (a retired name its successor's, <see cref="Canonical"/>);
+    /// null for an unknown name or "custom".</summary>
     public static IReadOnlyDictionary<string, string>? Values(string preset)
     {
+        preset = Canonical(preset);
         if (preset.Equals(High, StringComparison.OrdinalIgnoreCase))
         {
             return HighValues;
@@ -414,11 +495,24 @@ public static class GraphicsPresets
     }
 
     /// <summary>The preset every member setting matches, or "custom".</summary>
+    /// <remarks>The stored preset wins while it still matches, so a phone on Low stays on Low whatever
+    /// it set by hand outside the presets' settings; otherwise the first match does. Every preset sets
+    /// the same settings, so no two match the same values. A retired stored name reads as its successor
+    /// (<see cref="Canonical"/>).</remarks>
     public static string Current(IReadOnlyDictionary<string, string> values)
     {
-        foreach (string preset in new[] { Low, Medium, High, Ultra })
+        string storedName = values.TryGetValue(Key, out string? name) ? Canonical(name) : string.Empty;
+        IReadOnlyDictionary<string, string>? stored = Values(storedName);
+        if (stored is not null && Matches(stored, values))
         {
-            if (Values(preset)!.All(pair => Same(values.TryGetValue(pair.Key, out string? value) ? value : DefaultOf(pair.Key), pair.Value)))
+            return storedName;
+        }
+
+        foreach (string preset in Named)
+        {
+            IReadOnlyDictionary<string, string> chosen = Values(preset)!;
+            if (Matches(chosen, values) &&
+                (stored is null || stored.Keys.All(key => chosen.ContainsKey(key) || Same(ValueOf(values, key), DefaultOf(key)))))
             {
                 return preset;
             }
@@ -427,10 +521,36 @@ public static class GraphicsPresets
         return Custom;
     }
 
-    /// <summary>Writes a named preset's values; false for "custom" or an unknown name.</summary>
-    public static bool Apply(string preset, IDictionary<string, string> values)
+    /// <summary>
+    /// What <see cref="Apply"/> writes for <paramref name="preset"/> over <paramref name="values"/>, besides
+    /// the preset's name and revision: its own values, and the defaults of any settings that only the
+    /// stored preset being left decides (none since revision 19, when every preset sets the same ones).
+    /// Null for "custom" or an unknown name.
+    /// </summary>
+    public static IReadOnlyDictionary<string, string>? Writes(string preset, IDictionary<string, string> values)
     {
         if (Values(preset) is not { } chosen)
+        {
+            return null;
+        }
+
+        var writes = new Dictionary<string, string>(chosen, StringComparer.Ordinal);
+        string stored = values.TryGetValue(Key, out string? name) ? Canonical(name) : string.Empty;
+        if (stored != Canonical(preset) && Values(stored) is { } leaving)
+        {
+            foreach (string key in leaving.Keys.Where(key => !chosen.ContainsKey(key)))
+            {
+                writes[key] = DefaultOf(key);
+            }
+        }
+
+        return writes;
+    }
+
+    /// <summary>Writes a named preset's values (<see cref="Writes"/>); false for "custom" or an unknown name.</summary>
+    public static bool Apply(string preset, IDictionary<string, string> values)
+    {
+        if (Writes(preset, values) is not { } chosen)
         {
             return false;
         }
@@ -440,7 +560,7 @@ public static class GraphicsPresets
             values[key] = value;
         }
 
-        values[Key] = preset.ToLowerInvariant();
+        values[Key] = Canonical(preset);
         values[RevisionKey] = Revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return true;
     }
@@ -448,7 +568,8 @@ public static class GraphicsPresets
     /// <summary>Brings settings written from an earlier revision of the presets up to this one.</summary>
     /// <remarks>A phone whose stored preset is still a named one never changed one of its settings
     /// by hand (that stores "custom"), so it takes the preset's current values; a custom phone
-    /// keeps every value it has. Either way the revision is recorded, so this runs once per
+    /// keeps every value it has. A retired name takes its successor's values and name (Low (lean)
+    /// becomes Low at revision 19). Either way the revision is recorded, so this runs once per
     /// revision and a later hand edit of refii.toml stays as written.</remarks>
     /// <param name="values">The runtime configuration's values, changed in place.</param>
     /// <returns>Whether anything changed.</returns>
@@ -469,6 +590,12 @@ public static class GraphicsPresets
 
         return true;
     }
+
+    private static bool Matches(IReadOnlyDictionary<string, string> preset, IReadOnlyDictionary<string, string> values) =>
+        preset.All(pair => Same(ValueOf(values, pair.Key), pair.Value));
+
+    private static string ValueOf(IReadOnlyDictionary<string, string> values, string key) =>
+        values.TryGetValue(key, out string? value) ? value : DefaultOf(key);
 
     private static string DefaultOf(string key) =>
         RuntimeCVarSet.All.FirstOrDefault(definition => definition.Name == key)?.DefaultValue ?? string.Empty;

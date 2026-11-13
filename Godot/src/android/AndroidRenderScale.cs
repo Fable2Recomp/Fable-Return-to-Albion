@@ -23,20 +23,32 @@ internal sealed class AndroidRenderScale
     internal static GameWindowSettings ReadSettings(string path)
     {
         if (!File.Exists(path)) throw new FileNotFoundException("Live render-scale configuration is unavailable", path);
-        var values = Refii.Launcher.Core.RuntimeConfig.ReadValues(path);
-        if (!values.ContainsKey("render_scale_percent")) values.Add("render_scale_percent", "50");
+        return SettingsOf(Refii.Launcher.Core.RuntimeConfig.ReadValues(path), path);
+    }
+
+    /// <summary><see cref="ReadSettings"/> for values already read: <paramref name="values"/> is left as it is, for its other readers.</summary>
+    internal static GameWindowSettings SettingsOf(System.Collections.Generic.SortedDictionary<string, string> values, string path)
+    {
+        if (!values.ContainsKey("render_scale_percent"))
+        {
+            values = new System.Collections.Generic.SortedDictionary<string, string>(values, values.Comparer);
+            values.Add("render_scale_percent", "50");
+        }
         return GameWindowSettings.FromValues(values, path);
     }
 
     /// <summary>Invokes the root-viewport setter once per effective percentage change.</summary>
     /// <param name="settings">Settings parsed by the shared desktop runtime configuration policy.</param>
     /// <param name="apply">The host's root-world setter; no UI viewport is passed to this policy.</param>
+    /// <param name="adjust">The scale against the root's own target from the scale against the screen
+    /// (<see cref="AndroidCanvasResolution.WorldScale"/>); null keeps the configured one.</param>
     /// <returns>True after a changed value was successfully applied.</returns>
-    internal bool Apply(GameWindowSettings settings, Action<float> apply)
+    internal bool Apply(GameWindowSettings settings, Action<float> apply, Func<float, float>? adjust = null)
     {
         // Mobile has no FSR1/2 implementation. Read the explicit percentage instead
         // of letting an unrelated desktop FSR quality preset silently replace it.
         float scale = settings.RenderScalePercent / 100f;
+        if (adjust is not null) scale = adjust(scale);
         if (_applied == scale) return false;
         apply(scale);
         _applied = scale;

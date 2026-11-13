@@ -907,7 +907,7 @@ public partial class Engine_LightShadowBudget : Node
 			f.InFrustumBy |= bit;
 			LightSeenOf(ref f, view) = nowMs;
 
-			if (LightsEnabled && !classic && f.BaseEnergy > 0.0001f)
+			if (LightsEnabled && !classic && f.BaseEnergy > 0.0001f && Refii.AndroidRuntime.AndroidNoSpotLights.Shown(f.Omni, Refii.AndroidRuntime.AndroidNoSpotLights.Active))
 			{
 				_candidates[n++] = new Candidate { Fixture = i, Key = distance };
 			}

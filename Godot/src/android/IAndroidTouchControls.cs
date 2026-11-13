@@ -17,7 +17,8 @@ public interface IAndroidTouchControls
 
 	System.Action<Rect2>? OptionsPressed { get; set; }
 
-	System.Func<IEnumerable<Rect2>>? PassThrough { get; set; }
+	/// <summary>Adds the screen rectangles other UI owns (the diagnostics buttons) to the list it is given, which the controls reuse.</summary>
+	System.Action<List<Rect2>>? PassThrough { get; set; }
 
 	/// <summary>The controls as last laid out, the player's own layout applied: what the touch editor outlines and drags.</summary>
 	IReadOnlyList<TouchControl> LaidOut { get; }

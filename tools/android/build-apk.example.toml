@@ -36,4 +36,5 @@ package = "org.refii.androidpresentationprobe"   # the previews' package: update
 # min_sdk = 31
 # target_sdk = 36
 # rendering_method = "mobile"
+# gpu_profile = true                            # per-pass GPU timings (the debug channel's gpuprofile)
 # jobs = 12

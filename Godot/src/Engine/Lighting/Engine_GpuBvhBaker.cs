@@ -28,6 +28,41 @@ public static class Engine_GpuBvhBaker
 	public static int GpuAoBakeCount => Volatile.Read(ref _gpuAoBakeCount);
 	public static int CpuFallbackCount => Volatile.Read(ref _cpuFallbackCount);
 
+	/// <summary>Bytes a BVH goes up to the GPU in at a time.</summary>
+	private const int BvhUploadChunkBytes = 4 * 1024 * 1024;
+
+	/// <summary>
+	/// Puts a tree's nodes and triangles on <paramref name="rd"/> a few megabytes at a time. Exporting each
+	/// whole buffer first held it twice more (the array and its native copy) next to the GPU's own: in a
+	/// 5.7-million-triangle area that was over 700 MB at the peak, and a phone stopped the bake for memory.
+	/// </summary>
+	private static void UploadBvh(RenderingDevice rd, Engine_LevelShadowMaps.BvhTree bvh, out Rid nodeBuf, out Rid triBuf)
+	{
+		int nodeBytes = bvh.GpuNodeBytes;
+		int triBytes = bvh.GpuTriangleBytes;
+		nodeBuf = rd.StorageBufferCreate((uint)nodeBytes);
+		triBuf = rd.StorageBufferCreate((uint)triBytes);
+		byte[] chunk = new byte[Math.Min(BvhUploadChunkBytes, Math.Max(nodeBytes, triBytes))];
+		UploadInChunks(rd, nodeBuf, nodeBytes, 32, chunk, bvh.WriteGpuNodes);
+		UploadInChunks(rd, triBuf, triBytes, 64, chunk, bvh.WriteGpuTriangles);
+	}
+
+	private delegate void ChunkWriter(int first, Span<byte> dest);
+
+	private static void UploadInChunks(RenderingDevice rd, Rid buffer, int totalBytes, int stride, byte[] chunk, ChunkWriter write)
+	{
+		int perChunk = Math.Max(1, chunk.Length / stride);
+		int items = totalBytes / stride;
+		for (int first = 0; first < items; first += perChunk)
+		{
+			int count = Math.Min(perChunk, items - first);
+			int bytes = count * stride;
+			byte[] block = bytes == chunk.Length ? chunk : new byte[bytes];
+			write(first, block);
+			rd.BufferUpdate(buffer, (uint)(first * stride), (uint)bytes, block);
+		}
+	}
+
 	/// <summary>
 	/// Estimated staging/compute budget per GPU slice handed to <see cref="Engine_ServerSyncs.RunGpuUpload"/>
 	/// so background bakes automatically yield after 1-2 slices per drawn frame (~1.5-3 ms/frame).
@@ -268,7 +303,7 @@ layout(push_constant, std430) uniform Push {
 	float crop_span_z;
 	float max_radius;
 	float min_ao;
-	float pad0;
+	int col_offset;
 } push;
 
 const vec3 HEMISPHERE_KERNEL[24] = vec3[24](
@@ -507,7 +542,7 @@ float eval_hemisphere_ao(vec3 world_pos, vec3 world_normal, out int hit_count) {
 }
 
 void main() {
-	int tx = int(gl_GlobalInvocationID.x);
+	int tx = int(gl_GlobalInvocationID.x) + push.col_offset;
 	int local_y = int(gl_GlobalInvocationID.y);
 	if (tx >= push.terrain_w || local_y >= push.halo_h) {
 		return;
@@ -697,12 +732,12 @@ void main() {
 				return false;
 			}
 
-			worldBvh.ExportGpuBuffers(out byte[] nodeBytes, out byte[] triBytes);
+			long bvhBytes = (long)worldBvh.GpuNodeBytes + worldBvh.GpuTriangleBytes;
 
 			// Batch up to 12 lights per GPU slice (~0.8-2.0 ms GPU work per frame slice).
 			long bytesPerLight = (long)innerSize * innerSize * sizeof(uint);
 			int maxBatchLights = (int)Math.Clamp(
-				Math.Min(12L, 16L * 1024L * 1024L / Math.Max(1L, bytesPerLight)),
+				Math.Min(Refii.AndroidRuntime.AndroidBakedShadows.ShadowBatchLights(12), 16L * 1024L * 1024L / Math.Max(1L, bytesPerLight)),
 				1L,
 				lights.Count);
 
@@ -726,7 +761,7 @@ void main() {
 			{
 				bool initOk = false;
 				string? compileErr = null;
-				Engine_ServerSyncs.RunGpuUpload(nodeBytes.LongLength + triBytes.LongLength + outBufferBytes, () =>
+				Engine_ServerSyncs.RunGpuUpload(bvhBytes + outBufferBytes, () =>
 				{
 					rd = RenderingServer.CreateLocalRenderingDevice();
 					if (rd is null)
@@ -757,8 +792,7 @@ void main() {
 						return;
 					}
 
-					nodeBuf = rd.StorageBufferCreate((uint)nodeBytes.Length, nodeBytes);
-					triBuf = rd.StorageBufferCreate((uint)triBytes.Length, triBytes);
+					UploadBvh(rd, worldBvh, out nodeBuf, out triBuf);
 					lightBuf = rd.StorageBufferCreate((uint)lightBytes.Length, lightBytes);
 					outBuf = rd.StorageBufferCreate((uint)outBufferBytes);
 					uniformSet = rd.UniformSet(new RDUniform[]
@@ -915,7 +949,9 @@ void main() {
 						FreeIfValid(cleanupRd, nodeBuf);
 						FreeIfValid(cleanupRd, pipeline);
 						FreeIfValid(cleanupRd, shader);
-						cleanupRd.Dispose();
+						// A local device is an Object, not a RefCounted: Dispose only drops the C# handle and
+						// left the device and its memory pools behind, two a baked area.
+						cleanupRd.Free();
 					});
 				}
 			}
@@ -1040,7 +1076,7 @@ void main() {
 
 			float invHeightSpan = (terrainMaxH - terrainMinH) > 1e-4f ? 1.0f / (terrainMaxH - terrainMinH) : 0.0f;
 
-			worldBvh.ExportGpuBuffers(out byte[] nodeBytes, out byte[] triBytes);
+			long bvhBytes = (long)worldBvh.GpuNodeBytes + worldBvh.GpuTriangleBytes;
 			byte[] ghfBytes;
 			if (hasGhf)
 			{
@@ -1054,7 +1090,8 @@ void main() {
 
 			// Target ~262K-524K texels per strip slice (~1-2.5 ms GPU compute per slice) so gameplay stays silky smooth
 			// and temporary VRAM stays tiny (~8.5 MB even at 4K/8K).
-			int targetStripRows = terrainW >= 8192 ? 64 : (terrainW >= 4096 ? 128 : 256);
+			int targetStripRows = Refii.AndroidRuntime.AndroidBakedShadows.AoStripRows(
+				terrainW, terrainW >= 8192 ? 64 : (terrainW >= 4096 ? 128 : 256));
 			int maxStripH = Math.Clamp(targetStripRows, 1, terrainH);
 			int maxHaloH = maxStripH + 2;
 			int midBufferBytes = terrainW * maxHaloH * 16; // fp32 vec4(raw_terr_ao, ghf_y, raw_walk_ao, walk_y)
@@ -1083,7 +1120,7 @@ void main() {
 			{
 				bool initOk = false;
 				string? compileErr = null;
-				Engine_ServerSyncs.RunGpuUpload(nodeBytes.LongLength + triBytes.LongLength + ghfBytes.LongLength + midBufferBytes, () =>
+				Engine_ServerSyncs.RunGpuUpload(bvhBytes + ghfBytes.LongLength + midBufferBytes, () =>
 				{
 					rd = RenderingServer.CreateLocalRenderingDevice();
 					if (rd is null)
@@ -1127,8 +1164,7 @@ void main() {
 						return;
 					}
 
-					nodeBuf = rd.StorageBufferCreate((uint)nodeBytes.Length, nodeBytes);
-					triBuf = rd.StorageBufferCreate((uint)triBytes.Length, triBytes);
+					UploadBvh(rd, worldBvh, out nodeBuf, out triBuf);
 					ghfBuf = rd.StorageBufferCreate((uint)ghfBytes.Length, ghfBytes);
 					midBuf = rd.StorageBufferCreate((uint)midBufferBytes);
 					outBuf = rd.StorageBufferCreate((uint)outBufferBytes);
@@ -1165,6 +1201,7 @@ void main() {
 				byte[] filterPush = new byte[32];
 				int traceGroupsX = (terrainW + 7) / 8;
 				int filterGroupsX = traceGroupsX;
+				int traceColumns = Refii.AndroidRuntime.AndroidBakedShadows.AoTraceColumns(terrainW, maxStripH + 2);
 				float minHCopy = terrainMinH;
 
 				for (int rowOffset = 0; rowOffset < terrainH; rowOffset += maxStripH)
@@ -1194,7 +1231,7 @@ void main() {
 					BitConverter.TryWriteBytes(tracePush.AsSpan(48), cropSpanZ);
 					BitConverter.TryWriteBytes(tracePush.AsSpan(52), maxRadius);
 					BitConverter.TryWriteBytes(tracePush.AsSpan(56), minAo);
-					BitConverter.TryWriteBytes(tracePush.AsSpan(60), 0.0f);
+					BitConverter.TryWriteBytes(tracePush.AsSpan(60), 0); // col_offset (whole strip by default)
 
 					BitConverter.TryWriteBytes(filterPush.AsSpan(0), terrainW);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(4), stripH);
@@ -1214,28 +1251,39 @@ void main() {
 					uint readBytes = (uint)(stripH * rowStrideBytes);
 					byte[]? stripOut = null;
 					RenderingDevice localRd = rd;
-					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
+					if (traceColumns < terrainW)
 					{
-						if (Engine_RdHealth.IsDeviceLost)
+						if (!Refii.AndroidRuntime.AndroidBakedShadows.TraceAoInPieces(localRd, tracePipeline, traceSet, tracePush,
+							    traceColumns, terrainW, traceGroupsY, filterPipeline, filterSet, filterPush, filterGroupsX, filterGroupsY))
 						{
-							return;
+							return false;
 						}
-						long list1 = localRd.ComputeListBegin();
-						localRd.ComputeListBindComputePipeline(list1, tracePipeline);
-						localRd.ComputeListBindUniformSet(list1, traceSet, 0);
-						localRd.ComputeListSetPushConstant(list1, tracePush, (uint)tracePush.Length);
-						localRd.ComputeListDispatch(list1, (uint)traceGroupsX, (uint)traceGroupsY, 1);
-						localRd.ComputeListEnd();
+					}
+					else
+					{
+						Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
+						{
+							if (Engine_RdHealth.IsDeviceLost)
+							{
+								return;
+							}
+							long list1 = localRd.ComputeListBegin();
+							localRd.ComputeListBindComputePipeline(list1, tracePipeline);
+							localRd.ComputeListBindUniformSet(list1, traceSet, 0);
+							localRd.ComputeListSetPushConstant(list1, tracePush, (uint)tracePush.Length);
+							localRd.ComputeListDispatch(list1, (uint)traceGroupsX, (uint)traceGroupsY, 1);
+							localRd.ComputeListEnd();
 
-						long list2 = localRd.ComputeListBegin();
-						localRd.ComputeListBindComputePipeline(list2, filterPipeline);
-						localRd.ComputeListBindUniformSet(list2, filterSet, 0);
-						localRd.ComputeListSetPushConstant(list2, filterPush, (uint)filterPush.Length);
-						localRd.ComputeListDispatch(list2, (uint)filterGroupsX, (uint)filterGroupsY, 1);
-						localRd.ComputeListEnd();
+							long list2 = localRd.ComputeListBegin();
+							localRd.ComputeListBindComputePipeline(list2, filterPipeline);
+							localRd.ComputeListBindUniformSet(list2, filterSet, 0);
+							localRd.ComputeListSetPushConstant(list2, filterPush, (uint)filterPush.Length);
+							localRd.ComputeListDispatch(list2, (uint)filterGroupsX, (uint)filterGroupsY, 1);
+							localRd.ComputeListEnd();
 
-						localRd.Submit();
-					});
+							localRd.Submit();
+						});
+					}
 					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
 					{
 						localRd.Sync();
@@ -1276,7 +1324,9 @@ void main() {
 						FreeIfValid(cleanupRd, tracePipeline);
 						FreeIfValid(cleanupRd, filterShader);
 						FreeIfValid(cleanupRd, traceShader);
-						cleanupRd.Dispose();
+						// A local device is an Object, not a RefCounted: Dispose only drops the C# handle and
+						// left the device and its memory pools behind, two a baked area.
+						cleanupRd.Free();
 					});
 				}
 			}

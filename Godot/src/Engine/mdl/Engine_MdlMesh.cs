@@ -249,6 +249,7 @@ public static int SurfacesWithLods;
 
         List<MdlGeometry> surfaces = Engine_MdlMerge.ByMaterial(geometry);
         (int lodsAttached, int lodsDropped) = Engine_MdlLods.Attach(data, info, surfaces);
+        Refii.AndroidRuntime.AndroidCharacterFarLods.Append(info, surfaces);
         var surfaceLods = new Godot.Collections.Array();
         int meshVertices = 0;
         foreach (MdlGeometry geo in surfaces)
@@ -432,6 +433,7 @@ public static int SurfacesWithLods;
 
             // Still no level: a tree's thinned cards or generated ones, when set (Engine_MdlExtraLods).
             levels ??= Engine_MdlExtraLods.For(info, geo, vertices, arrays, indices);
+            AndroidIndexOrder.Apply(geo.Material, arrays, levels);
             Godot.Collections.Dictionary? lods = levels?.Lods;
 
             // The model's radiance transfer, expanded per vertex: CUSTOM0..2 are the red, green

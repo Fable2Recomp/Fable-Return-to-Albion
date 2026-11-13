@@ -45,14 +45,44 @@ public static class AndroidTouchModControls
     /// <summary>The lists above as an offer, compared against the last without building one.</summary>
     private static readonly Offer _scratch = new(_pills, _areas, _captions);
 
+    /// <summary>The actions that state a <c>"touch"</c>, in declaration order: the only ones a pill or caption comes from.</summary>
+    private static readonly List<ModInput.Action> _touchActions = new();
+
+    /// <summary>Each of <see cref="_touchActions"/>' pill and caption, resolved (<see cref="ModText.Game"/>).</summary>
+    private static readonly List<(string Pill, string Caption)> _texts = new();
+
+    /// <summary>Whether each of <see cref="_touchActions"/> stands this frame, asked once each.</summary>
+    private static readonly List<bool> _shown = new();
+
+    /// <summary>The mod set <see cref="_touchActions"/> was taken from, and its count then.</summary>
+    private static IReadOnlyList<ModInput.Action>? _touchSource;
+    private static int _touchSourceCount = -1;
+
+    /// <summary>What <see cref="_texts"/> were resolved through: the mod set, the culture in force, the mount's tables and the running book.</summary>
+    private static (object? Actions, string? Culture, object? Mounted, object? Book) _textKey;
+
     /// <summary>
     /// The pills, areas and captions standing now: <paramref name="previous"/> itself while nothing
     /// changed (read every frame, so the same is not built again). <paramref name="fromHud"/> maps a
     /// HUD piece's canvas rectangle onto the controls' canvas (null while the HUD's canvas is unknown).
     /// </summary>
+    /// <remarks>Nothing is asked of the mods while none states a touch control or an area; their texts
+    /// are resolved again only when the mod set, the culture, the mount's tables or the running book change.</remarks>
     public static Offer Now(System.Func<Rect2, Rect2?> fromHud, Offer previous)
     {
-        IReadOnlyList<ModInput.Action> actions = ModInput.All;
+        IReadOnlyList<ModInput.Action> actions = TouchActions();
+        if (actions.Count == 0 && !ModInputTouch.AnyAreas)
+        {
+            return Offer.None;
+        }
+
+        ResolveTexts();
+        _shown.Clear();
+        foreach (ModInput.Action action in _touchActions)
+        {
+            _shown.Add(ModInputTouch.Shown(action));
+        }
+
         _pills.Clear();
         _captions.Clear();
         // The pills that always stand first, then a mode's (a "when"), so a mode coming and going
@@ -60,27 +90,28 @@ public static class AndroidTouchModControls
         for (int pass = 0; pass < 2; ++pass)
         {
             bool modal = pass == 1;
-            foreach (ModInput.Action action in actions)
+            for (int i = 0; i < actions.Count; ++i)
             {
-                if (action.Touch is { Pill.Length: > 0 } pill && (pill.When.Length != 0) == modal && ModInputTouch.Shown(action))
+                if (actions[i].Touch is { Pill.Length: > 0 } pill && (pill.When.Length != 0) == modal && _shown[i])
                 {
-                    _pills.Add((action.Name, ModText.Game(pill.Pill), modal));
+                    _pills.Add((actions[i].Name, _texts[i].Pill, modal));
                 }
             }
         }
 
-        foreach (ModInput.Action action in actions)
+        for (int i = 0; i < actions.Count; ++i)
         {
-            if (!ModInputTouch.Shown(action))
+            if (!_shown[i])
             {
                 continue;
             }
 
+            ModInput.Action action = actions[i];
             if (action.Touch!.Pill.Length == 0 && action.Touch.Caption.Length != 0)
             {
                 foreach (JoyButton button in ModInput.EffectivePad(action).Buttons)
                 {
-                    _captions[ModInput.PadName(button)] = ModText.Game(action.Touch.Caption);
+                    _captions[ModInput.PadName(button)] = _texts[i].Caption;
                 }
             }
         }
@@ -100,6 +131,55 @@ public static class AndroidTouchModControls
             ? previous
             : new Offer(_pills.ToArray(), _areas.ToArray(), new Dictionary<string, string>(_captions));
     }
+
+    /// <summary>The enabled mods' actions that state a touch control, taken again when the mod set is.</summary>
+    private static List<ModInput.Action> TouchActions()
+    {
+        IReadOnlyList<ModInput.Action> all = ModInput.All;
+        if (ReferenceEquals(all, _touchSource) && all.Count == _touchSourceCount)
+        {
+            return _touchActions;
+        }
+
+        _touchSource = all;
+        _touchSourceCount = all.Count;
+        _touchActions.Clear();
+        foreach (ModInput.Action action in all)
+        {
+            if (action.Touch is not null)
+            {
+                _touchActions.Add(action);
+            }
+        }
+
+        // A new set: its texts too.
+        _texts.Clear();
+        _textKey = default;
+        return _touchActions;
+    }
+
+    /// <summary>Resolves <see cref="_touchActions"/>' pills and captions, when what they resolve through changed.</summary>
+    private static void ResolveTexts()
+    {
+        (object? Actions, string? Culture, object? Mounted, object? Book) key = (_touchSource,
+            Refii.Text.Engine_GameCulture.Current, ModText.Mounted, Refii.Core.Engine_TitleGame.Active.Strings);
+        if (_texts.Count == _touchActions.Count && TextKeyIs(key))
+        {
+            return;
+        }
+
+        _textKey = key;
+        _texts.Clear();
+        foreach (ModInput.Action action in _touchActions)
+        {
+            _texts.Add((ModText.Game(action.Touch!.Pill), ModText.Game(action.Touch.Caption)));
+        }
+    }
+
+    /// <summary>Whether the texts were resolved through these very sources (by reference: each is replaced, never changed in place).</summary>
+    private static bool TextKeyIs((object? Actions, string? Culture, object? Mounted, object? Book) key) =>
+        ReferenceEquals(key.Actions, _textKey.Actions) && string.Equals(key.Culture, _textKey.Culture, System.StringComparison.Ordinal) &&
+        ReferenceEquals(key.Mounted, _textKey.Mounted) && ReferenceEquals(key.Book, _textKey.Book);
 
     /// <summary>Whether two offers lay out the same: the same pills and captions, and every area within two units of where it was.</summary>
     public static bool Same(Offer a, Offer b)
@@ -212,12 +292,29 @@ public static class AndroidTouchModControls
 
     private static readonly List<string> _held = new();
 
+    /// <summary>Whether the mods were last told a finger holds something: telling them "nothing" again is a no-op.</summary>
+    private static bool _heldStated;
+
     /// <summary>Tells the mods which of their pills and areas a finger holds now (every frame; none while the controls are hidden).</summary>
-    public static void Hold(AndroidTouchPad pad, IReadOnlyList<TouchControl> controls, double now)
+    /// <param name="anyModControls">Whether the layout has a mod's pill or area at all (<see cref="Offer"/> not empty of
+    /// them): without one nothing is held, and the controls are not walked.</param>
+    public static void Hold(AndroidTouchPad pad, IReadOnlyList<TouchControl> controls, double now, bool anyModControls = true)
     {
         _held.Clear();
-        foreach (TouchControl control in controls)
+        if (!anyModControls)
         {
+            if (_heldStated)
+            {
+                ModInputTouch.SetHeld(_held);
+                _heldStated = false;
+            }
+
+            return;
+        }
+
+        for (int i = 0; i < controls.Count; ++i)
+        {
+            TouchControl control = controls[i];
             string id = control.Id;
             if (id.StartsWith(PillPrefix, System.StringComparison.Ordinal) && pad.Pressing(id, now))
             {
@@ -230,5 +327,9 @@ public static class AndroidTouchModControls
         }
 
         ModInputTouch.SetHeld(_held);
+        _heldStated = _held.Count != 0;
     }
+
+    /// <summary>Whether an offer lays out any control of a mod's own (a pill or an area): captions only rename the pad's.</summary>
+    public static bool HasControls(Offer offer) => offer.Pills.Count != 0 || offer.Areas.Count != 0;
 }

@@ -1,0 +1,53 @@
+diff --git a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+index 7845f5d..d436cfd 100644
+--- a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
++++ b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+@@ -541,7 +541,9 @@ void vertex_shader(in vec3 vertex,
+ 	uvec2 omni_light_indices = instances.data[instance_index].omni_lights;
+ 	for (uint i = 0; i < omni_light_count; i++) {
+ 		uint light_index = (i > 3) ? ((omni_light_indices.y >> ((i - 4) * 8)) & 0xFF) : ((omni_light_indices.x >> (i * 8)) & 0xFF);
+-		if (i > 0 && light_index == 0xFF) {
++		// Slot 0 can be empty too: a light paired with this instance but not in this frame's
++		// light buffer (out of view or past its distance fade) is left out, leaving 0xFF.
++		if (light_index == 0xFF) {
+ 			break;
+ 		}
+ 
+@@ -552,7 +554,7 @@ void vertex_shader(in vec3 vertex,
+ 	uvec2 spot_light_indices = instances.data[instance_index].spot_lights;
+ 	for (uint i = 0; i < spot_light_count; i++) {
+ 		uint light_index = (i > 3) ? ((spot_light_indices.y >> ((i - 4) * 8)) & 0xFF) : ((spot_light_indices.x >> (i * 8)) & 0xFF);
+-		if (i > 0 && light_index == 0xFF) {
++		if (light_index == 0xFF) {
+ 			break;
+ 		}
+ 
+@@ -2169,7 +2171,9 @@ void main() {
+ 	uvec2 omni_indices = instances.data[draw_call.instance_index].omni_lights;
+ 	for (uint i = 0; i < omni_light_count; i++) {
+ 		uint light_index = (i > 3) ? ((omni_indices.y >> ((i - 4) * 8)) & 0xFF) : ((omni_indices.x >> (i * 8)) & 0xFF);
+-		if (i > 0 && light_index == 0xFF) {
++		// Slot 0 can be empty too: a light paired with this instance but not in this frame's
++		// light buffer (out of view or past its distance fade) is left out, leaving 0xFF.
++		if (light_index == 0xFF) {
+ 			break;
+ 		}
+ 
+@@ -2201,7 +2205,7 @@ void main() {
+ 	uvec2 spot_indices = instances.data[draw_call.instance_index].spot_lights;
+ 	for (uint i = 0; i < spot_light_count; i++) {
+ 		uint light_index = (i > 3) ? ((spot_indices.y >> ((i - 4) * 8)) & 0xFF) : ((spot_indices.x >> (i * 8)) & 0xFF);
+-		if (i > 0 && light_index == 0xFF) {
++		if (light_index == 0xFF) {
+ 			break;
+ 		}
+ 
+@@ -2233,7 +2237,7 @@ void main() {
+ 	uvec2 area_indices = instances.data[draw_call.instance_index].area_lights;
+ 	for (uint i = 0; i < area_light_count; i++) {
+ 		uint light_index = (i > 3) ? ((area_indices.y >> ((i - 4) * 8)) & 0xFF) : ((area_indices.x >> (i * 8)) & 0xFF);
+-		if (i > 0 && light_index == 0xFF) {
++		if (light_index == 0xFF) {
+ 			break;
+ 		}
+ 

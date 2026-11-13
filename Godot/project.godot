@@ -149,6 +149,10 @@ atmos_near_ready={
 "type": "bool",
 "value": false
 }
+atmos_extinction={
+"type": "sampler2D",
+"value": ""
+}
 atmos_near_t0={
 "type": "vec3",
 "value": Vector3(1, 1, 1)
@@ -226,6 +230,10 @@ fable_emission_boost={
 "value": 1.0
 }
 fable_fill_floor={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
+fable_godot_ambient={
 "type": "vec3",
 "value": Vector3(0, 0, 0)
 }

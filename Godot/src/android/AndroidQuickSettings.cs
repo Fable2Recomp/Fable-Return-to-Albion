@@ -29,7 +29,8 @@ public static class AndroidQuickSettings
     public static readonly int[] FrameCaps = { 0, 20, 30, 40, 60 };
 
     /// <summary>The presets Options offers, in order.</summary>
-    public static readonly string[] Presets = { GraphicsPresets.Low, GraphicsPresets.Medium, GraphicsPresets.High, GraphicsPresets.Ultra };
+    public static readonly string[] Presets =
+        { GraphicsPresets.Low, GraphicsPresets.Medium, GraphicsPresets.High, GraphicsPresets.Ultra };
 
     /// <summary>The Frame limit row's name: the cap is the button that stands pressed, unless it was set by
     /// hand to one the row doesn't offer, which the name then states.</summary>
@@ -144,7 +145,7 @@ public static class AndroidQuickSettings
     public static void ApplyPreset(string config, string preset, Action<string, string> live)
     {
         SortedDictionary<string, string> values = RuntimeConfig.ReadValues(config);
-        if (GraphicsPresets.Values(preset) is not { } chosen || !GraphicsPresets.Apply(preset, values))
+        if (GraphicsPresets.Writes(preset, values) is not { } chosen || !GraphicsPresets.Apply(preset, values))
         {
             throw new ArgumentException("Unknown graphics preset: " + preset, nameof(preset));
         }
@@ -208,11 +209,16 @@ public static class AndroidQuickSettings
         Write(config, values);
     }
 
+    /// <summary>Writes the active title's file and copies what changed to the other title's, which the
+    /// launcher's settings share (<see cref="AndroidLauncherSettings.ShareWithOtherTitles"/>).</summary>
     private static void Write(string config, IReadOnlyDictionary<string, string> values)
     {
+        SortedDictionary<string, string> before = RuntimeConfig.ReadValues(config);
         if (!RuntimeConfig.WriteValues(config, values, out string error))
         {
             throw new IOException("Cannot write " + config + ": " + error);
         }
+
+        AndroidLauncherSettings.ShareWithOtherTitles(config, before, values);
     }
 }

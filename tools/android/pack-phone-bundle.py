@@ -3,10 +3,10 @@
 
 The bundle is what lets the phone generate, compile and link the game itself
 (`export-apk.py --phone-compiler-bundle`). Its executable tools (the ARM64
-Clang, lld and ReXGlue generator, and the phone bridge) are prebuilt and taken
-unchanged from an earlier bundle (`--tools-from`), with its NDK sysroot, Clang
-resources and recipe pins; this checkout and a `build-native.py` output are laid
-over them: the runtime libraries, the public headers, the payload hook sources the
+Clang, lld and ReXGlue generator, and the phone bridge) are taken unchanged from
+`--tools-from` (build-phone-tools.py's output, or an earlier bundle), with its NDK
+sysroot, Clang resources, third-party headers and recipe pins; this checkout and a
+`build-native.py` output are laid over them: the runtime libraries, the public headers, the payload hook sources the
 phone compiles and the version configs. The data ZIP is rehashed and `bundle-proof.json` binds it to the new
 `native-manifest.json`. No game files, generated source or game module are read
 or written.
@@ -215,7 +215,7 @@ def pack(repo: Path, native: Path, tools_from: Path, out: Path, built_from: Path
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--native', type=Path, required=True, help='a build-native.py --output directory')
-    parser.add_argument('--tools-from', type=Path, required=True, help='an earlier phone compiler bundle')
+    parser.add_argument('--tools-from', type=Path, required=True, help='build-phone-tools.py output, or an earlier phone compiler bundle')
     parser.add_argument('--out', type=Path, required=True, help='a new directory for the bundle')
     parser.add_argument('--built-from', type=Path, help='the checkout --native was built from, if not this one')
     args = parser.parse_args()

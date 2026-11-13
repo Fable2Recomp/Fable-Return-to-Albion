@@ -49,6 +49,47 @@ public sealed class Engine_EntitySkipIndex
 
 		/// <summary>Still on its own node, with nothing to pose or hang: owned, drawn unless married.</summary>
 		Still,
+
+		/// <summary>
+		/// A rigged prop (a door, a sign, a lamp with dummy bones) whose clips have settled, or (the
+		/// caller's tag) one out of view: owned and drawn as <see cref="Still"/>, and its pose gate
+		/// still asked by the walk, which writes no bones for it on any walk this verdict answers.
+		/// </summary>
+		RigProp,
+	}
+
+	/// <summary>
+	/// The walks a <see cref="Kind.RigProp"/> verdict lasts at most: the pose gate's settled-prop
+	/// check (GameEntities, `Due(address, 6)`), the walk a settled prop's clips are read again.
+	/// </summary>
+	public const int RigPropRecheckTicks = 6;
+
+	/// <summary>The empty path's own re-read, in reconcile periods: `Due(address, ReconcileTicks * 8)`.</summary>
+	public const int NothingRecheckPeriods = 8;
+
+	/// <summary>
+	/// The cadence a held verdict of <paramref name="kind"/> is re-asked on, in walks: the walk its
+	/// own path would next do something other than skip. The empty path re-reads the guest only on
+	/// its longer cadence, the still paths on the reconcile (times `entity_still_reconcile_scale`).
+	/// A <see cref="Kind.RigProp"/> verdict's is its holder's (GameEntities.Android.cs). Pure.
+	/// </summary>
+	public static int RecheckTicks(Kind kind, int reconcileTicks, int stillScale) => kind switch
+	{
+		// The empty path re-read the guest only on walks due on both its own cadence and the scaled reconcile
+		// (one phase per address), so every lcm of the two.
+		Kind.Nothing => reconcileTicks * Lcm(NothingRecheckPeriods, Math.Max(1, stillScale)),
+		_ => reconcileTicks * stillScale,
+	};
+
+	private static int Lcm(int a, int b)
+	{
+		int x = a, y = b;
+		while (y != 0)
+		{
+			(x, y) = (y, x % y);
+		}
+
+		return a / x * b;
 	}
 
 	private struct Entry
@@ -57,6 +98,12 @@ public sealed class Engine_EntitySkipIndex
 		public ulong UniqueId;
 		public uint Record;
 		public string? Key;
+
+		/// <summary>More model keys the path drew (a multi-mesh appearance's parts), or null.</summary>
+		public string[]? Keys;
+
+		/// <summary>The caller's word about the verdict (GameEntities: what a hit replays); 0 for none.</summary>
+		public int Tag;
 		public int Walk;
 		public Kind Kind;
 
@@ -121,6 +168,27 @@ public sealed class Engine_EntitySkipIndex
 	/// <summary>The same, for the entity at <paramref name="row"/> of this walk's list.</summary>
 	public bool TryHit(uint address, ulong uniqueId, int row, out Kind kind)
 	{
+		if (!TryFind(address, uniqueId, row, out kind, out _))
+		{
+			return false;
+		}
+
+		Take();
+		return true;
+	}
+
+	/// <summary>The slot <see cref="TryFind"/> last found, for <see cref="Take"/>; -1 for none.</summary>
+	private int _found = -1;
+
+	/// <summary>
+	/// The verdict held for the entity at <paramref name="row"/>, and its <paramref name="tag"/>, NOT
+	/// yet marked present: the caller checks what the verdict's kind asks of this walk first, then
+	/// <see cref="Take"/>s it, or lets its own path decide (which rewrites or drops the verdict).
+	/// </summary>
+	public bool TryFind(uint address, ulong uniqueId, int row, out Kind kind, out int tag)
+	{
+		_found = -1;
+		tag = 0;
 		int slot = -1;
 		if (row >= 0)
 		{
@@ -146,14 +214,31 @@ public sealed class Engine_EntitySkipIndex
 			}
 		}
 
-		ref Entry entry = ref _slots[slot];
-		if (entry.Stale || entry.UniqueId != uniqueId)
+		ref Entry found = ref _slots[slot];
+		if (found.Stale || found.UniqueId != uniqueId)
 		{
 			kind = default;
 			return false;
 		}
 
-		kind = entry.Kind;
+		kind = found.Kind;
+		tag = found.Tag;
+		_found = slot;
+		return true;
+	}
+
+	/// <summary>Answers the walk from the verdict <see cref="TryFind"/> just found: a hit, marked present.</summary>
+	public void Take()
+	{
+		int slot = _found;
+		_found = -1;
+		if (slot < 0)
+		{
+			return;
+		}
+
+		ref Entry entry = ref _slots[slot];
+		Kind kind = entry.Kind;
 		++Hits;
 		if (entry.Walk != _walk)
 		{
@@ -165,15 +250,20 @@ public sealed class Engine_EntitySkipIndex
 				++OwnedHits;
 			}
 		}
-
-		return true;
 	}
 
 	/// <summary>
 	/// The walk's own path just took a skip: the verdict, and what that path added to the drawn
 	/// sets (<paramref name="record"/> 0 and <paramref name="key"/> null for nothing).
 	/// </summary>
-	public void Park(uint address, ulong uniqueId, Kind kind, uint record, string? key)
+	public void Park(uint address, ulong uniqueId, Kind kind, uint record, string? key) =>
+		Park(address, uniqueId, kind, record, key, null, 0);
+
+	/// <summary>
+	/// The same, with the further model keys the path drew (<paramref name="keys"/>) and the caller's
+	/// <paramref name="tag"/>, handed back by <see cref="TryFind"/>.
+	/// </summary>
+	public void Park(uint address, ulong uniqueId, Kind kind, uint record, string? key, string[]? keys, int tag)
 	{
 		if (!_slotOf.TryGetValue(address, out int slot))
 		{
@@ -207,6 +297,8 @@ public sealed class Engine_EntitySkipIndex
 			UniqueId = uniqueId,
 			Record = record,
 			Key = key,
+			Keys = keys,
+			Tag = tag,
 			Walk = _walk,
 			Kind = kind,
 			Held = true,
@@ -237,6 +329,11 @@ public sealed class Engine_EntitySkipIndex
 
 	private void Drop(uint address, int slot)
 	{
+		if (_found == slot)
+		{
+			_found = -1;
+		}
+
 		_slotOf.Remove(address);
 		_slots[slot] = default;
 		_free.Push(slot);
@@ -296,6 +393,14 @@ public sealed class Engine_EntitySkipIndex
 			{
 				keys.Add((entry.Address, key));
 			}
+
+			if (entry.Keys is { } more)
+			{
+				foreach (string part in more)
+				{
+					keys.Add((entry.Address, part));
+				}
+			}
 		}
 	}
 
@@ -328,6 +433,7 @@ public sealed class Engine_EntitySkipIndex
 		Array.Clear(_slots, 0, _slotCount);
 		Array.Clear(_rowSlots);
 		_slotCount = 0;
+		_found = -1;
 		_free.Clear();
 		_slotOf.Clear();
 		_present = 0;

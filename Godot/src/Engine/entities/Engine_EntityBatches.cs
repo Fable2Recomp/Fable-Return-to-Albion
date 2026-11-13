@@ -32,6 +32,12 @@ public partial class Engine_EntityBatches : Node3D
 	/// <summary>Debug lever: false demotes everything and promotes nothing.</summary>
 	public static bool Enabled = true;
 
+	/// <summary>
+	/// The square edge a batch gathers its props over: twice the props' 32 m cell. Android's
+	/// `android_entity_batches = "cells"` sets a finer one, only while nothing is batched.
+	/// </summary>
+	public static float CellMetres = Refii.Level.Engine_LevelProps.BatchCellMetres * 2f;
+
 	/// <summary>Props drawn from a batch now, batches standing, and promotions and demotions as run totals.</summary>
 	public static int Batched;
 
@@ -78,7 +84,7 @@ public partial class Engine_EntityBatches : Node3D
 			return false;
 		}
 
-		float cellMetres = Refii.Level.Engine_LevelProps.BatchCellMetres * 2f;
+		float cellMetres = CellMetres;
 		var cell = new Vector3I(Mathf.FloorToInt(local.Origin.X / cellMetres),
 			0, Mathf.FloorToInt(local.Origin.Z / cellMetres));
 		int rangeKey = range is null ? -1 : Mathf.RoundToInt(range[2] / 16f) * 16;
@@ -258,20 +264,28 @@ public partial class Engine_EntityBatches : Node3D
 		}
 	}
 
-	private static void Cover(Batch batch)
+	/// <summary>
+	/// The box grown over a new slot, and the range read again with it. <paramref name="ranges"/>
+	/// reads the range again even when the box already holds the slots (a range setting changed).
+	/// </summary>
+	private static void Cover(Batch batch, bool ranges = false)
 	{
 		Aabb bounds = batch.Bounds.Grow(0.5f);
-		if (batch.Mesh.CustomAabb.Encloses(bounds))
+		bool enclosed = batch.Mesh.CustomAabb.Encloses(bounds);
+		if (enclosed && !ranges)
 		{
 			return;
 		}
 
-		Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.PropBounds);
-		batch.Mesh.CustomAabb = bounds;
-		if (batch.Caster is not null)
+		if (!enclosed)
 		{
-			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
-			batch.Caster.CustomAabb = bounds;
+			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.PropBounds);
+			batch.Mesh.CustomAabb = bounds;
+			if (batch.Caster is not null)
+			{
+				Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.ShadowTwin);
+				batch.Caster.CustomAabb = bounds;
+			}
 		}
 
 		// The range its entities state, widened by how far the batch spreads from the centre Godot
@@ -284,7 +298,7 @@ public partial class Engine_EntityBatches : Node3D
 			Refii.Level.Engine_PropDrawRange.StampEntity(batch.Node, widened);
 		}
 
-		Refii.Level.Engine_PropStreamer.ApplyVisibilityRange(batch.Node, batch.Mesh.Mesh);
+		Refii.AndroidRuntime.AndroidEntityProps.ApplyVisibilityRange(batch.Node, batch.Mesh.Mesh);
 
 		if (batch.Node.GetNodeOrNull<MultiMeshInstance3D>(Engine_ShadowProxy.NodeName) is { } twin)
 		{
@@ -300,13 +314,15 @@ public partial class Engine_EntityBatches : Node3D
 	}
 
 	/// <summary>Re-evaluates visibility ranges across all active entity batches.</summary>
+	/// <remarks>Every batch, also one whose box already holds its slots: Cover alone returns early
+	/// for those, which left a live range change (prop_cull_distance_scale) off every standing batch.</remarks>
 	public void UpdateVisibilityRanges()
 	{
 		foreach (Batch batch in _batches.Values)
 		{
 			if (batch.Mesh.Mesh is not null)
 			{
-				Cover(batch);
+				Cover(batch, ranges: true);
 			}
 		}
 	}

@@ -44,7 +44,7 @@ public static class Engine_MdlExtraLods
 
         // Still none and not a tree (trees thin only by their cards, above): generated levels on a phone
         // (Engine_MdlAutoLod, `mesh_auto_lod`). After the card thinning, which suits a leaf card better.
-        if (levels is null && !geo.HasBones && info.MovementMode != 2 && Engine_MdlAutoLod.Enabled)
+        if (levels is null && (!geo.HasBones || Engine_MdlAutoLod.Skinned) && info.MovementMode != 2 && Engine_MdlAutoLod.Enabled)
         {
             levels = Engine_MdlAutoLod.Generate(vertices, indices.Length, surface);
         }

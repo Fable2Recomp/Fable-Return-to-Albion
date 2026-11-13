@@ -249,12 +249,8 @@ void WriteRecord(const char* line, uintptr_t pc) {
     DescribeGuestThread(fd);
 #if REFII_HOST_BACKTRACE
     void* frames[64];
-    const int count = ::backtrace(frames, 64);
-    ::backtrace_symbols_fd(frames, count, fd);
-#else
-    // A crash diagnostic must not keep the library from loading on API31: Android resolves
-    // strong imports eagerly, before any of this runs.
-    Append(fd, "  host backtrace unavailable on Android API<33; fault PC and guest frames retained\n");
+    const int count = refii_host_backtrace::Capture(frames, 64);
+    refii_host_backtrace::WriteSymbols(frames, count, fd);
 #endif
     ::close(fd);
 }
@@ -789,7 +785,7 @@ void InstallEmbeddedFailureHandlers() {
     // and nothing more.
     {
         void* frames[4];
-        (void)::backtrace(frames, 4);
+        (void)refii_host_backtrace::Capture(frames, 4);
     }
 #endif
 
@@ -798,8 +794,7 @@ void InstallEmbeddedFailureHandlers() {
     // restored and the signal re-raised here rather than left to abort()'s own second raise,
     // so a SIGABRT that arrived any other way ends the process too.
     // On POSIX the handler it replaced is restored (on Windows, the default) before the re-raise:
-    // that keeps Android's debuggerd in the chain, whose tombstone carries the native backtrace
-    // this report cannot take below API 33.
+    // that keeps Android's debuggerd in the chain and its tombstone.
 #ifdef _WIN32
     std::signal(SIGABRT, [](int) {
         ReportEmbeddedFailure("SIGABRT", {});

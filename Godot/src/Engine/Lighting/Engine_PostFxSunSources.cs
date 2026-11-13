@@ -101,6 +101,7 @@ public partial class Engine_PostFxSunSources : Node
     public override void _Process(double delta)
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("postfxsunsources");
+        if (Engine_PostFxUnseen.Now) return; // no chain to draw them: the textures stay unloaded
         SkyTheme? sky = Engine_PostFxParams.Sky;
         SkyFrame? frame = Engine_PostFxParams.Frame;
         if (sky is not null && frame is not null)

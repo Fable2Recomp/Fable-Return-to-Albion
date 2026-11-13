@@ -174,7 +174,11 @@ public partial class GameInput
 	/// Screen rectangles the phone's own UI holds (the Options panel and the menus it opens), in canvas
 	/// units; null on the desktop. A pointer event there is that UI's alone.
 	/// </summary>
-	public static System.Func<System.Collections.Generic.IEnumerable<Rect2>>? HostUiRects { get; set; }
+	/// <remarks>Adds them to the list it is given (reused, so a pointer event allocates nothing), and adds none while that UI is closed.</remarks>
+	public static System.Action<System.Collections.Generic.List<Rect2>>? HostUiRects { get; set; }
+
+	/// <summary>The rectangles <see cref="HostUiRects"/> gave for the event being routed, refilled for each.</summary>
+	private readonly System.Collections.Generic.List<Rect2> _hostUiRects = new();
 
 	/// <summary>
 	/// Whether a mouse event lands on the phone's own UI, so the game's menu pointer leaves it: a tap on an
@@ -183,8 +187,11 @@ public partial class GameInput
 	private bool OnHostUi(InputEvent inputEvent)
 	{
 		if (HostUiRects is not { } rects || inputEvent is not InputEventMouse mouse) return false;
+		_hostUiRects.Clear();
+		rects(_hostUiRects);
+		if (_hostUiRects.Count == 0) return false;
 		Vector2 canvas = GetViewport().GetFinalTransform().AffineInverse() * mouse.Position;
-		foreach (Rect2 rect in rects())
+		foreach (Rect2 rect in _hostUiRects)
 			if (rect.HasPoint(canvas)) return true;
 		return false;
 	}

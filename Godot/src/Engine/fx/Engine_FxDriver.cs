@@ -134,5 +134,6 @@ public sealed partial class Engine_FxDriver : Node
 
         // The frozen systems after the last one that lapped.
         FableFx.FrameWork.Lap(1, ref FableFx.LapAt);
+        Refii.AndroidRuntime.AndroidFxLightLimit.Tick(camera, delta);
     }
 }

@@ -125,9 +125,9 @@ public partial class AndroidTouchEditor : CanvasLayer
     }
 
     /// <summary>While open, the whole screen: the touch controls leave every touch to the editor.</summary>
-    public IEnumerable<Rect2> Rects()
+    public void AddRects(List<Rect2> into)
     {
-        if (Visible) yield return GetViewport().GetVisibleRect();
+        if (Visible) into.Add(GetViewport().GetVisibleRect());
     }
 
     /// <summary>

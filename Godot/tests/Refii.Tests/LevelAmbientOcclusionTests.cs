@@ -295,11 +295,13 @@ public sealed class LevelAmbientOcclusionTests
 		AssertThat(helperBlock.Contains("fable_direct_ao", StringComparison.Ordinal)).IsTrue();
 
 		// Verify combined_ao in standard_material_body and terrain_splat_body uses max(..., 0.0) without clamp
-		// and modulates direct lighting in light() via fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL)
-		AssertThat(standardBody.Contains("float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, fable_unified));", StringComparison.Ordinal)).IsTrue();
+		// and modulates direct lighting in light() via fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL).
+		// FABLE_UNIFIED is fable_unified in every full build (fable_lighting.gdshaderinc); a phone's lite build may fold it.
+		AssertThat(standardBody.Contains("float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, FABLE_UNIFIED));", StringComparison.Ordinal)).IsTrue();
 		AssertThat(standardBody.Contains("fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL)", StringComparison.Ordinal)).IsTrue();
-		AssertThat(terrainBody.Contains("float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, fable_unified));", StringComparison.Ordinal)).IsTrue();
+		AssertThat(terrainBody.Contains("float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, FABLE_UNIFIED));", StringComparison.Ordinal)).IsTrue();
 		AssertThat(terrainBody.Contains("fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("#define FABLE_UNIFIED fable_unified", StringComparison.Ordinal)).IsTrue();
 	}
 
 	[TestCase]

@@ -103,8 +103,19 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     /// <summary>Runs when Options is tapped, with the button's rectangle to open the diagnostics beside.</summary>
     public System.Action<Rect2>? OptionsPressed { get; set; }
 
-    /// <summary>Optional supplier of screen rectangles other UI owns (the diagnostics buttons).</summary>
-    public System.Func<IEnumerable<Rect2>>? PassThrough { get; set; }
+    /// <summary>Optional supplier of screen rectangles other UI owns (the diagnostics buttons), added to the list it is given.</summary>
+    public System.Action<List<Rect2>>? PassThrough { get; set; }
+
+    /// <summary>The viewport's visible size and final transform, taken again when it signals a new size (which a new stretch also is).</summary>
+    private Vector2 _viewportSize;
+    private Transform2D _toWindow = Transform2D.Identity;
+    private Viewport? _sizedViewport;
+
+    /// <summary>
+    /// Whether the last frame ran whole, hidden, with nothing held: the pad, the pointer and what they
+    /// told the game were at rest, so a hidden frame that finds them so has nothing to do.
+    /// </summary>
+    private bool _restedHidden;
 
     private static double Now => Time.GetTicksUsec() / 1_000_000.0;
 
@@ -128,8 +139,33 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         }
     }
 
+    public override void _EnterTree()
+    {
+        _sizedViewport = GetViewport();
+        _sizedViewport.SizeChanged += TakeViewportSize;
+        TakeViewportSize();
+    }
+
+    /// <summary>Takes the viewport's size and final transform, read per frame before: they change only with its size or stretch.</summary>
+    private void TakeViewportSize()
+    {
+        if (_sizedViewport is null || !GodotObject.IsInstanceValid(_sizedViewport))
+        {
+            return;
+        }
+
+        _viewportSize = _sizedViewport.GetVisibleRect().Size;
+        _toWindow = _sizedViewport.GetFinalTransform();
+    }
+
     public override void _ExitTree()
     {
+        if (_sizedViewport is not null && GodotObject.IsInstanceValid(_sizedViewport))
+        {
+            _sizedViewport.SizeChanged -= TakeViewportSize;
+        }
+
+        _sizedViewport = null;
         _pad.Cancel();
         GameInput.Touch = default;
         Refii.Mods.ModInputTouch.SetPad(0u, 0u, 0u);
@@ -222,12 +258,18 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         }
 
         TouchContext context = _enabled ? Context() : TouchContext.Hidden;
-        Vector2 size = GetViewportRect().Size;
+        Vector2 size = _viewportSize;
         // Refreshed in place each frame: the pad holds this list, and the buttons it names lay out late.
+        // Nothing is added while the diagnostics are closed (AndroidDiagnosticButtons.AnyRects).
         _passThrough.Clear();
-        if (PassThrough is { } supplier)
+        PassThrough?.Invoke(_passThrough);
+        if (RestsHidden(context, _restedHidden, _laidOutContext, size == _laidOutSize && _scale == _laidOutScale &&
+                AndroidTouchCustomLayout.Version == _laidOutCustom, _pad.Idle, _pointer.Idle, _hidingWheel))
         {
-            _passThrough.AddRange(supplier());
+            // Nothing held and nothing to lay out: what the pad told the game last frame (nothing) stands.
+            _wheelPicksSeen = GameUi.ExpressionWheelPicks;
+            Present(Now);
+            return;
         }
 
         if (context == TouchContext.Photo && GamePhotoMode.PanelRect is { } panel)
@@ -246,7 +288,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         (Vector2 Centre, float Reach)? slots = ItemSlots(size);
         bool slotsMoved = slots is { } fresh && (_laidOutSlots is not { } was ||
             fresh.Centre.DistanceTo(was.Centre) > 2f || Mathf.Abs(fresh.Reach - was.Reach) > 2f);
-        TouchHero hero = Hero(delta);
+        TouchHero hero = Hero(delta, context == TouchContext.World);
         bool photoPanel = context == TouchContext.Decorate ? GameDecorate.PanelShown : GamePhotoMode.PanelShown;
         bool placing = context == TouchContext.Decorate && GameDecorate.Placing;
         string pubGame = GamePubGames.Showing;
@@ -337,7 +379,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         // What a finger holds of the mods' pills and areas, for their input actions this frame.
         double now = Now;
-        AndroidTouchModControls.Hold(_pad, _pad.Controls, now);
+        AndroidTouchModControls.Hold(_pad, _pad.Controls, now, AndroidTouchModControls.HasControls(_laidOutMods));
         TouchPadOutput output = _pad.Sample(now);
         _hidingWheel = _pad.Touching("RT") || (_hidingWheel && Engine_UiSpellAssignSet.GuestWheelOpen);
         Engine_UiSpellAssignSet.TouchHidesWheel = _hidingWheel;
@@ -377,6 +419,27 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         _pointer.Tick(now);
         FlushPointer();
+        // At rest once the game has been told nothing is held, hidden, with nothing in flight.
+        _restedHidden = context == TouchContext.Hidden && output == TouchPadOutput.Neutral && !_hidingWheel &&
+            _pad.Idle && _pointer.Idle;
+        Present(now);
+    }
+
+    /// <summary>
+    /// Whether a frame has nothing to do: hidden as the last frame was, which ran whole and left the
+    /// pad at rest (<paramref name="restedHidden"/>), laid out for the same screen, and with no finger,
+    /// pointer gesture or held-open wheel since. The layout, the pad's sample and what it tells the
+    /// game would all come out as they did.
+    /// </summary>
+    /// <param name="layoutSame">Whether the size, scale and the player's own layout are those laid out.</param>
+    public static bool RestsHidden(TouchContext context, bool restedHidden, TouchContext laidOutContext, bool layoutSame,
+        bool padIdle, bool pointerIdle, bool hidingWheel) =>
+        context == TouchContext.Hidden && laidOutContext == TouchContext.Hidden && restedHidden && layoutSame &&
+        padIdle && pointerIdle && !hidingWheel;
+
+    /// <summary>The frame's drawing: shown or not, the stick, and a redraw when what is drawn changed.</summary>
+    private void Present(double now)
+    {
         // Off the screen while a photo is taken, so the picture is the world's alone.
         Visible = _enabled && !GamePhotoMode.Capturing;
         _stick.Follow(AndroidTouchDrawState.Stick(_pad, _laidOutSize, _scale, _opacity, _pickerSpells is not null), _pad.StickKnob);
@@ -389,7 +452,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
     /// <summary>What the main canvas item would draw now (<see cref="_Draw"/>).</summary>
     private TouchDrawnOverlay OverlayNow(double now) => AndroidTouchDrawState.Overlay(_pad, _laidOutSize, _scale, _opacity,
-        GetViewport().GetFinalTransform().Scale.Y, _laidOutSlots, Engine_UiSpellAssignSet.HeroSpells.On(0) ?? -1,
+        _toWindow.Scale.Y, _laidOutSlots, Engine_UiSpellAssignSet.HeroSpells.On(0) ?? -1,
         Engine_UiKeyGlyphs.PadAtlas, _pickerSpells is not null, now);
 
     /// <summary>
@@ -417,11 +480,20 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     /// What the hero can do, re-read twice a second: a ranged weapon equipped (Y), a spell (B), two
     /// spells (the spell menu). Unknown counts as able — nothing is hidden on a guess.
     /// </summary>
-    private TouchHero Hero(double delta)
+    /// <param name="world">Whether the play is laid out: only its buttons stand on what the hero can do, so
+    /// elsewhere nothing is asked of the guest and the last answer stands, the clock running on so the
+    /// play's first frame asks afresh.</param>
+    private TouchHero Hero(double delta, bool world)
     {
         // Fable 3 plays on these controls too, and its bridge has none of Fable 2's hero queries:
         // every button stays offered.
         if (Refii.Core.Engine_Title.Active != Refii.Core.Engine_Title.Fable2) return _hero;
+        if (!world)
+        {
+            _heroClock -= delta;
+            return _hero;
+        }
+
         // A villager's Y prompt comes and goes as the hero looks about: read every frame.
         HostBridge.TargetedQuery query = Fable2Bridge.GetTargetedQuery();
         bool villager = query.Known && query.Present && query.Button;
@@ -468,7 +540,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             return null;
         }
 
-        Vector2 size = GetViewportRect().Size;
+        Vector2 size = _viewportSize;
         float sx = size.X / canvas.Size.X, sy = size.Y / canvas.Size.Y;
         // The piece's top edge (its largest Y) is the nearer the screen's top.
         var topLeft = new Vector2((piece.Position.X - canvas.Position.X) * sx,
@@ -605,7 +677,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
             return;
         }
 
-        Transform2D toWindow = GetViewport().GetFinalTransform();
+        Transform2D toWindow = _toWindow;
         foreach (TouchMouseAction action in actions)
         {
             Vector2 at = toWindow * action.Position;

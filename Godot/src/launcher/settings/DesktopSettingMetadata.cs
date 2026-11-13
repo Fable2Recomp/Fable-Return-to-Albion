@@ -94,7 +94,10 @@ public static class DesktopSettingMetadata
         Classify(definition).Label;
 
     /// <summary>Returns the complete <see cref="SettingPresentation"/> for <paramref name="definition"/>.</summary>
-    public static SettingPresentation Classify(RuntimeCVarDefinition definition)
+    public static SettingPresentation Classify(RuntimeCVarDefinition definition) =>
+        Refii.AndroidRuntime.AndroidSettingsLayout.Present(definition, ClassifyShared(definition)); // the phone's tiers, android/AndroidSettingsLayout.cs
+
+    private static SettingPresentation ClassifyShared(RuntimeCVarDefinition definition)
     {
         if (Explicit.TryGetValue(definition.Name, out SettingPresentation? known))
         {

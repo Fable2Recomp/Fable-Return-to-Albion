@@ -113,6 +113,10 @@ vec3 fable_atmosphere_near_knot(int index) {
 	return atmos_near_t4;
 }
 
+#if defined(FABLE_LITE_FOG_LEAN) || defined(FABLE_LITE_LEAN_DARKEN)
+#include "res://src/android/fable_lite_lean.gdshaderinc"
+#endif
+#ifndef FABLE_LITE_FOG_LEAN
 /// The two terms of the guest's line for this fragment. False when it takes no fog at all.
 ///
 /// `view_vertex` is the fragment's VIEW-space position, so its length is already the guest's
@@ -226,6 +230,7 @@ bool fable_atmosphere_terms_for(
 	fog_colour = (close_fog_blend ? mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) : sky) * atmos_factors.y;
 	return true;
 }
+#endif
 
 bool fable_atmosphere_terms(
 		vec3 view_vertex,

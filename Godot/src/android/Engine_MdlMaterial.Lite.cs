@@ -24,6 +24,12 @@ public static partial class Engine_MdlMaterial
     /// <summary>The vegetation flags `lite_vegetation_folds` folds (Engine_ShaderSpecialisation.VegetationDefines).</summary>
     private const int FactFoliage = 256, FactGrass = 512, FactFoliageNormals = 1024;
 
+    /// <summary>A character's two-sided pass drawn with back faces culled (AndroidCharacterCull).</summary>
+    private const int FactCullBack = 2048;
+
+    /// <summary>A character's pass on its own build (AndroidCharacterShading).</summary>
+    private const int FactCharacter = 4096;
+
     /// <summary>The authored-PBR bit, the third of the shader-build bits above.</summary>
     private const int FactPbr = 4;
 
@@ -98,6 +104,19 @@ public static partial class Engine_MdlMaterial
             }
 
             int facts = shaded.GetMeta(LiteFactsMeta).AsInt32();
+            if (Refii.AndroidRuntime.AndroidCharacterCull.For(info) &&
+                current.ResourcePath is Engine_ShaderFamily.StandardPath or Engine_ShaderFamily.StandardTranslucentPath)
+            {
+                SetFacts(shaded, FactCullBack, true);
+            }
+
+            if (Refii.AndroidRuntime.AndroidCharacterShading.For(info) &&
+                current.ResourcePath is Engine_ShaderFamily.StandardPath or Engine_ShaderFamily.StandardCulledPath
+                    or Engine_ShaderFamily.StandardTranslucentPath)
+            {
+                SetFacts(shaded, FactCharacter, true);
+            }
+
             if (Engine_ShaderVariant.ModelPath(
                     current.ResourcePath,
                     specularMap: (facts & 1) != 0 && !grass,
@@ -118,6 +137,8 @@ public static partial class Engine_MdlMaterial
     /// </summary>
     private static void ApplySpecialisation(Material built)
     {
+        // The opaque pass's draw order class (AndroidOpaqueOrder); a no-op while its key is 0.
+        Refii.AndroidRuntime.AndroidOpaqueOrder.Model(built);
         if (!Engine_ShaderVariant.Lite || !Engine_ShaderSpecialisation.Any)
         {
             return;
@@ -154,12 +175,26 @@ public static partial class Engine_MdlMaterial
                 foliageNormals: (facts & FactFoliageNormals) != 0,
                 tree: Engine_ShaderVariant.FullPathOf(path) == Engine_ShaderFamily.StandardTreePath)
             : Array.Empty<string>();
-        if (!Engine_ShaderSpecialisation.MaterialFolds)
+        if ((facts & FactCullBack) != 0)
+        {
+            vegetation = [.. vegetation, Refii.AndroidRuntime.AndroidCharacterCull.Define];
+        }
+
+        // A character's build (`android_character_lite` and its neighbours), and with the exact set at least the
+        // folds that split no build: a character's builds are its own already.
+        Engine_ShaderSpecialisation.FoldScope scope = Engine_ShaderSpecialisation.MaterialFoldScope;
+        if ((facts & FactCharacter) != 0)
+        {
+            vegetation = [.. vegetation, .. Refii.AndroidRuntime.AndroidCharacterShading.Defines(path)];
+            scope = Refii.AndroidRuntime.AndroidCharacterShading.FoldScopeFor(scope, Refii.AndroidRuntime.AndroidCharacterShading.On);
+        }
+
+        if (scope == Engine_ShaderSpecialisation.FoldScope.Off)
         {
             return vegetation;
         }
 
-        return vegetation.Concat(Engine_ShaderSpecialisation.ScopeFolds(Engine_ShaderSpecialisation.MaterialFoldScope, path, Engine_ShaderSpecialisation.FoldDefines(
+        return vegetation.Concat(Engine_ShaderSpecialisation.ScopeFolds(scope, path, Engine_ShaderSpecialisation.FoldDefines(
             pbr: (facts & 4) != 0,
             orm: (facts & FactOrm) != 0,
             emission: (facts & FactEmission) != 0,

@@ -529,7 +529,7 @@ public sealed partial class RuntimeSettingsModel
     {
         IReadOnlyDictionary<string, string>? desktopDefaults = DesktopGraphicsPresets.Offered
             ? DesktopGraphicsPresets.Values(DesktopGraphicsPresets.DefaultPreset)
-            : null;
+            : Refii.AndroidRuntime.AndroidSettingsLayout.TabDefaults(); // a phone's High preset and 30 FPS cap
 
         foreach (RuntimeCVarDefinition definition in RuntimeCVarSet.All)
         {

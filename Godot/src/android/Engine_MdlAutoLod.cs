@@ -30,6 +30,42 @@ public static class Engine_MdlAutoLod
 {
 	private static readonly float[] Errors = { 0.002f, 0.008f, 0.03f };
 
+	/// <summary><see cref="Errors"/> and two coarser levels under <see cref="FarKey"/>.</summary>
+	private static readonly float[] FarErrors = { 0.002f, 0.008f, 0.03f, 0.08f, 0.2f };
+
+	/// <summary>
+	/// `mesh_auto_lod_far`: generated levels at 8% and 20% of the surface's extent as well. Off by default.
+	/// </summary>
+	/// <remarks>
+	/// WHY. With Godot's rule a level draws once its error projects under the viewport threshold, so
+	/// past about 4 times its extent (mesh_lod_pixels 4 on a 2340x1080 screen, a 70 degree vertical
+	/// field) a surface already draws its coarsest level, 3%: a 2 m barrel from 8 m, a 10 m house
+	/// from 40 m. Further out nothing coarser exists, so a higher mesh_lod_pixels changes nothing
+	/// there. The coarser levels switch by the same rule, so at the threshold they look the same;
+	/// the 30% rule still drops a level that saves too little.
+	/// </remarks>
+	public const string FarKey = "mesh_auto_lod_far";
+
+	/// <summary>The relative errors the levels are generated at, finest first. Pure.</summary>
+	public static float[] ErrorsFor(bool far) => far ? FarErrors : Errors;
+
+	private static bool? _far;
+
+	/// <summary>Whether the coarser levels are generated too; read once.</summary>
+	public static bool Far => _far ??= Enabled && ReadFar();
+
+	private static bool ReadFar()
+	{
+		try
+		{
+			return Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), FarKey, false);
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
+
 	/// <summary>Surfaces given generated levels since start-up.</summary>
 	public static int Generated => System.Threading.Volatile.Read(ref _generated);
 
@@ -38,6 +74,38 @@ public static class Engine_MdlAutoLod
 
 	/// <summary>The launch setting; read once.</summary>
 	public static bool Enabled => _enabled ??= ReadEnabled();
+
+	private static bool? _skinned;
+
+	/// <summary>
+	/// `mesh_auto_lod_skinned`: skinned surfaces (characters) get generated levels too. The levels
+	/// index the surface's own vertices, so the skin weights are untouched and the bones still move
+	/// every vertex; the error is measured in the rest pose. Off by default while it is measured.
+	/// </summary>
+	public static bool Skinned => _skinned ??= Enabled && ReadSkinned();
+
+	/// <summary>The refii.toml key of <see cref="Skinned"/>.</summary>
+	/// <remarks>
+	/// MEASURED NO GAIN (S10e 30.5 -> 31.1 ms, OP7 39.6 -> 40.2), and the census says why: 83% of a
+	/// townsperson's triangles already ship coarser levels (Engine_MdlLods), which this never
+	/// replaces; where it does generate (the hero's clothes, body and hair, the dog), each surface is
+	/// keyed by its own extent, so Engine_BodyVariants stopped joining a body's same-material regions
+	/// (until AndroidBodyMerge); and the dog's fur shells, its real cost, were built without levels
+	/// (until AndroidFurShellLods).
+	/// </remarks>
+	public const string SkinnedKey = "mesh_auto_lod_skinned";
+
+	private static bool ReadSkinned()
+	{
+		try
+		{
+			return Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), SkinnedKey, false);
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
 
 	private static bool ReadEnabled()
 	{
@@ -57,7 +125,11 @@ public static class Engine_MdlAutoLod
 	/// <param name="indexCount">How many indices it has.</param>
 	/// <param name="surface">Its arrays so far, of which the positions, normals and indices (in the
 	/// winding the surface is added with) are read.</param>
-	internal static Engine_MdlSurfaceArrays.Levels? Generate(ReadOnlySpan<Vector3> vertices, int indexCount, Godot.Collections.Array surface)
+	internal static Engine_MdlSurfaceArrays.Levels? Generate(ReadOnlySpan<Vector3> vertices, int indexCount, Godot.Collections.Array surface) =>
+		GenerateFor(vertices, indexCount, surface, Far);
+
+	/// <summary><see cref="Generate"/> with the far levels stated rather than read from the setting.</summary>
+	internal static Engine_MdlSurfaceArrays.Levels? GenerateFor(ReadOnlySpan<Vector3> vertices, int indexCount, Godot.Collections.Array surface, bool far)
 	{
 		if (indexCount < 600 || vertices.Length == 0)
 		{
@@ -97,13 +169,14 @@ public static class Engine_MdlAutoLod
 		// Left null, it is what the walk below would have refused. A level of every index says
 		// nothing: it is also what `generate_lod` returns when a run collapses the surface to
 		// nothing, and a finer level can still be a good one then.
-		var generated = new int[Errors.Length][];
-		for (int e = Errors.Length - 1; e >= 0; e--)
+		float[] errors = ErrorsFor(far);
+		var generated = new int[errors.Length][];
+		for (int e = errors.Length - 1; e >= 0; e--)
 		{
 			// SurfaceTool.GenerateLod is intentionally used here for direct index-array simplification
 			// per error threshold without round-tripping through ImporterMesh.GenerateLods.
 #pragma warning disable CS0618
-			int[] level = tool.GenerateLod(Errors[e], 3);
+			int[] level = tool.GenerateLod(errors[e], 3);
 #pragma warning restore CS0618
 			generated[e] = level;
 			if (level.Length > indexCount * 7 / 10 && level.Length < indexCount)
@@ -114,7 +187,7 @@ public static class Engine_MdlAutoLod
 
 		Engine_MdlSurfaceArrays.Levels? levels = null;
 		int previous = indexCount;
-		for (int e = 0; e < Errors.Length; e++)
+		for (int e = 0; e < errors.Length; e++)
 		{
 			int[]? level = generated[e];
 			if (level is null || level.Length < 3 || level.Length > previous * 7 / 10)
@@ -123,7 +196,7 @@ public static class Engine_MdlAutoLod
 			}
 
 			levels ??= new Engine_MdlSurfaceArrays.Levels();
-			levels.Add(Errors[e] * extent, level);
+			levels.Add(errors[e] * extent, level);
 			previous = level.Length;
 		}
 

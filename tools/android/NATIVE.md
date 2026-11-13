@@ -34,11 +34,20 @@ the hook recipe, and `bundle-proof.json` binds the ZIP to its `native-manifest.j
 export checks the signed APK's copy against those hashes. No game file, generated source or
 module is in it.
 
-Its executables are prebuilt and reused from an earlier bundle: `librefii_clang.so`,
-`librefii_lld.so` and `librefii_codegen.so` (Clang, ELF lld and the ReXGlue generator as
-ARM64/Bionic/API 31 PIEs from NDK r28c's LLVM, source pin
-`97a699bf4812a18fb657c2779f5296a4ab2694d2`), and `librefii_phone_bridge.so`. Their build is
-not in this repository. They must keep these SONAMEs, 16 KiB load alignment and no RPATH;
+Its executables are `librefii_clang.so`, `librefii_lld.so` and `librefii_codegen.so` (Clang, ELF
+lld and the ReXGlue generator as ARM64/Bionic/API 31 PIEs from NDK r28c's LLVM, source pin
+`97a699bf4812a18fb657c2779f5296a4ab2694d2`), and `librefii_phone_bridge.so`.
+`build-phone-tools.py` builds them into a folder that `pack-phone-bundle.py --tools-from` (and
+`build-apk.toml`'s `phone_tools_from`) takes. The generator and bridge come from this checkout's SDK
+(`REFII_ANDROID_PHONE_TOOLS` in `cmake/refii_android.cmake`); Clang and lld are cross-built from
+llvm-project at the pin, or, without `--llvm-source`, reused from an earlier bundle:
+
+```sh
+python tools/android/build-phone-tools.py --ndk <ndk-r28c> --native <a build-native.py output> \
+  --llvm-source <llvm-project at the pin> --out <new folder>
+```
+
+They must keep these SONAMEs, 16 KiB load alignment and no RPATH;
 the generator calls `InitializeAndroidPlatform` / `ShutdownAndroidPlatform` around its run
 (an app-UID child does not inherit the parent's runtime initialization), and every payload
 translation unit is compiled with the mutex ABI guard and the guest's floating-point model

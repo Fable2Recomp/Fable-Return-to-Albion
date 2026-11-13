@@ -32,8 +32,10 @@ add_library(refii_hostcore STATIC
     ${REFII_HOSTCORE_ROOT}/src/godot_audio_effect.cpp
 )
 if(ANDROID)
-    # The platform services and SDL's event queue, readied for the guest Godot hosts on a phone.
-    target_sources(refii_hostcore PRIVATE ${REFII_HOSTCORE_ROOT}/src/lifecycle_android.cpp)
+    # The platform services and SDL's event queue, readied for the guest Godot hosts on a phone,
+    # and the host backtrace below API33.
+    target_sources(refii_hostcore PRIVATE ${REFII_HOSTCORE_ROOT}/src/lifecycle_android.cpp
+        ${REFII_HOSTCORE_ROOT}/src/host_backtrace_android.cpp)
 endif()
 
 set_target_properties(refii_hostcore PROPERTIES

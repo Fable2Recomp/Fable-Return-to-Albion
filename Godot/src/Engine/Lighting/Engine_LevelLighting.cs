@@ -202,6 +202,7 @@ public static class Engine_LevelLighting
 
 	public static void UpdateSun(DirectionalLight3D light, LightingFrame frame)
 	{
+		Refii.AndroidRuntime.AndroidInteriorSun.Apply(light, frame.HasSky);
 		if (!Refii.Level.Engine_DynamicSkyLighting.OverridesSun)
 		{
 			// Linear (the theme's value through ToLinearInput), so it goes in encoded like every
@@ -564,26 +565,28 @@ public static class Engine_LevelLighting
 
 		// A rebuild in progress holds it off for a frame or two; see Engine_GiRefresh.
 		bool enableGi = unified && SdfgiEnabled;
-		environment.SdfgiEnabled = enableGi &&
+		bool sdfgiOn = enableGi &&
 			!Engine_GiRefresh.HoldingOff &&
 			!Engine_GiRefresh.ForcedOff &&
 			!Engine_GiRefresh.HoldForWorldLoad &&
 			!Engine_GiRefresh.SettlingAfterWorldLoad;
+		if (environment.SdfgiEnabled != sdfgiOn) environment.SdfgiEnabled = sdfgiOn;
 		if (!enableGi)
 		{
 			return;
 		}
 
+		if (Refii.AndroidRuntime.AndroidEnvironmentWrites.Unchanged(environment, 0, hasSky ? 1f : 2f)) return;
 		// Cascade 0 is 0.2 m cells over 25.6 m and each of the four doubles it (covering 204.8 m,
 		// matching SunFarDepth = 200 m) while avoiding culling the entire region two extra times
 		// into RENDER_LIST_SECONDARY for 409.6 m / 819.2 m cascades on Direct3D 12.
-		environment.SdfgiCascades = DefaultSdfgiCascades;
-		environment.SdfgiMinCellSize = 0.2f;
-		environment.SdfgiYScale = Godot.Environment.SdfgiyScale.Scale75Percent;
-		environment.SdfgiUseOcclusion = true;
-		environment.SdfgiReadSkyLight = hasSky;
-		environment.SdfgiBounceFeedback = 0.5f;
-		environment.SdfgiEnergy = 1.0f;
+		if (environment.SdfgiCascades != DefaultSdfgiCascades) environment.SdfgiCascades = DefaultSdfgiCascades;
+		if (environment.SdfgiMinCellSize != 0.2f) environment.SdfgiMinCellSize = 0.2f;
+		if (environment.SdfgiYScale != Godot.Environment.SdfgiyScale.Scale75Percent) environment.SdfgiYScale = Godot.Environment.SdfgiyScale.Scale75Percent;
+		if (environment.SdfgiUseOcclusion != true) environment.SdfgiUseOcclusion = true;
+		if (environment.SdfgiReadSkyLight != hasSky) environment.SdfgiReadSkyLight = hasSky;
+		if (environment.SdfgiBounceFeedback != 0.5f) environment.SdfgiBounceFeedback = 0.5f;
+		if (environment.SdfgiEnergy != 1.0f) environment.SdfgiEnergy = 1.0f;
 	}
 
 	private static int _lastSsaoQualityTier = -1;
@@ -594,7 +597,7 @@ public static class Engine_LevelLighting
 			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
 			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f &&
 			!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake;
-		environment.SsaoEnabled = enableSsao;
+		if (environment.SsaoEnabled != enableSsao) environment.SsaoEnabled = enableSsao;
 		if (!enableSsao)
 		{
 			return;
@@ -617,13 +620,15 @@ public static class Engine_LevelLighting
 				55.0f);
 		}
 
-		environment.SsaoRadius = 0.42f;
-		environment.SsaoIntensity = 1.30f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
-		environment.SsaoPower = 1.35f;
-		environment.SsaoDetail = 0.85f;
-		environment.SsaoHorizon = 0.04f;
-		environment.SsaoSharpness = 0.72f;
-		environment.SsaoLightAffect = 0.18f;
+		if (Refii.AndroidRuntime.AndroidEnvironmentWrites.Unchanged(environment, 1, Engine_LevelAmbientOcclusion.BakedAoScale)) return;
+		if (environment.SsaoRadius != 0.42f) environment.SsaoRadius = 0.42f;
+		float ssaoIntensity = 1.30f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
+		if (environment.SsaoIntensity != ssaoIntensity) environment.SsaoIntensity = ssaoIntensity;
+		if (environment.SsaoPower != 1.35f) environment.SsaoPower = 1.35f;
+		if (environment.SsaoDetail != 0.85f) environment.SsaoDetail = 0.85f;
+		if (environment.SsaoHorizon != 0.04f) environment.SsaoHorizon = 0.04f;
+		if (environment.SsaoSharpness != 0.72f) environment.SsaoSharpness = 0.72f;
+		if (environment.SsaoLightAffect != 0.18f) environment.SsaoLightAffect = 0.18f;
 	}
 
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
@@ -633,7 +638,7 @@ public static class Engine_LevelLighting
 			return;
 		}
 
-		environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
+		if (environment.TonemapMode != Godot.Environment.ToneMapper.Linear) environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
 		Engine_LevelBakedLighting.PublishThemeLighting(frame);
 
 		// ONE FILL FOR EVERY SURFACE, AND GODOT CARRIES IT. The lit shaders no longer switch
@@ -649,13 +654,13 @@ public static class Engine_LevelLighting
 		// torches, braziers and emissive surfaces, while `fable_fill_floor` provides the cave
 		// theme's `LightmapColour` ambient share.
 		bool unified = Engine_LightingFrame.ModernModel;
-		RenderingServer.GlobalShaderParameterSet(FableUnifiedName, unified ? 1.0f : 0.0f);
+		LastUnified.Set(FableUnifiedName, unified ? 1.0f : 0.0f);
 		Engine_LevelAmbientOcclusion.PublishAoParameters();
 		ConfigureGlobalIllumination(environment, unified, frame.HasSky);
 		ConfigureScreenSpaceAo(environment, unified);
 
 		// Sky reflections are not part of this: the materials carry their own environment map.
-		environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;
+		if (environment.ReflectedLightSource != Godot.Environment.ReflectionSource.Disabled) environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;
 
 		// NO SKY, MODERN MODEL: interior dials apply where the theme states no main light.
 		// A painted day set is not a roof: painted sets author mood over OUTDOOR cells and the
@@ -683,33 +688,36 @@ public static class Engine_LevelLighting
 			if (frame.HasSky)
 			{
 				float peak = MathF.Max(sky[0], MathF.Max(sky[1], sky[2]));
-				environment.AmbientLightSource = Godot.Environment.AmbientSource.Color;
-				environment.AmbientLightColor = peak > 0f
+				if (environment.AmbientLightSource != Godot.Environment.AmbientSource.Color) environment.AmbientLightSource = Godot.Environment.AmbientSource.Color;
+				Color skyColour = peak > 0f
 					? Engine_LightColour.ForGodot(new Color(sky[0] / peak, sky[1] / peak, sky[2] / peak))
 					: Colors.Black;
+				if (environment.AmbientLightColor != skyColour) environment.AmbientLightColor = skyColour;
 				// The GI's half of the bake; the other half is the flat floor below.
 				float traced = 1f - Engine_LightingFrame.ModernFloorShare;
-				environment.AmbientLightEnergy = peak * traced * ambientScale;
+				float skyEnergy = peak * traced * ambientScale;
+				if (environment.AmbientLightEnergy != skyEnergy) environment.AmbientLightEnergy = skyEnergy;
 			}
 			else
 			{
 				// NONE MEANS NONE, not "whatever was here". The Environment outlives the region that
 				// last configured it, and a frame with no sky must not keep the previous region's
 				// sky ambient (b175). SDFGI in caves traces the dynamic lights alone.
-				environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
-				environment.AmbientLightEnergy = 0f;
+				if (environment.AmbientLightSource != Godot.Environment.AmbientSource.Disabled) environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
+				if (environment.AmbientLightEnergy != 0f) environment.AmbientLightEnergy = 0f;
 			}
 
 			float floor = Engine_LightingFrame.ModernFloorShare * ambientScale;
-			RenderingServer.GlobalShaderParameterSet(FableFillFloorName,
-				new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
+			LastFillFloor.Set(FableFillFloorName, new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
 		}
 		else
 		{
-			environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
-			environment.AmbientLightEnergy = 0f;
-			RenderingServer.GlobalShaderParameterSet(FableFillFloorName, Vector3.Zero);
+			if (environment.AmbientLightSource != Godot.Environment.AmbientSource.Disabled) environment.AmbientLightSource = Godot.Environment.AmbientSource.Disabled;
+			if (environment.AmbientLightEnergy != 0f) environment.AmbientLightEnergy = 0f;
+			LastFillFloor.Set(FableFillFloorName, Vector3.Zero);
 		}
+
+		Refii.AndroidRuntime.AndroidModernAmbientFold.Publish(environment);
 
 		// THE PROBE FIELD'S SKY TETHER. Published in ambient_light_scale space because the
 		// probe L0 it mixes with carries the same scale. Every caller that moves the lighting
@@ -723,10 +731,9 @@ public static class Engine_LevelLighting
 		Engine_LevelBakedLighting.InteriorNow = interior ? 1.0f : 0.0f;
 		Engine_LevelBakedLighting.InteriorBakeNow =
 			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f;
-		RenderingServer.GlobalShaderParameterSet(FableInteriorName, interior ? 1.0f : 0.0f);
+		LastInterior.Set(FableInteriorName, interior ? 1.0f : 0.0f);
 		// The bent-normal reference: the rig's sun direction, dome convention like `atmos_sun`.
-		RenderingServer.GlobalShaderParameterSet(FableAmbientRefName,
-			Refii.Level.Engine_SkyFrame.ToDome(frame.AmbientReference));
+		LastAmbientRef.Set(FableAmbientRefName, Refii.Level.Engine_SkyFrame.ToDome(frame.AmbientReference));
 		float interiorContrastFactor = interior
 			? ComputeInteriorFogContrastFactor(
 				Refii.Level.Engine_SkyEnvironment.LastAtmosphereState,
@@ -736,11 +743,9 @@ public static class Engine_LevelLighting
 			? Engine_LightingFrame.InteriorFogScale * interiorContrastFactor
 			: Engine_LightingFrame.OutdoorFogScale;
 
-		RenderingServer.GlobalShaderParameterSet(FableInteriorFogName,
-			effectiveFogScale);
-		RenderingServer.GlobalShaderParameterSet(FableInteriorBakeName,
-			interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f);
-		RenderingServer.GlobalShaderParameterSet(FableSkyAmbientName, new Vector4(
+		LastInteriorFog.Set(FableInteriorFogName, effectiveFogScale);
+		LastInteriorBake.Set(FableInteriorBakeName, interior ? Engine_LightingFrame.InteriorBakeScale : 1.0f);
+		LastSkyAmbient.Set(FableSkyAmbientName, new Vector4(
 			frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale,
 			frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale,
 			frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale,
@@ -751,7 +756,7 @@ public static class Engine_LevelLighting
 		// it, with a fog colour of 5/255 — so simply not touching the property any more would
 		// leave those regions running Godot's near-black depth fog UNDERNEATH the atmosphere
 		// below, which reads as the world going dark with distance rather than as two fogs.
-		environment.FogEnabled = false;
+		if (environment.FogEnabled) environment.FogEnabled = false;
 
 		// GODOT 3D VOLUMETRIC FOG (0..128m 32-bit float uniform medium) + FULL-RANGE FABLE ATMOSPHERE (0..2000m).
 		// Note: Custom `FogVolume` shaders (`shader_type fog;`) are quantized into integer `R32I` (`* 1024`)
@@ -763,8 +768,7 @@ public static class Engine_LevelLighting
 		// (`RGBA16F` float), completely bypassing integer truncation!
 		// Meanwhile, `fable_atmosphere.gdshaderinc` runs in full 32-bit float per pixel across all distances
 		// (`0..2000m`), dividing out `exp(-VolumetricFogDensity * min(view_z, 128m))` so near-field surfaces
-		// are never double-fogged.
-		const float VolumetricFogEndMetres = 128.0f;
+		// are never double-fogged. The 128 m is ConfigureFogMedium's VolumetricFogEndMetres.
 		bool useVolumetricFog = unified && Engine_LightingFrame.VolumetricFogEnabled;
 		bool activeVolumetric = useVolumetricFog && effectiveFogScale > 0.0f;
 		float volBaseDensity = 0.0f;
@@ -792,44 +796,52 @@ public static class Engine_LevelLighting
 				? MathF.Max(fs.ScatteringMisc[0], 0.0f)
 				: 0.0f;
 			float startAtten = 1.0f / (1.0f + fogStart * 0.045f);
-			environment.VolumetricFogEnabled = true;
-			environment.VolumetricFogDensity = volBaseDensity;
-			environment.VolumetricFogAlbedo = volAlbedo;
-			environment.VolumetricFogEmission = volEmission;
-			environment.VolumetricFogEmissionEnergy = interior ? volEmissionEnergy : (volEmissionEnergy * startAtten * 0.45f);
-			environment.VolumetricFogLength = VolumetricFogEndMetres;
-			environment.VolumetricFogDetailSpread = 2.0f;
-			environment.VolumetricFogAnisotropy = 0.65f;
-			environment.VolumetricFogAmbientInject = interior ? 0.15f : 0.20f;
-			environment.VolumetricFogGIInject = interior ? 0.85f : 0.30f;
-			environment.VolumetricFogSkyAffect = interior ? 1.0f : 0.45f;
-			environment.VolumetricFogTemporalReprojectionEnabled = true;
-			environment.VolumetricFogTemporalReprojectionAmount = 0.90f;
+			if (!environment.VolumetricFogEnabled) environment.VolumetricFogEnabled = true;
+			if (environment.VolumetricFogDensity != volBaseDensity) environment.VolumetricFogDensity = volBaseDensity;
+			if (environment.VolumetricFogAlbedo != volAlbedo) environment.VolumetricFogAlbedo = volAlbedo;
+			if (environment.VolumetricFogEmission != volEmission) environment.VolumetricFogEmission = volEmission;
+			float emissionEnergy = interior ? volEmissionEnergy : (volEmissionEnergy * startAtten * 0.45f);
+			if (environment.VolumetricFogEmissionEnergy != emissionEnergy) environment.VolumetricFogEmissionEnergy = emissionEnergy;
+			ConfigureFogMedium(environment, interior);
 			Engine_VolumetricLightShafts.SetMedium(MathF.Max(volBaseDensity, 0.0022f), volLinearTint, 0.65f, fogStart);
 		}
 		else if (activeVolumetric)
 		{
-			environment.VolumetricFogEnabled = hasMistVolumes;
-			environment.VolumetricFogDensity = 0.0f;
-			environment.VolumetricFogEmissionEnergy = 0.0f;
-			environment.VolumetricFogLength = VolumetricFogEndMetres;
-			environment.VolumetricFogDetailSpread = 2.0f;
-			environment.VolumetricFogAnisotropy = 0.65f;
-			environment.VolumetricFogAmbientInject = interior ? 0.15f : 0.20f;
-			environment.VolumetricFogGIInject = interior ? 0.85f : 0.30f;
-			environment.VolumetricFogSkyAffect = interior ? 1.0f : 0.45f;
-			environment.VolumetricFogTemporalReprojectionEnabled = true;
-			environment.VolumetricFogTemporalReprojectionAmount = 0.90f;
+			if (environment.VolumetricFogEnabled != hasMistVolumes) environment.VolumetricFogEnabled = hasMistVolumes;
+			if (environment.VolumetricFogDensity != 0.0f) environment.VolumetricFogDensity = 0.0f;
+			if (environment.VolumetricFogEmissionEnergy != 0.0f) environment.VolumetricFogEmissionEnergy = 0.0f;
+			ConfigureFogMedium(environment, interior);
 			Engine_VolumetricLightShafts.SetMedium(0.0022f, Colors.White, 0.65f, 0.0f);
 		}
 		else
 		{
-			environment.VolumetricFogEnabled = false;
-			environment.VolumetricFogDensity = 0.0f;
+			if (environment.VolumetricFogEnabled) environment.VolumetricFogEnabled = false;
+			if (environment.VolumetricFogDensity != 0.0f) environment.VolumetricFogDensity = 0.0f;
 			Engine_VolumetricLightShafts.SetMedium(0.0f, Colors.Black, 0.65f);
 		}
 
-		RenderingServer.GlobalShaderParameterSet(FableVolumetricFogEndName, volBaseDensity);
+		LastVolumetricFogEnd.Set(FableVolumetricFogEndName, Refii.AndroidRuntime.AndroidNearFog.Published(volBaseDensity));
+		Refii.AndroidRuntime.AndroidLeanShading.LevelFog(effectiveFogScale, Refii.AndroidRuntime.AndroidNearFog.Published(volBaseDensity));
+	}
+
+	/// <summary>
+	/// The fixed part of the volumetric medium, common to both lit branches. Each property is
+	/// written only when it differs: Godot's setters carry no equality check.
+	/// </summary>
+	private static void ConfigureFogMedium(Godot.Environment environment, bool interior)
+	{
+		const float VolumetricFogEndMetres = 128.0f;
+		float ambientInject = interior ? 0.15f : 0.20f;
+		float giInject = interior ? 0.85f : 0.30f;
+		float skyAffect = interior ? 1.0f : 0.45f;
+		if (environment.VolumetricFogLength != VolumetricFogEndMetres) environment.VolumetricFogLength = VolumetricFogEndMetres;
+		if (environment.VolumetricFogDetailSpread != 2.0f) environment.VolumetricFogDetailSpread = 2.0f;
+		if (environment.VolumetricFogAnisotropy != 0.65f) environment.VolumetricFogAnisotropy = 0.65f;
+		if (environment.VolumetricFogAmbientInject != ambientInject) environment.VolumetricFogAmbientInject = ambientInject;
+		if (environment.VolumetricFogGIInject != giInject) environment.VolumetricFogGIInject = giInject;
+		if (environment.VolumetricFogSkyAffect != skyAffect) environment.VolumetricFogSkyAffect = skyAffect;
+		if (!environment.VolumetricFogTemporalReprojectionEnabled) environment.VolumetricFogTemporalReprojectionEnabled = true;
+		if (environment.VolumetricFogTemporalReprojectionAmount != 0.90f) environment.VolumetricFogTemporalReprojectionAmount = 0.90f;
 	}
 
 	/// <summary>
@@ -1007,6 +1019,16 @@ public static class Engine_LevelLighting
 		Vector3 up = MathF.Abs(forward.Y) > 0.99f ? Vector3.Forward : Vector3.Up;
 		return Basis.LookingAt(forward, up);
 	}
+
+	// Written here and nowhere else, and written every frame: each sends only a changed value.
+	private static readonly Engine_LastWritten<float> LastUnified = new();
+	private static readonly Engine_LastWritten<Vector3> LastFillFloor = new();
+	private static readonly Engine_LastWritten<float> LastInterior = new();
+	private static readonly Engine_LastWritten<Vector3> LastAmbientRef = new();
+	private static readonly Engine_LastWritten<float> LastInteriorFog = new();
+	private static readonly Engine_LastWritten<float> LastInteriorBake = new();
+	private static readonly Engine_LastWritten<Vector4> LastSkyAmbient = new();
+	private static readonly Engine_LastWritten<float> LastVolumetricFogEnd = new();
 
 	// Lazily initialized so touching Engine_LevelLighting in headless .NET testhost never invokes
 	// native Godot StringName constructors.

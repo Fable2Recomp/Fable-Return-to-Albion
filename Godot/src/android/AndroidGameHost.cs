@@ -39,7 +39,9 @@ public partial class AndroidGameHost : Node3D
     private Label? _status;
     private PanelContainer? _statusPanel;
     private AndroidStartup? _startup;
-    private object? _frontEnd;
+
+    /// <summary>The guest's front end as last followed, for the status file; null until the UI follows it.</summary>
+    private FrontEndSample? _frontEnd;
     private bool _assetsReady, _focused = true;
 
     /// <summary>
@@ -61,8 +63,36 @@ public partial class AndroidGameHost : Node3D
     private readonly Engine_MeshLodPolicy _meshLod = new();
     private readonly AndroidSunShadows _sunShadows = new();
     private AndroidProfilingOptions? _profiling;
-    private double _reportAge;
+    private double _reportAge, _statusAge;
     private long _presentationFrames;
+
+    /// <summary>The diagnostics node of the scene, found once.</summary>
+    private AndroidDiagnosticButtons? _diagnostics;
+
+    /// <summary>Writes android-status.json off the main thread; null until the user directory is known.</summary>
+    private AndroidStatusWriter? _statusWriter;
+
+    /// <summary>The phase and failure the status file last stated: a change is written within a second.</summary>
+    private string _statusPhase = string.Empty, _statusFailure = string.Empty;
+
+    /// <summary>refii.toml as last read for the live settings, and its stamp then: read again only when it moves.</summary>
+    private System.Collections.Generic.SortedDictionary<string, string>? _liveValues;
+    private GameWindowSettings? _liveSettings;
+    private AndroidConfigStamp _liveStamp;
+
+    /// <summary>What does not change while the process runs: Godot's version and the renderer.</summary>
+    private string? _godotVersion, _renderingMethod;
+
+    /// <summary>One options object: the serializer keeps its per-type metadata on it, so a new one each write built it all again.</summary>
+    private static readonly JsonSerializerOptions StatusJson = new()
+    {
+        WriteIndented = true,
+        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
+    };
+
+    /// <summary>The guest's front end as <see cref="FollowFrontEnd"/> read it: raw fields, the status object built only when written.</summary>
+    private readonly record struct FrontEndSample(bool Found, Engine_UiModel.FrontEndScreen Screen, uint State, bool CanPressA,
+        uint Cursor, int Slide, int SlideCount, bool GuiUp, bool Reveal);
 
     [DllImport("libc", CallingConvention = CallingConvention.Cdecl)]
     private static extern int setenv(string name, string value, int overwrite);
@@ -76,20 +106,26 @@ public partial class AndroidGameHost : Node3D
         KeepInMemoryWhileAway();
         ProcessPriority = -100;
         Refii.Level.Engine_TreeSwayFar.Apply();
+        AndroidPoseRate.Apply();
+        AndroidOffscreenRigs.Apply();
+        AndroidSkipIndexHolds.Apply();
         // The back gesture is the game's (AndroidSystemKeys), never Godot's quit.
         GetTree().QuitOnGoBack = false;
         _userDirectory = OS.GetUserDataDir();
+        _statusWriter = new AndroidStatusWriter(Path.Combine(_userDirectory, "android-status.json"));
         BuildStatusOverlay();
         _touchNode = GetNodeOrNull<Control>("AndroidTouchLayer/AndroidTouchControls");
         _touch = _touchNode as IAndroidTouchControls;
-        if (_touch != null && GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons") is { } diagnostics)
+        _diagnostics = GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons");
+        if (_touch != null && _diagnostics is { } diagnostics)
         {
-            _touch.PassThrough = diagnostics.Rects;
+            _touch.PassThrough = diagnostics.AddRects;
             _touch.OptionsPressed = diagnostics.Toggle;
             diagnostics.Touch = _touch;
-            GameInput.HostUiRects = diagnostics.Rects;
+            GameInput.HostUiRects = diagnostics.AddRects;
             diagnostics.ConfigPath = () => _runtimeConfig;
-            diagnostics.SettingsWritten = RefreshRenderScale;
+            // Just written here: read again whatever the file's stamp says.
+            diagnostics.SettingsWritten = () => RefreshRenderScale(force: true);
         }
         if (_touch != null)
             AddChild(new AndroidCanvasLean { Name = "CanvasLean", Touch = _touchNode, Target = UiLayer });
@@ -112,7 +148,14 @@ public partial class AndroidGameHost : Node3D
             SetEnvironment("REFII_TEX_WORKERS", "1");
             SetEnvironment("REFII_TEX_CACHE_MB", "512");
             Refii.Textures.Engine_TexCache.Maintain();
-            SetEnvironment("REFII_LIGHTING_MODEL", "fable");
+            // `android_modern_lighting = true` keeps the config's own lighting_model (the lite
+            // modern builds exist) while the two models are compared on phones.
+            if (!Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), "android_modern_lighting", false))
+                SetEnvironment("REFII_LIGHTING_MODEL", "fable");
+            // Entity batches (modern only) save a few draws but are culled and LOD-picked as one
+            // 64 m box: on an S10e they drew 190K more triangles and cost 6-7 ms of GPU. So lean
+            // modern leaves them off unless android_entity_batches asks (AndroidEntityProps).
+            AndroidEntityProps.ApplyBatching();
             Refii.Lighting.Engine_GiRefresh.ForcedOff = true;
             Engine_TickClock.HostOwnsClock = false;
             Engine_TickClock.UseStatedClock = true;
@@ -124,8 +167,10 @@ public partial class AndroidGameHost : Node3D
             if (!File.Exists(runtimeConfig))
                 File.WriteAllText(runtimeConfig, "sun_shadow_map = 1024\nsun_shadow_splits = 2\nshader_warmup_enabled = false\n");
             var seeded = Refii.Launcher.Core.RuntimeConfig.ReadValues(runtimeConfig);
-            if (AndroidLauncherSettings.ApplyPresetOnce(seeded) | Refii.Launcher.Core.GraphicsPresets.Upgrade(seeded))
-                Refii.Launcher.Core.RuntimeConfig.WriteValues(runtimeConfig, seeded, out _);
+            var unseeded = new System.Collections.Generic.Dictionary<string, string>(seeded, StringComparer.Ordinal);
+            if (AndroidLauncherSettings.ApplyPresetOnce(seeded) | Refii.Launcher.Core.GraphicsPresets.Upgrade(seeded) &&
+                Refii.Launcher.Core.RuntimeConfig.WriteValues(runtimeConfig, seeded, out _))
+                AndroidLauncherSettings.ShareWithOtherTitles(runtimeConfig, unseeded, seeded);
             _runtimeConfig = runtimeConfig;
             _sunShadows.Apply(seeded, GetTree().Root);
             AddChild(new AndroidIdlePower { Name = "IdlePower", PauseNow = () => _pauseOnReturn = 0,
@@ -152,15 +197,26 @@ public partial class AndroidGameHost : Node3D
                 InWorld = () => _world != null, FrontEndPending = () => _guest != null && !_frontEndAttached });
         }
         catch (Exception error) { Fail(error); }
+        RefreshStatusSettings();
         SaveStatus();
+    }
+
+    /// <summary><see cref="RefreshRenderScale"/> where the status write ran it: an unexpected error is the host's failure.</summary>
+    private void RefreshStatusSettings()
+    {
+        try { RefreshRenderScale(); }
+        catch (Exception error) { Fail(error); }
     }
 
     /// <summary>Pumps presentation and real controller UI while the owner thread runs the native guest.</summary>
     public override void _Process(double delta)
     {
+        AndroidDebugIdleQuit.Tick();
         PauseOnReturn(delta);
         // Every frame, not only while a streamer is still loading: it stops processing once settled.
         Refii.Level.Engine_PropFarShading.Tick(this);
+        Refii.AndroidRuntime.AndroidCharacterLevers.Tick(this);
+        Refii.AndroidRuntime.AndroidEntityProps.Tick();
         try
         {
             if (_failure.Length == 0 && _guest == null && _assetsReady && Engine_ShaderWarmup.Done &&
@@ -225,10 +281,21 @@ public partial class AndroidGameHost : Node3D
         }
         catch (Exception error) { Fail(error); }
         _presentationFrames++;
+        // A write that failed on the writer's thread is this thread's failure.
+        if (_statusWriter?.TakeError() is { } writeError) Fail(writeError);
+        _statusAge += delta;
         _reportAge += delta;
-        if (_reportAge < 1) return;
-        _reportAge = 0;
-        SaveStatus();
+        bool refresh = _reportAge >= AndroidStatusCadence.RefreshSeconds;
+        if (refresh)
+        {
+            _reportAge = 0;
+            // The live frame cap and render scale: a stat each second, refii.toml read only when it moved.
+            RefreshStatusSettings();
+        }
+        if (AndroidStatusCadence.StatusDue(_statusAge, !string.Equals(_phase, _statusPhase, StringComparison.Ordinal),
+                !string.Equals(_failure, _statusFailure, StringComparison.Ordinal)))
+            SaveStatus();
+        if (!refresh) return;
         // ONLY A FAILURE IS SHOWN. The phase ("building the native guest world") stood in the corner
         // over the loading screen and the startup screen on every start and load; it stays in the
         // status file for tools, and the startup and loading screens say what is happening.
@@ -358,8 +425,7 @@ public partial class AndroidGameHost : Node3D
         if (reveal) _ui.Reveal();
         else if (!InteractiveFrontEndPolicy.StaysRevealed(_ui.IsRevealed, guiUp, _ui.HasInGameUi))
             _ui.Conceal("native guest has no visible interactive UI");
-        _frontEnd = new { found, screen = screen.ToString(), state, can_press_a = canPressA,
-            cursor, scene_slide = slide, slide_count = slideCount, gui_up = guiUp, should_reveal = reveal };
+        _frontEnd = new FrontEndSample(found, screen, state, canPressA, cursor, slide, slideCount, guiUp, reveal);
         if (_world == null) _phase = InteractiveFrontEndPolicy.Status(found, screen, guiUp, canPressA);
     }
 
@@ -411,11 +477,16 @@ public partial class AndroidGameHost : Node3D
     }
 
     /// <summary>Atomically writes generic status; counters are evidence of activity, not performance guarantees.</summary>
+    /// <remarks>The snapshot is taken here, on the main thread, from detached values; serializing and
+    /// writing it is the writer's (<see cref="AndroidStatusWriter"/>), off this thread.</remarks>
     private void SaveStatus()
     {
+        _statusAge = 0;
+        _statusPhase = _phase;
+        _statusFailure = _failure;
+        if (_statusWriter is not { } writer) return;
         try
         {
-            RefreshRenderScale();
             Viewport viewport = GetViewport();
             Vector2 logicalSize = viewport.GetVisibleRect().Size;
             Vector2 viewportTextureSize = viewport.GetTexture().GetSize();
@@ -428,8 +499,8 @@ public partial class AndroidGameHost : Node3D
             var report = new
             {
                 schema = 1, utc = DateTime.UtcNow.ToString("O"), phase = _phase, error = _failure,
-                godot = Engine.GetVersionInfo()["string"].AsString(),
-                rendering_method = RenderingServer.GetCurrentRenderingMethod(),
+                godot = _godotVersion ??= Engine.GetVersionInfo()["string"].AsString(),
+                rendering_method = _renderingMethod ??= RenderingServer.GetCurrentRenderingMethod(),
                 postfx_mode = Refii.Lighting.Engine_PostFxParams.Mode,
                 presentation_pacing = new
                 {
@@ -462,7 +533,7 @@ public partial class AndroidGameHost : Node3D
                 nested_bank_cache = bankCache,
                 nested_bank_cache_scope = "Process-wide BnkFileSystem nested cache; the budget bounds inflated containers only, memory-mapped containers are counted separately",
                 guest = _guest?.Describe(), guest_placement = _placement?.Report(), load_placement = _loadPlacement?.Report(), game_ui = _ui?.DescribeInteractiveUi(),
-                frontend = _frontEnd, controller = _input?.DescribeControllerInput(),
+                frontend = DescribeFrontEnd(), controller = _input?.DescribeControllerInput(),
                 world_attached = _world != null, world_held = GameWorld.WorldBuildHeld,
                 region_retirement = _world?.RetirementStatus,
                 entities_ready = _world?.Entities?.ReadyForRelease ?? false,
@@ -494,28 +565,39 @@ public partial class AndroidGameHost : Node3D
                 diagnostic_buttons = new {
                     performance_open = GetNodeOrNull<Refii.Game.GamePerfOverlay>("GamePerfOverlay")?.Visible ?? false,
                     debug_open = GetNodeOrNull<Refii.Game.GameDevMenu>("GameDevMenu")?.IsOpen ?? false,
-                    visible = GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons")?.Visible ?? false,
+                    visible = Diagnostics()?.Visible ?? false,
                 },
                 scope = "Foreground controller and touch prototype; explicit movie skipping; guest teardown unsupported"
             };
-            string path = Path.Combine(_userDirectory, "android-status.json");
-            File.WriteAllText(path + ".tmp", Refii.Core.Engine_Json.Serialize(report, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals
-            }));
-            File.Move(path + ".tmp", path, overwrite: true);
+            // The anonymous type as the serializer's type argument, as when this was written here.
+            writer.Post(() => Refii.Core.Engine_Json.Serialize(report, StatusJson));
         }
         catch (Exception error) { Fail(error); }
     }
 
+    /// <summary>The front end as the status file states it, from the raw fields <see cref="FollowFrontEnd"/> kept.</summary>
+    private object? DescribeFrontEnd() => _frontEnd is not { } f ? null : new
+    {
+        found = f.Found, screen = f.Screen.ToString(), state = f.State, can_press_a = f.CanPressA,
+        cursor = f.Cursor, scene_slide = f.Slide, slide_count = f.SlideCount, gui_up = f.GuiUp, should_reveal = f.Reveal
+    };
+
+    /// <summary>The scene's diagnostics node, while it stands.</summary>
+    private AndroidDiagnosticButtons? Diagnostics()
+    {
+        if (_diagnostics is not null && GodotObject.IsInstanceValid(_diagnostics)) return _diagnostics;
+        return _diagnostics = GetNodeOrNull<AndroidDiagnosticButtons>("AndroidDiagnosticButtons");
+    }
+
     /// <summary>The render thread this run uses and the one refii.toml asks for (AndroidRenderThread).</summary>
+    /// <remarks>From the values the live settings last read (<see cref="LiveSettings"/>), refii.toml's
+    /// stamp checked each second; read here only while none were.</remarks>
     private object? RenderThreadStatus()
     {
         if (_runtimeConfig.Length == 0 || !File.Exists(_runtimeConfig)) return null;
         return new
         {
-            mode = AndroidRenderThread.Describe(Refii.Launcher.Core.RuntimeConfig.ReadValues(_runtimeConfig)),
+            mode = AndroidRenderThread.Describe(_liveValues ?? Refii.Launcher.Core.RuntimeConfig.ReadValues(_runtimeConfig)),
             write_error = _renderThreadError,
         };
     }
@@ -564,14 +646,15 @@ public partial class AndroidGameHost : Node3D
     /// The texture size accessor includes canvas stretch and is reported separately, without a GPU readback.
     /// Unchanged inputs preserve a temporary profiler threshold until it is explicitly restored;
     /// a real quality, extent or global project-scale change reapplies configured parity.</remarks>
-    private void RefreshRenderScale()
+    /// <param name="force">Read refii.toml again even if its stamp has not moved: the diagnostics just wrote it.</param>
+    private void RefreshRenderScale(bool force = false)
     {
         if (_runtimeConfig.Length == 0) return;
         try
         {
             // Read the known app-private file directly: changing this diagnostic setting
             // must never select a different config, resize Android's window or start a guest.
-            var settings = AndroidRenderScale.ReadSettings(_runtimeConfig);
+            GameWindowSettings settings = LiveSettings(force);
             // The frame cap follows the same live file, so a changed cap needs no restart.
             int frameCap = AndroidIdlePower.FrameCap(settings.MaxFps);
             if (Engine.MaxFps != frameCap)
@@ -579,6 +662,10 @@ public partial class AndroidGameHost : Node3D
                 Engine.MaxFps = frameCap;
                 GD.Print($"[android] frame cap {(frameCap == 0 ? "off" : frameCap + " fps")}");
             }
+            // android_canvas_layout_size: the root's 2D at the layout size, the world's pixels kept.
+            bool canvasLayout = AndroidCanvasResolution.Apply(GetTree().Root,
+                Engine_RefiiConfig.Bool(Engine_RefiiConfig.Read(out _), AndroidCanvasResolution.Key, false),
+                out float stretch, out Vector2I renderedSize);
             if (_renderScale.Apply(settings, scale =>
             {
                 Viewport viewport = GetViewport();
@@ -586,13 +673,14 @@ public partial class AndroidGameHost : Node3D
                     viewport.Scaling3DMode != Viewport.Scaling3DModeEnum.Bilinear)
                     viewport.Scaling3DMode = Viewport.Scaling3DModeEnum.Bilinear;
                 viewport.Scaling3DScale = scale;
-            })) GD.Print($"[android] root world render scale {_renderScale.Applied:P0}; canvas/UI viewports unchanged");
+            }, scale => AndroidCanvasResolution.WorldScale(scale, stretch, canvasLayout)))
+                GD.Print($"[android] root world render scale {_renderScale.Applied:P0}; canvas/UI viewports unchanged");
             ApplyTextureSampling(GetViewport(), settings);
             ApplyColourBuffer(GetViewport(), settings);
             ApplyCanvasLean(settings);
             _sunShadows.Apply(Engine_RefiiConfig.Read(out _), GetTree().Root);
             Viewport lodViewport = GetViewport();
-            Vector2I physicalSize = GetTree().Root.Size;
+            Vector2I physicalSize = renderedSize;
             float projectScale = ProjectSettings.GetSetting("rendering/scaling_3d/scale", 1.0f).AsSingle();
             if (_meshLod.Apply(settings.MeshLodPixels, physicalSize.X, physicalSize.Y, projectScale,
                 threshold => lodViewport.MeshLodThreshold = threshold))
@@ -606,6 +694,27 @@ public partial class AndroidGameHost : Node3D
             if (_renderScaleError != error.Message) GD.Print("[android] render scale config read failed: " + error.Message);
             _renderScaleError = error.Message;
         }
+    }
+
+    /// <summary>
+    /// The live settings as <see cref="AndroidRenderScale.ReadSettings"/> reads them, parsed again only
+    /// when refii.toml's stamp moved (or <paramref name="force"/>): otherwise the last read's, after one stat.
+    /// </summary>
+    /// <exception cref="FileNotFoundException">The live configuration is unavailable.</exception>
+    private GameWindowSettings LiveSettings(bool force)
+    {
+        // Stamped before the read: a write landing during it moves the stamp again, and is read next time.
+        AndroidConfigStamp stamp = AndroidConfigStamp.Of(_runtimeConfig);
+        if (_liveSettings is { } kept && !AndroidConfigStamp.Reread(_liveStamp, stamp, force)) return kept;
+        _liveSettings = null;
+        _liveValues = null;
+        if (!File.Exists(_runtimeConfig)) throw new FileNotFoundException("Live render-scale configuration is unavailable", _runtimeConfig);
+        var values = Refii.Launcher.Core.RuntimeConfig.ReadValues(_runtimeConfig);
+        GameWindowSettings settings = AndroidRenderScale.SettingsOf(values, _runtimeConfig);
+        _liveValues = values;
+        _liveStamp = stamp;
+        _liveSettings = settings;
+        return settings;
     }
 
     /// <summary>

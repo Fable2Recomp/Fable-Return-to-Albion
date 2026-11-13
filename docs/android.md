@@ -69,7 +69,8 @@ one step from a config file naming the tools. It runs, each as a script of its o
 1. **templates**, only when missing: the patched Godot 4.7.1 Android templates
    (`godot-patches/build-templates.py`). This step needs SCons, the Godot source with
    Swappy installed (`misc/scripts/install_swappy_android.py`) and `ANDROID_HOME` set to an
-   SDK with NDK r29; `build-apk.py` does not set it.
+   SDK with NDK r29; `build-apk.py` does not set it. `build-apk.py` refuses templates built
+   with other patches than `godot-patches/` (they record theirs in `patches.txt`).
 2. **native**: `build-native.py --rexnet`, the ARM64 runtime libraries.
 3. **bundle**: `pack-phone-bundle.py`, the phone compiler bundle for this runtime.
 4. **export**: `export-apk.py --phone-compiler-bundle --nativeaot --netplay`, which
@@ -82,7 +83,7 @@ one step from a config file naming the tools. It runs, each as a script of its o
 | Java, Android SDK, NDK | JDK 17; platform 36 and build-tools 36.1.0; NDK r28c (28.2.13676358) |
 | Native tools | CMake 3.25+, Ninja, Python 3.11+, rustup with `aarch64-linux-android` |
 | ReXGlue generator | the desktop `rexglued` built from this checkout's SDK |
-| Phone compiler tools | an earlier phone compiler bundle (see below) |
+| Phone compiler tools | `build-phone-tools.py`, or an earlier phone compiler bundle (see below) |
 
 Initialize the submodules first (`git submodule update --init --recursive`), copy
 `tools/android/build-apk.example.toml` outside the checkout, fill in the paths, and run:
@@ -103,12 +104,12 @@ installed one signed with the same key and package, so keep one key. The passwor
 from the file `passwords_json` names (`REFII_ANDROID_STORE_PASSWORD`,
 `REFII_ANDROID_KEY_PASSWORD`) or from those environment variables, and are never printed.
 
-**The phone compiler tools are prebuilt.** The bundle's executables (ARM64/Bionic builds of
-Clang, lld and the ReXGlue generator, and the phone bridge) are not built here:
-`pack-phone-bundle.py` reuses them from the bundle `phone_tools_from` names (an earlier
-`build-apk.py` output's `compiler-bundle/`), with that bundle's NDK sysroot, Clang resources
-and recipe pins, and overlays this checkout's headers, payload hooks, version configs and
-runtime libraries. `tools/android/NATIVE.md` records their LLVM pin and contract.
+**The phone compiler tools.** The bundle's executables (ARM64/Bionic builds of Clang, lld and the
+ReXGlue generator, and the phone bridge) are built by `build-phone-tools.py`: `pack-phone-bundle.py`
+takes them from the folder `phone_tools_from` names (that output, or an earlier `build-apk.py`
+output's `compiler-bundle/`), with its NDK sysroot, Clang resources and recipe pins, and overlays
+this checkout's headers, payload hooks, version configs and runtime libraries.
+`tools/android/NATIVE.md` records their LLVM pin and contract.
 
 Tests: `dotnet test Godot/refii-launcher.sln` and
 `python -B -m unittest discover -s tools/android/tests -p 'test_*.py'`.
@@ -157,21 +158,27 @@ build signed with the same key to keep its saves and extracted game; never unins
 In the launcher, **Launch options → Install → Extract and compile on this phone** prepares
 the game. An update whose phone compiler bundle differs compiles it again by itself when the
 launcher opens; let it finish (Cancel keeps playing the earlier build meanwhile). The
-launcher then removes the extracted game copies and builds it no longer uses.
+launcher then removes the extracted game copies and builds it no longer uses. A rebuild reuses
+every unit whose inputs did not change (`phone-object-cache`); a change to the compiler, its flags
+or `AndroidPhoneCompiler.RecipeRevision` compiles every unit once.
 
 ## On the phone
 
-- **Settings** are the app's `files/runtime/refii.toml`, the same keys as the desktop's;
-  the launcher's Launch options edit it. On a phone it lists what a player sets (the graphics
-  preset, frame cap, FPS counter, render scale, camera, vibration, RexNet and split screen);
-  everything else is under **Advanced**, and the desktop's window, VSync and anti-aliasing
-  settings, which a phone ignores, are not listed. `debug_channel = true` opens the debug channel on
+- **Settings** are the app's `files/runtime/refii.toml` (and Fable 3's `refiii.toml`), the same keys
+  as the desktop's; the launcher's Launch options edit them in the desktop's tabs, and a setting both
+  games read is written to both files. On a phone each tab lists what a player sets (the graphics
+  preset, frame cap, FPS counter, render scale, baked lamp shadows, camera, vibration, RexNet and split
+  screen); everything else is under each tab's **Advanced** (`AndroidSettingsLayout`), and the
+  desktop's window, VSync, upscaler, anti-aliasing and Performance Preset settings, which a phone
+  ignores, are not listed. A row's reset goes back to the High preset's value. `debug_channel = true` opens the debug channel on
   `127.0.0.1` (port in `files/runtime/debug/refii-debug.json`; forward it with adb).
   `android_render_thread = true` runs Godot's renderer on its own thread from the next
   launch; it needs the patched templates. Every graphics preset sets it. `android_tex_upload_cache`
   (on by default) keeps each texture's GPU-ready form on disk for a GPU without BC, for faster
   repeat loads; `android_eac_normals` (off) stores normal maps there as EAC RG11, at half the
-  video memory and a slower load.
+  video memory and a slower load. `android_compress_mesh_attributes` (off) stores models that are
+  not skinned with Godot's attribute compression, 20 bytes a vertex instead of 36; a model over 32 m
+  or with UVs past ±8 keeps the float layout.
 - **Logs and saves.** Export (the launcher's Install tab and File menu, and Options in game)
   writes a zip to Download: the logs, settings, device and save for a bug report
   (`Fable2-logs-and-saves-…`), or the save folder alone as a backup (`Fable2-saves-…`).
@@ -191,9 +198,10 @@ launcher then removes the extracted game copies and builds it no longer uses.
   package's title in lower case when the picker gives no name: `Toggle Sprint` →
   `toggle_sprint`). There is no folder to open, no URL install and no editor. A soft mod runs
   as on a PC: its files, rows, images, Lua, `settings.json`, `input.json` and `godot/*.gd`.
-  Hard mods (with `native/` sources) cannot be built on the phone, so the tab marks them
-  *not on phone* and refuses them. Mod actions bound to keys need a keyboard; the touch
-  controls have no buttons for them yet.
+  A hard mod (`native/` sources) asks for consent as on a PC and is compiled into the game
+  code with the desktop's checks; changing the enabled hard mods makes the launcher offer
+  Build Game Code. Mod actions reach the touchscreen through their `touch` pills and captions
+  ([Mods on a touchscreen](#mods-on-a-touchscreen)) and a controller through the mod wheel on Back.
 - **Co-op.** RexNet needs the `--rexnet` native build and `--netplay` export (both in
   `build-apk.py`). With RexNet up the game signs in with the RexNet profile. When the game
   starts, a profile that was saved to less recently than another one takes a copy of the
@@ -204,17 +212,22 @@ launcher then removes the extracted game copies and builds it no longer uses.
 
 ## Android graphics preset
 
-Launch options has a **Graphics Preset** row on a phone: **Low**, **Medium**, **High**,
-**Ultra** or **Custom** (a preset setting changed by hand). A
+Launch options has a **Graphics preset** card at the top of its Display and Graphics tabs on a
+phone, in place of the desktop's Performance Preset: **Low**, **Medium**, **High**, **Ultra** or
+**Custom** (a preset setting changed by hand), with a line saying what the preset in use gives. A
 phone starts on High, or on Low if its GPU is an Adreno older than the 700s,
 with a 30 FPS cap either way. A 20 FPS cap is the player's choice in Options.
 
 | Preset | Render scale | Sun shadow | Also |
 |---|---|---|---|
-| Low | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth |
+| Low | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth, no normal maps, the modern lighting without ground-contact shadows |
 | Medium | 45% | none | more lights and distance than Low |
 | High | 50% | where the theme casts one | 16 placed lights, three quarters of the undergrowth, every same-picture shortcut |
 | Ultra | 67% | longer | the 360's model detail, the desktop's prop distances, 32 placed lights, the ground's bump |
+
+Each preset sets its lighting model (`android_modern_lighting`): the modern one for Low, the fable
+one for Medium, High and Ultra. It changes at the next start. A phone that stored the retired Low
+(lean) preset moves to Low.
 
 Low and Medium suit a 5-6 GB phone such as the OnePlus 7 Pro, Medium and High an 8 GB Adreno 640
 phone such as the Galaxy S10e, High and Ultra a Snapdragon 8 Elite such as the Galaxy S25+. An
@@ -253,10 +266,14 @@ casual use and has performance issues, and applies only if confirmed.
   The launcher's list uses the same names (`Godot/src/android/AndroidSettingNames.cs`).
 - **Skip intro videos** (the launcher's Display settings, `android_skip_intro_videos`, off by
   default) skips the logo videos at startup. Later cutscenes are not affected.
-- **Baked lamp shadows** (the launcher's Display settings, `android_baked_shadows`, off by default)
-  runs the desktop's static shadow sweep on the phone. Play bakes any missing area into
-  `cache/Fable2/shadows`, about 2 GB in all, as a foreground job; a cancelled bake resumes at the
-  next launcher start. Fable 2 only.
+- **Baked lamp shadows** (the launcher's Graphics settings, `android_baked_shadows`, Off by default)
+  picks when lamp and torch shadows are baked on the phone. Fable 2 only.
+  - **Before playing** (`true`): Play first runs the desktop's static shadow sweep (lamp shadows and
+    ground AO for every area, about 2.5 GB, hours on a phone) as a foreground job. A cancelled sweep
+    resumes at the next Play.
+  - **While playing** (`while_playing`): an area's lamp shadows bake in the background the first time
+    it is entered. Ground AO is left to the sweep.
+  - **Off** (`false`): no bake; baked files on the phone are ignored.
 - **FPS counter** shows the frame rate in the top left corner, and
   **Vibration** sets the rumble's strength or turns it off (`vibration_strength`, 50% by default).
 - **Diagnostics** unfolds **Performance stats** and **Developer tools**, the desktop's F5 and F6.
@@ -363,8 +380,5 @@ configuration and diagnostics.
 
 ## Known gaps
 
-- The phone compiler's executables are prebuilt (above); their build is not in this
-  repository.
-- Hard mods, and touch buttons for mod actions.
-- Memory on the Galaxy S10e (8 GB): Android has ended the game for low memory right after
-  a co-op join, and after a short time in the background.
+- Memory on the Galaxy S10e (8 GB): Android has ended the game for low memory after a short
+  time in the background.

@@ -374,7 +374,7 @@ def stage_phone_compiler(bundle: Path, project: Path, native_manifest: Path) -> 
                 raise ValueError("Private/link resource in compiler bundle: " + entry.filename)
         recipe = json.loads(archive.read("bundle.json"))
         if recipe.get("Schema") != 1 or recipe.get("Abi") != "arm64-v8a" or recipe.get("Api") != 31 or \
-            recipe.get("Ndk") != "28.2.13676358" or recipe.get("SdkPin") != "bc812c08ab2efd4ed8d7f306bd1911c703771732":
+            recipe.get("Ndk") != "28.2.13676358" or not re.fullmatch(r"[0-9a-f]{40}", str(recipe.get("SdkPin", ""))):
             raise ValueError("Compiler bundle SDK/ABI pins mismatch")
         files = recipe.get("Files", {})
         if set(files) != set(names) - {"bundle.json"}:

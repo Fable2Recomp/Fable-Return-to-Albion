@@ -117,7 +117,8 @@ public static class AndroidTextureUpload
     {
         if (Interlocked.Exchange(ref _initialized, 1) != 0) return;
         if (!Refii.Core.Engine_Platform.IsAndroid) return;
-        using RenderingDevice? device = RenderingServer.CreateLocalRenderingDevice();
+        // Freed below, not disposed: a local device is an Object, and Dispose would leave it (and its memory) behind.
+        RenderingDevice? device = RenderingServer.CreateLocalRenderingDevice();
         const RenderingDevice.TextureUsageBits usage =
             RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit;
         bool transcode = true, reduceNormalMaps = false, eacNormals = false;
@@ -129,8 +130,15 @@ public static class AndroidTextureUpload
             reduceNormalMaps = Refii.Game.AndroidMemoryRelease.LowRamMode;
         }
         catch (Exception) { }
-        Volatile.Write(ref _policy, AndroidTextureUploadPolicy.Capture(true,
-            format => device?.TextureIsFormatSupportedForUsage(format, usage) ?? false, transcode, reduceNormalMaps, eacNormals));
+        try
+        {
+            Volatile.Write(ref _policy, AndroidTextureUploadPolicy.Capture(true,
+                format => device?.TextureIsFormatSupportedForUsage(format, usage) ?? false, transcode, reduceNormalMaps, eacNormals));
+        }
+        finally
+        {
+            device?.Free();
+        }
     }
 
     /// <summary>Creates a 2D texture, releasing any private fallback image after Godot copies it.</summary>

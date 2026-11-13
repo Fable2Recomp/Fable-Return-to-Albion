@@ -51,14 +51,36 @@ public partial class AndroidPhoneLauncher : Control
 
     private string PlayLabel => Hosted ? "Play " + Engine_Title.Active.Name : "Play newly installed game";
     /// <summary>Current background worker status for the shared launcher's progress display.</summary>
-    public string Status => _message;
+    public string Status => !Busy && !_bundleStale && ModsChanged()
+        ? "The enabled mods with native code change the game's code. Build it again to play." : _message;
     /// <summary>Whether an owned installation worker is still running.</summary>
     public bool IsInstalling => Busy;
     /// <summary>Whether a completed installation or previous runtime is available to play.</summary>
     public bool HasPlayableInstall => _result != null || _runtime != null;
-    /// <summary>Whether the playable module was built from another APK's compiler bundle and must be built again
-    /// before it is played (<see cref="IsStale"/>); the launcher's button offers Build Game Code, as on desktop.</summary>
-    public bool NeedsBuild { get; private set; }
+    /// <summary>Whether the playable module must be built again before it is played: it was built from another
+    /// APK's compiler bundle (<see cref="IsStale"/>), or with other hard mods than are enabled now
+    /// (<see cref="ModsChanged"/>). The launcher's button offers Build Game Code, as on desktop.</summary>
+    public bool NeedsBuild => _bundleStale || ModsChanged();
+
+    private bool _bundleStale;
+    private string _modsNow = "";
+    private ulong _modsCheckedAt;
+    private bool _modsCheckedOnce;
+
+    /// <summary>Whether the enabled, consented hard mods differ from the ones the playable module was built with.
+    /// Read again every 2 s at most: it opens each mod's package.</summary>
+    private bool ModsChanged()
+    {
+        if (_result == null || Busy) return false;
+        ulong now = Time.GetTicksMsec();
+        if (!_modsCheckedOnce || now - _modsCheckedAt > 2000)
+        {
+            _modsNow = Refii.Launcher.Recompile.GameCodeBuild.HashNativeMods();
+            _modsCheckedAt = now;
+            _modsCheckedOnce = true;
+        }
+        return _modsNow != _result.Mods;
+    }
 
     /// <summary>Starts the game-code build from the shared launcher's Build Game Code button.</summary>
     public void BuildFromLauncher() => StartCompile();
@@ -79,9 +101,9 @@ public partial class AndroidPhoneLauncher : Control
         else PlayInstalled();
     }
 
-    /// <summary>Whether the launcher's Baked lamp shadows option has a sweep to run before the game starts.</summary>
+    /// <summary>Whether the launcher's Baked lamp shadows choice has a sweep to run before the game starts.</summary>
     private bool BakeBeforePlaying => InstalledGameRoot != null && AndroidBakedShadows.ShouldBake(
-        AndroidBakedShadows.Wanted(Refii.Launcher.Core.RuntimeConfig.ReadValues(
+        AndroidBakedShadows.BakesBeforePlaying(Refii.Launcher.Core.RuntimeConfig.ReadValues(
             Path.Combine(_app, "runtime", Engine_Title.Active.ConfigFileName))),
         Engine_Title.Active, _bakeSettled);
 
@@ -288,7 +310,7 @@ public partial class AndroidPhoneLauncher : Control
             // The build starts when the player chooses it, as desktop's Build Game Code does.
             if (HasPlayableInstall && _selected.Length > 0 && _native.Length > 0 && IsStale(_result, ApkBundleIdentity()) && !AdoptIfCurrent())
             {
-                NeedsBuild = true;
+                _bundleStale = true;
                 _message = "This update changes the game's code. Saves are kept.";
             }
         }
@@ -349,7 +371,7 @@ public partial class AndroidPhoneLauncher : Control
             var task = _task;
             _task = null;
             DisplayServer.ScreenSetKeepOn(_keepScreenOn);
-            try { _result = task.GetAwaiter().GetResult(); NeedsBuild = false; _message = _verificationOnly
+            try { _result = task.GetAwaiter().GetResult(); _bundleStale = false; _modsCheckedOnce = false; _message = _verificationOnly
                 ? $"The game code already built on this phone checks out. Select {PlayLabel}."
                 : $"Installation compiled and verified. Temporary copies and build files removed. Select {PlayLabel}."; }
             catch (OperationCanceledException) { _message = "Compilation cancelled. Your installed game is preserved."; }
@@ -359,7 +381,7 @@ public partial class AndroidPhoneLauncher : Control
             UpdateButtons();
         }
         if (_bakeTask?.IsCompleted == true) FinishBake();
-        if (_status != null) _status.Text = _message;
+        if (_status != null) _status.Text = Status;
     }
 
     /// <summary>Releases the owned worker and restores the screen policy when leaving the launcher.</summary>
@@ -484,7 +506,8 @@ public partial class AndroidPhoneLauncher : Control
                     Progress("Preparing the bundled compiler");
                     _bundle = ExtractBundle(token);
                     var request = new AndroidPhoneCompiler.Request(_bundle, _native, _selected, builds, Engine_Title.Active,
-                        Path.Combine(_user, "phone-object-cache"));
+                        Path.Combine(_user, "phone-object-cache"), Mods: Engine_Title.Active.HasHardMods
+                            ? AndroidHardMods.ForBuild(AndroidHardMods.Log) : null);
                     var result = diagnosis == null
                         ? await AndroidPhoneCompiler.CompileAsync(request, Progress, token)
                         : await AndroidPhoneCompiler.VerifyExistingAsync(request, diagnosis.Module, diagnosis.Sha256,

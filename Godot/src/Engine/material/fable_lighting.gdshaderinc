@@ -21,6 +21,26 @@
 #include "res://src/Engine/level/environment/dynamic/dynamic_cloud_receiver.gdshaderinc"
 #endif
 
+// THE HOOKS a phone build fills (FABLE_LITE: src/android/fable_lite_switches.gdshaderinc, and
+// fable_lite_lighting.gdshaderinc at the end of this file); anywhere else each is upstream's own spelling.
+#ifdef FABLE_LITE
+#include "res://src/android/fable_lite_switches.gdshaderinc"
+#else
+#define FABLE_LITE_MP
+#define FABLE_UNIFIED fable_unified
+#define FABLE_SKY_TETHER fable_sky_ambient.w
+#define FABLE_INTERIOR fable_interior
+#define FABLE_INTERIOR_BAKE fable_interior_bake
+#define FABLE_FILL_FLOOR fable_fill_floor
+#define FABLE_AO_LIGHT_AFFECT fable_ao_light_affect
+#define FABLE_AO_STRENGTH fable_ao_strength
+#define FABLE_LIGHT_LIVE(c) c
+#define FABLE_VARY_MP
+#define FABLE_LIGHTMAP_UV UV2
+#define FABLE_TERRAIN_LOD_FILTER filter_linear_mipmap_anisotropic
+#define FABLE_TERRAIN_FRAGMENT_IN
+#endif
+
 instance uniform vec4 probe_r = vec4(0.0);
 // Opt-in cost diagnostic: 1 terrain, 2 standard fragment, 4 canopy fragment, 8 vertex PRT; 0 is normal.
 global uniform int fable_shader_cost_diagnostic;
@@ -250,8 +270,8 @@ vec4 fable_transfer(vec4 tr, vec4 tg, vec4 tb, mat3 model) {
 /// figure to a probe-lit prop's instance uniform; keep the two identical.
 float fable_authored_bake_weight() {
 	float w = fable_bake_weight > 1.0 ? fable_bake_weight
-		: (fable_interior > 0.5 || fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight);
-	return w * fable_interior_bake;
+		: (FABLE_INTERIOR > 0.5 || fable_bake_weight <= 0.0 ? 1.0 : fable_bake_weight);
+	return w * FABLE_INTERIOR_BAKE;
 }
 
 /// The amb3 TEXTURE bake on its own — `fable_bake`'s mode 4, and the one bake the modern model
@@ -259,7 +279,7 @@ float fable_authored_bake_weight() {
 vec3 fable_bake_amb3(vec2 lightmap_uv) {
 	// Not an interior test: `fable_sky_ambient.w` is the sky TETHER, published by
 	// `Engine_LevelLighting` and 0 in the fable model. It decides model, not roof.
-	float tethered = fable_sky_ambient.w > 0.0 ? 1.0 : fable_authored_bake_weight();
+	float tethered = FABLE_SKY_TETHER > 0.0 ? 1.0 : fable_authored_bake_weight();
 	vec2 at = lightmap_rect.xy + lightmap_uv * lightmap_rect.zw;
 	return tethered * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
 		vec3(FABLE_BAKE_GAMMA));
@@ -312,7 +332,7 @@ vec3 fable_bake(vec3 world_normal, vec4 vertex_colour, vec2 lightmap_uv) {
 /// the rule covers modes 1/2/3; mode 4 (amb3, interiors-only) never calls this — a windowless
 /// room must not tint toward a sky it cannot see. `fable_sky_ambient.w` is 0 in fable mode.
 vec3 fable_sky_tether(vec3 ambient_half) {
-	return mix(ambient_half, fable_sky_ambient.rgb, fable_sky_ambient.w);
+	return mix(ambient_half, fable_sky_ambient.rgb, FABLE_SKY_TETHER);
 }
 
 /// Baked irradiance plus the theme's flat ambient — the second half of the guest's line.
@@ -355,6 +375,10 @@ global uniform float fable_emission_boost = 1.0;
 /// `LightmapColour`; the rest is the ambient the GI traces. See `ModernFloorShare`.
 global uniform vec3 fable_fill_floor = vec3(0.0);
 
+#ifdef FABLE_LITE
+#include "res://src/android/fable_lite_ambient_fold.gdshaderinc"
+#endif
+
 /// Pre-baked 2D world-space ground contact AO + walkable-floor height map
 /// (RGBA8 UNORM: R = terrain AO, G = walkable-floor AO, B/A = little-endian 16-bit normalized walkable height).
 /// fable_terrain_ao_height carries (minH, spanH, texWidth, texHeight); texWidth > 1.5 indicates an active bake.
@@ -368,7 +392,7 @@ global uniform float fable_ao_light_affect = 0.25;
 instance uniform float instance_baked_ao : instance_index(9) = 1.0;
 
 vec2 fable_sample_terrain_ao_and_height(vec3 world_pos) {
-	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001 ||
+	if (FABLE_UNIFIED <= 0.5 || FABLE_AO_STRENGTH <= 0.001 ||
 	    fable_terrain_ao_rect.z <= 0.0 || fable_terrain_ao_rect.w <= 0.0) {
 		return vec2(1.0, world_pos.y);
 	}
@@ -388,8 +412,9 @@ vec2 fable_sample_terrain_ao_and_height(vec3 world_pos) {
 	return vec2(raw.r, ground_y);
 }
 
+#ifndef FABLE_LITE_OWN_TERRAIN_AO
 float fable_sample_terrain_ao(vec3 world_pos) {
-	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001 ||
+	if (FABLE_UNIFIED <= 0.5 || FABLE_AO_STRENGTH <= 0.001 ||
 	    fable_terrain_ao_rect.z <= 0.0 || fable_terrain_ao_rect.w <= 0.0) {
 		return 1.0;
 	}
@@ -403,9 +428,11 @@ float fable_sample_terrain_ao(vec3 world_pos) {
 	vec2 tex_uv = (grid_uv * (dim - 1.0) + 0.5) / dim;
 	return textureLod(fable_terrain_contact_ao, tex_uv, 0.0).r;
 }
+#endif
 
+#ifndef FABLE_LITE_OWN_PROP_AO
 float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
-	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001) {
+	if (FABLE_UNIFIED <= 0.5 || FABLE_AO_STRENGTH <= 0.001) {
 		return 1.0;
 	}
 	float vertex_ao = color_alpha > 0.001 ? color_alpha : 1.0;
@@ -469,7 +496,9 @@ float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
 	float ground_contact_ao = mix(1.0, matched_ao, fade);
 	return vertex_ao * min(inst_ao, ground_contact_ao);
 }
+#endif
 
+#ifndef FABLE_LITE
 float fable_apply_ao_strength(float raw_ao) {
 	if (fable_ao_strength <= 0.001 || raw_ao >= 0.999) {
 		return 1.0;
@@ -501,18 +530,19 @@ float fable_specular_ao(float combined_ao) {
 	float spec_occ = max(0.0, min(1.0, ao_c * ao_c + 0.15 * ao_c));
 	return mix(1.0, spec_occ, max(0.0, min(1.0, fable_unified)));
 }
+#endif
 
 vec3 fable_ambient(vec3 bake) {
 	float is_amb3 = step(3.5, FABLE_MODE);
-	return (bake * max(1.0 - fable_unified, is_amb3 * 0.35)) +
-		(fable_ambient_colour + fable_fill_floor) * fable_ambient_scale;
+	return (bake * max(1.0 - FABLE_UNIFIED, is_amb3 * 0.35)) +
+		(fable_ambient_colour + FABLE_FILL_FLOOR) * fable_ambient_scale;
 }
 
 vec3 fable_ambient_occluded(vec3 bake, float modern_ao, vec3 modern_darken) {
 	float is_amb3 = step(3.5, FABLE_MODE);
-	vec3 floor_fill = (fable_ambient_colour + fable_fill_floor) * fable_ambient_scale;
-	vec3 modern_mod = mix(vec3(1.0), modern_darken * max(modern_ao, 0.05), fable_unified);
-	return (bake * max(1.0 - fable_unified, is_amb3 * 0.35)) + (floor_fill * modern_mod);
+	FABLE_LITE_MP vec3 floor_fill = (fable_ambient_colour + FABLE_FILL_FLOOR) * fable_ambient_scale;
+	FABLE_LITE_MP vec3 modern_mod = mix(vec3(1.0), modern_darken * max(modern_ao, 0.05), FABLE_UNIFIED);
+	return (bake * max(1.0 - FABLE_UNIFIED, is_amb3 * 0.35)) + (floor_fill * modern_mod);
 }
 
 /// The main light. Lambert, because Fable's main light is one directional source and the
@@ -651,17 +681,21 @@ float fable_attenuation_weighted(float godot_attenuation, bool directional, floa
 	// Clamp Godot's native attenuation (`OmniAttenuation = 1.0` / `SpotAttenuation = 1.0`) to 1.0
 	// so surfaces closer than 1m (`1/d > 1`) never blow out, while distances >= 1m follow Godot's
 	// native `((1 - (d/R)^4)^2) / d` falloff and dynamic entity shadow map.
-	float atten = clamp(godot_attenuation, 0.0, 1.0);
+	FABLE_LITE_MP float atten = clamp(godot_attenuation, 0.0, 1.0);
 	if (atten <= 1e-4 || atten * surface_weight <= 1e-4) {
 		return 0.0;
 	}
 
 	int slot = int(specular_amount * 0.5 + 0.5) - 2;
 	if (slot >= 0 && slot < 1000) {
+#if defined(FABLE_LITE_ONE_ROW_LIGHT) && defined(FABLE_LITE_NO_STATIC_SHADOW)
+#include "res://src/android/fable_lite_light_record.gdshaderinc"
+#else
 		vec4 record = texelFetch(fable_light_table, ivec2(slot, 0), 0);
 		float d = distance(world, record.xyz);
 		vec4 row1 = texelFetch(fable_light_table, ivec2(slot, 1), 0);
 		float stated = row1.x;
+#endif
 		if (d >= stated) {
 			return 0.0;
 		}
@@ -669,11 +703,11 @@ float fable_attenuation_weighted(float godot_attenuation, bool directional, floa
 		// When a flickering light breathes inward below its node range (`stated < record.w`),
 		// smoothly window the falloff to zero at `stated`.
 		if (stated < record.w - 1e-3) {
-			float r_s = clamp(d / max(stated, 1e-3), 0.0, 1.0);
-			float w_s = 1.0 - (r_s * r_s * r_s * r_s);
+			FABLE_LITE_MP float r_s = clamp(d / max(stated, 1e-3), 0.0, 1.0);
+			FABLE_LITE_MP float w_s = 1.0 - (r_s * r_s * r_s * r_s);
 			w_s *= w_s;
-			float r_n = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
-			float w_n = 1.0 - (r_n * r_n * r_n * r_n);
+			FABLE_LITE_MP float r_n = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
+			FABLE_LITE_MP float w_n = 1.0 - (r_n * r_n * r_n * r_n);
 			w_n *= w_n;
 			atten *= clamp(w_s / max(w_n, 1e-4), 0.0, 1.0);
 			if (atten <= 1e-4 || atten * surface_weight <= 1e-4) {
@@ -681,9 +715,13 @@ float fable_attenuation_weighted(float godot_attenuation, bool directional, floa
 			}
 		}
 
+#ifdef FABLE_LITE_NO_STATIC_SHADOW
+		return atten;
+#else
 		vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
 		float static_shadow = fable_sample_static_shadow_tiered(world - record.xyz, d, atten, row1.yzw, row2.x);
 		return atten * static_shadow;
+#endif
 	}
 
 	return atten;
@@ -723,9 +761,11 @@ float fable_normal_side(vec3 normal, vec3 view_position, vec3 view) {
 /// physically-based `light()` can divide it out. Dividing recovers `colour * energy` — the theme's
 /// MainLightColour, and what the guest puts in `g_GlobalLightParamsPS`. The guest itself applies no
 /// 1/PI anywhere: the constant appears in none of the 589 shipped shader blobs.
+#ifndef FABLE_LITE
 vec3 fable_direct(vec3 normal, vec3 light, float attenuation, vec3 light_colour) {
 	return clamp(dot(normal, light), 0.0, 1.0) * attenuation * (light_colour / PI);
 }
+#endif
 
 /// How much the guest's NdotL gate opens per unit of NdotL: `g_NormalMapLightAngleConstants.w`.
 ///
@@ -759,6 +799,7 @@ const float FABLE_SPEC_ANGLE_GATE = 4.0;
 ///
 /// LIGHT_COLOR IS DIVIDED BY PI for the same reason `fable_direct` does it: Godot hands `light()`
 /// a colour already multiplied by PI, and the guest multiplies by the raw one.
+#ifndef FABLE_LITE
 vec3 fable_specular(
 		vec3 normal,
 		vec3 light,
@@ -772,4 +813,9 @@ vec3 fable_specular(
 	float gate = clamp(FABLE_SPEC_ANGLE_GATE * dot(normal, light), 0.0, 1.0);
 	return lobe * gate * attenuation * (light_colour / PI) * specular_colour;
 }
+#endif
+
+#ifdef FABLE_LITE
+#include "res://src/android/fable_lite_lighting.gdshaderinc"
+#endif
 

@@ -54,6 +54,13 @@ public static class Engine_BodyVariants
 			? shown.Value.Source
 			: null;
 
+	/// <summary>The same, for a node whose mesh the caller has just read as <paramref name="mesh"/>.</summary>
+	public static ArrayMesh? SourceOf(MeshInstance3D node, Mesh? mesh) =>
+		Shown.TryGetValue(node, out StrongBox<(ArrayMesh Source, ArrayMesh Variant)>? shown) &&
+		ReferenceEquals(mesh, shown.Value.Variant)
+			? shown.Value.Source
+			: null;
+
 	/// <summary>The mesh whose surface order the body's bookkeeping uses: the source, whatever is shown.</summary>
 	public static Mesh? SourceMesh(MeshInstance3D node) => SourceOf(node) ?? node.Mesh;
 
@@ -81,7 +88,23 @@ public static class Engine_BodyVariants
 		}
 	}
 
-	/// <summary>Records that <paramref name="node"/> now shows <paramref name="variant"/> for <paramref name="source"/>.</summary>
+	/// <summary>The source and variant <see cref="NoteShown"/> last recorded for <paramref name="node"/>; false when none.</summary>
+	public static bool TryGetShown(MeshInstance3D node, out ArrayMesh? source, out ArrayMesh? variant)
+	{
+		if (Shown.TryGetValue(node, out StrongBox<(ArrayMesh Source, ArrayMesh Variant)>? shown))
+		{
+			(source, variant) = shown.Value;
+			return true;
+		}
+
+		source = variant = null;
+		return false;
+	}
+
+	/// <summary>
+	/// Records that <paramref name="node"/> now shows <paramref name="variant"/> for <paramref name="source"/>.
+	/// Engine_HiddenClusters, its one caller, keeps a copy of the entry in the node's record.
+	/// </summary>
 	public static void NoteShown(MeshInstance3D node, ArrayMesh source, ArrayMesh variant) =>
 		Shown.AddOrUpdate(node, new StrongBox<(ArrayMesh Source, ArrayMesh Variant)>((source, variant)));
 
@@ -118,7 +141,7 @@ public static class Engine_BodyVariants
 					continue;
 				}
 
-				var key = (material, layout, LodKeysOf(source, s));
+				var key = (material, layout, Refii.AndroidRuntime.AndroidBodyMerge.AnyLods ? string.Empty : LodKeysOf(source, s));
 				if (byKey.TryGetValue(key, out int group))
 				{
 					groups[group].Add(s);
@@ -165,7 +188,7 @@ public static class Engine_BodyVariants
 				: Joined(source, group, out _);
 			Godot.Collections.Dictionary? lods = group.Count == 1
 				? Refii.Models.Engine_MdlMesh.SurfaceLods(source, first)
-				: JoinedLods(source, group);
+				: Refii.AndroidRuntime.AndroidBodyMerge.AnyLods ? Refii.AndroidRuntime.AndroidBodyMerge.JoinedLods(source, group) : JoinedLods(source, group);
 			totalBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(arrays);
 			pending.Add((
 				source.SurfaceGetPrimitiveType(first),

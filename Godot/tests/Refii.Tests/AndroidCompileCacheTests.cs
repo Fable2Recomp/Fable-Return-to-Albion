@@ -36,6 +36,33 @@ public sealed class AndroidCompileCacheTests
         AssertThat(build.LinkedObjects.All(path => path.StartsWith(build.Request.ObjectCache!, StringComparison.Ordinal))).IsTrue();
     }
 
+    /// <summary>A hard mod's units and the hooks its chains rename compile every time: the cache keys a unit on its
+    /// source, not on its own arguments. The rest is reused, and the module records no inputs for an APK to adopt.</summary>
+    [TestCase]
+    public async Task HardModsAndTheHooksTheyRenameCompileEveryTime()
+    {
+        using var build = new Build();
+        string hook = Path.Combine(build.Request.BundleDirectory, "src/hooks/fixture.cpp");
+        build.Mods = (generated, _, _) =>
+        {
+            string mod = Path.Combine(generated, "mods", "souls", "native", "gate.cpp");
+            Directory.CreateDirectory(Path.GetDirectoryName(mod)!);
+            File.WriteAllText(mod, "synthetic mod");
+            return new AndroidPhoneCompiler.ModSources(new[] { mod }, new Dictionary<string, List<string>>
+            {
+                [mod] = new() { "-DREFII_MOD_NAME=\"souls\"" },
+                [hook] = new() { "-Drex_A=rex_A__refii" },
+            }, "mods-hash");
+        };
+        await build.RunAsync();
+        AssertThat(build.Compiled.ToArray()).IsEqual(new[] { "refii_register.cpp", "fixture.cpp", "payload_export.cpp", "gate.cpp" });
+        build.Reset();
+        var second = await build.RunAsync();
+        AssertThat(build.Compiled.ToArray()).IsEqual(new[] { "fixture.cpp", "gate.cpp" });
+        AssertThat(second.Mods).IsEqual("mods-hash");
+        AssertThat(File.Exists(Path.Combine(second.Directory, AndroidPhoneCompiler.ModuleInputsFile))).IsFalse();
+    }
+
     /// <summary>A changed hook recompiles itself alone, without the precompiled header.</summary>
     [TestCase]
     public async Task ChangedHookRecompilesOnlyItself()
@@ -545,8 +572,10 @@ public sealed class AndroidCompileCacheTests
             _fixture.SaveManifest();
         }
 
+        public AndroidPhoneCompiler.AddMods? Mods;
+
         public Task<AndroidPhoneCompiler.Result> RunAsync() =>
-            AndroidPhoneCompiler.CompileAsync(Request, _ => { }, CancellationToken.None, Execute, _ => true);
+            AndroidPhoneCompiler.CompileAsync(Request with { Mods = Mods }, _ => { }, CancellationToken.None, Execute, _ => true);
 
         public bool StillCurrent(AndroidPhoneCompiler.Result result) =>
             AndroidPhoneCompiler.StillCurrent(result, Manifest, Request.NativeDirectory, null);

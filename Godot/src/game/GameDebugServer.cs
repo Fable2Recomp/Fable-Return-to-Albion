@@ -521,6 +521,7 @@ public partial class GameDebugServer : Node
 				string request = line.Trim();
 				if (request.Length != 0)
 				{
+					Refii.AndroidRuntime.AndroidDebugIdleQuit.Heard();
 					Respond(client, request);
 				}
 			}
@@ -1301,6 +1302,36 @@ public partial class GameDebugServer : Node
 				});
 			}
 
+			case "timeofday":
+			{
+				// {"op":"timeofday","hours":0.83}: the mod API's set_time_of_day command (the guest's own
+				// clock setter; runs with no mod mounted, needs the world up). No "hours": asks the clock, and
+				// answers the hours the last ask returned (null until one has; send it twice).
+				if (root.TryGetProperty("hours", out JsonElement th))
+				{
+					string? command = TimeOfDayCommand(th.ValueKind == JsonValueKind.Number ? th.GetDouble() : double.NaN);
+					if (command is null)
+					{
+						return new Dictionary<string, object?>
+						{
+							["ok"] = false, ["error"] = "timeofday needs finite hours",
+						};
+					}
+
+					Refii.Host.HostBridge.PostModCommand(command);
+					return Ok(new Dictionary<string, object?> { ["posted"] = command });
+				}
+
+				Refii.Mods.ModHostQueries.Ask("time_of_day", string.Empty, fields =>
+				{
+					if (fields.TryGetValue("hours", out object? h) && h is System.IConvertible c)
+					{
+						_lastTimeOfDay = c.ToDouble(System.Globalization.CultureInfo.InvariantCulture);
+					}
+				});
+				return Ok(new Dictionary<string, object?> { ["hours"] = _lastTimeOfDay });
+			}
+
 			case "call-result":
 			{
 				if (Refii.Host.HostBridge.DebugCallResult() is not { } result)
@@ -1629,6 +1660,10 @@ public partial class GameDebugServer : Node
 					// buffer means the NEWEST effects were cut.
 					["nodesRead"] = feed?.NodesRead ?? 0,
 					["nodesSaturated"] = Refii.Host.HostBridge.ActiveFxSaturated,
+
+					// New nodes the per-walk limit (android_fx_spawns_per_frame) holds back, and has so far.
+					["spawnsWaiting"] = feed?.SpawnsWaiting ?? 0,
+					["spawnsDeferred"] = feed?.SpawnsDeferred ?? 0,
 
 					// The hook against the walk: both key on the particle instance pointer, so the rows line
 					// up. `statedCount` of 0 means the hook is not in this build.
@@ -2201,6 +2236,7 @@ public partial class GameDebugServer : Node
 					["skyRadianceLean"] = Refii.Level.Engine_SkyCosts.RadianceLean,
 					// The held sky's radiance size and its own, applied on the next frame; null when none is held.
 					["skyRadianceHeld"] = Refii.Level.Engine_SkyCosts.LeanRadianceState,
+					["skyRadianceInputs"] = Refii.Level.Engine_SkyCosts.LastInputs,
 					["meshLodThreshold"] = GetViewport().MeshLodThreshold,
 					["scaling3dMode"] = GetViewport().Scaling3DMode.ToString(),
 					["scaling3dScale"] = GetViewport().Scaling3DScale,
@@ -2643,6 +2679,20 @@ public partial class GameDebugServer : Node
 					: Refii.Core.Engine_DrawCensus.Describe(world, camera));
 			}
 
+			case "charcensus":
+			{
+				// Characters in view against the other entities: surfaces, passes, LOD-0 triangles,
+				// skinned vertices and shader builds (AndroidCharacterCensus): `{"op":"charcensus"}`.
+				Camera3D? camera = GameEntities.Current?.GetViewport()?.GetCamera3D();
+				return Ok(GameEntities.Current is not { } entities || camera is null
+					? new Dictionary<string, object?>()
+					: Refii.AndroidRuntime.AndroidCharacterCensus.Describe(entities, camera));
+			}
+
+			case "lightpairs":
+				// Omni/spot lights paired per instance in view, Mobile's way (AndroidLightPairCensus): `{"op":"lightpairs"}`.
+				return Ok((GameEntities.Current?.GetViewport() ?? GetViewport())?.GetCamera3D() is { } pairCamera ? Refii.AndroidRuntime.AndroidLightPairCensus.Describe(GetTree().Root, pairCamera) : new Dictionary<string, object?>());
+
 			case "instanceuniforms":
 			{
 				// The instances holding a slot of Godot's instance-uniform buffer, by owner, against
@@ -3016,6 +3066,7 @@ public partial class GameDebugServer : Node
 						["levelsAttached"] = Refii.Models.Engine_MdlMesh.LodLevelsAttached,
 						["levelsDropped"] = Refii.Models.Engine_MdlMesh.LodLevelsDropped,
 					},
+					["meshCompression"] = Refii.AndroidRuntime.AndroidMeshCompression.Stats(),
 					["fps"] = Performance.GetMonitor(Performance.Monitor.TimeFps),
 					// The frames that froze, each with the phases in it. Per-phase peaks decay independently,
 					// so two peaking in one report can be seconds apart; this is one frame, whole.
@@ -3147,6 +3198,36 @@ public partial class GameDebugServer : Node
 						["farRigPoseHz"] = GameEntities.FarRigPoseHz,
 						["farRigsWritten"] = GameEntities.FarRigsWritten,
 						["farRigsHeld"] = GameEntities.FarRigsHeld,
+						// The last walk's rows: entities, rows posed, rigs written, rows past the
+						// prologue; the last timed walk's rows past the skip index by kind (their time is
+						// the "ent.rows.*" frame phases); rigs left off screen (android_offscreen_rig_walks).
+						["entities"] = GameEntities.LastWalkEntities,
+						["posed"] = GameEntities.LastWalkPosed,
+						["posedWritten"] = GameEntities.LastWalkPosedWritten,
+						["pastPrologue"] = GameEntities.LastWalkPastPrologue,
+						["rowsCharacter"] = GameEntities.TimedRowCounts[0],
+						["rowsRigProp"] = GameEntities.TimedRowCounts[1],
+						["rowsChanged"] = GameEntities.TimedRowCounts[2],
+						["rowsStill"] = GameEntities.TimedRowCounts[3],
+						// The still rows by why: due on the still re-check, no node, a building on its
+						// full prologue while the reports count it, the rest. Then the last walk's rigged
+						// props and buildings held by the index (android_skip_index_rig_props/_buildings)
+						// and the verdicts parked at the end of a full-path row instead of the walk after.
+						["rowsStillDue"] = GameEntities.TimedStillRows[0],
+						["rowsStillNodeless"] = GameEntities.TimedStillRows[1],
+						["rowsStillBuilding"] = GameEntities.TimedStillRows[2],
+						["rowsStillOther"] = GameEntities.TimedStillRows[3],
+						["rigPropsHeld"] = GameEntities.LastWalkRigPropsHeld,
+						// The last walk's rigged props by what their row parked or why not, and each verdict found by why it answered or not.
+						["rigPropMiss"] = GameEntities.RigPropMissCounts(),
+						["buildingsHeld"] = GameEntities.LastWalkBuildingsHeld,
+						["reparked"] = GameEntities.LastWalkReparked,
+						["offscreenRigWalks"] = GameEntities.OffscreenRigWalks,
+						["offscreenDeferred"] = GameEntities.OffscreenDeferred,
+						["movers"] = GameEntities.LastWalkMovers,
+						["rigs"] = GameEntities.LastWalkRigs,
+						["nodes"] = GameEntities.LastWalkNodes,
+						["attached"] = GameEntities.LastWalkAttached,
 						["creationsDeferred"] = GameEntities.CreationsDeferred,
 						["lastWalkChanged"] = Refii.Host.HostBridge.LastWalkChanged,
 						["lastWalkCount"] = Refii.Host.HostBridge.LastWalkCount,
@@ -3783,6 +3864,14 @@ public partial class GameDebugServer : Node
 		return GameCameraTelemetry.Describe(camera.GlobalTransform, camera.Fov,
 			region?.GlobalTransform, usesGuestWorldMap: region is not null);
 	}
+
+	/// <summary>The hours the last "timeofday" ask was answered with.</summary>
+	private static double? _lastTimeOfDay;
+
+	/// <summary>The mod command that sets the game clock to <paramref name="hours"/> (clamped 0..24); null when not finite.</summary>
+	internal static string? TimeOfDayCommand(double hours) => double.IsFinite(hours)
+		? "set_time_of_day " + System.Math.Clamp(hours, 0d, 24d).ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+		: null;
 
 	/// <summary>Copies render telemetry and represents unavailable floating-point fields as JSON null.</summary>
 	/// <remarks>The clock fit is NaN before its first sample and OS-dependent measurements may be

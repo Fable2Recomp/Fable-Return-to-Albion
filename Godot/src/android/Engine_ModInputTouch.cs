@@ -103,6 +103,16 @@ public static class ModInputTouch
 		}
 	}
 
+	/// <summary><see cref="SetHeld(IEnumerable{string})"/> for a list, walked by index: no enumerator is boxed each frame.</summary>
+	public static void SetHeld(IReadOnlyList<string> actions)
+	{
+		_held.Clear();
+		for (int i = 0; i < actions.Count; ++i)
+		{
+			_held.Add(actions[i]);
+		}
+	}
+
 	/// <summary>The on-screen pad's buttons and triggers a finger presses, as the touch controls state them (<see cref="SetPad"/>).</summary>
 	private static uint _padButtons, _padLeft, _padRight;
 

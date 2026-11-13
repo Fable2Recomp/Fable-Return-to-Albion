@@ -51,18 +51,25 @@ public static class Engine_HiddenClusters
 			_clothSurfaces.AddOrUpdate(node, new System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>((mask, castsShadow)));
 		}
 
+		bool hadState = _collapsedSurfaces.TryGetValue(node, out SurfaceState? state);
+		if (hadState)
+		{
+			state!.Cloth = mask;
+			state.ClothCastsShadow = mask != UInt128.Zero && castsShadow;
+		}
+
 		if (Engine_BodyVariants.SourceMesh(node) is not ArrayMesh source)
 		{
 			return;
 		}
 
-		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		if (!hadState)
 		{
-			state = new SurfaceState();
+			state = NewState(node, 0ul);
 			_collapsedSurfaces.Add(node, state);
 		}
 
-		Present(node, source, state);
+		Present(node, source, state!);
 	}
 
 	/// <summary>
@@ -83,24 +90,55 @@ public static class Engine_HiddenClusters
 		{
 			_displacedSurfaces.AddOrUpdate(node, new System.Runtime.CompilerServices.StrongBox<UInt128>(mask));
 		}
+		bool hadState = _collapsedSurfaces.TryGetValue(node, out SurfaceState? state);
+		if (hadState)
+		{
+			state!.Displaced = mask;
+		}
 		if (Engine_BodyVariants.SourceMesh(node) is not ArrayMesh source)
 		{
 			return;
 		}
-		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		if (!hadState)
 		{
-			state = new SurfaceState();
+			state = NewState(node, 0ul);
 			_collapsedSurfaces.Add(node, state);
 		}
-		Present(node, source, state);
+		Present(node, source, state!);
 	}
 
 	/// <summary>Surfaces another node draws for this one: the cloth body's and the displacement parts'.</summary>
 	private static UInt128 ElsewhereMask(MeshInstance3D node) =>
-		ClothMask(node) |
-		(_displacedSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? displaced)
+		ClothMask(node) | DisplacedMask(node);
+
+	/// <summary>The surfaces the displacement parts draw for <paramref name="node"/>; zero when none.</summary>
+	private static UInt128 DisplacedMask(MeshInstance3D node) =>
+		_displacedSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? displaced)
 			? displaced.Value
-			: UInt128.Zero);
+			: UInt128.Zero;
+
+	/// <summary>
+	/// A node's record, with what the cloth and displacement tables hold for it copied in: the node's
+	/// one lookup answers the masks (<see cref="SetClothSurfaces"/> and <see cref="SetDisplacedSurfaces"/>,
+	/// those tables' only writers, keep the copies).
+	/// </summary>
+	private static SurfaceState NewState(MeshInstance3D node, ulong meshId)
+	{
+		var state = new SurfaceState { MeshId = meshId, Displaced = DisplacedMask(node) };
+		if (_clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>? cloth))
+		{
+			state.Cloth = cloth.Value.Mask;
+			state.ClothCastsShadow = cloth.Value.CastsShadow;
+		}
+
+		if (Engine_BodyVariants.TryGetShown(node, out ArrayMesh? source, out ArrayMesh? variant))
+		{
+			state.ShownSource = source;
+			state.ShownVariant = variant;
+		}
+
+		return state;
+	}
 
 	/// <summary>The surfaces a cloth body draws for <paramref name="node"/>; zero when none.</summary>
 	public static UInt128 ClothMask(MeshInstance3D node) =>
@@ -204,6 +242,41 @@ public static class Engine_HiddenClusters
 		/// <summary>The mesh these bits describe: a new mesh (a co-op hero re-rigged) starts over.</summary>
 		public ulong MeshId;
 
+		/// <summary>The node's entry in the cloth table (zero, false when it has none), kept by its writer.</summary>
+		public UInt128 Cloth;
+
+		public bool ClothCastsShadow;
+
+		/// <summary>The node's entry in the displacement table (zero when it has none), kept by its writer.</summary>
+		public UInt128 Displaced;
+
+		/// <summary>
+		/// The node's entry in <see cref="Engine_BodyVariants"/>' shown table (both null when it has
+		/// none): <see cref="Present"/>, that entry's only writer, keeps the copy.
+		/// </summary>
+		public ArrayMesh? ShownSource;
+
+		public ArrayMesh? ShownVariant;
+
+		/// <summary><see cref="Engine_BodyVariants.SourceOf(MeshInstance3D, Mesh)"/> from the copy.</summary>
+		public ArrayMesh? SourceOf(Mesh? shown) =>
+			ShownVariant is not null && ReferenceEquals(shown, ShownVariant) ? ShownSource : null;
+
+		/// <summary>
+		/// What the last <see cref="Present"/> was asked with and left the node showing: asked the
+		/// same again, it would write nothing (the variant is cached per source and mask, and the
+		/// overrides already stand as <see cref="Written"/> says).
+		/// </summary>
+		public bool Presented;
+
+		public ArrayMesh? PresentedSource;
+
+		public Mesh? PresentedShows;
+
+		public UInt128 PresentedHidden;
+
+		public bool PresentedVariants;
+
 		private ulong _bits;
 		private bool[] _more = Array.Empty<bool>();
 
@@ -212,6 +285,12 @@ public static class Engine_HiddenClusters
 				: surface - 64 < _more.Length && _more[surface - 64];
 
 		public ulong Bits => _bits;
+
+		/// <summary>No surface past the first 64 has ever been stated.</summary>
+		public bool OnlyFirst64 => _more.Length == 0;
+
+		/// <summary>No surface hidden.</summary>
+		public bool IsClear => _bits == 0ul && Array.IndexOf(_more, true) < 0;
 
 		public void Set(int surface, bool hidden)
 		{
@@ -246,16 +325,13 @@ public static class Engine_HiddenClusters
 	/// The surfaces <see cref="Apply"/> last collapsed on this node, as bits, the first 128 of
 	/// them (the hero's body has 79). No engine call.
 	/// </summary>
-	public static UInt128 CollapsedMask(MeshInstance3D node)
-	{
-		UInt128 cloth = ElsewhereMask(node);
-		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
-		{
-			return cloth;
-		}
+	public static UInt128 CollapsedMask(MeshInstance3D node) =>
+		_collapsedSurfaces.TryGetValue(node, out SurfaceState? state)
+			? MaskOf(state) | Elsewhere(state)
+			: ElsewhereMask(node);
 
-		return MaskOf(state) | cloth;
-	}
+	/// <summary><see cref="ElsewhereMask"/> from the node's record (its copies of both tables).</summary>
+	private static UInt128 Elsewhere(SurfaceState state) => state.Cloth | state.Displaced;
 
 	/// <summary>
 	/// Pure managed mask composition for <see cref="ShadowCollapsedMask"/>: folds covered body clusters
@@ -278,12 +354,14 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	public static UInt128 ShadowCollapsedMask(MeshInstance3D node)
 	{
-		UInt128 displacedMask = _displacedSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<UInt128>? displaced)
-			? displaced.Value
-			: UInt128.Zero;
-		UInt128 clusterMask = _collapsedSurfaces.TryGetValue(node, out SurfaceState? state)
-			? MaskOf(state)
-			: UInt128.Zero;
+		if (_collapsedSurfaces.TryGetValue(node, out SurfaceState? state))
+		{
+			// The node's record answers all three: its copies are the tables' entries.
+			return ComposeShadowCollapsedMask(MaskOf(state), state.Displaced, state.Cloth, state.ClothCastsShadow);
+		}
+
+		UInt128 displacedMask = DisplacedMask(node);
+		UInt128 clusterMask = UInt128.Zero;
 		bool hasCloth = _clothSurfaces.TryGetValue(node, out System.Runtime.CompilerServices.StrongBox<(UInt128 Mask, bool CastsShadow)>? cloth);
 		return ComposeShadowCollapsedMask(
 			clusterMask,
@@ -292,7 +370,11 @@ public static class Engine_HiddenClusters
 			hasCloth && cloth!.Value.CastsShadow);
 	}
 
-	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes);
+	/// <summary>
+	/// The mesh's part tables, its surface regions (<see cref="Engine_MdlMesh.SurfaceRegions"/>, cached
+	/// per mesh for good) and its instance id, which never change after it is built.
+	/// </summary>
+	private sealed record PartTables(int[] SurfaceParts, uint[] PartHashes, ulong MeshId, string[] Regions);
 
 	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Mesh, PartTables> _partTables = new();
 
@@ -303,44 +385,65 @@ public static class Engine_HiddenClusters
 	/// </summary>
 	public static int Apply(MeshInstance3D node, uint entity)
 	{
-		if (Engine_BodyVariants.SourceMesh(node) is not Mesh mesh)
-		{
-			return 0;
-		}
-
-		string[] regions = Engine_MdlMesh.SurfaceRegions(mesh);
-		if (regions.Length == 0 && ElsewhereMask(node) == UInt128.Zero)
+		// The node's mesh, read once for the pass: nothing below sets it before Present compares it.
+		// The node's record answers what it shows a variant of (its copy of the variants' entry).
+		Mesh? shown = node.Mesh;
+		bool known = _collapsedSurfaces.TryGetValue(node, out SurfaceState? state);
+		ArrayMesh? showsVariantOf = known ? state!.SourceOf(shown) : Engine_BodyVariants.SourceOf(node, shown);
+		if ((showsVariantOf ?? shown) is not Mesh mesh)
 		{
 			return 0;
 		}
 
 		// The tables are the mesh's and never change after it is built; a meta read is a
-		// crossing plus a wrapper, and this runs for every entity on the reconcile cadence.
-		if (!_partTables.TryGetValue(mesh, out PartTables? tables))
+		// crossing plus a wrapper, and this runs for every entity on the reconcile cadence. They
+		// carry the mesh's regions, so a mesh that has them is one lookup, not two.
+		if (_partTables.TryGetValue(mesh, out PartTables? tables))
 		{
+			if (tables.Regions.Length == 0 && (known ? Elsewhere(state!) : ElsewhereMask(node)) == UInt128.Zero)
+			{
+				return 0;
+			}
+		}
+		else
+		{
+			string[] meshRegions = Engine_MdlMesh.SurfaceRegions(mesh);
+			if (meshRegions.Length == 0 && (known ? Elsewhere(state!) : ElsewhereMask(node)) == UInt128.Zero)
+			{
+				return 0;
+			}
+
 			tables = new PartTables(
 				mesh.HasMeta(Engine_MdlComposite.SurfacePartsMetaName)
 					? mesh.GetMeta(Engine_MdlComposite.SurfacePartsMetaName).AsInt32Array()
 					: Array.Empty<int>(),
 				mesh.HasMeta(Engine_MdlComposite.PartHashesMetaName)
 					? Array.ConvertAll(mesh.GetMeta(Engine_MdlComposite.PartHashesMetaName).AsInt64Array(), v => unchecked((uint)v))
-					: Array.Empty<uint>());
+					: Array.Empty<uint>(),
+				mesh.GetInstanceId(),
+				meshRegions);
 			_partTables.AddOrUpdate(mesh, tables);
 		}
 
+		string[] regions = tables.Regions;
 		int[] surfaceParts = tables.SurfaceParts;
 		uint[] partHashes = tables.PartHashes;
 
-		if (!_collapsedSurfaces.TryGetValue(node, out SurfaceState? state) || state.MeshId != mesh.GetInstanceId())
+		if (state is null || state.MeshId != tables.MeshId)
 		{
-			state = new SurfaceState { MeshId = mesh.GetInstanceId() };
+			state = NewState(node, tables.MeshId);
 			_collapsedSurfaces.AddOrUpdate(node, state);
 		}
 
-		Dictionary<uint, HashSet<string>>? hidden = HiddenFor(entity);
+		// A mesh with no part table hides no surface whatever the guest's hides say (every surface
+		// below needs its part's hash), so they are not read; with nothing hidden and nothing
+		// hidden before, every surface is stated as it already stands.
+		Dictionary<uint, HashSet<string>>? hidden = surfaceParts.Length != 0 && partHashes.Length != 0
+			? HiddenFor(entity)
+			: null;
 
 		int count = 0;
-		int surfaces = Math.Min(mesh.GetSurfaceCount(), regions.Length);
+		int surfaces = hidden is null && state.IsClear ? 0 : Math.Min(mesh.GetSurfaceCount(), regions.Length);
 		for (int s = 0; s < surfaces; s++)
 		{
 			bool hide = false;
@@ -361,7 +464,7 @@ public static class Engine_HiddenClusters
 			}
 		}
 
-		Present(node, mesh as ArrayMesh, state);
+		Present(node, mesh as ArrayMesh, state, shown);
 		return count;
 	}
 
@@ -382,6 +485,13 @@ public static class Engine_HiddenClusters
 	private static Dictionary<uint, HashSet<string>>? HiddenFor(uint entity)
 	{
 		ReadOnlySpan<byte> text = HostBridge.GetEntityPartHidesText(entity);
+		if (text.IsEmpty)
+		{
+			// No parts gives no hides, whatever was read before (every single-model prop): the entry
+			// is only a parse cache, and an older one is still compared before it answers again.
+			return null;
+		}
+
 		if (_hiddenReads.TryGetValue(entity, out HiddenRead? read))
 		{
 			if (text.SequenceEqual(read.Text.AsSpan()))
@@ -414,17 +524,41 @@ public static class Engine_HiddenClusters
 	/// the variant — a node keeps its overrides by index across a mesh change — and written from
 	/// our own record, not `GetSurfaceOverrideMaterial` (a wrapper per call).
 	/// </summary>
-	private static void Present(MeshInstance3D node, ArrayMesh? source, SurfaceState state)
+	private static void Present(MeshInstance3D node, ArrayMesh? source, SurfaceState state) =>
+		Present(node, source, state, node.Mesh);
+
+	/// <summary>The same, for a node whose mesh the caller has just read as <paramref name="shown"/>.</summary>
+	private static void Present(MeshInstance3D node, ArrayMesh? source, SurfaceState state, Mesh? shown)
 	{
-		UInt128 hidden = MaskOf(state) | ElsewhereMask(node);
+		UInt128 hidden = MaskOf(state) | Elsewhere(state);
+		bool variants = Engine_BodyVariants.Enabled;
+
+		// ASKED AS LAST TIME, it writes nothing: the variant for this source and mask is cached for
+		// good, the node still shows what that pass left it showing, and the overrides stand as
+		// `Written` says (only this pass writes either). The reconcile's common case, with no lookup.
+		if (state.Presented && ReferenceEquals(source, state.PresentedSource) &&
+			ReferenceEquals(shown, state.PresentedShows) && hidden == state.PresentedHidden &&
+			variants == state.PresentedVariants)
+		{
+			return;
+		}
+
+		state.Presented = true;
+		state.PresentedSource = source;
+		state.PresentedHidden = hidden;
+		state.PresentedVariants = variants;
 		ArrayMesh? variant = source is null ? null : Engine_BodyVariants.For(source, hidden);
 		if (variant is not null)
 		{
-			if (!ReferenceEquals(node.Mesh, variant))
+			state.PresentedShows = variant;
+			if (!ReferenceEquals(shown, variant))
 			{
 				WriteOverrides(node, state, UInt128.Zero);
+				Refii.AndroidRuntime.AndroidCharacterLevers.BeforeMeshSwap(node);
 				node.Mesh = variant;
 				Engine_BodyVariants.NoteShown(node, source!, variant);
+				state.ShownSource = source;
+				state.ShownVariant = variant;
 				// The classic transfer pair is per surface index: rebuilt for the new mesh.
 				Refii.Models.Engine_ClassicTransfer.Apply(node);
 			}
@@ -432,8 +566,10 @@ public static class Engine_HiddenClusters
 			return;
 		}
 
-		if (source is not null && !ReferenceEquals(node.Mesh, source))
+		state.PresentedShows = source ?? shown;
+		if (source is not null && !ReferenceEquals(shown, source))
 		{
+			Refii.AndroidRuntime.AndroidCharacterLevers.BeforeMeshSwap(node);
 			node.Mesh = source;
 			state.Written = UInt128.Zero;
 			Refii.Models.Engine_ClassicTransfer.Apply(node);
@@ -445,6 +581,12 @@ public static class Engine_HiddenClusters
 	private static void WriteOverrides(MeshInstance3D node, SurfaceState state, UInt128 wanted)
 	{
 		UInt128 changed = state.Written ^ wanted;
+		if (changed == UInt128.Zero)
+		{
+			// Every override already stands as wanted: no count to ask the engine for.
+			return;
+		}
+
 		int surfaces = Math.Min(128, node.GetSurfaceOverrideMaterialCount());
 		for (int s = 0; s < surfaces && changed != UInt128.Zero; s++)
 		{
@@ -466,6 +608,12 @@ public static class Engine_HiddenClusters
 	private static UInt128 MaskOf(SurfaceState state)
 	{
 		UInt128 mask = state.Bits;
+		if (state.OnlyFirst64)
+		{
+			// Nothing stated past surface 63 (every prop): the rest of the mask is zero.
+			return mask;
+		}
+
 		for (int surface = 64; surface < 128; surface++)
 		{
 			if (state.Get(surface))

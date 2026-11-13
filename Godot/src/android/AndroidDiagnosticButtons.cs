@@ -59,6 +59,8 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private Button? _rebuildLater;
     private bool _rebuildWaiting;
     private bool _rebuildPutOff;
+    private PanelContainer? _restartNote;
+    private Label? _restartNoteText;
     private Label? _aboutText;
     private string? _aboutKey;
     private Control? _overOptions;
@@ -222,7 +224,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         rows.AddThemeConstantOverride("separation", 6);
         preset.CustomMinimumSize = new Vector2(510, 52);
         rows.AddChild(preset);
-        // The preset button opens the four presets to pick one from, rather than stepping through them:
+        // The preset button opens the presets to pick one from, rather than stepping through them:
         // each preset applied is a pass over the game's settings, and a pick is one.
         _presetChoices = new GridContainer { Columns = 2, Visible = false, MouseFilter = Control.MouseFilterEnum.Ignore };
         _presetChoices.AddThemeConstantOverride("h_separation", 6);
@@ -241,6 +243,9 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         rows.AddChild(CreateFrameCaps());
         // The shadow rebuild's question stands under the preset, where the pick that needs it was made.
         rows.AddChild(_rebuild = CreateRebuild());
+        // The line that says a change waits for the next start stands just above the settings, under the
+        // preset and the frame limit, so the preset's choices stay where the finger left them.
+        rows.AddChild(_restartNote = CreateRestartNote());
         // The settings scroll under the preset once they outgrow the room above Options (Place sizes it):
         // a drag that starts on a row's name scrolls, since the names let the press through to it.
         _graphicsScroll = new ScrollContainer
@@ -392,6 +397,41 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         return box;
     }
 
+    /// <summary>
+    /// The quiet line, hidden until a graphics change waits for the next start (AndroidRestartNotes): in
+    /// the see-through box the about text and the rebuild question use, plain text and no buttons, so it
+    /// never stands in the way. It stays while the panel is open, until a later graphics change replaces
+    /// or clears it.
+    /// </summary>
+    private PanelContainer CreateRestartNote()
+    {
+        PanelContainer box = AndroidSeeThrough.Panel(0.6f);
+        box.MouseFilter = Control.MouseFilterEnum.Ignore;
+        box.Visible = false;
+        _restartNoteText = new Label
+        {
+            CustomMinimumSize = new Vector2(480, 0), AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
+        _restartNoteText.AddThemeFontSizeOverride("font_size", 18);
+        box.AddChild(_restartNoteText);
+        return box;
+    }
+
+    /// <summary>Shows <paramref name="note"/> under the preset, or puts the line away for null.</summary>
+    private void ShowRestartNote(string? note)
+    {
+        if (_restartNote is null || _restartNoteText is null) return;
+        bool was = _restartNote.Visible;
+        string before = _restartNoteText.Text;
+        _restartNoteText.Text = note ?? "";
+        _restartNote.Visible = note is not null;
+        if (was == _restartNote.Visible && before == _restartNoteText.Text) return;
+        Place();
+        // The wrapped text only knows its height once the column has laid it out.
+        Callable.From(Place).CallDeferred();
+    }
+
     /// <summary>Leaves the shadow rebuild for the next loading screen and puts the question away.</summary>
     private void PutOffRebuild()
     {
@@ -444,7 +484,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     private const string GraphicsLabel = "Graphics settings...";
 
     /// <summary>
-    /// Shows the Graphics column beside the buttons, the four presets open at its top, or puts it away with
+    /// Shows the Graphics column beside the buttons, the presets open at its top, or puts it away with
     /// what it had opened (a setting's about box, a preset's warning).
     /// </summary>
     private void ShowGraphics(bool shown)
@@ -454,6 +494,9 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         if (_about is not null) _about.Visible = false;
         if (_presetChoices is not null) _presetChoices.Visible = shown;
         if (_presetWarning is not null) _presetWarning.Visible = false;
+        // The next-start line belongs to this visit's changes: the column put away, or the panel
+        // opened again (which puts the column away first), starts without it.
+        if (!shown) ShowRestartNote(null);
         Place();
     }
 
@@ -495,18 +538,26 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         panel.Position = new Vector2(_options.Position.X, _options.End.Y - size.Y);
     }
 
-    /// <summary>The buttons' screen rectangles: the touch controls leave a finger landing there to the buttons.</summary>
-    public IEnumerable<Rect2> Rects()
+    /// <summary>Whether any of the buttons or the menus they open stands, so <see cref="AddRects"/> has a rectangle to add.</summary>
+    public bool AnyRects => Visible || _remap is { Visible: true } || _editor is { Visible: true };
+
+    /// <summary>
+    /// Adds the buttons' screen rectangles to <paramref name="into"/>: the touch controls leave a finger
+    /// landing there to the buttons. Asked every frame and every pointer event, so nothing is built while
+    /// nothing stands (<see cref="AnyRects"/>).
+    /// </summary>
+    public void AddRects(List<Rect2> into)
     {
-        foreach (Rect2 rect in _remap?.Rects() ?? Array.Empty<Rect2>()) yield return rect;
-        foreach (Rect2 rect in _editor?.Rects() ?? Array.Empty<Rect2>()) yield return rect;
-        if (!Visible) yield break;
+        if (!AnyRects) return;
+        _remap?.AddRects(into);
+        _editor?.AddRects(into);
+        if (!Visible) return;
         // The whole Graphics column, so a finger between its buttons doesn't turn the camera.
-        if (_graphics is { Visible: true } graphics) yield return graphics.GetGlobalRect();
-        if (_about is { Visible: true } about) yield return about.GetGlobalRect();
-        if (_rebuild is { } rebuild && rebuild.IsVisibleInTree()) yield return rebuild.GetGlobalRect();
+        if (_graphics is { Visible: true } graphics) into.Add(graphics.GetGlobalRect());
+        if (_about is { Visible: true } about) into.Add(about.GetGlobalRect());
+        if (_rebuild is { } rebuild && rebuild.IsVisibleInTree()) into.Add(rebuild.GetGlobalRect());
         // The buttons' scroll area, not each button: one scrolled out of view must not keep its rectangle.
-        if (_buttonsScroll is { } buttonsScroll) yield return buttonsScroll.GetGlobalRect();
+        if (_buttonsScroll is { } buttonsScroll) into.Add(buttonsScroll.GetGlobalRect());
     }
 
     private const string ExportLabel = "Export...";
@@ -584,9 +635,21 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     }
 
     /// <summary>Sets the frame cap to <paramref name="cap"/>; 0 is uncapped.</summary>
-    private void PickFrameCap(int cap) => Write(config => AndroidQuickSettings.SetFrameCap(config, cap));
+    private void PickFrameCap(int cap) => WriteGraphics(config =>
+    {
+        string note = NoteFor(config, new[] { ("max_fps", Math.Max(0, cap).ToString(System.Globalization.CultureInfo.InvariantCulture)) });
+        AndroidQuickSettings.SetFrameCap(config, cap);
+        return note.Length > 0 ? note : null;
+    });
 
-    /// <summary>Shows or hides the four presets under the preset button.</summary>
+    /// <summary>The line for writing <paramref name="writes"/> over the file as it stands: the one-setting note
+    /// when a setting it changes waits for the next start, else empty.</summary>
+    private static string NoteFor(string config, IEnumerable<(string Key, string Value)> writes) =>
+        AndroidRestartNotes.ChangesNeedRestart(Refii.Launcher.Core.RuntimeConfig.ReadValues(config), writes)
+            ? AndroidRestartNotes.SettingNote
+            : "";
+
+    /// <summary>Shows or hides the presets under the preset button.</summary>
     private void TogglePresetChoices()
     {
         if (_presetChoices is null) return;
@@ -635,16 +698,44 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
     /// <summary>Applies <paramref name="preset"/> to the running game.</summary>
     private void ApplyPreset(string preset)
     {
-        Write(config => AndroidQuickSettings.ApplyPreset(config, preset,
-            (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));
+        WriteGraphics(config =>
+        {
+            // Asked before the write: what counts is what the preset changes from the file as it stood.
+            bool restart = AndroidRestartNotes.PresetNeedsRestart(Refii.Launcher.Core.RuntimeConfig.ReadValues(config), preset);
+            AndroidQuickSettings.ApplyPreset(config, preset,
+                (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value));
+            return restart ? AndroidRestartNotes.PresetNote : null;
+        });
         Place();
     }
 
     /// <summary>Steps one graphics setting, applying it to the running game.</summary>
-    private void StepGraphics(AndroidGraphicsOption option, int direction) => Write(config =>
-        AndroidQuickSettings.SetGraphics(config,
-            AndroidGraphicsOptions.Writes(option, AndroidGraphicsOptions.Step(option, AndroidQuickSettings.Value(config, option.Key), direction)),
-            (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value)));
+    private void StepGraphics(AndroidGraphicsOption option, int direction) => WriteGraphics(config =>
+    {
+        IReadOnlyList<(string Key, string Value)> writes =
+            AndroidGraphicsOptions.Writes(option, AndroidGraphicsOptions.Step(option, AndroidQuickSettings.Value(config, option.Key), direction));
+        string note = NoteFor(config, writes);
+        AndroidQuickSettings.SetGraphics(config, writes,
+            (name, value) => Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value));
+        return note.Length > 0 ? note : null;
+    });
+
+    /// <summary>
+    /// Runs one graphics change against the live file (<see cref="Write"/>), then shows the line it returns
+    /// when part of it waits for the next start, or puts the line away when none does. A change that failed
+    /// to write leaves the line as it was.
+    /// </summary>
+    private void WriteGraphics(Func<string, string?> change)
+    {
+        bool written = false;
+        string? note = null;
+        Write(config =>
+        {
+            note = change(config);
+            written = true;
+        });
+        if (written) ShowRestartNote(note);
+    }
 
     /// <summary>Shows or hides the frame rate in the top left corner.</summary>
     private void ToggleFpsCounter() => Write(config =>

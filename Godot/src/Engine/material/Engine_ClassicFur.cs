@@ -655,6 +655,7 @@ public partial class Engine_ClassicFur : Node
                 n = Math.Max(n, Math.Clamp((int)((furred.Length / dv) / tv * 142.85713f + 1f), 16, MaxShells));
                 d = MathF.Min(d, dv);
             }
+            n = Refii.AndroidRuntime.AndroidFurShells.Cap(n);
             float length = furred.Length * (1f + 0.1f * d);
             Link(furred, n - 1);
             Mist(furred, Engine_ClassicMist.VolumeFor(box));
@@ -1103,6 +1104,7 @@ public partial class Engine_ClassicFur : Node
             return;
         }
 
+        Godot.Collections.Dictionary? lods = Refii.AndroidRuntime.AndroidFurShellLods.For(source, surface, Fur, Map, outIndices.Count);
         var shell = new Godot.Collections.Array();
         shell.Resize((int)Mesh.ArrayType.Max);
         shell[(int)Mesh.ArrayType.Vertex] = outVertices.ToArray();
@@ -1122,7 +1124,7 @@ public partial class Engine_ClassicFur : Node
                 format |= Mesh.ArrayFormat.FlagUse8BoneWeights;
             }
         }
-        Refii.Core.Engine_ArrayMeshes.AddSurface(into, Mesh.PrimitiveType.Triangles, shell, null, null, format);
+        Refii.Core.Engine_ArrayMeshes.AddSurface(into, Mesh.PrimitiveType.Triangles, shell, null, lods, format);
         shell.Dispose();
     }
 

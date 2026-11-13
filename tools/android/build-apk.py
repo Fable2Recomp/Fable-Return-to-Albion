@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -53,12 +54,29 @@ def load_config(path: Path) -> dict:
     return config
 
 
+def check_templates(templates: Path) -> None:
+    """Refuses templates built with other Godot patches than godot-patches/ holds now. Templates from before
+    the record existed are used with a warning: what they carry cannot be read back."""
+    spec = importlib.util.spec_from_file_location('build_templates', TOOLS / 'godot-patches/build-templates.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    record = templates / module.PATCHES_RECORD
+    if not record.is_file():
+        print(f'warning: {templates} does not record its Godot patches; build them again to check them', file=sys.stderr)
+        return
+    if record.read_text(encoding='utf-8') != module.patch_record():
+        raise ValueError(f'templates {templates} were built with other Godot patches than '
+                         f'tools/android/godot-patches/ holds; move them aside and build them again')
+
+
 def plan(config: dict, output: Path, native: Path | None) -> list[tuple[str, list[str]]]:
     """The steps' commands, in order: (name, argv)."""
     py = [sys.executable, '-B']
     steps = []
     templates = Path(config['templates'])
-    if not templates.exists():
+    if templates.exists():
+        check_templates(templates)
+    else:
         if not ('godot_source' in config and 'official_templates' in config):
             raise ValueError(f'templates {templates} does not exist; set godot_source and official_templates to build it')
         steps.append(('templates', py + [str(TOOLS / 'godot-patches/build-templates.py'),
@@ -86,6 +104,8 @@ def plan(config: dict, output: Path, native: Path | None) -> list[tuple[str, lis
                    '--rendering-method', config.get('rendering_method', 'mobile'), '--netplay', '--nativeaot']
     if 'cache_root' in config:
         export += ['--cache-root', config['cache_root']]
+    if config.get('gpu_profile'):
+        export.append('--gpu-profile')
     if 'keystore' in config:
         export += ['--keystore', config['keystore'], '--alias', config.get('alias', 'androiddebugkey')]
     steps.append(('export', export))

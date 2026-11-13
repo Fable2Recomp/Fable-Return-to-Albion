@@ -199,6 +199,7 @@ public partial class Engine_PostFxHalos : Node
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("postfxhalos");
+		if (SkipUnseen()) return; // no chain to draw them: no sprites decoded, no array built
 		_live.Clear();
 		_sky.Clear();
 		using (Gate.Hold())

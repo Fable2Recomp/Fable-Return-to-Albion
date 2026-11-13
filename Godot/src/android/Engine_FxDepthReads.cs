@@ -83,6 +83,82 @@ public static class Engine_FxDepthReads
         return value.GetBoolean();
     }
 
+    /// <summary>
+    /// `android_fx_hard_all`: every effect particle drawn from its hard build, the ones with a soft
+    /// distance too, so no effect material is left to read depth. Android only; off by default.
+    /// </summary>
+    /// <remarks>
+    /// WHY. <see cref="Enabled"/> hardens only the materials whose fade is exactly 1 (soft distance
+    /// zero); smoke, steam and dust with a soft distance still declare the depth texture, and one
+    /// of them in view keeps Mobile's frame split ("Render Opaque", depth copy, "Render
+    /// Transparent"). With this on, their fade is 1 too: the picture changes where such a particle
+    /// meets a wall or the ground, which shows its quad's straight edge instead of fading out over
+    /// the soft distance. With fx_no_depth_reads (the glares) and android_highlight_depth_test, only
+    /// water and rain can still split the pass. Live: a `cvar_set` re-points every effect material
+    /// the key reaches.
+    /// </remarks>
+    public const string HardAllKey = "android_fx_hard_all";
+
+    private static bool? _hardAll;
+    private static bool _hardAllHooked;
+
+    /// <summary>Whether <see cref="HardAllKey"/> is on, on Android only; read once and again on each live change.</summary>
+    public static bool HardAll
+    {
+        get
+        {
+            if (_hardAll is { } known) return known;
+            bool on = false;
+            try
+            {
+                on = Refii.Core.Engine_Platform.IsAndroid &&
+                    Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), HardAllKey, false);
+            }
+            catch (Exception)
+            {
+                on = false;
+            }
+
+            if (!_hardAllHooked)
+            {
+                _hardAllHooked = true;
+                Refii.Core.Engine_RefiiConfig.OnConfigChanged += (name, _) =>
+                {
+                    if (!string.Equals(name, HardAllKey, StringComparison.OrdinalIgnoreCase)) return;
+                    bool was = _hardAll ?? false;
+                    _hardAll = null;
+                    if (HardAll != was && OS.GetThreadCallerId() == OS.GetMainThreadId())
+                    {
+                        Repoint();
+                    }
+                };
+            }
+
+            _hardAll = on;
+            if (on)
+            {
+                GD.Print($"[fx] {HardAllKey}: every effect particle hard, soft fades included");
+            }
+
+            return on;
+        }
+    }
+
+    /// <summary>
+    /// Whether an effect material draws from its hard build: every one under
+    /// <paramref name="hardAll"/>, else one without a soft distance under
+    /// <paramref name="noDepthReads"/>. Pure.
+    /// </summary>
+    public static bool ShouldBeHard(bool noDepthReads, bool hardAll, bool soft) => hardAll || (noDepthReads && !soft);
+
+    /// <summary>
+    /// Whether an effect material built in <paramref name="mode"/> with <paramref name="softDepth"/>
+    /// is kept for a hard build: any fx_soft mode without a soft distance, and on Android one with a
+    /// soft distance as well (<see cref="HardAll"/>). Pure but for the platform.
+    /// </summary>
+    public static bool Adoptable(float softDepth, string mode) =>
+        SoftMode(mode) && (softDepth <= 0f || Refii.Core.Engine_Platform.IsAndroid);
+
     /// <summary>The effect modes whose shader includes fx_soft.gdshaderinc, the depth fade; the
     /// additive layer's and the displacement shaders never declare the depth texture. Pure.</summary>
     public static bool SoftMode(string mode) => mode is not ("addlayer" or "disp");
@@ -141,8 +217,9 @@ public static class Engine_FxDepthReads
         return hard;
     }
 
-    /// <summary>A material whose soft distance is zero, and the file shader it was built from.</summary>
-    private readonly record struct Capable(WeakReference<ShaderMaterial> Material, Shader Soft);
+    /// <summary>A material that may draw hard, the file shader it was built from, and whether it
+    /// has a soft distance (hard then only under <see cref="HardAll"/>).</summary>
+    private readonly record struct Capable(WeakReference<ShaderMaterial> Material, Shader Soft, bool SoftFade);
 
     private static readonly List<Capable> Materials = new();
 
@@ -150,20 +227,21 @@ public static class Engine_FxDepthReads
     private static int _pruneAt = 64;
 
     /// <summary>
-    /// Main thread: <paramref name="material"/> fades by nothing (its soft distance is zero), so it
-    /// may draw from the hard build of <paramref name="soft"/>. Points it at the build the setting
-    /// asks for, and keeps it for a live change.
+    /// Main thread: <paramref name="material"/> may draw from the hard build of
+    /// <paramref name="soft"/>: it fades by nothing (its soft distance is zero), or, with
+    /// <paramref name="softFade"/>, only under <see cref="HardAll"/>. Points it at the build the
+    /// settings ask for, and keeps it for a live change.
     /// </summary>
-    public static void Adopt(ShaderMaterial material, Shader soft)
+    public static void Adopt(ShaderMaterial material, Shader soft, bool softFade = false)
     {
         if (Materials.Count >= _pruneAt)
         {
-            Prune(null);
+            Prune(false);
             _pruneAt = Math.Max(64, Materials.Count * 2);
         }
 
-        Materials.Add(new Capable(new WeakReference<ShaderMaterial>(material), soft));
-        Point(material, soft, Enabled);
+        Materials.Add(new Capable(new WeakReference<ShaderMaterial>(material), soft, softFade));
+        Point(material, soft, ShouldBeHard(Enabled, HardAll, softFade));
     }
 
     private static void Point(ShaderMaterial material, Shader soft, bool hard)
@@ -179,15 +257,16 @@ public static class Engine_FxDepthReads
 
     private static void Repoint()
     {
-        bool hard = Enabled;
-        int kept = Prune(hard);
-        GD.Print($"[fx] {Key} {(hard ? "on" : "off")}: {kept} effect materials re-pointed");
+        int kept = Prune(true);
+        GD.Print($"[fx] {Key} {(Enabled ? "on" : "off")}, {HardAllKey} {(HardAll ? "on" : "off")}: {kept} effect materials re-pointed");
     }
 
-    /// <summary>Drops freed materials, pointing the live ones at <paramref name="hard"/>'s build
-    /// when it is stated. Returns how many are kept.</summary>
-    private static int Prune(bool? hard)
+    /// <summary>Drops freed materials, pointing the live ones at the build the settings ask for
+    /// when <paramref name="repoint"/>. Returns how many are kept.</summary>
+    private static int Prune(bool repoint)
     {
+        bool noDepthReads = Enabled;
+        bool hardAll = HardAll;
         int kept = 0;
         for (int i = 0; i < Materials.Count; i++)
         {
@@ -198,9 +277,9 @@ public static class Engine_FxDepthReads
                 continue;
             }
 
-            if (hard is { } h)
+            if (repoint)
             {
-                Point(material, entry.Soft, h);
+                Point(material, entry.Soft, ShouldBeHard(noDepthReads, hardAll, entry.SoftFade));
             }
 
             Materials[kept++] = entry;

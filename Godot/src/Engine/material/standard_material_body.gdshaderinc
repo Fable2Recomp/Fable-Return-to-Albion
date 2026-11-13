@@ -27,6 +27,13 @@
 #define FABLE_LITE
 #endif
 #endif
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_switches.gdshaderinc"
+#else
+#define FABLE_MODEL_HEIGHT(v) v.y
+#define FABLE_MODEL_UP vec3(0.0, 1.0, 0.0)
+#define FABLE_MODEL_NORMAL NORMAL
+#endif
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
@@ -232,7 +239,7 @@ global uniform vec2 fable_wind_factors;
 // A tree's transfer is the constant zero (vertex() below): FABLE_SPEC_TREE_NO_TRANSFER drops the
 // varying and its test instead of interpolating four zeros.
 #if !defined(FABLE_LITE_MODERN) && !defined(FABLE_MODERN_DIRECT)
-#if defined(FABLE_TREE_WIND) && defined(FABLE_SPEC_TREE_NO_TRANSFER)
+#if (defined(FABLE_TREE_WIND) && defined(FABLE_SPEC_TREE_NO_TRANSFER)) || defined(FABLE_TRANSFER_CONSTANT)
 #else
 #define FABLE_TRANSFER_VARYING
 #endif
@@ -266,7 +273,7 @@ varying float v_specular_power;
 /// The PRT ambient, computed per vertex as the guest's AMB2 vertex shader does; a = present.
 /// Not in FABLE_LITE_MODERN: the modern model multiplies every probe bake by zero.
 #ifdef FABLE_TRANSFER_VARYING
-varying vec4 v_transfer;
+varying FABLE_VARY_MP vec4 v_transfer;
 #endif
 
 /// A TREE'S PER-PLACEMENT FADE (`sub_8220AF90`; Engine_PropDrawRange.TreeBand stamps the band):
@@ -288,8 +295,12 @@ instance uniform vec3 xr_tree_centre : instance_index(12) = vec3(0.0);
 /// A PROP'S ARRIVAL: 0 the frame its mesh stood, 1 after Engine_PropFade.ArrivalSeconds, so a copy
 /// the streamer delivers inside its radius dithers in instead of popping. 1 is standing.
 instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_varyings.gdshaderinc"
+#else
 varying float v_tree_fade;
 varying float v_combined_ao;
+#endif
 
 void vertex() {
 #ifdef FABLE_TRANSFER_VARYING
@@ -298,7 +309,7 @@ void vertex() {
     // FABLE_SPEC_NO_PRT build draws instances that state another bake mode, or a mesh without CUSTOM0.
     v_transfer = vec4(0.0);
 #else
-    v_transfer = fable_unified < 0.5
+    v_transfer = FABLE_UNIFIED < 0.5
         ? fable_transfer(CUSTOM0, CUSTOM1, CUSTOM2, mat3(MODEL_MATRIX))
         : vec4(0.0);
 #endif
@@ -307,10 +318,13 @@ void vertex() {
     // factor + offset) bends the normal toward the instance's up, and the pixel stage bends
     // the vertex normal toward that again by the same w.
     if (FABLE_GRASS_BEND) {
-        float w = clamp((VERTEX.y * grass_normal_gradient.y) + grass_normal_gradient.z, 0.0, 1.0);
-        vec3 bent = normalize(mix(NORMAL, vec3(0.0, 1.0, 0.0), w));
-        NORMAL = normalize(mix(NORMAL, bent, w));
+        float w = clamp((FABLE_MODEL_HEIGHT(VERTEX) * grass_normal_gradient.y) + grass_normal_gradient.z, 0.0, 1.0);
+        vec3 bent = normalize(mix(FABLE_MODEL_NORMAL, FABLE_MODEL_UP, w));
+        NORMAL = normalize(mix(FABLE_MODEL_NORMAL, bent, w));
     }
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_tree_fade.gdshaderinc"
+#else
     v_tree_fade = 1.0;
     // FABLE_SOLID never carries a band: a tree is .mdl byte 77 == 2, which hands every one of
     // its surfaces, LOD1 included, to the two-sided or wind shader (Engine_MdlMaterial), and a
@@ -325,6 +339,7 @@ void vertex() {
         float fade_out = pow(clamp((xr_tree_fade_out.x - d) * xr_tree_fade_out.y, 0.0, 1.0), xr_tree_fade_out.z);
         v_tree_fade *= fade_in * fade_out;
     }
+#endif
 #endif
     // GUARDED BY AN `if`, NOT AN EARLY `return`. Godot rejects the latter outright — "Using
     // 'return' in the 'vertex' processor function is incorrect" — and the shader then fails to
@@ -347,8 +362,12 @@ void vertex() {
         float f = fract(origin.z - origin.x);
         float c = cos(1.0 + f - (TIME * wind_speed * (1.0 + (0.1 * f))));
         vec3 g = c * ((fable_wind_direction * fable_wind_factors.x) + (vec3(-0.35, 1.53, 0.0) * fable_wind_factors.y));
-        vec3 world_offset = vec3(-g.x, g.z, g.y) * clamp(5.0 * VERTEX.y, 0.0, 1.0);
+        vec3 world_offset = vec3(-g.x, g.z, g.y) * clamp(5.0 * FABLE_MODEL_HEIGHT(VERTEX), 0.0, 1.0);
+#ifdef FABLE_WORLD_VERTEX
+        VERTEX += world_offset;
+#else
         VERTEX += inverse(mat3(MODEL_MATRIX)) * world_offset;
+#endif
     }
 #endif
 
@@ -360,7 +379,11 @@ void vertex() {
     float sway_keep = fable_tree_sway_keep(
         distance(MAIN_CAM_INV_VIEW_MATRIX[3].xyz, (MODEL_MATRIX * vec4(xr_tree_centre, 1.0)).xyz));
     if (sway_keep > 0.0) {
+#ifdef FABLE_WORLD_VERTEX
+        VERTEX += mat3(MODEL_MATRIX) * (fable_tree_sway(vec3(0.0), CUSTOM1, MODEL_MATRIX) * sway_keep);
+#else
         VERTEX = mix(VERTEX, fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX), sway_keep);
+#endif
     }
 #else
     VERTEX = fable_tree_sway(VERTEX, CUSTOM1, MODEL_MATRIX);
@@ -368,7 +391,11 @@ void vertex() {
 #endif
 
     // After the wind: the light table measures to where the vertex is drawn.
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_vertex_out.gdshaderinc"
+#else
     fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+#endif
 }
 
 void fragment() {
@@ -469,6 +496,9 @@ void fragment() {
     //
     // Flipped before the bake below as well, because the probe SH is evaluated for a direction
     // too and a back face was sampling the wrong lobe of it.
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_normal_map.gdshaderinc"
+#else
     if (!FABLE_FOLIAGE_NORMALS) {
         float side = fable_normal_side(NORMAL, VERTEX, VIEW);
         NORMAL *= side;
@@ -507,6 +537,7 @@ void fragment() {
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
         mapped_view = normalize(TANGENT * nxy.x + BINORMAL * nxy.y + NORMAL * ndotn);
     }
+#endif
 
     METALLIC = 0.0;
 
@@ -518,7 +549,7 @@ void fragment() {
     // Zero when there is no specular map, which is the guest's behaviour too: its fallback for
     // that slot is transparent black, so r2 is zero and the cube contributes nothing however
     // bright it is.
-    vec3 spec_colour = vec3(0.0);
+    FABLE_LITE_MP vec3 spec_colour = vec3(0.0);
     float spec_power = spec_power_min;
 
 #ifdef FABLE_LITE_NO_SPEC
@@ -551,7 +582,7 @@ void fragment() {
         ROUGHNESS = orm.g;
         METALLIC = orm.b;
     } else if (FABLE_HAS_NORMAL) {
-        ao = mix(1.0, ndotn * ndotn, 0.35 * fable_unified);
+        ao = mix(1.0, ndotn * ndotn, 0.35 * FABLE_UNIFIED);
     }
 
     // ORM HAS NOWHERE TO PUT A SPECULAR COLOUR, so the pair is reconstructed from what it does
@@ -571,14 +602,18 @@ void fragment() {
 #endif
 
     // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_baked_ao.gdshaderinc"
+#else
     float baked_ao = fable_evaluate_prop_baked_ao(COLOR.a, fable_world);
-    float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, fable_unified));
+#endif
+    float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, FABLE_UNIFIED));
     v_combined_ao = combined_ao;
     if (!FABLE_IS_PBR) {
         SPECULAR = 0.0;
         METALLIC = 0.0;
         ROUGHNESS = 1.0;
-        AO_LIGHT_AFFECT = fable_unified * fable_ao_light_affect;
+        AO_LIGHT_AFFECT = FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT;
     } else {
         AO = combined_ao;
         AO_LIGHT_AFFECT = 1.0;
@@ -607,35 +642,43 @@ void fragment() {
     // transfer, the vertex bakes, their darkening, the tether and the bake AO — so none of it is
     // compiled. amb3 (mode 4) keeps its 0.35 share, untethered and unoccluded exactly as below.
     vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
-    vec3 darken = vec3(1.0);
+    FABLE_LITE_MP vec3 darken = vec3(1.0);
     if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
+#ifdef FABLE_LITE_LEAN_DARKEN
+        darken = fable_lean_darken(NORMAL, mapped_view, INV_VIEW_MATRIX);
+#else
         vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
         float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
-        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+        FABLE_LITE_MP float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
         darken = mix(fable_darkening, vec3(1.0), nb * nb);
+#endif
     }
-    vec3 ambient_half = vec3(0.0);
+    FABLE_LITE_MP vec3 ambient_half = vec3(0.0);
     if (FABLE_MODE > 3.5) {
-        ambient_half = fable_bake_amb3(UV2) * fable_lightmap_rgb() * darken;
+        ambient_half = fable_bake_amb3(FABLE_LIGHTMAP_UV) * fable_lightmap_rgb() * darken;
     }
     EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
     AO = combined_ao;
 #else
     vec3 mapped_world = normalize((INV_VIEW_MATRIX * vec4(mapped_view, 0.0)).xyz);
-    vec3 darken = vec3(1.0);
+    FABLE_LITE_MP vec3 darken = vec3(1.0);
     if (!FABLE_GRASS && (!FABLE_FOLIAGE || FABLE_HAS_NORMAL)) {
+#ifdef FABLE_LITE_LEAN_DARKEN
+        darken = fable_lean_darken(NORMAL, mapped_view, INV_VIEW_MATRIX);
+#else
         vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
         float bend = 0.5 * (dot(world_normal, amb_ref) + 1.0);
         vec3 bent = normalize(mix(world_normal, amb_ref, bend));
-        float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+        FABLE_LITE_MP float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
         darken = mix(fable_darkening, vec3(1.0), nb * nb);
+#endif
     }
 
-    if (fable_unified > 0.999) {
-        vec3 ambient_half = vec3(0.0);
+    if (FABLE_UNIFIED > 0.999) {
+        FABLE_LITE_MP vec3 ambient_half = vec3(0.0);
         if (FABLE_MODE > 3.5) {
-            ambient_half = fable_bake_amb3(UV2) * fable_lightmap_rgb() * darken;
+            ambient_half = fable_bake_amb3(FABLE_LIGHTMAP_UV) * fable_lightmap_rgb() * darken;
         }
         EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
         AO = combined_ao;
@@ -646,10 +689,10 @@ void fragment() {
         // Mode 1 on a mesh that carries its transfer: the guest's PRT, decoded as AMB2 is.
         bake = pow(max(v_transfer.rgb, vec3(0.0)), vec3(FABLE_BAKE_GAMMA));
     } else {
-        bake = fable_bake(world_normal, COLOR, UV2);
+        bake = fable_bake(world_normal, COLOR, FABLE_LIGHTMAP_UV);
     }
 #else
-    bake = fable_bake(world_normal, COLOR, UV2);
+    bake = fable_bake(world_normal, COLOR, FABLE_LIGHTMAP_UV);
 #endif
 
     if (FABLE_FOLIAGE) {
@@ -674,7 +717,7 @@ void fragment() {
     // what split the bridge from the terrain beside it. The probe and flat modes are synthetic
     // ambient with no baked occlusion, so the modernized AO stays legitimate there.
     float bake_ao = FABLE_MODE > 2.5 ? 1.0 : ao;
-    vec3 ambient_half = bake * fable_lightmap_rgb() * darken * bake_ao;
+    FABLE_LITE_MP vec3 ambient_half = bake * fable_lightmap_rgb() * darken * bake_ao;
 
     // The sky tether runs POST-LightmapColour (see fable_sky_tether) on every exterior mode;
     // mode 4's amb3 lightmaps are interiors-only and stay authored.
@@ -684,14 +727,14 @@ void fragment() {
 
     EMISSION = alb.rgb * fable_ambient_occluded(ambient_half, combined_ao, darken);
     // Godot's ambient and GI take the AO the guest's fills took above; 1 in the fable model.
-    AO = mix(1.0, combined_ao, fable_unified);
+    AO = mix(1.0, combined_ao, FABLE_UNIFIED);
     }
 #endif
     if (FABLE_HAS_EMISSION) {
         // Linear for authored PBR mod assets (is_pbr = true) with authored physical radiance.
         // Squared for legacy assets per guest pixel shader (r3.xyz = r3.xyz * r3.xyz),
         // scaled by material self_illum_scale and global fable_emission_boost for HDR headroom.
-        vec3 selfIllum = texture(emission_tex, uv).rgb;
+        FABLE_LITE_MP vec3 selfIllum = texture(emission_tex, uv).rgb;
         if (FABLE_IS_PBR) {
             EMISSION += selfIllum * self_illum_scale;
         } else {
@@ -722,7 +765,7 @@ void fragment() {
 
         // SQUARED like the albedo and the specular — `r6.xyz = r6.xyz * r6.xyz` — because gamma
         // 2.0 is the guest's decode for every colour fetch, this one included.
-        vec3 env = texture(envmap_tex, reflected).rgb;
+        FABLE_LITE_MP vec3 env = texture(envmap_tex, reflected).rgb;
         EMISSION += spec_colour * env * env;
     }
 #endif
@@ -739,6 +782,9 @@ void fragment() {
     // LAST, because it attenuates everything above it. The guest's fog is the final thing its
     // pixel shader does to the colour as well — the only line after it is the global brightness
     // multiply, which Godot owns.
+#ifdef FABLE_LITE_VERTEX_FOG
+    fable_atmosphere_apply(v_fog_t, v_fog_c, alpha_scissor_on ? 1.0 : alb.a, ALBEDO, EMISSION);
+#else
     vec3 fog_t;
     vec3 fog_c;
     if (fable_atmosphere_terms_for(VERTEX, INV_VIEW_MATRIX, !FABLE_FOLIAGE, fog_t, fog_c)) {
@@ -755,6 +801,7 @@ void fragment() {
         float coverage = alpha_scissor_on ? 1.0 : alb.a;
         fable_atmosphere_apply(fog_t, fog_c, coverage, ALBEDO, EMISSION);
     }
+#endif
 
 	// THE LIGHTING DEBUG VIEWS — `lighting_debug_view` in the launcher, global
 	// `fable_light_debug`. ALBEDO = 0 kills the diffuse light term (Godot multiplies
@@ -819,6 +866,9 @@ void fragment() {
         v_combined_ao = 1.0;
     }
 #endif
+#ifdef FABLE_LITE
+#include "res://src/android/standard_lite_fragment_end.gdshaderinc"
+#endif
 }
 
 /// THE GUEST'S MODEL, so every family shades by the same rules.
@@ -850,11 +900,11 @@ void light() {
         }
     } else
 #endif
-    if (ndotl > 1e-4) {
+    if (FABLE_LIGHT_LIVE(ndotl > 1e-4)) {
         // FACING AWAY, BOTH TERMS ARE EXACTLY ZERO — the diffuse's saturate(NdotL) and the
         // specular's saturate(4 NdotL) gate scale finite factors — so the light is skipped there,
         // and wherever its attenuation is zero, without changing a bit of the sum.
-        float atten = fable_attenuation_weighted(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world, ndotl) * fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL);
+        FABLE_LITE_MP float atten = fable_attenuation_weighted(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world, ndotl) * fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL);
         if (atten > 0.0) {
             // Plain Lambert, no specular, on foliage: every shipped tree draws the TRUNK1 pair,
             // leaves included (blob 0559 `saturate(dot(L, N))` x the shadow; the canopy wrap of

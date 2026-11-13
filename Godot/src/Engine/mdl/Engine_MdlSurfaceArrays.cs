@@ -68,7 +68,8 @@ public static class Engine_MdlSurfaceArrays
 		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
 		Godot.Collections.Dictionary? lods, float[]? levelTable)
 	{
-		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
+		Godot.Collections.Array built = Refii.AndroidRuntime.AndroidLeanTreeStreams.ForGodot(arrays);
+		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, primitive, built, null, lods, Engine_MdlTransfer.FormatOf(built) | Refii.AndroidRuntime.AndroidMeshCompression.FlagFor(primitive, built));
 		int added = mesh.GetSurfaceCount() - 1;
 		Record(mesh, added, arrays.Duplicate(false), lods is null ? null : levelTable ?? LevelsOf(lods));
 		return added;
@@ -106,7 +107,8 @@ public static class Engine_MdlSurfaceArrays
 		ArrayMesh mesh, Mesh.PrimitiveType primitive, Godot.Collections.Array arrays,
 		Godot.Collections.Dictionary? lods, float[]? levelTable = null)
 	{
-		Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(mesh, primitive, arrays, null, lods, Engine_MdlTransfer.FormatOf(arrays));
+		Godot.Collections.Array built = Refii.AndroidRuntime.AndroidLeanTreeStreams.ForGodot(arrays);
+		Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(mesh, primitive, built, null, lods, Engine_MdlTransfer.FormatOf(built) | Refii.AndroidRuntime.AndroidMeshCompression.FlagFor(primitive, built));
 		int added = mesh.GetSurfaceCount() - 1;
 		Record(mesh, added, arrays.Duplicate(false), lods is null ? null : levelTable ?? LevelsOf(lods));
 		return added;

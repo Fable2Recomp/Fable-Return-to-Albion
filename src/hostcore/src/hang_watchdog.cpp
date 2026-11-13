@@ -145,10 +145,10 @@ constexpr uint64_t kCaptureWaitNs = 3ull * 1000000000ull;
 constexpr int kCaptureSignal = SIGUSR2;  // free: the SDK's thread signals are SIGRTMIN+n on Linux
 constexpr int kMaxFrames = 128;
 
-/// backtrace() where the platform has it (host_backtrace.h); no frames elsewhere.
+/// The host's backtrace where the platform has one (host_backtrace.h); no frames elsewhere.
 int CaptureFrames(void** frames, int capacity) {
 #if REFII_HOST_BACKTRACE
-    return ::backtrace(frames, capacity);
+    return refii_host_backtrace::Capture(frames, capacity);
 #else
     (void)frames;
     (void)capacity;

@@ -126,6 +126,8 @@ public static partial class Engine_TerrainSplatMaterial
     /// <param name="normalsBound">Whether the layers' normal maps were bound.</param>
     private static void ApplyLite(ShaderMaterial material, TerrainSplatData data, Vector4[] parameters, bool normalsBound)
     {
+        // The ground's draw order class (AndroidOpaqueOrder), under either shader set; the no-cliff copy inherits it.
+        Refii.AndroidRuntime.AndroidOpaqueOrder.Terrain(material);
         if (!Refii.Models.Engine_ShaderVariant.Lite)
         {
             return;

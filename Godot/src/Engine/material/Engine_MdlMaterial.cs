@@ -468,7 +468,8 @@ public static partial class Engine_MdlMaterial
             info.WindAmplitude.ToString("R"), "|",
             IsVegetationDrawPath(info) ? "v" : "-",
             authoredNormals ? "n" : "-",
-            tangentBasis ? "t" : "-");
+            tangentBasis ? "t" : "-",
+            Refii.AndroidRuntime.AndroidTranslucentPass.KeyPart(info));
 
         if (_shared.TryGetValue(key, out Material? hit))
         {
@@ -595,6 +596,8 @@ public static partial class Engine_MdlMaterial
         // over 96% of the map) showed the cobble blend straight through them.
         bool translucent = albedo is not null &&
             Refii.Textures.Engine_TexLibrary.IsTranslucent(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader);
+        // A phone may draw a character's opaque pass alone, cut at 128 (AndroidTranslucentPass).
+        bool onePass = Refii.AndroidRuntime.AndroidTranslucentPass.SinglePass(translucent, info);
 
         // THE TEXTURE STATES THE CUTOUT, not its format. A standard surface is alpha tested only
         // when the diffuse header carries 0x20 (texture-set +152 = ALPHATESTENABLE), GREATER 128
@@ -607,7 +610,7 @@ public static partial class Engine_MdlMaterial
             : 0;
         bool cutout = vegetation ? albedoHasAlpha : (diffuseFlags & 0x20) != 0;
         Shader? chosen = cutout || translucent ? shader : SharedCulled();
-        Shader? blended = translucent ? LoadShared(Engine_ShaderFamily.StandardTranslucentPath) : null;
+        Shader? blended = translucent && !onePass ? LoadShared(Engine_ShaderFamily.StandardTranslucentPath) : null;
 
         // The packed ORM, when the player has asked for it, or an authored PBR ORM map exists.
         // The specular map feeds roughness and metallic; the NORMAL map feeds AO and height;
@@ -677,7 +680,7 @@ public static partial class Engine_MdlMaterial
                 }
                 if (translucent)
                 {
-                    mat.SetShaderParameter("alpha_scissor_threshold", OpaquePassAlpha);
+                    mat.SetShaderParameter("alpha_scissor_threshold", onePass ? CutoutAlpha : OpaquePassAlpha);
                 }
                 else if (cutout && !vegetation)
                 {

@@ -178,7 +178,7 @@ public partial class Engine_StableLightCounts : Node
 		{
 			bool lit = _sentinel && i == 0;
 			Add(RenderingServer.OmniLightCreate(), scenario, at, lit);
-			Add(RenderingServer.SpotLightCreate(), scenario, at, lit);
+			if (!Refii.AndroidRuntime.AndroidNoSpotLights.Active) Add(RenderingServer.SpotLightCreate(), scenario, at, lit);
 		}
 	}
 

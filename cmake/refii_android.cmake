@@ -3,6 +3,8 @@ include_guard(GLOBAL)
 set(REFII_ANDROID_GENERATED_DIR "" CACHE PATH
     "Private PC-generated sources from the matching SDK; never packaged with the runtime")
 option(REFII_ANDROID_BUILD_SELFTESTS "Build Android runtime semantic tests" OFF)
+option(REFII_ANDROID_PHONE_TOOLS
+    "Build the phone compiler's generator and bridge (librefii_codegen.so, librefii_phone_bridge.so)" OFF)
 set(REFII_ANDROID_GAME_TITLE "Fable2" CACHE STRING
     "The title REFII_ANDROID_GENERATED_DIR was generated from: its hooks and link set build the module")
 set_property(CACHE REFII_ANDROID_GAME_TITLE PROPERTY STRINGS Fable2 Fable3)
@@ -139,4 +141,36 @@ if(REFII_ANDROID_BUILD_SELFTESTS)
     target_compile_options(refii_android_fiber_selftest PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:-O2;-fno-omit-frame-pointer;-ffp-model=strict>")
     target_link_options(refii_android_fiber_selftest PRIVATE -Wl,--no-undefined)
+endif()
+
+# THE PHONE COMPILER'S OWN TOOLS. The generator is the SDK's command line around a main that sets up
+# the Android platform layer (a child of the app inherits none of it). Both are named like libraries
+# so the APK installs them into its native folder, where the app may run them; the generator is a
+# PIE executable all the same (tools/android/NATIVE.md).
+if(REFII_ANDROID_PHONE_TOOLS)
+    set(_refii_cli "${REFII_REXGLUE_SHADOW_BUILD_DIR}/src/rexglue")
+    add_executable(refii_phone_codegen
+        "${CMAKE_SOURCE_DIR}/tools/android/phone-tools/codegen_main.cpp"
+        "${_refii_cli}/main.cpp"
+        "${_refii_cli}/ui/ui.cpp"
+        "${_refii_cli}/ui/progress.cpp"
+        "${_refii_cli}/commands/codegen_command.cpp"
+        "${_refii_cli}/commands/init_command.cpp"
+        "${_refii_cli}/commands/test_recompiler.cpp"
+        "${_refii_cli}/commands/project_scan.cpp")
+    set_source_files_properties("${_refii_cli}/main.cpp" PROPERTIES COMPILE_DEFINITIONS "main=rexglue_cli_main")
+    target_include_directories(refii_phone_codegen PRIVATE
+        "${REFII_REXGLUE_SHADOW_BUILD_DIR}/src"
+        "${REFII_REXGLUE_SHADOW_BUILD_DIR}/thirdparty/disasm"
+        "${REFII_REXGLUE_SHADOW_BUILD_DIR}/thirdparty/cli11/include")
+    target_link_libraries(refii_phone_codegen PRIVATE rexcodegen log)
+    target_link_options(refii_phone_codegen PRIVATE -Wl,--no-undefined -Wl,-z,now
+        -Wl,-soname,librefii_codegen.so -Wl,-z,max-page-size=16384)
+    set_target_properties(refii_phone_codegen PROPERTIES OUTPUT_NAME librefii_codegen.so SUFFIX ""
+        POSITION_INDEPENDENT_CODE ON RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/phone-tools")
+
+    add_library(refii_phone_bridge SHARED "${CMAKE_SOURCE_DIR}/tools/android/phone-tools/bridge.cpp")
+    target_link_options(refii_phone_bridge PRIVATE -Wl,--no-undefined -Wl,-z,max-page-size=16384)
+    set_target_properties(refii_phone_bridge PROPERTIES OUTPUT_NAME refii_phone_bridge
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/phone-tools")
 endif()

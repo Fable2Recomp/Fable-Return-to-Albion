@@ -141,6 +141,44 @@ public sealed class AndroidPhoneCompilerTests
         fixture.AssertPreserved();
     }
 
+    /// <summary>A hard mod's sources compile after refii's, with their own arguments and no PCH; a hook a chain
+    /// renames gets its defines; the result names the mods (the cache's side: AndroidCompileCacheTests).</summary>
+    [TestCase]
+    public async Task HardModsCompileWithTheirOwnArguments()
+    {
+        using var fixture = new Fixture();
+        string hook = Path.Combine(fixture.Request.BundleDirectory, "src/hooks/fixture.cpp");
+        var request = fixture.Request with
+        {
+            Mods = (generated, config, hooks) =>
+            {
+                AssertThat(File.Exists(config)).IsTrue();
+                AssertThat(hooks.Single()).IsEqual(hook);
+                string mod = Path.Combine(generated, "mods", "souls", "native", "gate.cpp");
+                Directory.CreateDirectory(Path.GetDirectoryName(mod)!);
+                File.WriteAllText(mod, "synthetic mod");
+                return new AndroidPhoneCompiler.ModSources(new[] { mod }, new Dictionary<string, List<string>>
+                {
+                    [mod] = new() { "-DREFII_MOD_NAME=\"souls\"" },
+                    [hook] = new() { "-Drex_A=rex_A__refii" },
+                }, "mods-hash");
+            },
+        };
+        var compiled = new List<AndroidPhoneCompiler.Command>();
+        Task<int> Run(AndroidPhoneCompiler.Command command, CancellationToken token)
+        {
+            if (command.Arguments.Contains("-c")) compiled.Add(command);
+            return fixture.Generate(command, token);
+        }
+        var result = await AndroidPhoneCompiler.CompileAsync(request, _ => { }, CancellationToken.None, Run);
+        AssertThat(result.Mods).IsEqual("mods-hash");
+        AssertThat(compiled[^1].Arguments.Last(arg => arg.EndsWith(".cpp", StringComparison.Ordinal)).EndsWith("gate.cpp", StringComparison.Ordinal)).IsTrue();
+        AssertThat(compiled[^1].Arguments.Contains("-DREFII_MOD_NAME=\"souls\"")).IsTrue();
+        AssertThat(compiled[^1].Arguments.Contains("-include-pch")).IsFalse();
+        AssertThat(compiled.Single(command => command.Arguments.Contains(hook)).Arguments.Contains("-Drex_A=rex_A__refii")).IsTrue();
+        AssertThat(compiled.Count(command => command.Arguments.Contains("-DREFII_MOD_NAME=\"souls\""))).IsEqual(1);
+    }
+
     /// <summary>Unpatched generation selects the separate manifest and explicit guest layout definition.</summary>
     [TestCase]
     public async Task UnpatchedInputsUseTheirOwnGuestLayout()

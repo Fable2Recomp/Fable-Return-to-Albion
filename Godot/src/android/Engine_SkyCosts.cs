@@ -37,6 +37,33 @@ public static class Engine_SkyCosts
     public const Sky.RadianceSizeEnum LeanRadianceSize = Sky.RadianceSizeEnum.Size32;
 
     /// <summary>
+    /// Whether SDFGI reads the sky's radiance: it is on, and the renderer runs it. SDFGI is Forward+ only;
+    /// Godot's Mobile renderer ignores the Environment's flag, so on a phone it reads nothing. Pure.
+    /// </summary>
+    public static bool SdfgiReads(bool enabled, string renderingMethod) =>
+        enabled && string.Equals(renderingMethod, "forward_plus", StringComparison.Ordinal);
+
+    private static string? _renderer;
+
+    private static (Godot.Environment.ReflectionSource Reflect, Godot.Environment.AmbientSource Ambient,
+        Godot.Environment.BGMode Background, bool Sdfgi, bool VolumetricFog, Sky.RadianceSizeEnum? Size, bool Unread)? _last;
+
+    /// <summary>Debug: what <see cref="ApplyRadiance"/> last saw (the `render` op's skyRadianceInputs); built only when asked.</summary>
+    public static string? LastInputs => _last is { } l
+        ? $"reflect={l.Reflect} ambient={l.Ambient} bg={l.Background} sdfgi={l.Sdfgi} vfog={l.VolumetricFog} " +
+          $"renderer={_renderer} size={(l.Size?.ToString() ?? "no sky")} unread={l.Unread}"
+        : null;
+
+    /// <summary>
+    /// Whether the volumetric fog reads the sky's radiance: it is on, and the renderer draws it. Godot's
+    /// Mobile renderer (every phone's) has no volumetric fog pass (AndroidNearFog), so a modern-lighting
+    /// Environment with `volumetric_fog` on read nothing there, yet held the map at full size and had it
+    /// re-filtered on the sky-update tick (about 1 ms of "Setup Sky" on an S10e). Pure.
+    /// </summary>
+    public static bool VolumetricFogReads(bool enabled, string renderingMethod) =>
+        enabled && Refii.AndroidRuntime.AndroidNearFog.DrawsVolumetricFog(renderingMethod);
+
+    /// <summary>
     /// Whether nothing Godot draws samples the sky's radiance under these environment settings:
     /// no sky reflection or ambient (directly, or through a sky background), no SDFGI (its probes
     /// take the sky's light from it) and no volumetric fog injecting ambient (Forward+ samples the
@@ -87,13 +114,19 @@ public static class Engine_SkyCosts
 
         if (sky is null)
         {
+            _last = (environment.ReflectedLightSource, environment.AmbientLightSource, environment.BackgroundMode,
+                environment.SdfgiEnabled, environment.VolumetricFogEnabled, null, false);
             return;
         }
 
+        _renderer ??= RenderingServer.GetCurrentRenderingMethod();
         bool unread = RadianceUnread(
             environment.ReflectedLightSource, environment.AmbientLightSource, environment.BackgroundMode,
-            environment.SdfgiEnabled, environment.VolumetricFogEnabled,
+            SdfgiReads(environment.SdfgiEnabled, _renderer),
+            VolumetricFogReads(environment.VolumetricFogEnabled, _renderer),
             environment.VolumetricFogAmbientInject * environment.AmbientLightEnergy);
+        _last = (environment.ReflectedLightSource, environment.AmbientLightSource, environment.BackgroundMode,
+            environment.SdfgiEnabled, environment.VolumetricFogEnabled, sky.RadianceSize, unread);
         bool lean = RadianceLean && unread;
         if (lean && _leanSky is null)
         {

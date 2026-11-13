@@ -288,11 +288,14 @@ public static class Engine_LevelShadowPrebuild
 						out int _,
 						out string _) && worldBvh is not null)
 					{
+						Refii.AndroidRuntime.AndroidBakedShadows.BetweenSteps();
 						if (!shadowValid)
 						{
 							shadowContainer = Engine_LevelShadowMaps.BakeFromBvh(
 								worldBvh, bakeLights, resolution, lightsPerMap, placedReach, interiorReach);
 						}
+
+						Refii.AndroidRuntime.AndroidBakedShadows.BetweenSteps();
 
 						if (!aoValid)
 						{
@@ -300,6 +303,7 @@ public static class Engine_LevelShadowPrebuild
 							aoContainer = Engine_LevelAmbientOcclusion.BakeFromBvh(
 								worldBvh, propBlocks, lightHosts, fixtureModelPaths, primaryTerrain, read);
 						}
+
 					}
 				}
 
@@ -536,7 +540,7 @@ public static class Engine_LevelShadowPrebuild
 		int lightsPerMap = Engine_LevelShadowMaps.ConfiguredLightsPerMap;
 		float placedReach = Engine_LevelLights.PlacedRange;
 		float interiorReach = Engine_LevelLights.BuildingInteriorReachScale;
-		bool bakeAo = Engine_LevelAmbientOcclusion.BakedAoEnabled;
+		bool bakeAo = Engine_LevelAmbientOcclusion.BakedAoEnabled && Refii.AndroidRuntime.AndroidBakedShadows.InGameBakesAo;
 
 		string safeGdbPath = gdbPath ?? string.Empty;
 		string diskPath = Engine_LevelShadowMaps.GetShadowMapDiskPath(snapshot, safeGdbPath);
@@ -669,7 +673,8 @@ public static class Engine_LevelShadowPrebuild
 					Engine_LevelAmbientOcclusion.ClearBakeCaches();
 				}
 			}
-		});
+		}).ContinueWith(_ => Refii.AndroidRuntime.AndroidBakedShadows.AfterInGameBake(),
+			CancellationToken.None, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously, System.Threading.Tasks.TaskScheduler.Default);
 	}
 
 	/// <summary>

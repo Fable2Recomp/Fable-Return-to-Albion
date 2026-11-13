@@ -62,7 +62,7 @@ public static class Engine_LightTable
 
 	private static StaticShadowMapContainer? _boundShadowMap;
 
-	/// <summary>Three rows of Capacity texels: (x, y, z, Godot's range), (the STATED range, atlasU, atlasV, atlasScale), then (atlasLayer, 0, 0, 0).</summary>
+	/// <summary>Three rows of Capacity texels: (x, y, z, Godot's range), (the STATED range, atlasU, atlasV, atlasScale), then (atlasLayer, 0, 0, 0) — or, on a phone, the one-fetch record (Refii.AndroidRuntime.AndroidLightTablePacking).</summary>
 	private static readonly float[] Data = new float[Capacity * 4 * 3];
 
 	private static readonly byte[] Bytes = new byte[Capacity * 16 * 3];
@@ -225,7 +225,8 @@ public static class Engine_LightTable
 
 		bool changed = false;
 		int live = 0;
-		bool useStaticShadows = !Refii.Models.Engine_ClassicMaterial.Active;
+		bool packed = Refii.AndroidRuntime.AndroidLightTablePacking.On;
+		bool useStaticShadows = !Refii.Models.Engine_ClassicMaterial.Active && !packed;
 		int metaGen = Engine_LevelLights.LightMetaGeneration;
 
 		lock (Gate)
@@ -295,7 +296,8 @@ public static class Engine_LightTable
 				}
 
 				int third = (Capacity * 2 + slot) * 4;
-				if (Data[third] != rect.W)
+				if (packed) changed |= Refii.AndroidRuntime.AndroidLightTablePacking.Write(Data, third, x, y, z, range, stated);
+				else if (Data[third] != rect.W)
 				{
 					Data[third] = rect.W;
 					Data[third + 1] = 0f;

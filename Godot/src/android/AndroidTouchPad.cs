@@ -203,6 +203,13 @@ public sealed class AndroidTouchPad
     public bool AnyFinger => _fingers.Count > 0;
 
     /// <summary>
+    /// Whether the pad holds nothing at all: no finger, latch or lingering tap, and no camera drag,
+    /// host action or pointer event waiting to be taken. Its sample is then <see cref="TouchPadOutput.Neutral"/>.
+    /// </summary>
+    public bool Idle => _fingers.Count == 0 && _latched.Count == 0 && _lingering.Count == 0 && _lingeringIds.Count == 0 &&
+        _actions.Count == 0 && _pointerEvents.Count == 0 && _look == Vector2.Zero;
+
+    /// <summary>
     /// Lays the controls out for a context. A finger keeps its control across the change when the
     /// new layout has a control of the same id; otherwise it lets go and stays inert until lifted.
     /// Latches end when the play ends — a lock or a held wheel must not outlive a menu opening.

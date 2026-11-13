@@ -309,8 +309,14 @@ public class GraphicsPresetTests
         RuntimeCVarDefinition definition = RuntimeCVarSet.All.First(d => d.Name == GraphicsPresets.Key);
         AssertThat(definition.DefaultValue).IsEqual("android");
         RuntimeCVarOption[] options = RuntimeSettingsModel.OptionsFor(definition, new Dictionary<string, string>()).ToArray();
-        AssertThat(options.Select(option => option.Value).ToArray()).IsEqual(new[] { "android_low", "android_mid", "android", "android_high", "custom" });
+        AssertThat(options.Select(option => option.Value).ToArray())
+            .IsEqual(new[] { "android_low", "android_mid", "android", "android_high", "custom" });
         AssertThat(options.Select(option => option.Label).ToArray()).IsEqual(new[] { "Low", "Medium", "High", "Ultra", "Custom" });
+        // Each choice's label is the preset's own.
+        foreach (RuntimeCVarOption option in options)
+        {
+            AssertThat(GraphicsPresets.Label(option.Value)).OverrideFailureMessage(option.Value).IsEqual(option.Label);
+        }
         // The stored names predate the labels: "android" has been Quality, then Balanced, and is High.
         AssertThat(GraphicsPresets.Label("android")).IsEqual("High");
         // "android_low" was Performance, then Ultra Performance: a phone on it keeps its values.
@@ -444,6 +450,59 @@ public class GraphicsPresetTests
         AssertThat(GraphicsPresets.Upgrade(phone)).IsFalse();
         AssertThat(GraphicsPresets.Current(phone)).IsEqual(GraphicsPresets.High);
         AssertThat(phone["render_scale_percent"]).IsEqual("50");
+    }
+
+    /// <summary>
+    /// Revision 19: Low takes Low (lean)'s settings and Low (lean) is gone; each preset sets its lighting
+    /// model. Low runs the modern model, Medium, High and Ultra the fable one; a phone that stored Low
+    /// (lean) moves to Low; and Low to High is High as revision 18 had it, for every setting Low sets.
+    /// </summary>
+    [TestCase]
+    public void TestRevision19FoldsLowLeanIntoLowAndNamesEachLightingModel()
+    {
+        AssertThat(GraphicsPresets.Revision).IsEqual(19);
+        AssertThat(GraphicsPresets.LowValues["android_modern_lighting"]).IsEqual("true");
+        AssertThat(GraphicsPresets.MediumValues["android_modern_lighting"]).IsEqual("false");
+        AssertThat(GraphicsPresets.HighValues["android_modern_lighting"]).IsEqual("false");
+        AssertThat(GraphicsPresets.UltraValues["android_modern_lighting"]).IsEqual("false");
+
+        // Revision 18's Low (lean), stored by name: Low's values and name on the next start.
+        var lean = new Dictionary<string, string>
+        {
+            [GraphicsPresets.Key] = "android_low_lean", [GraphicsPresets.RevisionKey] = "18",
+            ["android_modern_lighting"] = "true", ["lite_normal_maps"] = "fast", ["lite_fog"] = "table",
+        };
+        AssertThat(GraphicsPresets.Upgrade(lean)).IsTrue();
+        AssertThat(lean[GraphicsPresets.Key]).IsEqual(GraphicsPresets.Low);
+        AssertThat(lean[GraphicsPresets.RevisionKey]).IsEqual("19");
+        AssertThat(lean["lite_normal_maps"]).IsEqual("off");
+        AssertThat(GraphicsPresets.Current(lean)).IsEqual(GraphicsPresets.Low);
+        AssertThat(GraphicsPresets.Label("android_low_lean")).IsEqual("Low");
+
+        // High as revision 18 wrote it: its own values then, and the settings it did not name at their defaults.
+        var high18 = new Dictionary<string, string>(System.StringComparer.Ordinal)
+        {
+            ["android_modern_lighting"] = "false", ["lite_fog"] = "lean", ["lite_ground_ao"] = "near",
+            ["lite_prop_fragment_world"] = "false", ["lite_pack_lightmap_uv"] = "false", ["lite_fold_modern_model"] = "false",
+        };
+        foreach (string key in high18.Keys)
+        {
+            AssertThat(RuntimeCVarSet.All.First(d => d.Name == key).DefaultValue).OverrideFailureMessage(key).IsEqual(high18[key]);
+        }
+
+        var phone = new Dictionary<string, string>();
+        GraphicsPresets.Apply(GraphicsPresets.Low, phone);
+        GraphicsPresets.Apply(GraphicsPresets.High, phone);
+        AssertThat(GraphicsPresets.Current(phone)).IsEqual(GraphicsPresets.High);
+        foreach (string key in GraphicsPresets.LowValues.Keys)
+        {
+            string expected = high18.TryGetValue(key, out string? was) ? was : GraphicsPresets.HighValues[key];
+            AssertThat(phone[key]).OverrideFailureMessage(key).IsEqual(expected);
+        }
+        // Revision 18's High settings are all still High's, unchanged.
+        AssertThat(phone["render_scale_percent"]).IsEqual("50");
+        AssertThat(phone["lite_normal_maps"]).IsEqual("full");
+        AssertThat(phone["lite_skip_black_lights"]).IsEqual("true");
     }
 
     [TestCase]

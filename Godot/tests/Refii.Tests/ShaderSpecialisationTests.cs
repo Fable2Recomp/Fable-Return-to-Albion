@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using GdUnit4;
 using Refii.Models;
 using static GdUnit4.Assertions;
@@ -60,6 +61,17 @@ public sealed class ShaderSpecialisationTests
         AssertThat(a).IsGreater(-1);
         AssertThat(b).IsGreater(a);
         AssertThat(include).IsGreater(b);
+    }
+
+    /// <summary>A define the variant already states (lite_extra_defines) is not stated twice.</summary>
+    [TestCase]
+    public void ADefineAlreadyStatedIsSkipped()
+    {
+        string code = Engine_ShaderVariant.WithExtraDefines(
+            Source("res://src/Engine/material/lite/standard_material_lite.gdshader"), new[] { "FABLE_A" });
+        string built = Engine_ShaderSpecialisation.Compose(code, new[] { "FABLE_B", "FABLE_A" }, false);
+        AssertThat(built.Split("#define FABLE_A\n").Length - 1).IsEqual(1);
+        AssertThat(built).Contains("#define FABLE_B\n");
     }
 
     /// <summary>Any setting that could render a shadow map keeps the shadowed builds.</summary>
@@ -199,12 +211,87 @@ public sealed class ShaderSpecialisationTests
         }
     }
 
+    /// <summary>An include's text, or null when there is no such file.</summary>
+    private static string? Include(string resPath, [CallerFilePath] string source = "")
+    {
+        string path = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(source)!, "../..", resPath["res://".Length..]));
+        return System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path).Replace("\r\n", "\n") : null;
+    }
+
+    /// <summary>The code Godot compiles for <paramref name="code"/>: includes inlined, conditionals decided, comments gone.</summary>
+    private static string Active(string code, string path) => Engine_ShaderCeilingSource.Preprocess(code, path, p => Include(p));
+
+    private static readonly Regex TangentFrame = new(@"\b(TANGENT|BINORMAL|NORMAL_MAP|NORMAL_MAP_DEPTH)\b", RegexOptions.CultureInvariant);
+
+    /// <summary>What of the tangent frame <paramref name="code"/> still names, for the message.</summary>
+    private static string Named(string path, string code) =>
+        string.Join(", ", TangentFrame.Matches(code).Select(m => m.Value).Distinct().Select(n => path + ": " + n));
+
+    /// <summary>
+    /// A model build without a normal map names no TANGENT, BINORMAL or NORMAL_MAP once preprocessed:
+    /// Godot marks a built-in used wherever it is named, a folded `if (false)` included, and a used
+    /// one keeps the tangent attribute, its varyings and Godot's normal-map maths. The far build and
+    /// the fold sets with it the same; without the define every lite build still names them.
+    /// The flat terrain builds and the vista page, which have no layer normal maps, likewise.
+    /// </summary>
+    [TestCase]
+    public void NoNormalMapBuildsNameNoTangentFrame()
+    {
+        string[] models = Engine_ShaderVariant.AllVariantPaths.Where(p => !Engine_ShaderVariant.IsTerrainSplat(p)).ToArray();
+        AssertThat(models.Length).IsEqual(26);
+        string[] allFolds = Engine_ShaderSpecialisation.FoldDefines(false, false, false, false, false, false);
+        string[][] sets =
+        {
+            Engine_ShaderSpecialisation.FarDefines,
+            allFolds,
+            allFolds.Concat(Engine_ShaderSpecialisation.VegetationDefines(true, false, true, tree: true)).ToArray(),
+            allFolds.Concat(Engine_ShaderSpecialisation.VegetationDefines(false, true, false, tree: false)).ToArray(),
+            Engine_ShaderSpecialisation.FarDefines.Concat(Engine_ShaderSpecialisation.BakeDefines(0, false)).ToArray(),
+        };
+        foreach (string lite in models)
+        {
+            string code = Source(lite);
+            AssertThat(TangentFrame.IsMatch(Active(code, lite))).IsTrue();
+            foreach (string[] defines in sets)
+            {
+                AssertThat(defines).Contains("FABLE_SPEC_NO_NORMAL_MAP");
+                AssertThat(Named(lite, Active(Engine_ShaderSpecialisation.Compose(code, defines, false), lite))).IsEmpty();
+            }
+        }
+
+        int flatBuilds = 0;
+        foreach (string terrain in Engine_ShaderVariant.AllVariantPaths.Where(p => Engine_ShaderVariant.IsTerrainSplat(p)))
+        {
+            string code = Source(terrain);
+            bool flat = code.Contains("#define FABLE_LITE_FLAT_TERRAIN", StringComparison.Ordinal) ||
+                code.Contains("#define FABLE_TERRAIN_PAGE", StringComparison.Ordinal);
+            string active = Active(code, terrain);
+            if (flat)
+            {
+                AssertThat(Named(terrain, active)).IsEmpty();
+                flatBuilds++;
+            }
+            else
+            {
+                AssertThat(TangentFrame.IsMatch(active)).IsTrue();
+            }
+        }
+
+        AssertThat(flatBuilds).IsEqual(6);
+
+        // The full shaders keep all of it: parallax, the weather ripple, the normal map itself.
+        foreach (string full in new[] { Engine_ShaderFamily.StandardPath, Engine_ShaderVariant.TerrainFullPath })
+        {
+            AssertThat(TangentFrame.Matches(Active(File(full), full)).Select(m => m.Value).Distinct().Count()).IsEqual(3);
+        }
+    }
+
     /// <summary>The single-fetch splat has one layer fetch, inside the lite branch only.</summary>
     [TestCase]
     public void TheSingleFetchSplatSamplesOnce()
     {
         string body = Source("res://src/Engine/level/terrain/terrain_splat_body.gdshaderinc");
-        const string open = "#if defined(FABLE_LITE) && defined(FABLE_SPEC_TERRAIN_ONE_SAMPLE)\n";
+        const string open = "#elif defined(FABLE_LITE) && defined(FABLE_SPEC_TERRAIN_ONE_SAMPLE)\n";
         int start = body.IndexOf(open, StringComparison.Ordinal);
         AssertThat(start).IsGreater(-1);
         int split = body.IndexOf("\n#else\n", start, StringComparison.Ordinal);

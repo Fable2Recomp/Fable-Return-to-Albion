@@ -175,6 +175,7 @@ public static class Engine_ModernFur
                 n = Math.Max(n, Math.Clamp((int)((furred.Length / dv) / tv * 142.85713f + 1f), 16, Engine_ClassicFur.MaxShells));
                 d = MathF.Min(d, dv);
             }
+            n = Refii.AndroidRuntime.AndroidFurShells.Cap(n);
             if (furred.LastShells != n)
             {
                 furred.LastShells = n;
@@ -243,6 +244,7 @@ public static class Engine_ModernFur
             MaterialOverride = passes[0],
         };
         mesh.AddChild(shell);
+        Refii.AndroidRuntime.AndroidCharacterLevers.Shell(mesh, shell);
         if (mesh.GetNodeOrNull(mesh.Skeleton) is { } skeleton)
         {
             shell.Skeleton = shell.GetPathTo(skeleton);

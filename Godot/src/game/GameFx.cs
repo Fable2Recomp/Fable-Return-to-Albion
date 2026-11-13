@@ -352,6 +352,7 @@ public partial class GameFx : Node3D
         _draw = Engine_LiveFx.Draws(config);
         _report = Refii.Core.Engine_RefiiConfig.Bool(config, ReportSettingKey, false);
         Refii.Fx.Engine_FxFastPaths.Configure(config);
+        ConfigureSpawns(config);
 
         // Under classic the title's particle path (Engine_ClassicParticles) draws every live
         // effect with its own shaders; drawing them here as well drew each one twice.
@@ -447,6 +448,7 @@ public partial class GameFx : Node3D
         Engine_FxRecipes.Begin();
         _seen.Clear();
         _counted.Clear();
+        _spawns.BeginWalk();
         RefreshStated();
 
         // The placement is the root's. Every type-vector of an effect hangs off a synthetic root
@@ -733,14 +735,16 @@ public partial class GameFx : Node3D
                 }
                 else
                 {
+                    // Over this walk's budget of new nodes (a phone's): built on a later walk, unseen till then.
+                    if (SpawnDeferred(key)) continue;
+
                     long madeFrom = System.Diagnostics.Stopwatch.GetTimestamp();
                     node = new FableFx
                     {
-                        Name = $"LiveFx_{key:X8}",
-
                         // Hash token form: the guest stores only the FNV-1 of the name.
                         EffectName = $"FX_{effect:X8}",
                     };
+                    if (!SpawnsUnnamed) node.Name = $"LiveFx_{key:X8}";
                     _nodes[key] = node;
                     AddChild(node);
                     Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxNode, madeFrom);
@@ -822,6 +826,7 @@ public partial class GameFx : Node3D
             }
         }
 
+        _spawns.EndWalk();
         UpdateActiveWeaponFx();
 
         // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the

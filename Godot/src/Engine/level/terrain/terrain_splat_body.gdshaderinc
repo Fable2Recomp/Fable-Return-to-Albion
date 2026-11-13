@@ -65,8 +65,8 @@ uniform bool has_lightmap = false;
 uniform bool page_mode = false;
 uniform sampler2D page_albedo : filter_linear, repeat_disable;
 
-uniform sampler2DArray lod_array : filter_linear_mipmap_anisotropic, repeat_enable;
-uniform sampler2DArray lod_detail_array : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray lod_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable;
+uniform sampler2DArray lod_detail_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable;
 
 // The per-layer normal maps, sampled with their colour partner's UV because that is what the
 // guest does — `sub_82215BE0` passes the SAME scale float to the ground pair (material+0xB0 and
@@ -161,16 +161,24 @@ uniform vec4 weight_size;
 uniform vec2 cliff_blend = vec2(-8.0, 10.0);
 uniform vec4 material_params[32];
 
+#ifdef FABLE_LITE
+#include "res://src/android/terrain_lite_varyings.gdshaderinc"
+#else
 varying vec3 v_local;
 varying vec3 v_local_normal;
 varying flat vec4 v_page_rect;
 varying float v_combined_ao;
+#endif
 
 void vertex() {
+#ifdef FABLE_LITE
+#include "res://src/android/terrain_lite_vertex.gdshaderinc"
+#else
 	v_local = VERTEX;
 	v_page_rect = CUSTOM0;
 	v_local_normal = NORMAL;
 	fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+#endif
 #ifndef FABLE_LITE
 	v_weather_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
 #endif
@@ -280,9 +288,13 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 		vec2 pw;
 		cliff_projection(local, n, cliff_scale, uv_x, uv_z, pw);
 
+#ifdef FABLE_LITE_TERRAIN_CLIFF_SHARP
+#include "res://src/android/terrain_lite_cliff_sharp.gdshaderinc"
+#else
 		vec3 cliff =
 			textureGrad(lod_detail_array, vec3(uv_x, fs), local_dx.zy * cliff_scale, local_dy.zy * cliff_scale).rgb * pw.x +
 			textureGrad(lod_detail_array, vec3(uv_z, fs), local_dx.xy * cliff_scale, local_dy.xy * cliff_scale).rgb * pw.y;
+#endif
 		cliff *= cliff;
 		colour = mix(base, cliff, cliff_w);
 
@@ -318,6 +330,7 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 }
 
 void fragment() {
+	FABLE_TERRAIN_FRAGMENT_IN
     // Keep the diagnostic neutral by default; derivatives precede per-layer branches.
 #ifndef FABLE_LITE
     if ((fable_shader_cost_diagnostic & 1) == 0) {
@@ -333,7 +346,9 @@ void fragment() {
 	// this pair since the beginning; the splat never did.
 	float side = fable_normal_side(NORMAL, VERTEX, VIEW);
 	NORMAL *= side;
+#if !defined(FABLE_LITE_FLAT_TERRAIN) && !defined(FABLE_LITE_TERRAIN_NM_ANALYTIC)
 	BINORMAL *= side;
+#endif
 
 	vec2 mesh_xy = vec2(v_local.x, v_local.z);
 	vec2 world_xy = (mesh_xy * mesh_xform.xy) + mesh_xform.zw;
@@ -407,7 +422,9 @@ void fragment() {
 	uvec4 mask_bytes = uvec4(round(texelFetch(material_mask, mask_texel, 0) * 255.0));
 	uint layer_mask = mask_bytes.r | (mask_bytes.g << 8u) | (mask_bytes.b << 16u) | (mask_bytes.a << 24u);
 
-#if defined(FABLE_LITE) && defined(FABLE_SPEC_TERRAIN_ONE_SAMPLE)
+#if defined(FABLE_LITE) && (defined(FABLE_LITE_TERRAIN_BIT_LOOP) || defined(FABLE_LITE_TERRAIN_MIN_WEIGHT) || defined(FABLE_LITE_TERRAIN_MAX_LAYERS))
+#include "res://src/android/terrain_lite_layers.gdshaderinc"
+#elif defined(FABLE_LITE) && defined(FABLE_SPEC_TERRAIN_ONE_SAMPLE)
 	// ONE `sample_layer` IN THE SHADER, NOT TWO (`lite_terrain_single_fetch`). The fallback for a
 	// pixel no layer weighs (layer 0 at full weight) was a second inlined copy of the whole layer
 	// fetch after the loop; here it is the loop's last pass instead, through the same code. Exact:
@@ -584,7 +601,11 @@ void fragment() {
 	// below only affects the AMBIENT half.
 #ifndef FABLE_LITE_FLAT_TERRAIN
 	if (has_normals) {
+#ifdef FABLE_LITE_TERRAIN_NM_ANALYTIC
+#include "res://src/android/terrain_lite_nm_analytic.gdshaderinc"
+#else
 		NORMAL_MAP = mapped_normal * 0.5 + 0.5;
+#endif
 	}
 #endif
 #ifndef FABLE_LITE
@@ -662,10 +683,14 @@ void fragment() {
 	// shadows linearly across the region — "the shadows don't line up". `repeat_disable` on
 	// the sampler is the guest's CLAMP; texel i owns cell span [i, i+1), corner-aligned, so
 	// bilinear at cell/dim needs no +0.5 — adding one would shift the bake half a cell.
-	float terrain_contact_ao = mix(1.0, fable_sample_terrain_ao(fable_world), step(0.5, fable_unified));
-	float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, fable_unified));
+#ifdef FABLE_VERTEX_TERRAIN_AO
+	float terrain_contact_ao = mix(1.0, v_terrain_contact_ao, step(0.5, FABLE_UNIFIED));
+#else
+	float terrain_contact_ao = mix(1.0, fable_sample_terrain_ao(fable_world), step(0.5, FABLE_UNIFIED));
+#endif
+	float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, FABLE_UNIFIED));
 	v_combined_ao = combined_ao;
-	AO_LIGHT_AFFECT = fable_unified * fable_ao_light_affect;
+	AO_LIGHT_AFFECT = FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT;
 
 	// darken = lerp(DarkeningColour, 1, saturate(dot(Nbent, Nmapped))^2). The square is the
 	// guest's, and the theme's darkening colour arrives through `fable_darkening` — it is the
@@ -676,7 +701,7 @@ void fragment() {
 	// by the same rule as the bridge standing on it. The tangent frame is the analytic one
 	// ToArrayMesh emits:
 	// T = local +X, B = cross(N, T) × w with w = +1 (local -Z, the ground's v).
-	vec3 darken = vec3(1.0);
+	FABLE_LITE_MP vec3 darken = vec3(1.0);
 #ifndef FABLE_LITE_FLAT_TERRAIN
 	if (has_normals) {
 		vec3 world_geom = normalize((MODEL_MATRIX * vec4(geom_normal, 0.0)).xyz);
@@ -688,7 +713,7 @@ void fragment() {
 		vec3 amb_ref = normalize(vec3(fable_ambient_ref.x, fable_ambient_ref.z, fable_ambient_ref.y));
 		float bend = 0.5 * (dot(world_geom, amb_ref) + 1.0);
 		vec3 bent = normalize(mix(world_geom, amb_ref, bend));
-		float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
+		FABLE_LITE_MP float nb = clamp(dot(bent, mapped_world), 0.0, 1.0);
 		darken = mix(fable_darkening, vec3(1.0), nb * nb);
 	}
 #endif
@@ -701,7 +726,7 @@ void fragment() {
 	EMISSION = final * fable_ambient_occluded(vec3(0.0), combined_ao, darken);
 	AO = combined_ao;
 #else
-	if (fable_unified > 0.999) {
+	if (FABLE_UNIFIED > 0.999) {
 		EMISSION = final * fable_ambient_occluded(vec3(0.0), combined_ao, darken);
 		AO = combined_ao;
 	} else {
@@ -739,7 +764,7 @@ void fragment() {
 	// texture-scale occlusion. The direct half is untouched, same as the props' ao.
 	// The same weight the props take, interior exemption and interior bake factor included.
 	float authored_weight = fable_authored_bake_weight();
-	vec3 authored = bake * fable_lightmap_rgb() * darken * authored_weight;
+	FABLE_LITE_MP vec3 authored = bake * fable_lightmap_rgb() * darken * authored_weight;
 
 	// THE TERRAIN'S SKY TETHER — the SAME plain mix the probe field takes in `fable_bake`,
 	// deliberately NOT a chroma-only retint. The painted lightmap carries the 360's baked sun
@@ -758,7 +783,7 @@ void fragment() {
 	// carry texture-scale occlusion.
 	EMISSION = final * fable_ambient_occluded(authored * ao, combined_ao, darken);
 	// Godot's ambient and GI take the AO the guest's fill took above; 1 in the fable model.
-	AO = mix(1.0, combined_ao, fable_unified);
+	AO = mix(1.0, combined_ao, FABLE_UNIFIED);
 	}
 #endif
 
@@ -766,11 +791,15 @@ void fragment() {
 	// `specular_disabled`, so ALBEDO and EMISSION between them carry the whole surface, and the
 	// guest's landscape pixel shader (blob 0007) runs the same block instruction for instruction
 	// as the props standing on it. Opaque, so the guest's alpha factor is 1.
+#ifdef FABLE_LITE_TERRAIN_VERTEX_FOG
+	fable_atmosphere_apply(v_fog_t, v_fog_c, 1.0, ALBEDO, EMISSION);
+#else
 	vec3 fog_t;
 	vec3 fog_c;
 	if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
 		fable_atmosphere_apply(fog_t, fog_c, 1.0, ALBEDO, EMISSION);
 	}
+#endif
 
 	// THE LIGHTING DEBUG VIEWS — `lighting_debug_view` in the launcher, global
 	// `fable_light_debug`. ALBEDO = 0 kills the diffuse light term (Godot multiplies
@@ -825,6 +854,9 @@ void fragment() {
         v_combined_ao = 1.0;
     }
 #endif
+#ifdef FABLE_LITE_AMBIENT_FOLD
+	EMISSION += fable_godot_ambient_fold(ALBEDO, AO, METALLIC);
+#endif
 }
 
 void light() {
@@ -850,11 +882,11 @@ void light() {
 		}
 	} else
 #endif
-	if (ndotl > 1e-4) {
+	if (FABLE_LIGHT_LIVE(ndotl > 1e-4)) {
 		// Facing away the term is exactly zero (saturate(NdotL) scales finite factors): skipped.
-		float atten = fable_attenuation_weighted(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world, ndotl) * fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL);
+		FABLE_LITE_MP float atten = fable_attenuation_weighted(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world, ndotl) * fable_direct_ao_for_light(v_combined_ao, LIGHT_IS_DIRECTIONAL);
 		if (atten > 0.0) {
-			float gate = LIGHT_IS_DIRECTIONAL
+			FABLE_LITE_MP float gate = LIGHT_IS_DIRECTIONAL
 				? clamp(8.0 * ndotl, 0.0, 1.0)
 				: 1.0;
 			DIFFUSE_LIGHT += gate * fable_direct(

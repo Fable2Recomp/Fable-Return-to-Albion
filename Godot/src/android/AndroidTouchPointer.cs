@@ -37,6 +37,9 @@ public sealed class AndroidTouchPointer
     /// <summary>Whether the mouse button is down now.</summary>
     public bool Pressed => _state == State.Pressed;
 
+    /// <summary>Whether nothing is in flight: no finger's gesture under way and no mouse action waiting to be taken; a tick changes nothing.</summary>
+    public bool Idle => _state == State.Idle && _actions.Count == 0;
+
     /// <summary>Feeds the pointer finger's events, in order.</summary>
     public void Feed(TouchPointerEvent touch, double now)
     {

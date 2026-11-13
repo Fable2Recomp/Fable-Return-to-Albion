@@ -787,9 +787,9 @@ public partial class Engine_ClassicParticles : Node
         {
             shader = new Shader
             {
-                Code = "shader_type spatial;\nrender_mode " + blend +
+                Code = Refii.Fx.Engine_ParticleVertexLighting.Apply("shader_type spatial;\nrender_mode " + blend +
                     ", cull_disabled, depth_draw_never, fog_disabled, shadows_disabled, specular_disabled, skip_vertex_transform;\n" +
-                    defines + "#include \"" + include + "\"\n",
+                    defines + "#include \"" + include + "\"\n"),
             };
             ModernShaders[key] = shader;
         }
@@ -906,7 +906,7 @@ public partial class Engine_ClassicParticles : Node
     /// </summary>
     private void Constants(uint address, Group group, uint owner, int at, Vector2 viewport, bool changed)
     {
-        bool disableDistanceFade = !Engine_ClassicMaterial.Active && Refii.Lighting.Engine_LightingFrame.ModernModel;
+        bool disableDistanceFade = Refii.AndroidRuntime.AndroidLeanModern.ParticleFadeOff(Engine_ClassicMaterial.Active, Refii.Lighting.Engine_LightingFrame.ModernModel);
         bool fadeModeChanged = group.DisableDistanceFadeSent != disableDistanceFade;
         if (!changed && !fadeModeChanged && !Engine_ClassicMaterial.Active && ReferenceEquals(group.Live, group.Material) && group.Material is not null)
         {

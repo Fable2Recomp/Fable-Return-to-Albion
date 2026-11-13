@@ -213,6 +213,20 @@ public sealed partial class Engine_FxSystem
         public float PrevAge;
         public float PrevPhase;
         public bool HasPrev;
+
+        /// <summary>The curve reads behind <see cref="Engine_FxSystem.LightAt"/>, kept while the frame and phase hold.</summary>
+        public LightCurves NowCurves;
+        public LightCurves PrevCurves;
+    }
+
+    /// <summary>One light's curves read at a frame and flicker phase; the same inputs give the same values.</summary>
+    private struct LightCurves
+    {
+        public bool Valid;
+        public int Frame;
+        public float Phase;
+        public Color Colour;
+        public float Range, Energy, Cutoff, Ramp, Cone, BaseRange;
     }
 
     private sealed partial class EmitterRuntime
@@ -2276,7 +2290,7 @@ public sealed partial class Engine_FxSystem
                 if (index-- != 0) continue;
                 FxEmitter? d = light.Def;
                 if (d is null) return default;
-                FxLightState now = LightState(d, light.Age, light.Phase, light.WorldPos);
+                FxLightState now = LightState(d, light.Age, light.Phase, light.WorldPos, ref light.NowCurves);
                 if (!light.HasPrev)
                 {
                     return now;
@@ -2284,7 +2298,7 @@ public sealed partial class Engine_FxSystem
 
                 // Between the last two steps, as the particles are drawn: on Godot's clock, at the
                 // effect's sub-step fraction for this instance's rate.
-                FxLightState before = LightState(d, light.PrevAge, light.PrevPhase, light.PrevWorldPos);
+                FxLightState before = LightState(d, light.PrevAge, light.PrevPhase, light.PrevWorldPos, ref light.PrevCurves);
                 float a = inst.Step > 1 ? StepAlphaHalf : StepAlpha;
                 return new FxLightState(
                     before.Position.Lerp(now.Position, a),
@@ -2301,32 +2315,36 @@ public sealed partial class Engine_FxSystem
         return default;
     }
 
-    private static FxLightState LightState(FxEmitter d, float age, float phase, float[] worldPos)
+    private static FxLightState LightState(FxEmitter d, float age, float phase, float[] worldPos, ref LightCurves c)
     {
         int f = (int)age;
-        (float r, float g, float b) = d.LightColour.EvalFrame(f);
+        if (!c.Valid || c.Frame != f || c.Phase != phase)
+        {
+            (float r, float g, float b) = d.LightColour.EvalFrame(f);
 
-        // Brightness = 1 + phase × p20, clamped to [0, 2] (0x821f0c4c, 0x821f0ca8);
-        // radius = 1 + phase × p19 (0x821f0c84), taken by a point light outright and by
-        // a spot only past two flags whose meaning is not established, so point only —
-        // the same reading the placed fixtures take.
-        float brightness = Math.Clamp(1f + (phase * d.Generic[20].EvalFrame(f)), 0f, 2f);
-        float radius = d.TypeId == 7 ? 1f + (phase * d.Generic[19].EvalFrame(f)) : 1f;
-        float energy = d.LightIntensity.EvalFrame(f) * brightness;
-        float baseRange = MathF.Max(0f, d.LightRange.EvalFrame(f));
+            // Brightness = 1 + phase × p20, clamped to [0, 2] (0x821f0c4c, 0x821f0ca8);
+            // radius = 1 + phase × p19 (0x821f0c84), taken by a point light outright and by
+            // a spot only past two flags whose meaning is not established, so point only —
+            // the same reading the placed fixtures take.
+            float brightness = Math.Clamp(1f + (phase * d.Generic[20].EvalFrame(f)), 0f, 2f);
+            float radius = d.TypeId == 7 ? 1f + (phase * d.Generic[19].EvalFrame(f)) : 1f;
+            float baseRange = MathF.Max(0f, d.LightRange.EvalFrame(f));
+            c.Valid = true;
+            c.Frame = f;
+            c.Phase = phase;
+            c.Colour = new Color(r, g, b);
+            c.Energy = d.LightIntensity.EvalFrame(f) * brightness;
+            c.BaseRange = baseRange;
+            c.Range = MathF.Max(0f, baseRange * radius);
+            c.Cutoff = d.LightCutoff.EvalFrame(f);
+            c.Ramp = d.LightFadeRamp.EvalFrame(f);
+            c.Cone = d.LightConeAngle.EvalFrame(f);
+        }
 
         // Not scaled by the effect's scale: `sub_8323FA50` hands param 15 to the proxy
         // unmultiplied (`fmr f1, f30` → `stfs f31, 0x90`), and the colour path is
         // colour × intensity × kill-fade only. Only the position takes the transform.
-        return new FxLightState(
-            ToGodot(worldPos),
-            new Color(r, g, b),
-            MathF.Max(0f, baseRange * radius),
-            energy,
-            d.LightCutoff.EvalFrame(f),
-            d.LightFadeRamp.EvalFrame(f),
-            d.LightConeAngle.EvalFrame(f),
-            baseRange);
+        return new FxLightState(ToGodot(worldPos), c.Colour, c.Range, c.Energy, c.Cutoff, c.Ramp, c.Cone, c.BaseRange);
     }
 
     /// <summary>
@@ -3552,7 +3570,7 @@ public sealed partial class Engine_FxSystem
 
     /// <summary>Active in-frustum simulation distance for <see cref="FableFx"/>.</summary>
     public static float EffectiveFreezeDistance(bool modernModel) =>
-        modernModel ? ModernFreezeDistance : ClassicFreezeDistance;
+        modernModel && !Refii.AndroidRuntime.AndroidLeanModern.Fx ? ModernFreezeDistance : ClassicFreezeDistance;
 
     /// <summary>
     /// Builds <c>vs_g_FadeOutDistanceInfo</c> (<c>R+384</c> slots <c>f2, f3, f4</c>). When

@@ -115,6 +115,9 @@ public partial class FableFx : Node3D
 	private readonly Dictionary<string, Engine_FxSystem.MeshInstanceData> _meshData = new();
 	private readonly Dictionary<string, MultiMeshInstance3D> _meshNodes = new();
 
+	/// <summary>How many of <see cref="_meshNodes"/> are displacement meshes: the only ones given a layer instance.</summary>
+	private int _dispMeshNodes;
+
 	private MeshInstance3D? _surface;
 	private ArrayMesh? _mesh;
 
@@ -527,7 +530,9 @@ public partial class FableFx : Node3D
 	{
 		bool needAdd = _addMesh is not null && _addInstance is null;
 		bool needDisp = _dispMesh is not null && _dispInstance is null;
-		bool needMesh = _meshNodes.Count > 0 && _meshInstances.Count < _meshNodes.Count;
+		// Against the displacement nodes, not all of them: the others never get an instance, so
+		// counting them kept this asking the tree every step for the life of the effect.
+		bool needMesh = _meshInstances.Count < _dispMeshNodes;
 		if (!needAdd && !needDisp && !needMesh)
 		{
 			return;
@@ -667,7 +672,7 @@ public partial class FableFx : Node3D
 						FxLightCache cache = _lightCache[i];
 						if (!cache.Applied || cache.Visible)
 						{
-							_lights[i].Visible = false;
+							Refii.AndroidRuntime.AndroidFxLightLimit.SetShown(_lights[i], false);
 							cache.Applied = true;
 							cache.Visible = false;
 							_lightCache[i] = cache;
@@ -706,7 +711,7 @@ public partial class FableFx : Node3D
 			_system.ForceSaturationMask();
 			_saturationApplied = true;
 		}
-		Engine_FxSystem.FadeOut = !Refii.Lighting.Engine_LightingFrame.ModernModel;
+		Engine_FxSystem.FadeOut = !Refii.Lighting.Engine_LightingFrame.ModernModel || Refii.AndroidRuntime.AndroidLeanModern.Fx;
 		if (!lightsOnly)
 		{
 			ApplyLit();
@@ -736,7 +741,7 @@ public partial class FableFx : Node3D
 			{
 				if (!cache.Applied || cache.Visible)
 				{
-					light.Visible = false;
+					Refii.AndroidRuntime.AndroidFxLightLimit.SetShown(light, false);
 					cache.Applied = true;
 					cache.Visible = false;
 					_lightCache[i] = cache;
@@ -752,7 +757,7 @@ public partial class FableFx : Node3D
 			// re-pair in the BVH on every random-walk flicker step, and fold the subtle flicker
 			// radius breathing into `lightEnergy`.
 			float modernBaseReach = Refii.Lighting.Engine_LightingFrame.ModernModel
-				? Refii.Lighting.Engine_LevelLights.ModernBaseReachScale
+				? Refii.AndroidRuntime.AndroidLeanModern.LampReach(Refii.Lighting.Engine_LevelLights.ModernBaseReachScale)
 				: 1.0f;
 			float baseRange = state.BaseRange > 0f ? state.BaseRange : range;
 			float omniRange = baseRange * modernBaseReach * Refii.Lighting.Engine_LevelLights.PlacedRange;
@@ -771,7 +776,7 @@ public partial class FableFx : Node3D
 			{
 				float cutoff = MathF.Min(state.Cutoff, 1000f);
 				float ramp = MathF.Max(state.Ramp, 0.01f);
-				if (Refii.Lighting.Engine_LightingFrame.ModernModel)
+				if (Refii.Lighting.Engine_LightingFrame.ModernModel && !Refii.AndroidRuntime.AndroidLeanModern.Fx)
 				{
 					cutoff *= 2f;
 					ramp = MathF.Max(ramp * 2f, cutoff * 0.5f);
@@ -786,7 +791,7 @@ public partial class FableFx : Node3D
 			bool spatialChanged = false;
 			if (!cache.Applied || !cache.Visible)
 			{
-				light.Visible = true;
+				Refii.AndroidRuntime.AndroidFxLightLimit.SetShown(light, true);
 				cache.Visible = true;
 				changed = true;
 				spatialChanged = true;
@@ -821,7 +826,7 @@ public partial class FableFx : Node3D
 
 			if (!cache.Applied || MathF.Abs(cache.LightEnergy - lightEnergy) > 1e-3f)
 			{
-				light.LightEnergy = lightEnergy;
+				Refii.AndroidRuntime.AndroidFxLightLimit.SetEnergy(light, lightEnergy);
 				cache.LightEnergy = lightEnergy;
 				changed = true;
 			}
@@ -973,7 +978,11 @@ public partial class FableFx : Node3D
 				}
 
 				_meshNodes[path] = node;
-				if (!data.Displacement)
+				if (data.Displacement)
+				{
+					++_dispMeshNodes;
+				}
+				else
 				{
 					AddChild(node);
 				}
@@ -1544,6 +1553,7 @@ public partial class FableFx : Node3D
 
 		_meshInstances.Clear();
 		_meshNodes.Clear();
+		_dispMeshNodes = 0;
 		_meshData.Clear();
 		_meshBuffers.Clear();
 
@@ -1618,6 +1628,7 @@ public partial class FableFx : Node3D
 			_lights.Add(light);
 			_lightCache.Add(default);
 			AddChild(light);
+			Refii.AndroidRuntime.AndroidFxLightLimit.Track(light);
 
 			// THE GLOW LAYER. The guest gives every in-range, in-frustum, non-black light a
 			// glow quad, gated on a per-light texture key the shipped FX data never states —
@@ -1625,7 +1636,7 @@ public partial class FableFx : Node3D
 			// follows the data (no keys, no glows); the modern model runs the mechanism with
 			// the procedural disc standing in for the default provider.
 			uint halo = _system.HaloAt(i);
-			if (halo != 0 || Refii.Lighting.Engine_LightingFrame.ModernModel)
+			if (halo != 0 || (Refii.Lighting.Engine_LightingFrame.ModernModel && !Refii.AndroidRuntime.AndroidLeanModern.Fx))
 			{
 				Engine_PostFxHalos.Register(light, halo);
 				anyHalo = true;
@@ -1727,11 +1738,12 @@ public partial class FableFx : Node3D
 		material.SetShaderParameter(FxSoftInvName, softDepth > 0f ? 1.0f / softDepth : 0.0f);
 
 		// No soft distance, no fade: the hard build, without the depth texture whose declaration
-		// alone splits Mobile's render pass, when fx_no_depth_reads asks for it. The additive
-		// layer's and the displacement shaders never declare it.
-		if (softDepth <= 0f && Engine_FxDepthReads.SoftMode(mode))
+		// alone splits Mobile's render pass, when fx_no_depth_reads asks for it; on Android a soft
+		// one too under android_fx_hard_all. The additive layer's and the displacement shaders
+		// never declare it.
+		if (Engine_FxDepthReads.Adoptable(softDepth, mode))
 		{
-			Engine_FxDepthReads.Adopt(material, shader);
+			Engine_FxDepthReads.Adopt(material, shader, softDepth > 0f);
 		}
 		if (mode == "darken")
 		{

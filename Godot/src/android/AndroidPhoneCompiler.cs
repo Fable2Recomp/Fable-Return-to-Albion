@@ -27,9 +27,10 @@ public static class AndroidPhoneCompiler
     /// <param name="Title">The game being compiled; Fable 2 when unset.</param>
     /// <param name="ObjectCache">Directory that keeps compiled units between builds (<see cref="AndroidCompileCache"/>); null keeps none.</param>
     /// <param name="Jobs">Compilers at once; 0 plans it from free memory for the real tools, and runs one for an injected runner.</param>
+    /// <param name="Mods">Adds the enabled hard mods' native sources once the game code is generated; null adds none.</param>
     public sealed record Request(string BundleDirectory, string NativeDirectory,
         string GameDirectory, string PrivateDirectory, Refii.Core.Engine_Title? Title = null,
-        string? ObjectCache = null, int Jobs = 0)
+        string? ObjectCache = null, int Jobs = 0, AddMods? Mods = null)
     {
         /// <summary>Whether this compiles Fable 3: its own version config, hooks, includes, bridge and link set.</summary>
         internal bool IsFable3 => Title == Refii.Core.Engine_Title.Fable3;
@@ -52,7 +53,28 @@ public static class AndroidPhoneCompiler
         // installer state from an older APK), so null is read as unknown here.
         public string Bundle { get => _bundle; init => _bundle = value ?? ""; }
         private readonly string _bundle = "";
+
+        /// <summary>The hard mods compiled in (<see cref="ModSources.Hash"/>); empty for none, and for a
+        /// module from before this was recorded, which had none.</summary>
+        public string Mods { get => _mods; init => _mods = value ?? ""; }
+        private readonly string _mods = "";
     }
+
+    /// <summary>Hard mods' native sources for one build, as the desktop's build adds them
+    /// (<see cref="Refii.Launcher.Recompile.GameCodeBuild"/>).</summary>
+    /// <param name="Sources">Further units: each mod's sources, extracted under the attempt's generated code, and
+    /// the chain entries when two owners hook one function.</param>
+    /// <param name="Arguments">Compiler arguments of one unit only, by its path: a mod's own and required
+    /// headers, its name, and the chain defines of every unit (refii's hooks included) a chain renames.</param>
+    /// <param name="Hash">The compiled set's fingerprint (<see cref="Refii.Mods.ModNative.HashSet"/>); empty for none.</param>
+    public sealed record ModSources(IReadOnlyList<string> Sources,
+        IReadOnlyDictionary<string, List<string>> Arguments, string Hash);
+
+    /// <summary>Plans the hard mods for a build; throws <see cref="InvalidDataException"/> to refuse it.</summary>
+    /// <param name="generated">The attempt's generated game code.</param>
+    /// <param name="versionConfig">The attempt's version config, for the names it gives functions.</param>
+    /// <param name="hookSources">Refii's own hook sources this build compiles.</param>
+    public delegate ModSources AddMods(string generated, string versionConfig, IReadOnlyList<string> hookSources);
 
     /// <summary>A compiler bundle's identity: what it holds, not how it was zipped.</summary>
     /// <remarks>Two APK builds from the same sources packed byte-different data.zip files (the entries'
@@ -229,9 +251,8 @@ public static class AndroidPhoneCompiler
         public int Api { get; set; }
         /// <summary>Pinned NDK revision used for tools and sysroot.</summary>
         public string Ndk { get; set; } = "";
-        /// <summary>The ReXGlue SDK revision the prebuilt phone tools were built from. The bundle
-        /// carries it forward from the bundle it reuses; it is not the checkout's SDK submodule
-        /// and is not checked against it.</summary>
+        /// <summary>The ReXGlue SDK revision the phone tools were built from (build-phone-tools.py), carried
+        /// forward from the tools the bundle takes; only its form is checked.</summary>
         public string SdkPin { get; set; } = "";
         /// <summary>Ordered public include directories, with bridge headers first.</summary>
         public string[] Includes { get; set; } = Array.Empty<string>();
@@ -267,8 +288,7 @@ public static class AndroidPhoneCompiler
             File.ReadAllText(Path.Combine(request.BundleDirectory, "bundle.json")), AndroidJsonContext.Default.BundleManifest)
             ?? throw new InvalidDataException("Missing compiler bundle manifest");
         if (manifest.Schema != 1 || manifest.Abi != "arm64-v8a" || manifest.Api != 31 ||
-            manifest.Ndk != "28.2.13676358" ||
-            manifest.SdkPin != "bc812c08ab2efd4ed8d7f306bd1911c703771732")
+            manifest.Ndk != "28.2.13676358" || !Regex.IsMatch(manifest.SdkPin, "^[0-9a-f]{40}$"))
             throw new InvalidDataException("Compiler bundle does not match the pinned ARM64/API31 runtime");
         if (manifest.Files.Count == 0 || manifest.Hooks.Length == 0 || manifest.Includes.Length == 0)
             throw new InvalidDataException("Incomplete compiler bundle recipe");
@@ -385,14 +405,19 @@ public static class AndroidPhoneCompiler
             cache = new AndroidCompileCache(request.ObjectCache, request.BundleDirectory, generated, bundle.Files,
                 request.IsFable3 ? bundle.Fable3Includes : bundle.Includes, UnitRecipe(bundle, request.Title, version, lseAtomics));
         }
-        var all = units.Concat((request.IsFable3 ? bundle.Fable3Hooks : bundle.Hooks).Select(path => Below(request.BundleDirectory, path)))
-            .Append(Below(request.BundleDirectory, "src/payload/src/payload_export.cpp")).ToArray();
+        string[] hooks = (request.IsFable3 ? bundle.Fable3Hooks : bundle.Hooks).Select(path => Below(request.BundleDirectory, path)).ToArray();
+        ModSources? mods = request.Mods?.Invoke(generated, Path.Combine(attempt, key + "_config.toml"), hooks);
+        var all = units.Concat(hooks).Append(Below(request.BundleDirectory, "src/payload/src/payload_export.cpp"))
+            .Concat(mods?.Sources ?? Array.Empty<string>()).ToArray();
+        // A unit with arguments of its own (a mod's, or a hook a chain renames) is compiled every
+        // time: the cache keys a unit on its source, not on what it is compiled with.
+        bool Cacheable(int i) => mods == null || !mods.Arguments.ContainsKey(all[i]);
         string[] objects = new string[all.Length];
         var toCompile = new List<int>();
         for (int i = 0; i < all.Length; i++)
         {
             cancellation.ThrowIfCancellationRequested();
-            if (cache?.Find(all[i]) is { } kept) objects[i] = kept;
+            if (Cacheable(i) && cache?.Find(all[i]) is { } kept) objects[i] = kept;
             else toCompile.Add(i);
         }
         string pch = Path.Combine(attempt, "refii.pch");
@@ -411,6 +436,7 @@ public static class AndroidPhoneCompiler
             string obj = Path.Combine(attempt, "unit-" + i + ".o");
             var args = new List<string>(flags);
             if (i < units.Length) args.AddRange(new[] { "-include-pch", pch });
+            if (mods != null && mods.Arguments.TryGetValue(all[i], out List<string>? own)) args.AddRange(own);
             args.AddRange(Dependencies(cache, obj + ".d"));
             args.AddRange(new[] { "-c", all[i], "-o", obj });
             return runner(new Command(Below(request.NativeDirectory, "librefii_clang.so"), args, attempt,
@@ -419,7 +445,7 @@ public static class AndroidPhoneCompiler
         void Compiled(int i)
         {
             string obj = Path.Combine(attempt, "unit-" + i + ".o");
-            objects[i] = cache?.Store(all[i], obj, obj + ".d", i < units.Length) ?? obj;
+            objects[i] = Cacheable(i) ? cache?.Store(all[i], obj, obj + ".d", i < units.Length) ?? obj : obj;
             if (++finished < all.Length) progress($"Compiling game code {finished + 1}/{all.Length}");
         }
         int jobs = request.Jobs > 0 ? request.Jobs : execute == null ? PlanJobs(Environment.ProcessorCount, AvailableMemory()) : 1;
@@ -459,8 +485,10 @@ public static class AndroidPhoneCompiler
                 loader = "android_dlopen_rtld_now_global_runtime_first",
                 scope = "Loaded the complete module and called its metadata accessor; no guest boot or gameplay" }));
         string digest = Hash(module);
-        if (cache != null) RecordModuleInputs(request, bundle, cache, attempt, module, version, key, lseAtomics);
-        var result = new Result(attempt, module, digest, version) { Bundle = RecordedBundle(request.BundleDirectory) };
+        // A module with hard mods is never adopted by a later APK (StillCurrent): its inputs include
+        // units the cache does not record.
+        if (cache != null && string.IsNullOrEmpty(mods?.Hash)) RecordModuleInputs(request, bundle, cache, attempt, module, version, key, lseAtomics);
+        var result = new Result(attempt, module, digest, version) { Bundle = RecordedBundle(request.BundleDirectory), Mods = mods?.Hash ?? "" };
         File.WriteAllText(Path.Combine(attempt, "completed.json"), Refii.Core.Engine_Json.Serialize(result));
         try { cache?.KeepOnlyUsed(); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { progress("Could not tidy the compile cache: " + error.Message); }

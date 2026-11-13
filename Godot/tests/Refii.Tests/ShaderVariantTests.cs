@@ -34,6 +34,24 @@ public sealed class ShaderVariantTests
         AssertThat(Engine_ShaderVariant.Parse("fast")).IsEqual(Engine_ShaderVariant.Mode.Full);
     }
 
+    [TestCase]
+    public void ExtraDefinesKeepOnlyNames()
+    {
+        AssertThat(Engine_ShaderVariant.ParseDefines("\"FABLE_LITE_NO_SPEC, FABLE_X2,FABLE_LITE_NO_SPEC\""))
+            .ContainsExactly("FABLE_LITE_NO_SPEC", "FABLE_X2");
+        AssertThat(Engine_ShaderVariant.ParseDefines("lower, X Y, #define A, 9A")).IsEmpty();
+        AssertThat(Engine_ShaderVariant.ParseDefines("")).IsEmpty();
+    }
+
+    [TestCase]
+    public void ExtraDefinesSkipNamesTheBuildAlreadyDefines()
+    {
+        const string code = "shader_type spatial;\n#define FABLE_LITE_NO_SPEC\n#include \"res://body.gdshaderinc\"\n";
+        string composed = Engine_ShaderVariant.WithExtraDefines(code, new[] { "FABLE_LITE_NO_SPEC", "FABLE_LITE_NO_SPEC_X" });
+        AssertThat(composed.Split("#define FABLE_LITE_NO_SPEC\n").Length - 1).IsEqual(1);
+        AssertThat(composed).Contains("#define FABLE_LITE_NO_SPEC_X\n#include");
+    }
+
     /// <summary>Lite is refused off Android and wherever the code it drops would be visible; the
     /// lighting model plays no part in the decision.</summary>
     [TestCase]

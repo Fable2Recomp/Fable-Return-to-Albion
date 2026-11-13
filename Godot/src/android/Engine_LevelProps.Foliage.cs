@@ -83,9 +83,42 @@ public static partial class Engine_LevelProps
         return (hash * 0.6180339887498949) % 1.0 < density;
     }
 
-    /// <summary>The cell a block's placements batch by: the foliage cell for ground foliage when set.</summary>
-    private static float CellMetresFor(PropBlockBuild block, float foliageCells) =>
-        foliageCells > 0f && (block.Foliage || Refii.Models.Engine_MdlFoliage.IsFoliagePath(block.ModelPath))
-            ? foliageCells
-            : BatchCellMetres;
+    /// <summary>The cell a block's placements batch by: the foliage cell for ground foliage when set,
+    /// the prop cell (<see cref="PropCellKey"/>) for everything else when set.</summary>
+    private static float CellMetresFor(PropBlockBuild block, float foliageCells, float propCells = 0f) =>
+        block.Foliage || Refii.Models.Engine_MdlFoliage.IsFoliagePath(block.ModelPath)
+            ? (foliageCells > 0f ? foliageCells : BatchCellMetres)
+            : (propCells > 0f ? propCells : BatchCellMetres);
+
+    /// <summary>`prop_cell_metres`: the cube edge every other batched model (props, buildings, trees) is batched by; 0 keeps <see cref="BatchCellMetres"/>.</summary>
+    public const string PropCellKey = "prop_cell_metres";
+
+    /// <summary>
+    /// The configured prop cell (a cvar-set override included, so it applies to the next region
+    /// built), 0 for the shared one. Held to [8, 32] m. Android only.
+    /// </summary>
+    /// <remarks>
+    /// WHY. Godot picks a mesh level once per MultiMesh, from the camera to the nearest point of the
+    /// batch's box (render_forward_mobile.cpp `_fill_render_list`), so every copy in a 32 m cell
+    /// draws at the level of the cell's nearest corner: the cells around the camera draw every copy
+    /// at full detail, whatever `mesh_lod_pixels` says. A finer cell lets the far copies of a near
+    /// cell take their coarser levels, and culls by a tighter box. The cost is more, smaller draws.
+    /// The lodcensus's `perObjectTriangles` against `triangles` is what a cell of one copy would save.
+    /// </remarks>
+    public static float ReadPropCellMetres()
+    {
+        if (!Refii.Core.Engine_Platform.IsAndroid) return 0f;
+        try
+        {
+            return ClampPropCell(Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), PropCellKey, 0f));
+        }
+        catch (Exception)
+        {
+            return 0f;
+        }
+    }
+
+    /// <summary>0 (the shared cell) for an unset, zero or invalid value; otherwise [8, 32] m.</summary>
+    internal static float ClampPropCell(float metres) =>
+        float.IsFinite(metres) && metres > 0f ? Math.Clamp(metres, 8f, BatchCellMetres) : 0f;
 }

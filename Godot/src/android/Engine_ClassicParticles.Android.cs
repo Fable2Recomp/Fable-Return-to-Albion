@@ -8,5 +8,7 @@ public partial class Engine_ClassicParticles
     /// render pass. Read when the material is composed; a live change reaches groups composed after it.
     /// </summary>
     internal static string HardDefines(bool soft) =>
-        !soft && Refii.Fx.Engine_FxDepthReads.Enabled ? "#define " + Refii.Fx.Engine_FxDepthReads.HardDefine + "\n" : string.Empty;
+        Refii.Fx.Engine_FxDepthReads.ShouldBeHard(Refii.Fx.Engine_FxDepthReads.Enabled, Refii.Fx.Engine_FxDepthReads.HardAll, soft)
+            ? "#define " + Refii.Fx.Engine_FxDepthReads.HardDefine + "\n"
+            : string.Empty;
 }

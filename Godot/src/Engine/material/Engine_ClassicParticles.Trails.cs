@@ -441,7 +441,7 @@ public partial class Engine_ClassicParticles
         bool doubled = _trailBuffer[at + 1] == 3f;
         bool fresh = !ReferenceEquals(trail.SentTo, m);
         trail.SentTo = m;
-        bool disableDistanceFade = !Engine_ClassicMaterial.Active && Refii.Lighting.Engine_LightingFrame.ModernModel;
+        bool disableDistanceFade = Refii.AndroidRuntime.AndroidLeanModern.ParticleFadeOff(Engine_ClassicMaterial.Active, Refii.Lighting.Engine_LightingFrame.ModernModel);
         bool fadeModeChanged = trail.DisableDistanceFadeSent != disableDistanceFade;
 
         if (changed || fresh || fadeModeChanged)

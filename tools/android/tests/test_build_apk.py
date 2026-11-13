@@ -71,6 +71,12 @@ class BuildApkTests(unittest.TestCase):
             self.assertEqual(export[export.index('--rendering-method') + 1], 'mobile')
             self.assertEqual(export[export.index('--min-sdk') + 1], '31')
             self.assertNotIn('--keystore', export)
+            self.assertNotIn('--gpu-profile', export)
+
+    def test_gpu_profile_in_the_config_packages_the_capture_switch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = dict(self.config(temp), gpu_profile=True)
+            self.assertIn('--gpu-profile', dict(build_apk.plan(config, Path(temp) / 'out', None))['export'])
 
     def test_a_reused_native_build_skips_the_native_step(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -86,6 +92,19 @@ class BuildApkTests(unittest.TestCase):
                 build_apk.plan(config, Path(temp) / 'out', None)
             config.update(godot_source='/godot', official_templates='/official')
             self.assertEqual(build_apk.plan(config, Path(temp) / 'out', None)[0][0], 'templates')
+
+    def test_templates_built_with_other_godot_patches_are_refused(self):
+        templates_module = load('build_templates', 'godot-patches/build-templates.py')
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.config(temp)
+            record = Path(config['templates']) / templates_module.PATCHES_RECORD
+            record.write_text(templates_module.patch_record(), encoding='utf-8')
+            build_apk.plan(config, Path(temp) / 'out', None)
+            record.write_text(templates_module.patch_record() + 'a' * 64 + '  0099-later.diff\n', encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'other Godot patches'):
+                build_apk.plan(config, Path(temp) / 'out', None)
+            record.unlink()
+            build_apk.plan(config, Path(temp) / 'out', None)
 
     def test_signing_passwords_come_from_the_json_and_are_required_with_a_keystore(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -861,8 +861,6 @@ public partial class ModdingPanel : VBoxContainer
 				}
 			}
 
-			if (pressed && RefuseNativeModOnPhone(check, captured)) return;
-
 			if (pressed && !_selectedTitle.HasHardMods && _native.ContainsKey(captured.Name))
 			{
 				check.SetPressedNoSignal(false);
@@ -1006,11 +1004,7 @@ public partial class ModdingPanel : VBoxContainer
 				string.Equals(conflict.Second, mod.Name, StringComparison.OrdinalIgnoreCase)).ToList()
 			: new List<ModNativeConflict>();
 		_tallies.TryGetValue(mod.Name, out ModTally? tally);
-		if (Phone && nativeSources != null)
-		{
-			statusControl = NotOnPhoneLabel();
-		}
-		else if (!_selectedTitle.HasHardMods && nativeSources != null)
+		if (!_selectedTitle.HasHardMods && nativeSources != null)
 		{
 			var unsupportedLabel = MakeLabel("⛔ native");
 			unsupportedLabel.AddThemeColorOverride("font_color", new Color(0.95f, 0.3f, 0.25f));

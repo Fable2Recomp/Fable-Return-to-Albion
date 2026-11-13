@@ -983,6 +983,7 @@ public static partial class Engine_LevelProps
         }
 
         float foliageCells = editorHierarchy is null ? ReadFoliageCellMetres() : 0f;
+        float propCells = editorHierarchy is null ? ReadPropCellMetres() : 0f;
         float foliageDensity = editorHierarchy is null ? ReadFoliageDensity() : 1f;
         foreach (string key in order)
         {
@@ -1051,7 +1052,7 @@ public static partial class Engine_LevelProps
             // AND ONE PER STATED RANGE: a batch switches as one node, so placements the file gives
             // different distances cannot share one.
             var cells = new Dictionary<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>>();
-            float cellMetres = CellMetresFor(block, foliageCells);
+            float cellMetres = CellMetresFor(block, foliageCells, propCells);
             foreach (int index in batched)
             {
                 if (!KeepsFoliageCopy(block, index, foliageDensity)) continue;
