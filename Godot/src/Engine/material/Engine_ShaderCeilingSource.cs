@@ -46,7 +46,7 @@ internal static class Engine_ShaderCeilingSource
 	private static readonly Regex Identifier = new(@"[A-Za-z_]\w*", RegexOptions.CultureInvariant);
 
 	private static readonly Regex VaryingDeclaration = new(
-		@"^varying\s+(?:(?:flat|smooth|highp|mediump|lowp)\s+)*\w+\s+([A-Za-z_]\w*)", RegexOptions.CultureInvariant);
+		@"^varying\s+(?:(?:flat|smooth|highp|mediump|lowp|[A-Z][A-Z0-9_]*)\s+)*\w+\s+([A-Za-z_]\w*)", RegexOptions.CultureInvariant);
 
 	private static readonly Regex Sampler2D = new(
 		@"^uniform\s+(?:(?:highp|mediump|lowp)\s+)?sampler2D\s+([A-Za-z_]\w*)", RegexOptions.CultureInvariant);
@@ -521,9 +521,9 @@ internal static class Engine_ShaderCeilingSource
 		return body.Append("}\n").ToString();
 	}
 
-	/// <summary>A varying's type and name, for `flatvs`: `varying smooth vec3 v`.</summary>
+	/// <summary>A varying's type and name, for `flatvs`: `varying smooth vec3 v` (a qualifier may be a macro, `FABLE_VARY_MP`).</summary>
 	private static readonly Regex TypedVarying = new(
-		@"^varying\s+(?:(?:flat|smooth|highp|mediump|lowp)\s+)*(\w+)\s+([A-Za-z_]\w*)\s*;", RegexOptions.CultureInvariant);
+		@"^varying\s+(?:(?:flat|smooth|highp|mediump|lowp|[A-Z][A-Z0-9_]*)\s+)*(\w+)\s+([A-Za-z_]\w*)\s*;", RegexOptions.CultureInvariant);
 
 	/// <summary>The vertex built-ins a pixel stage can read, each read in full.</summary>
 	private static readonly (string Name, string Read)[] PixelInputs =

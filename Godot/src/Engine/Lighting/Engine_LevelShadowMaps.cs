@@ -976,32 +976,43 @@ public static class Engine_LevelShadowMaps
 		public const uint FlagAoOccluder = 4u;
 		public const uint DefaultFlags = FlagShadowCaster | FlagAoOccluder;
 
+		// Only the corners and flags are stored (40 bytes, not 88): a large town's bake holds millions of these, and
+		// the derived values below are worked out with the same arithmetic the constructor used to store them.
 		public readonly Vector3 V0;
-		public readonly Vector3 Edge1;
-		public readonly Vector3 Edge2;
-		public readonly Vector3 Normal;
-		public readonly Vector3 Min;
-		public readonly Vector3 Max;
-		public readonly Vector3 Centroid;
+		private readonly Vector3 _b;
+		private readonly Vector3 _c;
 		public readonly uint Flags;
+
+		public Vector3 Edge1 => _b - V0;
+		public Vector3 Edge2 => _c - V0;
+
+		public Vector3 Normal
+		{
+			get
+			{
+				Vector3 cross = Edge1.Cross(Edge2);
+				float lenSq = cross.LengthSquared();
+				return lenSq > 1e-12f ? cross / MathF.Sqrt(lenSq) : Vector3.Up;
+			}
+		}
+
+		public Vector3 Min => new(
+			MathF.Min(V0.X, MathF.Min(_b.X, _c.X)),
+			MathF.Min(V0.Y, MathF.Min(_b.Y, _c.Y)),
+			MathF.Min(V0.Z, MathF.Min(_b.Z, _c.Z)));
+
+		public Vector3 Max => new(
+			MathF.Max(V0.X, MathF.Max(_b.X, _c.X)),
+			MathF.Max(V0.Y, MathF.Max(_b.Y, _c.Y)),
+			MathF.Max(V0.Z, MathF.Max(_b.Z, _c.Z)));
+
+		public Vector3 Centroid => (V0 + _b + _c) * (1.0f / 3.0f);
 
 		public BvhTriangle(Vector3 a, Vector3 b, Vector3 c, uint flags = DefaultFlags)
 		{
 			V0 = a;
-			Edge1 = b - a;
-			Edge2 = c - a;
-			Vector3 cross = Edge1.Cross(Edge2);
-			float lenSq = cross.LengthSquared();
-			Normal = lenSq > 1e-12f ? cross / MathF.Sqrt(lenSq) : Vector3.Up;
-			Min = new Vector3(
-				MathF.Min(a.X, MathF.Min(b.X, c.X)),
-				MathF.Min(a.Y, MathF.Min(b.Y, c.Y)),
-				MathF.Min(a.Z, MathF.Min(b.Z, c.Z)));
-			Max = new Vector3(
-				MathF.Max(a.X, MathF.Max(b.X, c.X)),
-				MathF.Max(a.Y, MathF.Max(b.Y, c.Y)),
-				MathF.Max(a.Z, MathF.Max(b.Z, c.Z)));
-			Centroid = (a + b + c) * (1.0f / 3.0f);
+			_b = b;
+			_c = c;
 			Flags = flags;
 		}
 	}
@@ -1017,7 +1028,7 @@ public static class Engine_LevelShadowMaps
 		}
 
 		private readonly BvhTriangle[] _triangles;
-		private readonly Node[] _nodes;
+		private Node[] _nodes;
 		private int _nodeCount;
 
 		public int TriangleCount => _triangles.Length;
@@ -1025,22 +1036,37 @@ public static class Engine_LevelShadowMaps
 		public Vector3 RootMin => _nodeCount > 0 ? _nodes[0].Min : Vector3.Zero;
 		public Vector3 RootMax => _nodeCount > 0 ? _nodes[0].Max : Vector3.Zero;
 
+		/// <summary>Bytes of the GPU node buffer: 32 a node (min, first-or-left, max, count).</summary>
+		public int GpuNodeBytes => _nodeCount > 0 && _triangles.Length > 0 ? _nodeCount * 32 : 32;
+
+		/// <summary>Bytes of the GPU triangle buffer: 64 a triangle (v0, edge1, edge2, normal and flags).</summary>
+		public int GpuTriangleBytes => _nodeCount > 0 && _triangles.Length > 0 ? _triangles.Length * 64 : 64;
+
 		public void ExportGpuBuffers(out byte[] nodeBytes, out byte[] triBytes)
+		{
+			nodeBytes = new byte[GpuNodeBytes];
+			triBytes = new byte[GpuTriangleBytes];
+			WriteGpuNodes(0, nodeBytes);
+			WriteGpuTriangles(0, triBytes);
+		}
+
+		/// <summary>Writes nodes from <paramref name="first"/> into <paramref name="dest"/> (32 bytes a node), so a
+		/// buffer can be uploaded in pieces instead of from one array of its full size.</summary>
+		public void WriteGpuNodes(int first, Span<byte> dest)
 		{
 			if (_nodeCount <= 0 || _triangles.Length == 0)
 			{
-				nodeBytes = new byte[32];
-				triBytes = new byte[64];
+				dest.Clear();
 				return;
 			}
 
-			nodeBytes = new byte[_nodeCount * 32];
-			Span<float> nFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(nodeBytes.AsSpan());
-			Span<int> nInts = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, int>(nodeBytes.AsSpan());
-			for (int i = 0; i < _nodeCount; i++)
+			Span<float> nFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(dest);
+			Span<int> nInts = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, int>(dest);
+			int count = dest.Length / 32;
+			for (int k = 0; k < count; k++)
 			{
-				ref readonly Node n = ref _nodes[i];
-				int o = i * 8;
+				ref readonly Node n = ref _nodes[first + k];
+				int o = k * 8;
 				nFloats[o] = n.Min.X;
 				nFloats[o + 1] = n.Min.Y;
 				nFloats[o + 2] = n.Min.Z;
@@ -1050,36 +1076,55 @@ public static class Engine_LevelShadowMaps
 				nFloats[o + 6] = n.Max.Z;
 				nInts[o + 7] = n.Count;
 			}
+		}
 
-			triBytes = new byte[_triangles.Length * 64];
-			Span<float> tFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(triBytes.AsSpan());
-			Span<uint> tUints = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(triBytes.AsSpan());
-			for (int i = 0; i < _triangles.Length; i++)
+		/// <summary>Writes triangles from <paramref name="first"/> into <paramref name="dest"/> (64 bytes a triangle).</summary>
+		public void WriteGpuTriangles(int first, Span<byte> dest)
+		{
+			if (_nodeCount <= 0 || _triangles.Length == 0)
 			{
-				ref readonly BvhTriangle t = ref _triangles[i];
-				int o = i * 16;
+				dest.Clear();
+				return;
+			}
+
+			Span<float> tFloats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(dest);
+			Span<uint> tUints = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, uint>(dest);
+			int count = dest.Length / 64;
+			for (int k = 0; k < count; k++)
+			{
+				ref readonly BvhTriangle t = ref _triangles[first + k];
+				int o = k * 16;
+				Vector3 edge1 = t.Edge1;
+				Vector3 edge2 = t.Edge2;
+				Vector3 normal = t.Normal;
 				tFloats[o] = t.V0.X;
 				tFloats[o + 1] = t.V0.Y;
 				tFloats[o + 2] = t.V0.Z;
 				tFloats[o + 3] = 0.0f;
-				tFloats[o + 4] = t.Edge1.X;
-				tFloats[o + 5] = t.Edge1.Y;
-				tFloats[o + 6] = t.Edge1.Z;
+				tFloats[o + 4] = edge1.X;
+				tFloats[o + 5] = edge1.Y;
+				tFloats[o + 6] = edge1.Z;
 				tFloats[o + 7] = 0.0f;
-				tFloats[o + 8] = t.Edge2.X;
-				tFloats[o + 9] = t.Edge2.Y;
-				tFloats[o + 10] = t.Edge2.Z;
+				tFloats[o + 8] = edge2.X;
+				tFloats[o + 9] = edge2.Y;
+				tFloats[o + 10] = edge2.Z;
 				tFloats[o + 11] = 0.0f;
-				tFloats[o + 12] = t.Normal.X;
-				tFloats[o + 13] = t.Normal.Y;
-				tFloats[o + 14] = t.Normal.Z;
+				tFloats[o + 12] = normal.X;
+				tFloats[o + 13] = normal.Y;
+				tFloats[o + 14] = normal.Z;
 				tUints[o + 15] = t.Flags;
 			}
 		}
 
 		public BvhTree(List<BvhTriangle> sourceTriangles)
+			: this(sourceTriangles.ToArray())
 		{
-			_triangles = sourceTriangles.ToArray();
+		}
+
+		/// <summary>Builds over <paramref name="triangles"/>, which the tree takes over and reorders.</summary>
+		public BvhTree(BvhTriangle[] triangles)
+		{
+			_triangles = triangles;
 			if (_triangles.Length == 0)
 			{
 				_nodes = Array.Empty<Node>();
@@ -1089,6 +1134,12 @@ public static class Engine_LevelShadowMaps
 			_nodes = new Node[Math.Max(1, _triangles.Length * 2)];
 			_nodeCount = 1;
 			BuildRecursive(0, 0, _triangles.Length);
+
+			// The build reserves the worst case, two nodes a triangle; give back what it did not use.
+			if (_nodeCount < _nodes.Length)
+			{
+				Array.Resize(ref _nodes, _nodeCount);
+			}
 		}
 
 		private void BuildRecursive(int nodeIdx, int start, int count)
@@ -1390,8 +1441,10 @@ public static class Engine_LevelShadowMaps
 			out float t)
 		{
 			t = 0.0f;
-			Vector3 pvec = dir.Cross(tri.Edge2);
-			float det = tri.Edge1.Dot(pvec);
+			Vector3 edge1 = tri.Edge1;
+			Vector3 edge2 = tri.Edge2;
+			Vector3 pvec = dir.Cross(edge2);
+			float det = edge1.Dot(pvec);
 			if (MathF.Abs(det) < 1e-8f)
 			{
 				return false;
@@ -1405,14 +1458,14 @@ public static class Engine_LevelShadowMaps
 				return false;
 			}
 
-			Vector3 qvec = tvec.Cross(tri.Edge1);
+			Vector3 qvec = tvec.Cross(edge1);
 			float v = dir.Dot(qvec) * invDet;
 			if (v < 0.0f || u + v > 1.0f)
 			{
 				return false;
 			}
 
-			float hit = tri.Edge2.Dot(qvec) * invDet;
+			float hit = edge2.Dot(qvec) * invDet;
 			if (hit <= tMin || hit >= tMax)
 			{
 				return false;
@@ -1766,17 +1819,22 @@ public static class Engine_LevelShadowMaps
 			}
 		}
 
-		var worldTriangles = new List<BvhTriangle>(65536);
+		var terrainTriangles = new List<BvhTriangle>(65536);
 
 		// 1. Add main terrain triangles.
-		AppendTerrainTriangles(level, manifest, read, worldTriangles, terrainHeights);
+		AppendTerrainTriangles(level, manifest, read, terrainTriangles, terrainHeights);
 
 		// 2. Add static world prop triangles (lamp shadow casters carry FlagShadowCaster | FlagAoOccluder;
 		// light-fixture / brazier / candelabra hosts and non-lamp-shadow props carry FlagAoOccluder so
 		// fire pits, candelabras, pedestals, and decorative statues ground cleanly into floor AO without
 		// blocking their own hosted lamps).
-		foreach (Engine_LevelProps.StaticShadowPropBlock block in propBlocks)
+		// Counted first so the world's triangles go straight into one array of the exact size: a growing
+		// list and its copy held about three times the triangles at the peak (gigabytes in a large town).
+		var casterVerts = new Vector3[]?[propBlocks.Count];
+		long total = terrainTriangles.Count;
+		for (int b = 0; b < propBlocks.Count; b++)
 		{
+			Engine_LevelProps.StaticShadowPropBlock block = propBlocks[b];
 			if (block.Foliage)
 			{
 				continue;
@@ -1789,12 +1847,33 @@ public static class Engine_LevelShadowMaps
 				continue;
 			}
 
-			bool isFixtureModel = fixtureModelPaths.Contains(block.ModelPath) || IsLightFixtureModel(casterPath);
 			Vector3[]? modelVerts = GetShadowCasterTriangles(casterPath, read, isTreeShadowModel: isTree);
 			if (modelVerts is null || modelVerts.Length < 3)
 			{
 				continue;
 			}
+
+			casterVerts[b] = modelVerts;
+			total += (long)(modelVerts.Length / 3) * block.Instances.Count;
+		}
+
+		var worldTriangles = new BvhTriangle[total];
+		terrainTriangles.CopyTo(worldTriangles);
+		int filled = terrainTriangles.Count;
+		terrainTriangles = null;
+
+		for (int b = 0; b < propBlocks.Count; b++)
+		{
+			Vector3[]? modelVerts = casterVerts[b];
+			if (modelVerts is null)
+			{
+				continue;
+			}
+
+			Engine_LevelProps.StaticShadowPropBlock block = propBlocks[b];
+			bool isTree = block.ModelClass == PropModelClass.Tree;
+			string casterPath = isTree ? block.ShadowModelPath : block.ModelPath;
+			bool isFixtureModel = fixtureModelPaths.Contains(block.ModelPath) || IsLightFixtureModel(casterPath);
 
 			for (int i = 0; i < block.Instances.Count; i++)
 			{
@@ -1808,17 +1887,17 @@ public static class Engine_LevelShadowMaps
 				uint triFlags = BvhTriangle.FlagAoOccluder | (castsLampShadow ? BvhTriangle.FlagShadowCaster : 0u);
 
 				Transform3D inst = block.Instances[i];
-				for (int v = 0; v < modelVerts.Length; v += 3)
+				for (int v = 0; v + 2 < modelVerts.Length; v += 3)
 				{
 					Vector3 a = MirrorX(inst * modelVerts[v]);
-					Vector3 b = MirrorX(inst * modelVerts[v + 1]);
+					Vector3 b2 = MirrorX(inst * modelVerts[v + 1]);
 					Vector3 c = MirrorX(inst * modelVerts[v + 2]);
-					worldTriangles.Add(new BvhTriangle(a, b, c, triFlags));
+					worldTriangles[filled++] = new BvhTriangle(a, b2, c, triFlags);
 				}
 			}
 		}
 
-		triangleCount = worldTriangles.Count;
+		triangleCount = filled;
 		worldBvh = new BvhTree(worldTriangles);
 		return true;
 	}

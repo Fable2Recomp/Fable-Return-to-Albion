@@ -11,7 +11,8 @@ namespace Refii.Core;
 /// category. Off unless a request asks; a diagnostic, never a quality setting.
 /// </summary>
 /// <remarks>
-/// <para>The modes, per category (props, trees, terrain, entities):
+/// <para>The modes, per category (props, trees, terrain, entities, characters — the entities' rigged
+/// bodies and everything under them; it takes the entities' mode unless a request names it):
 /// `off` the original materials; `flat` the original's own source cut to a constant unshaded colour
 /// (Engine_ShaderCeilingSource: same cull, blend and depth words, the vertex stage only where it
 /// moves the vertex); `flatcut` the same, but a material that alpha-tests keeps a discard on its
@@ -30,6 +31,23 @@ namespace Refii.Core;
 /// material's own fragment() still runs, and what goes is Godot's lighting — no lights, probes or
 /// decals in the render data (so no light loops and no shadow passes), ambient forced to white,
 /// camera effects off (renderer_scene_render_rd.cpp, render_scene_data_rd.cpp).</para>
+/// <para>`nodraw` takes a category's geometry off every camera (its render layers zeroed, given
+/// back at restore) and leaves it VISIBLE IN THE TREE, so everything that keys off an entity being
+/// shown — the entity walk, the targeting highlight's passes, the displacement layer's pump, cloth,
+/// a hosted light — runs as before. `hide` against `nodraw` is that side work; `nodraw` against
+/// off is the drawing alone.</para>
+/// <para>THE ENTITIES' SUB-CATEGORIES, to split what hiding the entities saves. `attachments`: every
+/// node under a character's body but the body (held items, cloth, fur shells, twins, skinned parts);
+/// it takes the characters' mode unless named, and shows only while its body does.
+/// `entitylights`: the lights, decals and probes under the entities' root, which are not geometry;
+/// `hide` only. Unnamed, it is hidden exactly when the entities and the characters both are, which
+/// is when the root goes as one node as before; `{"entities":"hide","entitylights":"off"}` hides
+/// every entity node by node instead and keeps the root, the walk and the lights. Two switches
+/// that are no node of the entities, `hide` only and only when named (`all` and a bare mode leave
+/// them off, so such a request means what it did before they existed): `highlight`, the
+/// targeting highlight's layer and passes, and `entityfeed`, the entity walk paused with everything
+/// still drawn as last placed and posed. What each switch does is the caller's (the constructor's
+/// `switches`).</para>
 /// <para>THE SWAP IS ON THE MATERIAL, not the instance: each ShaderMaterial a category draws is given
 /// the replacement Shader and later its own back. A ShaderMaterial keeps its parameter values across
 /// a shader change (param_cache, and the server's own params), and the replacement keeps every
@@ -52,6 +70,11 @@ internal sealed class Engine_ShaderCeiling
 		Trees,
 		Terrain,
 		Entities,
+		Characters,
+		Attachments,
+		EntityLights,
+		Highlight,
+		EntityFeed,
 	}
 
 	internal enum Mode
@@ -61,6 +84,7 @@ internal sealed class Engine_ShaderCeiling
 		FlatCut,
 		Hide,
 		FlatVs,
+		NoDraw,
 		RenderModes,
 	}
 
@@ -72,9 +96,16 @@ internal sealed class Engine_ShaderCeiling
 
 	internal const string Key = "shaderCeiling";
 
-	internal static readonly string[] CategoryNames = { "props", "trees", "terrain", "entities" };
+	internal static readonly string[] CategoryNames =
+		{ "props", "trees", "terrain", "entities", "characters", "attachments", "entitylights", "highlight", "entityfeed" };
 
-	private static readonly string[] ModeNames = { "off", "flat", "flatcut", "hide", "flatvs" };
+	private static readonly string[] ModeNames = { "off", "flat", "flatcut", "hide", "flatvs", "nodraw" };
+
+	/// <summary>The categories that take `off` or `hide` alone: no geometry of their own to draw another way.</summary>
+	private static readonly Category[] HideOnly = { Category.EntityLights, Category.Highlight, Category.EntityFeed };
+
+	/// <summary>The categories that are switches, not nodes: the caller turns each off and back on.</summary>
+	private static readonly Category[] Switches = { Category.Highlight, Category.EntityFeed };
 
 	/// <summary>Each category's constant colour, so a screenshot says which one is swapped.</summary>
 	private static readonly (float R, float G, float B)[] Colours =
@@ -83,6 +114,11 @@ internal sealed class Engine_ShaderCeiling
 		(0.16f, 0.46f, 0.30f),
 		(0.42f, 0.62f, 0.24f),
 		(0.80f, 0.26f, 0.62f),
+		(0.26f, 0.62f, 0.80f),
+		(0.90f, 0.78f, 0.20f),
+		(1.00f, 1.00f, 1.00f),
+		(1.00f, 1.00f, 1.00f),
+		(1.00f, 1.00f, 1.00f),
 	};
 
 	/// <summary>Nodes visited per frame while a mode is on: a few hundred keeps the walk off the frame.</summary>
@@ -93,6 +129,8 @@ internal sealed class Engine_ShaderCeiling
 
 	private readonly Func<Node, IEnumerable<(Node Root, Category Category)>> _roots;
 	private readonly Func<GeometryInstance3D, bool> _isTree;
+	private readonly Func<Node, bool> _isCharacter;
+	private readonly Action<Category, bool>? _switches;
 	private readonly Mode[] _modes = new Mode[CategoryNames.Length];
 	private readonly string[]?[] _words = new string[]?[CategoryNames.Length];
 	private bool _active;
@@ -109,11 +147,18 @@ internal sealed class Engine_ShaderCeiling
 	/// <summary>Each shader's replacement per mode and category, built once; null where none applies.</summary>
 	private readonly Dictionary<(Shader Original, string Variant), Shader?> _replacements = new();
 	private readonly Dictionary<Node3D, bool> _hidden = new();
+
+	/// <summary>`nodraw` nodes and the render layers each had when last zeroed.</summary>
+	private readonly Dictionary<GeometryInstance3D, uint> _culled = new();
+
+	/// <summary>The switches this ceiling turned off, by category.</summary>
+	private readonly bool[] _switchedOff = new bool[CategoryNames.Length];
 	private readonly Dictionary<Viewport, Viewport.DebugDrawEnum> _debugDraw = new();
 
 	private readonly HashSet<ulong>[] _nodes = NewSets();
 	private readonly long[] _instances = new long[CategoryNames.Length];
 	private readonly int[] _hiddenNodes = new int[CategoryNames.Length];
+	private readonly int[] _culledNodes = new int[CategoryNames.Length];
 	private readonly HashSet<ulong> _skipped = new();
 	private readonly HashSet<ulong> _shared = new();
 
@@ -129,17 +174,22 @@ internal sealed class Engine_ShaderCeiling
 	private int _walks;
 	private int _idleFrames;
 
+	/// <param name="switches">Turns a switch category (`highlight`, `entityfeed`) off (false) or back on (true).</param>
 	internal Engine_ShaderCeiling(
-		Func<Node, IEnumerable<(Node Root, Category Category)>> roots, Func<GeometryInstance3D, bool> isTree)
+		Func<Node, IEnumerable<(Node Root, Category Category)>> roots, Func<GeometryInstance3D, bool> isTree,
+		Func<Node, bool>? isCharacter = null, Action<Category, bool>? switches = null)
 	{
 		_roots = roots;
 		_isTree = isTree;
+		_isCharacter = isCharacter ?? (_ => false);
+		_switches = switches;
 	}
 
 	/// <summary>
 	/// Reads the optional `shaderCeiling` key: a string (one mode for every category, or "unshaded")
-	/// or an object of `props`, `trees`, `terrain`, `entities` and `all`. Each request states the
-	/// whole ceiling: a category it does not name takes `all`'s mode, or `off`.
+	/// or an object of the categories (<see cref="CategoryNames"/>) and `all`. Each request states the
+	/// whole ceiling: a category it does not name takes `all`'s mode, or `off` (the characters,
+	/// their attachments and the entities' lights follow the rules in the class remarks).
 	/// </summary>
 	/// <returns>Null when the key is absent.</returns>
 	/// <exception cref="JsonException">A value is not one of the modes.</exception>
@@ -152,10 +202,12 @@ internal sealed class Engine_ShaderCeiling
 
 		var modes = new Mode[CategoryNames.Length];
 		var words = new string[]?[CategoryNames.Length];
+		var named = new bool[CategoryNames.Length];
 		bool unshaded = false;
 		if (value.ValueKind == JsonValueKind.String)
 		{
 			ReadAll(value, modes, words, ref unshaded);
+			Settle(modes, words, named);
 			return new Request(modes, words, unshaded);
 		}
 		if (value.ValueKind != JsonValueKind.Object)
@@ -176,11 +228,62 @@ internal sealed class Engine_ShaderCeiling
 			int category = Array.IndexOf(CategoryNames, property.Name);
 			if (category < 0)
 			{
-				throw new JsonException($"{Key}: unknown category '{property.Name}' (props, trees, terrain, entities, all).");
+				throw new JsonException($"{Key}: unknown category '{property.Name}' ({string.Join(", ", CategoryNames)}, all).");
 			}
 			modes[category] = ModeOf(property.Value, out words[category]);
+			named[category] = true;
 		}
+		Settle(modes, words, named);
 		return new Request(modes, words, unshaded);
+	}
+
+	/// <summary>The modes the request did not name, from the ones it did; the hide-only categories checked.</summary>
+	private static void Settle(Mode[] modes, string[]?[] words, bool[] named)
+	{
+		// The characters are entities: unnamed, they take the entities' mode, as before the split;
+		// a character's parts take the characters'.
+		if (!named[(int)Category.Characters])
+		{
+			modes[(int)Category.Characters] = modes[(int)Category.Entities];
+			words[(int)Category.Characters] = words[(int)Category.Entities];
+		}
+		if (!named[(int)Category.Attachments])
+		{
+			modes[(int)Category.Attachments] = modes[(int)Category.Characters];
+			words[(int)Category.Attachments] = words[(int)Category.Characters];
+		}
+		// Unnamed, the entities' lights go where they went before they had a category: with the
+		// root, which went as one node when the entities and the characters were both hidden.
+		if (!named[(int)Category.EntityLights] &&
+			modes[(int)Category.Entities] == Mode.Hide && modes[(int)Category.Characters] == Mode.Hide)
+		{
+			modes[(int)Category.EntityLights] = Mode.Hide;
+		}
+		// The switches act only when named: `all`, or a bare mode, leaves them off.
+		foreach (Category category in Switches)
+		{
+			if (!named[(int)category])
+			{
+				modes[(int)category] = Mode.Off;
+				words[(int)category] = null;
+			}
+		}
+		foreach (Category category in HideOnly)
+		{
+			int c = (int)category;
+			if (modes[c] is Mode.Off or Mode.Hide)
+			{
+				words[c] = null;
+				continue;
+			}
+			if (named[c])
+			{
+				throw new JsonException($"{Key}: {CategoryNames[c]} is off or hide.");
+			}
+			// `all` with a drawing mode: nothing of these is drawn another way.
+			modes[c] = Mode.Off;
+			words[c] = null;
+		}
 	}
 
 	private static void ReadAll(JsonElement value, Mode[] modes, string[]?[] words, ref bool unshaded)
@@ -219,7 +322,7 @@ internal sealed class Engine_ShaderCeiling
 		int mode = text is null ? -1 : Array.IndexOf(ModeNames, text);
 		return mode >= 0
 			? (Mode)mode
-			: throw new JsonException($"{Key}: a mode is one of off, flat, flatcut, flatvs, hide, +word[,word] (and \"all\":\"unshaded\").");
+			: throw new JsonException($"{Key}: a mode is one of off, flat, flatcut, flatvs, hide, nodraw, +word[,word] (and \"all\":\"unshaded\").");
 	}
 
 	/// <summary>A mode as the reply states it: `+` modes with their words.</summary>
@@ -255,6 +358,30 @@ internal sealed class Engine_ShaderCeiling
 			Queue(root);
 			Walk(int.MaxValue);
 			_walks = 1;
+			SwitchOff();
+		}
+	}
+
+	/// <summary>Each switch category that hides, turned off; again on every walk, so one rebuilt meanwhile is too.</summary>
+	private void SwitchOff()
+	{
+		if (_switches is null)
+		{
+			return;
+		}
+		foreach (Category category in Switches)
+		{
+			int c = (int)category;
+			if (_modes[c] != Mode.Hide)
+			{
+				continue;
+			}
+			_switches(category, false);
+			if (!_switchedOff[c])
+			{
+				_switchedOff[c] = true;
+				++_hiddenNodes[c];
+			}
 		}
 	}
 
@@ -274,6 +401,7 @@ internal sealed class Engine_ShaderCeiling
 			_idleFrames = 0;
 			Queue(root);
 			++_walks;
+			SwitchOff();
 		}
 		Walk(NodesPerFrame);
 	}
@@ -313,6 +441,8 @@ internal sealed class Engine_ShaderCeiling
 				["nodes"] = _nodes[c].Count,
 				["instances"] = _instances[c],
 				["hidden"] = _hiddenNodes[c],
+				// Off every camera and still shown in the tree (`nodraw`).
+				["noDraw"] = _culledNodes[c],
 				// Of the swapped materials: those whose own shader compiles a discard, and of those the
 				// standard-body ones with alpha_scissor_on false and no node drawing them with a fade
 				// band or an arrival (xr_tree_fade_out.x > 0, xr_fade_alpha < 1) — solid without a change.
@@ -358,6 +488,16 @@ internal sealed class Engine_ShaderCeiling
 			{
 				continue;
 			}
+			// A rigged entity body is the characters' (`_isCharacter`), and everything under it its
+			// attachments'.
+			if (!root && category is Category.Entities or Category.Attachments && _isCharacter(node))
+			{
+				category = Category.Characters;
+			}
+			else if (!root && category == Category.Characters && !_isCharacter(node))
+			{
+				category = Category.Attachments;
+			}
 			if (!Visit(node, category, root))
 			{
 				continue;
@@ -373,12 +513,32 @@ internal sealed class Engine_ShaderCeiling
 	private bool Visit(Node node, Category category, bool root)
 	{
 		// A root whose every category hides goes as one node: nothing under it is drawn.
-		if (root && node is Node3D container && (category == Category.Props
-			? _modes[(int)Category.Props] == Mode.Hide && _modes[(int)Category.Trees] == Mode.Hide
-			: _modes[(int)category] == Mode.Hide))
+		if (root && node is Node3D container && (category switch
+		{
+			Category.Props => _modes[(int)Category.Props] == Mode.Hide && _modes[(int)Category.Trees] == Mode.Hide,
+			Category.Entities => _modes[(int)Category.Entities] == Mode.Hide && _modes[(int)Category.Characters] == Mode.Hide &&
+				_modes[(int)Category.EntityLights] == Mode.Hide,
+			_ => _modes[(int)category] == Mode.Hide,
+		}))
 		{
 			Hide(container, category);
 			return false;
+		}
+		// A hidden character goes whole, from its body: attachments, shells and twins with it.
+		if (category == Category.Characters && _modes[(int)category] == Mode.Hide && node is Node3D body && _isCharacter(node))
+		{
+			Hide(body, category);
+			return false;
+		}
+		// Lights, decals and probes under the entities are no geometry: only `entitylights` hides them.
+		if (node is VisualInstance3D visual and not GeometryInstance3D &&
+			category is Category.Entities or Category.Characters or Category.Attachments)
+		{
+			if (_modes[(int)Category.EntityLights] == Mode.Hide)
+			{
+				Hide(visual, Category.EntityLights);
+			}
+			return true;
 		}
 		if (node is not GeometryInstance3D geometry)
 		{
@@ -400,8 +560,30 @@ internal sealed class Engine_ShaderCeiling
 			case Mode.Hide:
 				Hide(geometry, category);
 				break;
+			case Mode.NoDraw:
+				Cull(geometry, category);
+				break;
 		}
 		return true;
+	}
+
+	/// <summary>
+	/// The node off every camera, still shown in the tree: its render layers zeroed. A walk after
+	/// the game wrote it new layers keeps those for the restore.
+	/// </summary>
+	private void Cull(GeometryInstance3D geometry, Category category)
+	{
+		uint layers = geometry.Layers;
+		if (layers == 0)
+		{
+			return;
+		}
+		if (!_culled.ContainsKey(geometry))
+		{
+			++_culledNodes[(int)category];
+		}
+		_culled[geometry] = layers;
+		geometry.Layers = 0;
 	}
 
 	private void Hide(Node3D node, Category category)
@@ -653,8 +835,8 @@ internal sealed class Engine_ShaderCeiling
 	};
 
 	/// <summary>
-	/// Every material back on its own shader, every hidden node shown, the viewports' debug draw
-	/// returned, and the counts cleared. A material whose shader something else changed meanwhile
+	/// Every material back on its own shader, every hidden node shown, every `nodraw` node's layers
+	/// and every switch back, the viewports' debug draw returned, and the counts cleared. A material whose shader something else changed meanwhile
 	/// is left with that one.
 	/// </summary>
 	private void Restore(Node root)
@@ -700,6 +882,24 @@ internal sealed class Engine_ShaderCeiling
 		}
 		_hidden.Clear();
 
+		foreach ((GeometryInstance3D node, uint layers) in _culled)
+		{
+			if (GodotObject.IsInstanceValid(node) && node.Layers == 0)
+			{
+				node.Layers = layers;
+			}
+		}
+		_culled.Clear();
+
+		for (int c = 0; c < _switchedOff.Length; c++)
+		{
+			if (_switchedOff[c])
+			{
+				_switches?.Invoke((Category)c, true);
+				_switchedOff[c] = false;
+			}
+		}
+
 		foreach ((Viewport viewport, Viewport.DebugDrawEnum before) in _debugDraw)
 		{
 			if (GodotObject.IsInstanceValid(viewport) && viewport.DebugDraw == Viewport.DebugDrawEnum.Unshaded)
@@ -717,6 +917,7 @@ internal sealed class Engine_ShaderCeiling
 		}
 		Array.Clear(_instances);
 		Array.Clear(_hiddenNodes);
+		Array.Clear(_culledNodes);
 		_skipped.Clear();
 		_shared.Clear();
 		_banded.Clear();

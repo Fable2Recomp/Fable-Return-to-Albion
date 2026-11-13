@@ -74,7 +74,13 @@ public partial class Engine_UiRoundedPanel : MeshInstance3D
 			_material.SetShaderParameter(OpacityName, opacity);
 		}
 
-		Position = new Vector3(rect.Position.X + rect.Size.X * 0.5f, rect.Position.Y + rect.Size.Y * 0.5f, z);
+		// Compared first: a write restates the panel to the renderer even when it has not moved.
+		var at = new Vector3(rect.Position.X + rect.Size.X * 0.5f, rect.Position.Y + rect.Size.Y * 0.5f, z);
+		if (Position != at)
+		{
+			Position = at;
+		}
+
 		Visible = true;
 	}
 }

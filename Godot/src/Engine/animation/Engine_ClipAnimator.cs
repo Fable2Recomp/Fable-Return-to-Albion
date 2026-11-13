@@ -455,7 +455,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	private ulong _lastFrameUsec;
 
 	/// <summary>True when this animator drives a character or creature rig rather than a simple prop (door, chest, clock, sign).</summary>
-	public bool IsCharacterRig => _hasFace || _skeleton.GetBoneCount() >= 20;
+	/// <remarks>
+	/// Decided once, at construction: the bone count is the skeleton's topology, which every
+	/// per-bone array here is sized from, and asking the engine for it again was a crossing per
+	/// leaf and per channel of every apply.
+	/// </remarks>
+	public bool IsCharacterRig => _isCharacterRig;
+
+	private readonly bool _isCharacterRig;
+
+	/// <summary>A character or creature rig: one with a face, or with 20 bones or more.</summary>
+	public static bool IsCharacterRigShape(bool hasFace, int boneCount) => hasFace || boneCount >= 20;
 
 	public Engine_ClipAnimator(Skeleton3D skeleton, string skeletonName, int[] modelToGuest)
 	{
@@ -509,6 +519,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		_hasFace = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Jaw) >= 0 &&
 			(_titleRig.Bone(boneNames, Engine_TitleRig.RigRole.LeftEye) >= 0 ||
 			 _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.RightEye) >= 0);
+		_isCharacterRig = IsCharacterRigShape(_hasFace, bones);
 
 		_hipBone = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Hip);
 		_hipCompensates = HipCompensation(
@@ -694,7 +705,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 				IsSettled = true;
 				LastMovedBones = 0;
 				LastFallback = string.Empty;
-				_wroteFrame = Godot.Engine.GetProcessFrames();
+				_wroteFrame = Refii.Core.Engine_ProcessFrame.Current;
 				return true;
 			}
 			++FallbackNoLeaves;
@@ -1023,7 +1034,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 				IsSettled = true;
 				LastMovedBones = 0;
 				LastFallback = string.Empty;
-				_wroteFrame = Godot.Engine.GetProcessFrames();
+				_wroteFrame = Refii.Core.Engine_ProcessFrame.Current;
 				return true;
 			}
 			++FallbackNoLeaves;
@@ -1118,7 +1129,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			{
 				IsSettled = true;
 				LastMovedBones = 0;
-				_wroteFrame = Godot.Engine.GetProcessFrames();
+				_wroteFrame = Refii.Core.Engine_ProcessFrame.Current;
 				return true;
 			}
 		}
@@ -1979,6 +1990,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		if (_written.Length != bones)
 		{
 			_written = new Transform3D[bones];
+			_writtenRotation = new Quaternion[bones];
+			_writtenPosition = new Vector3[bones];
 			_hasWritten = false;
 		}
 
@@ -2019,6 +2032,15 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 
 		for (int b = 0; b < bones; ++b)
 		{
+			// The same rotation and translation the written pose was built from build the same
+			// pose, which IsEqualApprox would find unchanged: skipped without building it.
+			if (_hasWritten && !shadowAll &&
+				SameRawPose(_finalRotation[b], _finalPosition[b], _writtenRotation[b], _writtenPosition[b]))
+			{
+				++SkippedBoneWrites;
+				continue;
+			}
+
 			var pose = new Transform3D(new Basis(_finalRotation[b]), _finalPosition[b]);
 			bool unchanged = _hasWritten && pose.IsEqualApprox(_written[b]);
 			if (unchanged && !shadowAll)
@@ -2035,6 +2057,8 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 				}
 
 				_written[b] = pose;
+				_writtenRotation[b] = _finalRotation[b];
+				_writtenPosition[b] = _finalPosition[b];
 				++movedBones;
 				_skeleton.SetBonePose(b, pose);
 			}
@@ -2071,7 +2095,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		}
 
 		LastMovedBones = movedBones;
-		_wroteFrame = Godot.Engine.GetProcessFrames();
+		_wroteFrame = Refii.Core.Engine_ProcessFrame.Current;
 		BoneWrites += movedBones;
 		if (movedBones != 0)
 		{
@@ -2145,7 +2169,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	public uint LastRunnerUid => _lastRunnerUid;
 
 	/// <summary>Whether this rig's bones were written in the current process frame.</summary>
-	public bool WroteThisFrame => _wroteFrame == Godot.Engine.GetProcessFrames();
+	public bool WroteThisFrame => _wroteFrame == Refii.Core.Engine_ProcessFrame.Current;
 
 	private ulong _wroteFrame = ulong.MaxValue;
 
@@ -2364,7 +2388,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			_postOpSeen[i] = false;
 		}
 
-		HostBridge.GuestPostOps? ops = HostBridge.GetAnimPostOps(_entity);
+		// READ ONCE PER GUEST FRAME, as the leaves are (Begin): between two guest frames the
+		// records read the same. The ramps below still step every frame, on the held copy.
+		uint guestFrame = Refii.Core.Engine_GuestFrame.Frame;
+		if (guestFrame == 0u || guestFrame != _postOpsFrame || _entity != _postOpsEntity)
+		{
+			_heldPostOps.Take(HostBridge.GetAnimPostOps(_entity));
+			_postOpsFrame = guestFrame;
+			_postOpsEntity = _entity;
+		}
+
+		HostBridge.GuestPostOps? ops = _heldPostOps.Value;
 		if (ops is not { } post || post.Ops.Count == 0)
 		{
 			for (int i = 0; i < MaxTakenPostOps; i++)
@@ -2499,6 +2533,63 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 
 		return c.Slerp(t, Mathf.Clamp(blend, 0f, 1f));
 	}
+
+	/// <summary>
+	/// One read of <see cref="HostBridge.GetAnimPostOps"/>, copied: the bridge refills one set of
+	/// shared buffers on every call, for every entity, so a read kept past the call is copied out.
+	/// </summary>
+	internal sealed class HeldPostOps
+	{
+		private int[] _aim = System.Array.Empty<int>();
+		private int[] _look = System.Array.Empty<int>();
+		private readonly List<HostBridge.GuestPostOp> _ops = new();
+		private readonly List<Quaternion[]> _targets = new();
+
+		/// <summary>The copy of the last read, or null when that read was null.</summary>
+		public HostBridge.GuestPostOps? Value { get; private set; }
+
+		/// <summary>Replaces the held read with a copy of <paramref name="source"/>.</summary>
+		public void Take(HostBridge.GuestPostOps? source)
+		{
+			if (source is not { } post)
+			{
+				Value = null;
+				return;
+			}
+
+			_aim = CopyInto(_aim, post.AimBones);
+			_look = CopyInto(_look, post.LookBones);
+			_ops.Clear();
+			for (int i = 0; i < post.Ops.Count; i++)
+			{
+				HostBridge.GuestPostOp op = post.Ops[i];
+				if (_targets.Count <= i)
+				{
+					_targets.Add(System.Array.Empty<Quaternion>());
+				}
+
+				_targets[i] = CopyInto(_targets[i], op.Targets);
+				_ops.Add(op with { Targets = _targets[i] });
+			}
+
+			Value = new HostBridge.GuestPostOps(post.AimOn, post.LookOn, _aim, _look, _ops);
+		}
+
+		private static T[] CopyInto<T>(T[] held, T[] source)
+		{
+			if (held.Length != source.Length)
+			{
+				held = new T[source.Length];
+			}
+
+			System.Array.Copy(source, held, source.Length);
+			return held;
+		}
+	}
+
+	private readonly HeldPostOps _heldPostOps = new();
+	private uint _postOpsFrame;
+	private uint _postOpsEntity;
 
 	private const int MaxTakenPostOps = 8;
 	private int _postKinds;
@@ -2833,6 +2924,21 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 
 	/// <summary>The last pose written per bone, so an unchanged bone is not written again.</summary>
 	private Transform3D[] _written = System.Array.Empty<Transform3D>();
+
+	/// <summary>The rotation and translation each <see cref="_written"/> pose was built from.</summary>
+	private Quaternion[] _writtenRotation = System.Array.Empty<Quaternion>();
+
+	private Vector3[] _writtenPosition = System.Array.Empty<Vector3>();
+
+	/// <summary>
+	/// Whether a bone's rotation and translation are the ones its written pose was built from,
+	/// compared with <c>==</c>: equal values build an equal pose, and NaN never matches, as
+	/// IsEqualApprox never matches it.
+	/// </summary>
+	public static bool SameRawPose(Quaternion rotation, Vector3 position, Quaternion writtenRotation, Vector3 writtenPosition) =>
+		rotation.X == writtenRotation.X && rotation.Y == writtenRotation.Y &&
+		rotation.Z == writtenRotation.Z && rotation.W == writtenRotation.W &&
+		position.X == writtenPosition.X && position.Y == writtenPosition.Y && position.Z == writtenPosition.Z;
 
 	private bool _hasWritten;
 

@@ -4390,13 +4390,34 @@ public partial class GameUi : Node, IGameTitleUi
 		windows.Step(slides, null, HudBehaviourClock.ElapsedMilliseconds);
 		bool[] drawn = resolve.Drawn;
 		bool[] closed = windows.Closed;
-		System.Collections.Generic.List<Engine_UiBehaviourEvents.Fired>? fired = behaviours.Observe(ordinal =>
-			ordinal >= 0 && ordinal < drawn.Length && drawn[ordinal] && !(ordinal < closed.Length && closed[ordinal]));
-		foreach (Engine_UiBehaviourEvents.Fired one in fired ?? new System.Collections.Generic.List<Engine_UiBehaviourEvents.Fired>(0))
+		_observeDrawn = drawn;
+		_observeClosed = closed;
+		System.Collections.Generic.List<Engine_UiBehaviourEvents.Fired>? fired = behaviours.Observe(_observeLive ??= ObserveLive);
+		if (fired is null)
+		{
+			return;
+		}
+
+		foreach (Engine_UiBehaviourEvents.Fired one in fired)
 		{
 			PostPresentationEvent("hud", one);
 		}
 	}
+
+	// The HUD behaviour pass's liveness test, as one cached delegate over fields: a lambda
+	// capturing the frame's arrays made a closure and a delegate every pass.
+	private bool[] _observeDrawn = System.Array.Empty<bool>();
+	private bool[] _observeClosed = System.Array.Empty<bool>();
+	private System.Func<int, bool>? _observeLive;
+	private bool[] _statedPlays = System.Array.Empty<bool>();
+	private System.Func<int, bool>? _statedPlayTest;
+
+	private bool ObserveLive(int ordinal) =>
+		ordinal >= 0 && ordinal < _observeDrawn.Length && _observeDrawn[ordinal] &&
+		!(ordinal < _observeClosed.Length && _observeClosed[ordinal]);
+
+	private bool StatedPlay(int ordinal) =>
+		ordinal >= 0 && ordinal < _statedPlays.Length && _statedPlays[ordinal];
 
 	private int _worldIconTick;
 
@@ -4523,10 +4544,11 @@ public partial class GameUi : Node, IGameTitleUi
 			// A mod's stated slides (hud_slide) stand over the guest's, for the local player's HUD.
 			ApplyHudSlideOverrides(stated, HudLocalPlayer);
 
+			_statedPlays = statedPlays;
 			long standBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 			_hudStand.Stand(_hudAddress, stated, _hudResolve?.Drawn,
 				HudBehaviourClock.ElapsedMilliseconds,
-				ordinal => ordinal >= 0 && ordinal < statedPlays.Length && statedPlays[ordinal],
+				_statedPlayTest ??= StatedPlay,
 				HudMeterTimes());
 			_hudStandTicks += System.Diagnostics.Stopwatch.GetTimestamp() - standBegan;
 

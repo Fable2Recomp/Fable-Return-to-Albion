@@ -478,6 +478,17 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         /// <summary>A mod's size factor for this piece, on top of the canvas scale.</summary>
         public float ExtraScale { get; set; } = 1f;
 
+        private bool? _slab;
+
+        /// <summary>Whether the modern panels hide this piece whole (<see cref="Slabs"/>), asked of its id once.</summary>
+        public bool Slab => _slab ??= Slabs.Is(Piece.Id);
+
+        /// <summary>
+        /// A bar's last drive (<see cref="DriveBar"/>): the placed transform it started from, its
+        /// inputs, and the transform it left the node at. Null until driven, and while unpublished.
+        /// </summary>
+        public (Transform3D From, float Fraction, float Scale, Vector2 At, Transform3D To)? LastBar { get; set; }
+
         /// <summary>
         /// A mod clone's meter sources by meter name (<see cref="Engine_HudModPieces.Clone"/>): its
         /// nested meters read these instead of the guest's. Null for every shipped piece.
@@ -1857,6 +1868,26 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// <summary>The same names as StringNames: a node's Name compares natively, where the string form is a fresh conversion per child per walk.</summary>
     private static readonly StringName[] SlabNameNames = { "Bar", "blur", "left", "right", "top", "bottom" };
 
+    /// <summary>The slab pieces <see cref="DrawModernPanels"/> hides whole: the counters' CornerBox and its meters, the subtitle's box.</summary>
+    /// <remarks>A nested class, so a test can ask it without this node's static StringNames.</remarks>
+    internal static class Slabs
+    {
+        internal static bool Is(string id) =>
+            id.StartsWith("slidetoggle.Counter", System.StringComparison.Ordinal) ||
+            id.EndsWith(".CornerBox", System.StringComparison.Ordinal) ||
+            id.StartsWith("meter.CornerX.", System.StringComparison.Ordinal) ||
+            id.StartsWith("meter.CornerY.", System.StringComparison.Ordinal) ||
+            id.StartsWith("meter.SubtitlesX.", System.StringComparison.Ordinal) ||
+            id.StartsWith("meter.SubtitlesY.", System.StringComparison.Ordinal) ||
+            id == "slidefader2.Subtitles.Subtitles";
+    }
+
+    /// <summary>
+    /// A slab piece the panels replace. The walk shows it hidden from the start: shown there and
+    /// hidden here, each walk flipped it twice, and every flip restates its subtree to the renderer.
+    /// </summary>
+    private bool HiddenAsSlab(Built built) => !AuthoredTextBoxPanels && built.Slab;
+
     private void DrawModernPanels()
     {
         // Reused, not rebuilt: this runs every frame.
@@ -1958,14 +1989,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
                 StateTopBoxHeight();
             }
-            else if (!AuthoredTextBoxPanels &&
-                (built.Piece.Id.StartsWith("slidetoggle.Counter", System.StringComparison.Ordinal) ||
-                built.Piece.Id.EndsWith(".CornerBox", System.StringComparison.Ordinal) ||
-                built.Piece.Id.StartsWith("meter.CornerX.", System.StringComparison.Ordinal) ||
-                built.Piece.Id.StartsWith("meter.CornerY.", System.StringComparison.Ordinal) ||
-                built.Piece.Id.StartsWith("meter.SubtitlesX.", System.StringComparison.Ordinal) ||
-                built.Piece.Id.StartsWith("meter.SubtitlesY.", System.StringComparison.Ordinal) ||
-                built.Piece.Id == "slidefader2.Subtitles.Subtitles"))
+            else if (HiddenAsSlab(built))
             {
                 // The counters' strings sit in the CornerBox — a black nine-slice (`Group`#616:
                 // BoxMiddle, corners, sides) sized by the CornerX/CornerY meters — and the
@@ -2415,14 +2439,14 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 continue;
             }
 
-            if (label.HasMeta("text_wrap") && (int)label.GetMeta("text_wrap") == 1 &&
-                label.HasMeta("text_box") && (Vector2)label.GetMeta("text_box") == wrapBox)
+            if (label.HasMeta(TextWrapMeta) && (int)label.GetMeta(TextWrapMeta) == 1 &&
+                label.HasMeta(TextBoxMeta) && (Vector2)label.GetMeta(TextBoxMeta) == wrapBox)
             {
                 continue;
             }
 
-            label.SetMeta("text_wrap", 1);
-            label.SetMeta("text_box", wrapBox);
+            label.SetMeta(TextWrapMeta, 1);
+            label.SetMeta(TextBoxMeta, wrapBox);
             built.ShownTexts.Remove(ordinal);
         }
     }
@@ -2555,7 +2579,12 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     }
 
     /// <summary>Marks a label already given the HUD text style, so it is styled once.</summary>
-    private const string StyledMeta = "hud_text_styled";
+    /// <remarks>A StringName, as the wrap keys below: a string is converted to a new one on every call.</remarks>
+    private static readonly StringName StyledMeta = "hud_text_styled";
+
+    private static readonly StringName TextWrapMeta = "text_wrap";
+
+    private static readonly StringName TextBoxMeta = "text_box";
 
     private int _queryPieces;
     private string _queryReport = string.Empty;
@@ -2695,7 +2724,13 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 }
 
                 float baseY = (float)prompt.GetMeta(PromptBaseMeta).AsDouble();
-                prompt.Position = new Vector3(PromptX, baseY - PromptDrop, prompt.Position.Z);
+                Vector3 standing = prompt.Position;
+                var centred = new Vector3(PromptX, baseY - PromptDrop, standing.Z);
+                if (centred != standing)
+                {
+                    prompt.Position = centred;
+                }
+
                 continue;
             }
 
@@ -3386,7 +3421,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
             // resolves the name to its bound elements, `sub_828421F8`/`sub_823FE848` push the
             // slide), whose commands carry the active and opacity the state gate above reads.
 
-            built.Node.Visible = true;
+            built.Node.Visible = !HiddenAsSlab(built);
 
             Engine_UiCloneBinding.Lap(ref TicksGates, ref mark);
 
@@ -3485,7 +3520,12 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                 built.Piece.Driven == Engine_HudLayout.Drive.Bar && built.Tracks.Count == 0
                     ? standing.Origin
                     : new Vector3(at.X, at.Y, built.Piece.Depth));
-            if (placed != standing)
+            // A bar that stands where its last drive left it, from the same placed transform, is
+            // left to DriveBar: unchanged inputs write nothing (the write, then its scale and
+            // position, were three restatements a walk of a bar that had not moved).
+            bool barHeld = built.Piece.Driven == Engine_HudLayout.Drive.Bar && built.Tracks.Count == 0 &&
+                built.LastBar is { } lastBar && lastBar.From == placed && lastBar.To == standing;
+            if (placed != standing && !barHeld)
             {
                 built.Node.Transform = placed;
             }
@@ -3513,7 +3553,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
                     break;
 
                 case Engine_HudLayout.Drive.Bar:
-                    DriveBar(built, at, scale);
+                    DriveBar(built, at, scale, placed, standing, barHeld);
                     break;
 
                 case Engine_HudLayout.Drive.Text:
@@ -3533,7 +3573,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
 
             // The drive hides too: `ScrubTracks` and `DriveBar` return early on a meter the guest
             // has never published, after both gates above have passed.
-            if (!built.Node.Visible)
+            if (!built.Node.Visible && !HiddenAsSlab(built))
             {
                 ++_hiddenByDrive;
                 if (_explain)
@@ -3823,22 +3863,40 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// Scales a bar by its meter, keeping the left edge where the layout put it: a quad is
     /// centred on its origin, so the node shifts by half the width removed.
     /// </summary>
-    private void DriveBar(Built built, Vector2 at, float scale)
+    /// <remarks>
+    /// <paramref name="barHeld"/>: the walk found the node where the last drive left it, from the
+    /// same <paramref name="placed"/>, and did not write it. With the same inputs the same writes
+    /// would give the same transform, so none is made; otherwise the walk's write comes first.
+    /// </remarks>
+    private void DriveBar(Built built, Vector2 at, float scale, Transform3D placed, Transform3D standing, bool barHeld)
     {
         // Unpublished is not empty: a never-written meter hides the bar, a meter written as zero
         // draws an empty one.
         if (Values.Fraction(built.Value) is not { } fraction)
         {
             built.Node.Visible = false;
+            built.LastBar = null;
             return;
         }
 
-        built.Node.Visible = true;
+        built.Node.Visible = !HiddenAsSlab(built);
+        if (barHeld && built.LastBar is { } last &&
+            last.Fraction == fraction && last.Scale == scale && last.At == at)
+        {
+            return;
+        }
+
+        if (barHeld && placed != standing)
+        {
+            built.Node.Transform = placed;
+        }
+
         built.Node.Scale = new Vector3(scale * fraction, scale, 1f);
 
         float full = built.Width * scale;
         built.Node.Position = new Vector3(
             at.X - (full * (1f - fraction) * 0.5f), at.Y, built.Piece.Depth);
+        built.LastBar = (placed, fraction, scale, at, built.Node.Transform);
     }
 
     /// <summary>Lays a text piece out in the shipped font, only when the string changes.</summary>

@@ -273,6 +273,9 @@ public static class Engine_FxRecipes
 	private static readonly List<Recipe> _active = new();
 	private static readonly Dictionary<FableFx, Applied> _applied = new();
 	private static readonly List<FableFx> _gone = new();
+	// Begin's snapshots of the two anchor maps (entries are removed while walking), kept and reused.
+	private static readonly List<KeyValuePair<Recipe, FableFx>> _anchorScratch = new();
+	private static readonly List<KeyValuePair<(string, uint), FableFx>> _withScratch = new();
 
 	/// <summary>
 	/// ONE COLUMN PER RECIPE. A spell plays several effects per cast and names them all in
@@ -368,7 +371,9 @@ public static class Engine_FxRecipes
 			_applied.Remove(node);
 		}
 
-		foreach ((Recipe recipe, FableFx node) in new List<KeyValuePair<Recipe, FableFx>>(_anchorOf))
+		_anchorScratch.Clear();
+		_anchorScratch.AddRange(_anchorOf);
+		foreach ((Recipe recipe, FableFx node) in _anchorScratch)
 		{
 			if (!GodotObject.IsInstanceValid(node) || !node.IsInsideTree() || !_applied.ContainsKey(node))
 			{
@@ -376,13 +381,18 @@ public static class Engine_FxRecipes
 			}
 		}
 
-		foreach (((string, uint) key, FableFx node) in new List<KeyValuePair<(string, uint), FableFx>>(_withAnchors))
+		_anchorScratch.Clear();
+		_withScratch.Clear();
+		_withScratch.AddRange(_withAnchors);
+		foreach (((string, uint) key, FableFx node) in _withScratch)
 		{
 			if (!GodotObject.IsInstanceValid(node) || !node.IsInsideTree() || !_applied.ContainsKey(node))
 			{
 				_withAnchors.Remove(key);
 			}
 		}
+
+		_withScratch.Clear();
 	}
 
 	/// <summary>

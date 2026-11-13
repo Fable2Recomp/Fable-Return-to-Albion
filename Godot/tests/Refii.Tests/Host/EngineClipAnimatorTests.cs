@@ -5,6 +5,7 @@ using GdUnit4;
 using static GdUnit4.Assertions;
 using Godot;
 using Refii.Animations;
+using Refii.Host;
 
 [TestSuite]
 public class EngineClipAnimatorTests
@@ -359,5 +360,106 @@ public class EngineClipAnimatorTests
         int[] holes = { 0, 1, 2, -1, 3, -1, 4, 5, 6, 7, 8 };
         AssertThat(Engine_ClipAnimator.HipCompensation(1, 2, parents, holes, out children)).IsTrue();
         AssertThat(children).IsEqual(new[] { 4, 6, 7, 8, 9, 10 });
+    }
+
+    [TestCase]
+    public void TestCharacterRigShapeIsAFaceOrTwentyBones()
+    {
+        AssertThat(Engine_ClipAnimator.IsCharacterRigShape(false, 4)).IsFalse();
+        AssertThat(Engine_ClipAnimator.IsCharacterRigShape(false, 19)).IsFalse();
+        AssertThat(Engine_ClipAnimator.IsCharacterRigShape(false, 20)).IsTrue();
+        AssertThat(Engine_ClipAnimator.IsCharacterRigShape(true, 4)).IsTrue();
+    }
+
+    [TestCase]
+    public void TestSameRawPoseSkipsOnlyWhatIsEqualApproxWouldSkip()
+    {
+        var q = new Quaternion(new Vector3(0.3f, 0.8f, -0.2f).Normalized(), 1.1f);
+        var p = new Vector3(0.12f, -1.5f, 3.25f);
+        AssertThat(Engine_ClipAnimator.SameRawPose(q, p, q, p)).IsTrue();
+        var written = new Transform3D(new Basis(q), p);
+        AssertThat(new Transform3D(new Basis(q), p).IsEqualApprox(written)).IsTrue();
+
+        // Any component moved is not the same raw pose: the full comparison decides.
+        AssertThat(Engine_ClipAnimator.SameRawPose(new Quaternion(q.X, q.Y, q.Z, q.W + 1e-7f), p, q, p)).IsFalse();
+        AssertThat(Engine_ClipAnimator.SameRawPose(q, p + new Vector3(0f, 0f, 1e-6f), q, p)).IsFalse();
+
+        // NaN never matches, as IsEqualApprox never matches it.
+        var nan = new Quaternion(float.NaN, 0f, 0f, 1f);
+        AssertThat(Engine_ClipAnimator.SameRawPose(nan, p, nan, p)).IsFalse();
+        AssertThat(new Transform3D(new Basis(nan), p).IsEqualApprox(new Transform3D(new Basis(nan), p))).IsFalse();
+
+        // Signed zeros compare equal, and the poses they build are equal too.
+        var plus = new Quaternion(0f, 0f, 0f, 1f);
+        var minus = new Quaternion(-0f, 0f, -0f, 1f);
+        AssertThat(Engine_ClipAnimator.SameRawPose(minus, Vector3.Zero, plus, new Vector3(-0f, 0f, 0f))).IsTrue();
+        AssertThat(new Transform3D(new Basis(minus), Vector3.Zero)
+            .IsEqualApprox(new Transform3D(new Basis(plus), new Vector3(-0f, 0f, 0f)))).IsTrue();
+    }
+
+    [TestCase]
+    public void TestHeldPostOpsIsACopyOfTheRead()
+    {
+        var held = new Engine_ClipAnimator.HeldPostOps();
+        held.Take(null);
+        AssertThat(held.Value is null).IsTrue();
+
+        int[] aim = { 1, 2, 3, 4, 5 };
+        int[] look = { 6, 7, 8, 9, 10, 11 };
+        var targets = new Quaternion[6];
+        for (int b = 0; b < targets.Length; b++)
+        {
+            targets[b] = new Quaternion(0.1f * b, 0.2f, 0.3f, 0.9f);
+        }
+
+        var ops = new System.Collections.Generic.List<HostBridge.GuestPostOp>
+        {
+            new(77u, 1, 2, 0.5f, 0.75f, targets),
+        };
+        held.Take(new HostBridge.GuestPostOps(true, false, aim, look, ops));
+
+        // The bridge refills its buffers for the next entity: the held copy must not move.
+        aim[0] = -1;
+        look[5] = -1;
+        targets[3] = Quaternion.Identity;
+        ops.Clear();
+
+        HostBridge.GuestPostOps copy = held.Value!.Value;
+        AssertThat(copy.AimOn).IsTrue();
+        AssertThat(copy.LookOn).IsFalse();
+        AssertThat(copy.AimBones).IsEqual(new[] { 1, 2, 3, 4, 5 });
+        AssertThat(copy.LookBones).IsEqual(new[] { 6, 7, 8, 9, 10, 11 });
+        AssertThat(copy.Ops.Count).IsEqual(1);
+        HostBridge.GuestPostOp op = copy.Ops[0];
+        AssertThat(op.RecordUid).IsEqual(77u);
+        AssertThat(op.Kind).IsEqual(1);
+        AssertThat(op.Mode).IsEqual(2);
+        AssertThat(op.Weight).IsEqual(0.5f);
+        AssertThat(op.RecordWeight).IsEqual(0.75f);
+        AssertThat(op.Targets.Length).IsEqual(6);
+        AssertThat(op.Targets[3] == new Quaternion(0.3f, 0.2f, 0.3f, 0.9f)).IsTrue();
+
+        // An empty read stays an empty read, not a null one.
+        held.Take(new HostBridge.GuestPostOps(false, false, aim, look, new System.Collections.Generic.List<HostBridge.GuestPostOp>()));
+        AssertThat(held.Value is { Ops.Count: 0 }).IsTrue();
+    }
+
+    [TestCase]
+    public void TestProcessFrameLatchHoldsTheOuterValue()
+    {
+        AssertThat(Refii.Core.Engine_ProcessFrame.Latched).IsFalse();
+        using (Refii.Core.Engine_ProcessFrame.Begin(42UL))
+        {
+            AssertThat(Refii.Core.Engine_ProcessFrame.Current).IsEqual(42UL);
+            using (Refii.Core.Engine_ProcessFrame.Begin(43UL))
+            {
+                AssertThat(Refii.Core.Engine_ProcessFrame.Current).IsEqual(42UL);
+            }
+
+            AssertThat(Refii.Core.Engine_ProcessFrame.Latched).IsTrue();
+            AssertThat(Refii.Core.Engine_ProcessFrame.Current).IsEqual(42UL);
+        }
+
+        AssertThat(Refii.Core.Engine_ProcessFrame.Latched).IsFalse();
     }
 }

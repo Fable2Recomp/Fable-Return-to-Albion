@@ -86,6 +86,43 @@ public class StaticShadowMapTests
 	}
 
 	[TestCase]
+	public void TestBvhFromAnExactArrayMatchesTheListBuildAndKeepsOnlyUsedNodes()
+	{
+		// A few hundred scattered triangles: the tree a bake builds from its exact-size array must be the
+		// one the list constructor builds, node for node, and must not keep the build's spare nodes.
+		var list = new List<Engine_LevelShadowMaps.BvhTriangle>();
+		var rng = new Random(7);
+		for (int i = 0; i < 300; i++)
+		{
+			var at = new Vector3(rng.Next(-50, 50), rng.Next(0, 10), rng.Next(-50, 50));
+			list.Add(new(at, at + new Vector3(1f, 0f, 0f), at + new Vector3(0f, 1f, 0.5f)));
+		}
+
+		var fromList = new Engine_LevelShadowMaps.BvhTree(list);
+		var fromArray = new Engine_LevelShadowMaps.BvhTree(list.ToArray());
+
+		AssertThat(fromArray.TriangleCount).IsEqual(300);
+		AssertThat(fromArray.NodeCount).IsEqual(fromList.NodeCount);
+		AssertThat(fromArray.NodeCount < 600).IsTrue();
+		fromList.ExportGpuBuffers(out byte[] listNodes, out byte[] listTris);
+		fromArray.ExportGpuBuffers(out byte[] arrayNodes, out byte[] arrayTris);
+		AssertThat(arrayNodes.Length).IsEqual(fromArray.NodeCount * 32);
+		AssertThat(arrayNodes.AsSpan().SequenceEqual(listNodes)).IsTrue();
+		AssertThat(arrayTris.AsSpan().SequenceEqual(listTris)).IsTrue();
+
+		// Written in pieces, as the GPU upload does, the buffers are byte for byte the whole export.
+		var pieces = new byte[arrayTris.Length];
+		fromArray.WriteGpuTriangles(0, pieces.AsSpan(0, 64 * 120));
+		fromArray.WriteGpuTriangles(120, pieces.AsSpan(64 * 120));
+		AssertThat(pieces.AsSpan().SequenceEqual(arrayTris)).IsTrue();
+		var nodePieces = new byte[arrayNodes.Length];
+		int half = fromArray.NodeCount / 2;
+		fromArray.WriteGpuNodes(0, nodePieces.AsSpan(0, 32 * half));
+		fromArray.WriteGpuNodes(half, nodePieces.AsSpan(32 * half));
+		AssertThat(nodePieces.AsSpan().SequenceEqual(arrayNodes)).IsTrue();
+	}
+
+	[TestCase]
 	public void TestBakeFromBvhRecordsWallOcclusionAndLeavesOppositeOpen()
 	{
 		// Place a vertical wall quad at X = +3.0 spanning Y in [-4, 4] and Z in [-4, 4].

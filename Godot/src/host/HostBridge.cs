@@ -805,7 +805,10 @@ public static partial class HostBridge
 		}
 
 		byte[] text = _partHidesText ??= new byte[8192];
-		System.Array.Clear(text);
+		// Only the first byte, not the 8 KB: the bridge terminates its text at [0] before anything
+		// else and again after every line it puts (both titles' RefiiHostGetEntityPartHides), so
+		// the first zero below is where this call's text ends whatever an earlier call left past it.
+		text[0] = 0;
 		uint count;
 		try
 		{

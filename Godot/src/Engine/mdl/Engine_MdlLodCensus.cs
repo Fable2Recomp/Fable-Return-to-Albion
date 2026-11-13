@@ -26,7 +26,7 @@ namespace Refii.Models;
 /// transform); and a single mesh is measured to its box, not its origin (`originTriangles`).
 /// Debug use: it walks the whole tree on the main thread.
 /// </remarks>
-public static class Engine_MdlLodCensus
+public static partial class Engine_MdlLodCensus
 {
 	private sealed class Tally
 	{
@@ -100,6 +100,7 @@ public static class Engine_MdlLodCensus
 
 		var owners = new Dictionary<string, Tally>();
 		var meshes = new Dictionary<string, Tally>();
+		_categories = new Dictionary<string, CategoryTally>();
 		Walk(root, "(root)", view, owners, meshes);
 
 		Tally all = new();
@@ -130,6 +131,7 @@ public static class Engine_MdlLodCensus
 			["total"] = Row("all", all),
 			["owners"] = owners.OrderByDescending(p => p.Value.Triangles).Select(p => Row(p.Key, p.Value)).ToList(),
 			["meshes"] = meshes.OrderByDescending(p => p.Value.Triangles).Take(40).Select(p => Row(p.Key, p.Value)).ToList(),
+			["categories"] = TakeCategories(),
 		};
 	}
 
@@ -247,6 +249,7 @@ public static class Engine_MdlLodCensus
 			}
 		}
 
+		TallyCategories(geometry, mesh, batch is not null, owner, levels, full, copies, scale, boxDistance, view);
 		long fullTriangles = copies * full.Sum();
 		long noLod = 0;
 		for (int s = 0; s < surfaces; s++)

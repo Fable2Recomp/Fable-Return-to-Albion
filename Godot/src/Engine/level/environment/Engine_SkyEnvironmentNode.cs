@@ -1518,16 +1518,24 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         Camera3D? camera = ResolveCamera();
 
-        Vector3 right = camera?.GlobalTransform.Basis.X ?? Vector3.Right;
-        Vector3 up = camera?.GlobalTransform.Basis.Y ?? Vector3.Up;
+        Basis view = camera?.GlobalTransform.Basis ?? Basis.Identity;
+        Vector3 right = camera is not null ? view.X : Vector3.Right;
+        Vector3 up = camera is not null ? view.Y : Vector3.Up;
 
+        // Written only when it changes (it is 1 under a clear sky): every material write
+        // queues the material's update for the renderer, the same value or not.
         if (celestial.GetNodeOrNull<MeshInstance3D>(Path_MoonGlare) is
                 { MaterialOverride: ShaderMaterial moonGlare })
         {
             // The moon glare is a scene draw (celestial_overlay); the cloud term is its vis.
             Vector3 moonDir = Engine_SkyFrame.ToGodot(frame.MoonDirection);
             float vis = CloudVisibility(clouds, cloudTheme, moonDir, right, up);
-            moonGlare.SetShaderParameter(Param_element_vis, vis);
+            if (!ReferenceEquals(moonGlare, _moonGlareVisMaterial) || vis != _moonGlareVis)
+            {
+                moonGlare.SetShaderParameter(Param_element_vis, vis);
+                _moonGlareVisMaterial = moonGlare;
+                _moonGlareVis = vis;
+            }
         }
 
         if (celestial.GetNodeOrNull<MeshInstance3D>(Path_SunGlare) is
@@ -1535,9 +1543,20 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             Vector3 sunDir = Engine_SkyFrame.ToGodot(frame.SunDirection);
             float vis = CloudVisibility(clouds, cloudTheme, sunDir, right, up);
-            sunGlare.SetShaderParameter(Param_element_vis, vis);
+            if (!ReferenceEquals(sunGlare, _sunGlareVisMaterial) || vis != _sunGlareVis)
+            {
+                sunGlare.SetShaderParameter(Param_element_vis, vis);
+                _sunGlareVisMaterial = sunGlare;
+                _sunGlareVis = vis;
+            }
         }
     }
+
+    /// <summary>The glare materials' last written <c>element_vis</c> (AnimateSky), so an unchanged one is not written again.</summary>
+    private ShaderMaterial? _moonGlareVisMaterial;
+    private float _moonGlareVis;
+    private ShaderMaterial? _sunGlareVisMaterial;
+    private float _sunGlareVis;
 
     private void AdvanceCloudLayers(Node3D clouds, CloudTheme theme, float delta)
     {

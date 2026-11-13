@@ -112,8 +112,10 @@ public static class Engine_WaterMaterial
         {
             return;
         }
-        foreach (Node child in water.GetChildren())
+        // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
+        for (int i = 0, count = water.GetChildCount(); i < count; i++)
         {
+            Node child = water.GetChild(i);
             if (child is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material &&
                 Phases.TryGetValue(material, out Phase? phase))
             {

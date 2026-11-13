@@ -1113,7 +1113,7 @@ public sealed class Engine_EntitySkeleton
 	public void Reblend()
 	{
 		// The walk's write this frame already drew this instant.
-		if (_blendedFrame != Godot.Engine.GetProcessFrames())
+		if (_blendedFrame != Refii.Core.Engine_ProcessFrame.Current)
 		{
 			WriteBlended();
 		}
@@ -1647,7 +1647,7 @@ public sealed class Engine_EntitySkeleton
 			return;
 		}
 
-		_blendedFrame = Godot.Engine.GetProcessFrames();
+		_blendedFrame = Refii.Core.Engine_ProcessFrame.Current;
 
 		// AT THE WORLD'S DRAW POINT, BY STAMP. The guest does not blend a pair: `sub_82A75720`
 		// assigns the same block to both `renderObj+0x200` and `+0x204` (`r4 = r29` at

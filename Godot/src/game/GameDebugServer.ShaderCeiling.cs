@@ -8,7 +8,36 @@ namespace Refii.Game;
 /// <summary>The render channel's `shaderCeiling` lever (Engine_ShaderCeiling); normal play never requests it.</summary>
 public partial class GameDebugServer
 {
-	private static readonly Engine_ShaderCeiling ShaderCeiling = new(CeilingRoots, IsTreeProp);
+	private static readonly Engine_ShaderCeiling ShaderCeiling = new(CeilingRoots, IsTreeProp, IsCharacterBody, CeilingSwitch);
+
+	/// <summary>Fewest skin binds a character's rig has; rigged props (doors, signs) have a handful.</summary>
+	internal const int CharacterBones = 12;
+
+	/// <summary>The ceiling's `characters` rule: a mesh on a rig of at least <see cref="CharacterBones"/> binds.</summary>
+	internal static bool IsCharacterBody(Node node) =>
+		node is MeshInstance3D { Skin: { } skin } && skin.GetBindCount() >= CharacterBones;
+
+	/// <summary>
+	/// The ceiling's switches: `highlight` the targeting highlight's layer (its silhouette viewport and,
+	/// on a phone, the bleed passes and the composite quad, Engine_MobileHighlight), `entityfeed` the
+	/// entity walk (GameEntities' process; everything stays drawn as last placed and posed). Nothing
+	/// else turns either off, so back on is their normal state.
+	/// </summary>
+	private static void CeilingSwitch(Engine_ShaderCeiling.Category category, bool on)
+	{
+		switch (category)
+		{
+			case Engine_ShaderCeiling.Category.Highlight:
+				Refii.Entities.Engine_EntityHighlightLayer.Current?.SetEnabled(on);
+				break;
+			case Engine_ShaderCeiling.Category.EntityFeed:
+				if (GameEntities.Current is { } entities && GodotObject.IsInstanceValid(entities))
+				{
+					entities.SetProcess(on);
+				}
+				break;
+		}
+	}
 
 	/// <summary>Applies a validated `shaderCeiling` request on the Godot thread, mirrors included.</summary>
 	private void ApplyShaderCeiling(Engine_ShaderCeiling.Request ceiling)

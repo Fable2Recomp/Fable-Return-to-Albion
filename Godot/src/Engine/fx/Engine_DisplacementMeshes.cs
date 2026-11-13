@@ -13,7 +13,8 @@ namespace Refii.Fx;
 /// (Engine_ClassicDisplacement). The level build notes the records
 /// (Engine_ClassicDisplacement.NoteRecord); the prop streamer hands each node over once its mesh
 /// is in. The layer renders only on frames something states it active, so this pump does while
-/// any stands.
+/// any stands; a frame a view would draw for static meshes outside its frustum alone is taken
+/// back in that frame (<see cref="Engine_FxDisplacement.SleepUnseen"/>).
 /// </remarks>
 public static class Engine_DisplacementMeshes
 {
@@ -26,6 +27,8 @@ public static class Engine_DisplacementMeshes
         public Engine_FxLayerInstance? Instance;
         public ShaderMaterial? Material;
         public Transform3D Placed;
+        /// <summary>The mesh's own bounds, as the renderer culls it (no vertex shader moves it).</summary>
+        public Aabb Bounds;
         public bool Visible;
         /// <summary>A body's displacement parts: skinned on the body's skeleton, each surface on its own material.</summary>
         public bool Skinned;
@@ -81,7 +84,74 @@ public static class Engine_DisplacementMeshes
         return held;
     }
 
-    /// <summary>Keeps each mesh's layer instance with its node and keeps the layer awake. Main thread, once a frame.</summary>
+    /// <summary>
+    /// Margin on every frustum plane, in metres, over the renderer's own cull of the same box: the
+    /// test only ever keeps the layer awake for longer.
+    /// </summary>
+    public const float FrustumSlack = 1f;
+
+    /// <summary>
+    /// Whether <paramref name="local"/> under <paramref name="placed"/> can touch the volume inside
+    /// ALL of <paramref name="planes"/> (outward-facing, <see cref="Camera3D.GetFrustum"/>), within
+    /// <see cref="FrustumSlack"/>. Conservative: the world box of a rotated box only grows.
+    /// </summary>
+    public static bool BoxTouchesFrustum(Aabb local, Transform3D placed, Plane[] planes)
+    {
+        Aabb world = placed * local;
+        Vector3 centre = world.GetCenter();
+        Vector3 half = world.Size * 0.5f;
+        foreach (Plane plane in planes)
+        {
+            Vector3 n = plane.Normal;
+            float reach = Mathf.Abs(n.X) * half.X + Mathf.Abs(n.Y) * half.Y + Mathf.Abs(n.Z) * half.Z;
+            if (plane.DistanceTo(centre) - reach > FrustumSlack)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static readonly Plane[] Frustum = new Plane[6];
+    private static readonly System.Func<Camera3D, bool> SeenBy = AnyStaticShownIn;
+
+    /// <summary>
+    /// Whether a shown static mesh, as this frame's pump left its instance, touches the frustum of
+    /// <paramref name="camera"/> (a layer view's own camera). True when the frustum cannot be read.
+    /// </summary>
+    private static bool AnyStaticShownIn(Camera3D camera)
+    {
+        Godot.Collections.Array<Plane> planes = camera.GetFrustum();
+        // Freed here, not left to the finalizer: one array a frame while a static mesh stands.
+        using (var handle = (Godot.Collections.Array)planes)
+        {
+            if (planes.Count != Frustum.Length)
+            {
+                return true;
+            }
+            for (int i = 0; i < Frustum.Length; i++)
+            {
+                Frustum[i] = planes[i];
+            }
+        }
+        foreach (Held held in Meshes)
+        {
+            if (!held.Skinned && held.Instance is not null && held.Visible &&
+                BoxTouchesFrustum(held.Bounds, held.Placed, Frustum))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Keeps each mesh's layer instance with its node and keeps the layer awake. A shown skinned
+    /// part wakes it as before; a shown static mesh wakes it too, but each view's frame is taken
+    /// back when no static mesh is in that view's frustum (<see cref="Engine_FxDisplacement.SleepUnseen"/>):
+    /// tested here, after the instances are placed for this frame, against the camera the view
+    /// copied this frame. Main thread, once a frame.
+    /// </summary>
     public static void Pump()
     {
         if (Meshes.Count == 0)
@@ -89,7 +159,8 @@ public static class Engine_DisplacementMeshes
             return;
         }
         Rid scenario = Engine_FxDisplacement.Scenario;
-        int shown = 0;
+        int shownSkinned = 0;
+        int shownStatic = 0;
         for (int i = Meshes.Count - 1; i >= 0; i--)
         {
             Held held = Meshes[i];
@@ -103,6 +174,7 @@ public static class Engine_DisplacementMeshes
             {
                 held.Material = held.Skinned ? null : MaterialFor(held.Mesh);
                 held.Placed = held.Node.GlobalTransform;
+                held.Bounds = held.Mesh.GetAabb();
                 held.Visible = held.Node.IsVisibleInTree();
                 held.Instance = Engine_FxLayerInstance.Create(held.Mesh.GetRid(), scenario, Engine_FxDisplacement.LayerMask,
                     0f, held.Placed, held.Visible, held.Material?.GetRid() ?? default);
@@ -126,12 +198,22 @@ public static class Engine_DisplacementMeshes
                     held.Visible = visible;
                     held.Instance.SetVisible(visible);
                 }
-                shown += visible ? 1 : 0;
+                if (visible)
+                {
+                    // A skinned part's bounds follow its skeleton, which this does not know.
+                    if (held.Skinned) shownSkinned++;
+                    else shownStatic++;
+                }
             }
         }
-        if (shown > 0)
+        if (shownSkinned > 0)
         {
             Engine_FxDisplacement.NotifyActive();
+        }
+        Engine_FxDisplacement.SleepUnseen(SeenBy);
+        if (shownStatic > 0)
+        {
+            Engine_FxDisplacement.NotifyStaticShown();
         }
     }
 

@@ -77,6 +77,89 @@ public sealed class ShaderCeilingTests
         }
     }
 
+    /// <summary>
+    /// The entities' split: attachments follow the characters, the entities' lights go with the root
+    /// exactly when it went whole before, the switches are off unless named, `nodraw` parses, and the
+    /// hide-only categories take nothing else.
+    /// </summary>
+    [TestCase]
+    public void SplitsTheEntities()
+    {
+        static Engine_ShaderCeiling.Mode M(Engine_ShaderCeiling.Request r, Engine_ShaderCeiling.Category c) => r.Modes[(int)c];
+        const Engine_ShaderCeiling.Mode Off = Engine_ShaderCeiling.Mode.Off, Hide = Engine_ShaderCeiling.Mode.Hide;
+
+        // The old whole hide: everything under the root, its lights with it; no switch.
+        Engine_ShaderCeiling.Request whole = Parse("{\"shaderCeiling\":{\"entities\":\"hide\"}}")!.Value;
+        AssertThat(M(whole, Engine_ShaderCeiling.Category.Characters) == Hide).IsTrue();
+        AssertThat(M(whole, Engine_ShaderCeiling.Category.Attachments) == Hide).IsTrue();
+        AssertThat(M(whole, Engine_ShaderCeiling.Category.EntityLights) == Hide).IsTrue();
+        AssertThat(M(whole, Engine_ShaderCeiling.Category.Highlight) == Off).IsTrue();
+        AssertThat(M(whole, Engine_ShaderCeiling.Category.EntityFeed) == Off).IsTrue();
+
+        // The rigid entities alone, as before: the lights stay.
+        Engine_ShaderCeiling.Request rigid = Parse("{\"shaderCeiling\":{\"entities\":\"hide\",\"characters\":\"off\"}}")!.Value;
+        AssertThat(M(rigid, Engine_ShaderCeiling.Category.Attachments) == Off).IsTrue();
+        AssertThat(M(rigid, Engine_ShaderCeiling.Category.EntityLights) == Off).IsTrue();
+
+        // Every node by node, the root and its lights kept.
+        Engine_ShaderCeiling.Request nodes = Parse("{\"shaderCeiling\":{\"entities\":\"hide\",\"entitylights\":\"off\"}}")!.Value;
+        AssertThat(M(nodes, Engine_ShaderCeiling.Category.Characters) == Hide).IsTrue();
+        AssertThat(M(nodes, Engine_ShaderCeiling.Category.EntityLights) == Off).IsTrue();
+
+        // Drawn by nobody, shown in the tree; the parts follow, a named part does not.
+        Engine_ShaderCeiling.Request noDraw = Parse("{\"shaderCeiling\":{\"entities\":\"nodraw\",\"attachments\":\"off\"}}")!.Value;
+        AssertThat(M(noDraw, Engine_ShaderCeiling.Category.Characters) == Engine_ShaderCeiling.Mode.NoDraw).IsTrue();
+        AssertThat(M(noDraw, Engine_ShaderCeiling.Category.Attachments) == Off).IsTrue();
+        AssertThat(M(noDraw, Engine_ShaderCeiling.Category.EntityLights) == Off).IsTrue();
+
+        Engine_ShaderCeiling.Request parts = Parse("{\"shaderCeiling\":{\"characters\":\"flat\"}}")!.Value;
+        AssertThat(M(parts, Engine_ShaderCeiling.Category.Attachments) == Engine_ShaderCeiling.Mode.Flat).IsTrue();
+        AssertThat(M(parts, Engine_ShaderCeiling.Category.Entities) == Off).IsTrue();
+
+        Engine_ShaderCeiling.Request switches = Parse("{\"shaderCeiling\":{\"highlight\":\"hide\",\"entityfeed\":\"hide\"}}")!.Value;
+        AssertThat(M(switches, Engine_ShaderCeiling.Category.Highlight) == Hide).IsTrue();
+        AssertThat(M(switches, Engine_ShaderCeiling.Category.EntityFeed) == Hide).IsTrue();
+        AssertThat(M(switches, Engine_ShaderCeiling.Category.Entities) == Off).IsTrue();
+
+        // `all` with a drawing mode leaves the hide-only categories off; `all` hide takes the
+        // entities' lights but never a switch, which acts only when named.
+        Engine_ShaderCeiling.Request allFlat = Parse("{\"shaderCeiling\":{\"all\":\"flat\"}}")!.Value;
+        AssertThat(M(allFlat, Engine_ShaderCeiling.Category.Highlight) == Off).IsTrue();
+        AssertThat(M(allFlat, Engine_ShaderCeiling.Category.EntityLights) == Off).IsTrue();
+        AssertThat(allFlat.Words[(int)Engine_ShaderCeiling.Category.EntityLights] is null).IsTrue();
+        foreach (string allHide in new[] { "{\"shaderCeiling\":\"hide\"}", "{\"shaderCeiling\":{\"all\":\"hide\"}}" })
+        {
+            Engine_ShaderCeiling.Request hidden = Parse(allHide)!.Value;
+            for (int c = 0; c < hidden.Modes.Length; c++)
+            {
+                bool isSwitch = (Engine_ShaderCeiling.Category)c is Engine_ShaderCeiling.Category.Highlight or Engine_ShaderCeiling.Category.EntityFeed;
+                AssertThat(hidden.Modes[c] == (isSwitch ? Off : Hide)).IsTrue();
+            }
+        }
+        Engine_ShaderCeiling.Request allAndOne = Parse("{\"shaderCeiling\":{\"all\":\"hide\",\"highlight\":\"hide\"}}")!.Value;
+        AssertThat(M(allAndOne, Engine_ShaderCeiling.Category.Highlight) == Hide).IsTrue();
+        AssertThat(M(allAndOne, Engine_ShaderCeiling.Category.EntityFeed) == Off).IsTrue();
+
+        foreach (string bad in new[]
+        {
+            "{\"shaderCeiling\":{\"highlight\":\"flat\"}}",
+            "{\"shaderCeiling\":{\"entitylights\":\"nodraw\"}}",
+            "{\"shaderCeiling\":{\"entityfeed\":\"+shadows_disabled\"}}",
+        })
+        {
+            bool threw = false;
+            try
+            {
+                Parse(bad);
+            }
+            catch (JsonException)
+            {
+                threw = true;
+            }
+            AssertThat(threw).IsTrue();
+        }
+    }
+
     /// <summary>A swaying tree keeps its sway and, cut, its scissor; the PRT transfer and the lighting go.</summary>
     [TestCase]
     public void TreeKeepsItsSwayAndItsCutout()

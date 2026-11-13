@@ -454,10 +454,13 @@ public partial class Engine_PropStreamer : Node3D
     ///
     /// The tiered cull is one test per node, so its edge is dithered per copy by
     /// <see cref="Engine_PropFade"/> at the same radius; a tree keeps its own stated band.
+    /// <paramref name="reachScale"/> multiplies every distance this sets (the stated range, the
+    /// tiers, the pixel cull); 1, the default, is the rule above unchanged. Android's rigid entity
+    /// props pass `android_entity_prop_distance_scale` (AndroidEntityProps).
     /// </summary>
-    public static void ApplyVisibilityRange(GeometryInstance3D instance, Mesh mesh)
+    public static void ApplyVisibilityRange(GeometryInstance3D instance, Mesh mesh, float reachScale = 1f)
     {
-        float radius = ApplyRange(instance, mesh);
+        float radius = ApplyRange(instance, mesh, reachScale);
         if (!instance.HasMeta(Engine_PropDrawRange.TreeBandMeta))
         {
             Engine_PropFade.SetRadius(instance, mesh, radius);
@@ -472,10 +475,15 @@ public partial class Engine_PropStreamer : Node3D
     /// The range above; returns the radius each copy is drawn to under the tiered cull (the node's
     /// end less the batch's spread), or zero when the node is not tier-culled.
     /// </summary>
-    private static float ApplyRange(GeometryInstance3D instance, Mesh mesh)
+    private static float ApplyRange(GeometryInstance3D instance, Mesh mesh, float reachScale)
     {
         // First apply what the guest states (draw range, tree instance uniforms, billboard meta)
         bool hasStated = Engine_PropDrawRange.Apply(instance, mesh);
+        if (hasStated && reachScale != 1f && instance.VisibilityRangeEnd > 0f)
+        {
+            instance.VisibilityRangeEnd *= reachScale;
+            instance.VisibilityRangeEndMargin *= reachScale;
+        }
 
         Vector3 size = mesh.GetAabb().Size;
         float extent = MathF.Max(size.X, MathF.Max(size.Y, size.Z));
@@ -519,7 +527,7 @@ public partial class Engine_PropStreamer : Node3D
         }
 
         float cullScale = ReadCullDistanceScale();
-        float tieredEnd = CalculateTieredCullDistance(extent, cullScale);
+        float tieredEnd = CalculateTieredCullDistance(extent, cullScale) * reachScale;
         if (tieredEnd > 0f)
         {
             float end = tieredEnd + spread;
@@ -530,7 +538,7 @@ public partial class Engine_PropStreamer : Node3D
                 instance.GetMeta(Engine_PropDrawRange.Meta).AsFloat32Array() is { Length: >= 3 } statedMeta &&
                 statedMeta[2] > 0f)
             {
-                end = MathF.Min(statedMeta[2], end);
+                end = MathF.Min(statedMeta[2] * reachScale, end);
             }
 
             if (instance.VisibilityRangeBegin > 0f)
@@ -552,7 +560,7 @@ public partial class Engine_PropStreamer : Node3D
             return 0f;
         }
 
-        float legacyEnd = extent * PixelsPerMetreAtOneMetre / CullMinPixels;
+        float legacyEnd = extent * PixelsPerMetreAtOneMetre / CullMinPixels * reachScale;
         if (legacyEnd >= CullFarthestMetres)
         {
             return 0f;

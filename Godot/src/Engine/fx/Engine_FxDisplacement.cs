@@ -90,6 +90,46 @@ public partial class Engine_FxDisplacement : Node
 
     public static void NotifyActive() => _activeFrame = Engine.GetProcessFrames();
 
+    /// <summary>The frame a shown static displacement mesh was last pumped (<see cref="NotifyStaticShown"/>).</summary>
+    private static ulong _staticFrame;
+
+    /// <summary>
+    /// The frame this view woke for a static displacement mesh alone, so <see cref="SleepUnseen"/>
+    /// may put it back to sleep; any other frame, never.
+    /// </summary>
+    private ulong _staticOnlyFrame = ulong.MaxValue;
+
+    /// <summary>
+    /// A static displacement mesh is shown (Engine_DisplacementMeshes.Pump): wakes the layer next
+    /// frame exactly as <see cref="NotifyActive"/> does, except that the wake can be taken back in
+    /// that frame by <see cref="SleepUnseen"/>.
+    /// </summary>
+    public static void NotifyStaticShown() => _staticFrame = Engine.GetProcessFrames();
+
+    /// <summary>
+    /// Puts back to sleep, for this frame, each view woken only by a static displacement mesh when
+    /// nothing else stated the layer active this frame and <paramref name="seen"/> says no static
+    /// mesh is inside the frustum of the camera that view copied this frame — the camera it draws
+    /// with. Main thread, after every view's _Process and before the frame draws.
+    /// </summary>
+    public static void SleepUnseen(Func<Camera3D, bool> seen)
+    {
+        if (_current is not { } first || !GodotObject.IsInstanceValid(first)) return;
+        ulong frame = Engine.GetProcessFrames();
+        if (_activeFrame == frame) return;
+        first.SleepIfUnseen(frame, seen);
+        if (first._second is { } second && GodotObject.IsInstanceValid(second)) second.SleepIfUnseen(frame, seen);
+    }
+
+    private void SleepIfUnseen(ulong frame, Func<Camera3D, bool> seen)
+    {
+        if (_staticOnlyFrame != frame || _rect is null || _camera is null || seen(_camera)) return;
+        _staticOnlyFrame = ulong.MaxValue;
+        if ((uint)_view < 2u) System.Threading.Volatile.Write(ref _viewActive[_view], false);
+        _rect.Visible = false;
+        _viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+    }
+
     public Image? CaptureMap() => _viewport?.GetTexture()?.GetImage();
 
     public static void Ensure(Node context)
@@ -276,7 +316,12 @@ public partial class Engine_FxDisplacement : Node
 
         if ((main.CullMask & LayerMask) != 0) main.CullMask &= ~LayerMask;
 
-        bool active = _enabled && Engine.GetProcessFrames() - _activeFrame <= 1;
+        ulong frame = Engine.GetProcessFrames();
+        bool stated = frame - _activeFrame <= 1;
+        bool active = _enabled && (stated || frame - _staticFrame <= 1);
+        // Awake for a static displacement mesh alone: the mesh pump tests it against the camera
+        // copied below, in this frame, and may put the view back to sleep (SleepUnseen).
+        _staticOnlyFrame = active && !stated ? frame : ulong.MaxValue;
         if ((uint)_view < 2u) System.Threading.Volatile.Write(ref _viewActive[_view], active);
         _rect.Visible = active;
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;

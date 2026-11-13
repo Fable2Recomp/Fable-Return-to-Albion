@@ -453,6 +453,8 @@ public static class Engine_FramePhases
 			_frameStart = 0;
 			_processEnd = 0;
 			_drawEnd = 0;
+			_deferredEnd = 0;
+			_preDraw = 0;
 			ResetSteadyGc(Stopwatch.GetTimestamp());
 		}
 	}
@@ -473,6 +475,42 @@ public static class Engine_FramePhases
 		FrameAlive?.Invoke(_frameIndex);
 	}
 
+	/// <summary>
+	/// THE "draw" SPAN IN THREE, for where the main thread waits. Each part is recorded only
+	/// when the marks before it came in order this frame, so the three sum to "draw":
+	/// <list type="bullet">
+	/// <item>draw.deferred — the deferred calls queued during the frame's processing (Godot's own
+	/// skeleton updates, call_deferred), up to the mark the last process callback queued behind them.</item>
+	/// <item>draw.sync — the transform notifications, timers and tweens, then RenderingServer.sync():
+	/// with a render thread, the wait for it to finish everything queued so far, the last frame's
+	/// draw included. Up to FramePreDraw, which RenderingServer.draw() emits on this thread.</item>
+	/// <item>draw.post — from there to FramePostDraw: the audio and frame-rate cap, and, with a
+	/// render thread, the next frame's input and physics up to the queue flush that delivers it.</item>
+	/// </list>
+	/// </summary>
+	private static long _deferredEnd;
+	private static long _preDraw;
+
+	/// <summary>Run as a deferred call queued by the last process callback: the deferred calls before it have run.</summary>
+	public static void MarkDeferredEnd()
+	{
+		_deferredEnd = Stopwatch.GetTimestamp();
+		if (_processEnd != 0)
+		{
+			Record("draw.deferred", (_deferredEnd - _processEnd) * 1000.0 / Stopwatch.Frequency);
+		}
+	}
+
+	/// <summary>RenderingServer.FramePreDraw: sync() has returned and draw() is about to be queued.</summary>
+	public static void MarkPreDraw()
+	{
+		_preDraw = Stopwatch.GetTimestamp();
+		if (_processEnd != 0 && _deferredEnd >= _processEnd)
+		{
+			Record("draw.sync", (_preDraw - _deferredEnd) * 1000.0 / Stopwatch.Frequency);
+		}
+	}
+
 	/// <summary>RenderingServer.FramePostDraw: the renderer has submitted the frame.</summary>
 	public static void MarkDrawEnd()
 	{
@@ -480,6 +518,10 @@ public static class Engine_FramePhases
 		if (_processEnd != 0)
 		{
 			Record("draw", (_drawEnd - _processEnd) * 1000.0 / Stopwatch.Frequency);
+			if (_deferredEnd >= _processEnd && _preDraw >= _deferredEnd)
+			{
+				Record("draw.post", (_drawEnd - _preDraw) * 1000.0 / Stopwatch.Frequency);
+			}
 		}
 	}
 
@@ -564,6 +606,54 @@ public static class Engine_FramePhases
 	}
 }
 
+/// <summary>
+/// Godot's process-frame counter (<c>Engine.GetProcessFrames()</c>), read once for a scope
+/// instead of once per caller: the entity walk stamps and compares it per rig, several times
+/// each, and every read is a crossing into the engine.
+/// </summary>
+/// <remarks>
+/// The counter only moves between two iterations of the main loop, never inside a node's
+/// callback, so inside a <see cref="Latch"/> the held value is exactly what the engine would
+/// answer. Outside one, <see cref="Current"/> asks the engine as before. Main thread.
+/// </remarks>
+public static class Engine_ProcessFrame
+{
+	private static ulong _frame;
+	private static int _depth;
+
+	/// <summary>The process frame: the latched value inside a <see cref="Latch"/>, else the engine's.</summary>
+	public static ulong Current => _depth > 0 ? _frame : Godot.Engine.GetProcessFrames();
+
+	/// <summary>Whether a latch is open.</summary>
+	public static bool Latched => _depth > 0;
+
+	/// <summary>Holds the counter until the returned latch is disposed; a nested latch keeps the outer value.</summary>
+	public static Latch Begin() => Begin(Godot.Engine.GetProcessFrames());
+
+	/// <summary><see cref="Begin()"/> with the counter given, for tests.</summary>
+	internal static Latch Begin(ulong frame)
+	{
+		if (_depth++ == 0)
+		{
+			_frame = frame;
+		}
+
+		return default;
+	}
+
+	/// <summary>Closes what <see cref="Begin()"/> opened.</summary>
+	public readonly struct Latch : System.IDisposable
+	{
+		public void Dispose()
+		{
+			if (_depth > 0)
+			{
+				--_depth;
+			}
+		}
+	}
+}
+
 /// <summary>First process callback of the frame (lowest priority node).</summary>
 public sealed partial class Engine_FrameStartNode : Godot.Node
 {
@@ -572,6 +662,7 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 		ProcessPriority = int.MinValue;
 		Engine_ServerSyncs.MarkMainThread();
 		Godot.RenderingServer.Singleton.FramePreDraw += Engine_ServerSyncs.MarkDrawBegin;
+		Godot.RenderingServer.Singleton.FramePreDraw += Engine_FramePhases.MarkPreDraw;
 		Godot.RenderingServer.Singleton.FramePostDraw += Engine_ServerSyncs.MarkDrawEnd;
 		Godot.RenderingServer.Singleton.FramePostDraw += Engine_FramePhases.MarkDrawEnd;
 	}
@@ -631,7 +722,13 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 /// <summary>Last process callback of the frame (highest priority node).</summary>
 public sealed partial class Engine_FrameEndNode : Godot.Node
 {
+	private static readonly Godot.StringName DeferredMark = nameof(MarkDeferredEnd);
+
 	public override void _Ready() => ProcessPriority = int.MaxValue;
+
+	/// <summary>Queued behind the frame's deferred calls (Engine_FramePhases.MarkDeferredEnd).</summary>
+	public void MarkDeferredEnd() => Engine_FramePhases.MarkDeferredEnd();
+
 	public override void _Process(double delta)
 	{
 		Engine_ServerSyncs.NotifyMainFrameTick();
@@ -644,5 +741,6 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 8.0 : 6.0);
 		}
 		Engine_FramePhases.MarkFrameEnd();
+		CallDeferred(DeferredMark);
 	}
 }
