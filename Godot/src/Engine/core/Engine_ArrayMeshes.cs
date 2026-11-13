@@ -31,11 +31,20 @@ public static class Engine_ArrayMeshes
 		Godot.Collections.Array<Godot.Collections.Array>? blendShapes = null,
 		Godot.Collections.Dictionary? lods = null, Mesh.ArrayFormat flags = 0)
 	{
+		if (Engine_RdHealth.IsDeviceLost)
+		{
+			return;
+		}
+
 		Godot.Collections.Array<Godot.Collections.Array> shapes = blendShapes ?? NoBlendShapes;
 		Godot.Collections.Dictionary levels = lods ?? NoLods;
 		long estimatedBytes = EstimateSurfaceBytes(arrays);
 		Engine_ServerSyncs.RunGpuUpload(estimatedBytes, () =>
 		{
+			if (Engine_RdHealth.IsDeviceLost)
+			{
+				return;
+			}
 			mesh.AddSurfaceFromArrays(primitive, arrays, shapes, levels, flags);
 		});
 		GC.KeepAlive(mesh);
@@ -53,6 +62,11 @@ public static class Engine_ArrayMeshes
 		Godot.Collections.Array<Godot.Collections.Array>? blendShapes = null,
 		Godot.Collections.Dictionary? lods = null, Mesh.ArrayFormat flags = 0)
 	{
+		if (Engine_RdHealth.IsDeviceLost)
+		{
+			return;
+		}
+
 		Godot.Collections.Array<Godot.Collections.Array> shapes = blendShapes ?? NoBlendShapes;
 		Godot.Collections.Dictionary levels = lods ?? NoLods;
 		mesh.AddSurfaceFromArrays(primitive, arrays, shapes, levels, flags);

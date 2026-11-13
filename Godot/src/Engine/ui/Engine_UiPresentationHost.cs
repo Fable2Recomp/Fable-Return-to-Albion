@@ -73,6 +73,12 @@ public partial class Engine_UiPresentationHost : Node3D
 	/// </summary>
 	public Texture2D? LoadTexture(string relativePath) => Textures?.Load(relativePath);
 
+	/// <summary>
+	/// Pre-warms one UI texture when not already cached so startup prebuild can spread
+	/// decodes/uploads across individual frames.
+	/// </summary>
+	public bool TryWarmTexture(string relativePath) => Textures is not null && Textures.TryWarmOne(relativePath);
+
 	/// <summary>Where the presentations came from, for diagnostics.</summary>
 	protected string SourceRoot = string.Empty;
 
@@ -346,12 +352,42 @@ public partial class Engine_UiPresentationHost : Node3D
 	{
 		FollowGameMount();
 		int currentGen = Refii.Assets.Engine_GameAssets.Instance?.MountGeneration ?? 0;
-		if (Strings is null || currentGen == 0 || currentGen != _stringsMountGeneration)
+		if (Strings is null || currentGen == 0)
 		{
 			ReloadStrings();
 		}
+		else if (currentGen != _stringsMountGeneration)
+		{
+			if (_stringsMountGeneration == 0 && !HasMountedBabelOverride())
+			{
+				_stringsMountGeneration = currentGen;
+			}
+			else
+			{
+				ReloadStrings();
+			}
+		}
 		AddModLayers();
 		RefreshPatternBooks();
+	}
+
+	private static bool HasMountedBabelOverride()
+	{
+		if (Refii.Assets.Engine_GameAssets.Instance is not { } assets)
+		{
+			return false;
+		}
+
+		string culture = Engine_GameCulture.Current;
+		foreach (string candidate in Engine_GameCulture.MountCandidates(culture, "text/book.babel"))
+		{
+			if (assets.FileIsOverride(candidate))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/// <summary>

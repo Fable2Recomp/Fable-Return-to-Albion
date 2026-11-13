@@ -796,6 +796,20 @@ public partial class GameVideo : Node
 			return;
 		}
 
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost ||
+			!IsTextureReady(_luma, "GameVideo.AdvanceVideo.luma") ||
+			!IsTextureReady(_chromaU, "GameVideo.AdvanceVideo.chromaU") ||
+			!IsTextureReady(_chromaV, "GameVideo.AdvanceVideo.chromaV"))
+		{
+			if (!_reportedInvalidTextures)
+			{
+				_reportedInvalidTextures = true;
+				GD.PushWarning("[game-video] video GPU texture RD handle is invalid; stopping movie playback");
+			}
+			Skip("video GPU texture unavailable");
+			return;
+		}
+
 		_luma.Update(_lumaImage);
 		_chromaU.Update(_chromaUImage);
 		_chromaV.Update(_chromaVImage);
@@ -854,18 +868,46 @@ public partial class GameVideo : Node
 		GD.Print($"[game-video] frame shot -> {path} ({image.SavePng(path)})");
 	}
 
+	private int _allocatedWidth;
+	private int _allocatedHeight;
+	private bool _reportedInvalidTextures;
+
+	private static bool IsTextureReady(ImageTexture? tex, string context = "GameVideo.IsTextureReady")
+	{
+		if (tex is null || Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			return false;
+		}
+
+		Rid rid = tex.GetRid();
+		return Refii.Core.Engine_RdHealth.CheckTextureValid(rid, context, verifyRdBacking: true);
+	}
+
 	private void Allocate(Engine_BinkDecoder decoder)
 	{
-		if (decoder.Width <= 0 || decoder.Height <= 0)
+		if (decoder.Width <= 0 || decoder.Height <= 0 || Refii.Core.Engine_RdHealth.IsDeviceLost)
 		{
+			return;
+		}
+
+		int chromaWidth = (decoder.Width + 1) / 2;
+		int chromaHeight = (decoder.Height + 1) / 2;
+
+		if (decoder.Width == _allocatedWidth && decoder.Height == _allocatedHeight &&
+			IsTextureReady(_luma, "GameVideo.Allocate.reuseLuma") &&
+			IsTextureReady(_chromaU, "GameVideo.Allocate.reuseChromaU") &&
+			IsTextureReady(_chromaV, "GameVideo.Allocate.reuseChromaV") &&
+			_lumaImage is not null && _chromaUImage is not null && _chromaVImage is not null &&
+			_y is not null && _u is not null && _v is not null)
+		{
+			_embedded.Size = new Vector2I(decoder.Width, decoder.Height);
+			_view.Texture = _luma;
+			_reportedInvalidTextures = false;
 			return;
 		}
 
 		// Buffers sized exactly to their planes: Image.SetData requires the byte count to match
 		// the image's dimensions, and an over-sized chroma buffer is rejected silently.
-		int chromaWidth = (decoder.Width + 1) / 2;
-		int chromaHeight = (decoder.Height + 1) / 2;
-
 		_y = new byte[decoder.Width * decoder.Height];
 		_u = new byte[chromaWidth * chromaHeight];
 		_v = new byte[chromaWidth * chromaHeight];
@@ -878,6 +920,26 @@ public partial class GameVideo : Node
 		_chromaU = ImageTexture.CreateFromImage(_chromaUImage);
 		_chromaV = ImageTexture.CreateFromImage(_chromaVImage);
 
+		if (!IsTextureReady(_luma, "GameVideo.Allocate.luma") ||
+			!IsTextureReady(_chromaU, "GameVideo.Allocate.chromaU") ||
+			!IsTextureReady(_chromaV, "GameVideo.Allocate.chromaV"))
+		{
+			if (!_reportedInvalidTextures)
+			{
+				_reportedInvalidTextures = true;
+				GD.PushWarning("[game-video] GPU texture allocation failed (device lost or out of memory); skipping video playback");
+			}
+			_luma = null;
+			_chromaU = null;
+			_chromaV = null;
+			_allocatedWidth = 0;
+			_allocatedHeight = 0;
+			return;
+		}
+
+		_allocatedWidth = decoder.Width;
+		_allocatedHeight = decoder.Height;
+		_reportedInvalidTextures = false;
 		_embedded.Size = new Vector2I(decoder.Width, decoder.Height);
 		_view.Texture = _luma;
 		_material.SetShaderParameter("luma", _luma);

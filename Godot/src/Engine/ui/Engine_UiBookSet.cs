@@ -358,12 +358,16 @@ public sealed class Engine_UiBookSet
 			_books[screenId] = book;
 		}
 
+		bool switching = FrontEndBookId != screenId || !book.Visible;
 		book.Position = Vector3.Zero;
 		book.Visible = true;
 		book.PresentationAddress = Refii.Host.HostBridge.FrontEndPresentation();
-		book.SetRest();
-
 		FrontEndBookId = screenId;
+
+		if (switching || Refii.Core.Engine_GuestFrame.Changed || Refii.Core.Engine_GuestFrame.Frame == 0u)
+		{
+			book.SetRest();
+		}
 
 		// Take the other front-end book down: title and main menu are two presentations and only
 		// one is up. Only front-end books, tested through the same helper that defines the front

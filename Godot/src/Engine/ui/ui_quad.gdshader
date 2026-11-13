@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode unshaded, cull_disabled, blend_mix;
+render_mode unshaded, cull_disabled, depth_draw_never, blend_mix;
 
 // The one shader every Gameface quad draws through — the native form of the title's own
 // `0098_pshader_guiquad`:
@@ -89,32 +89,42 @@ void fragment() {
 		clip_world.y < clip_rect.y || clip_world.y > clip_rect.w;
 
 	vec2 uv = UV * uv1_scale + uv1_offset;
+	// Precompute gradients in uniform control flow so D3D12/DXIL mipmap selection stays
+	// valid and anti-aliased inside the per-quad sampler branches below.
+	vec2 uv_dx = dFdx(uv);
+	vec2 uv_dy = dFdy(uv);
+	vec2 raw_uv_dx = dFdx(UV);
+	vec2 raw_uv_dy = dFdy(UV);
+
+	// Laid-out size in UI units, off the model matrix so ancestor scale is included.
+	vec2 size = vec2(length(MODEL_MATRIX[0].xyz), length(MODEL_MATRIX[1].xyz))
+		* quad_base_size;
+	// V is negated exactly as the guest writes it (`uv1.y = -|dy| * 0.0025 + rand`).
+	vec2 detail_uv = vec2(UV.x, -UV.y) * size * detail_scale + detail_origin;
+	vec2 detail_dx = dFdx(detail_uv);
+	vec2 detail_dy = dFdy(detail_uv);
+
 	vec4 primary = vec4(1.0);
 	if (has_keycap && ui_keyboard_mode) {
-		primary = texture(keycap_tex, UV);
+		primary = textureGrad(keycap_tex, UV, raw_uv_dx, raw_uv_dy);
 	} else if (has_diffuse) {
-		primary = texture(diffuse_tex, uv);
+		primary = textureGrad(diffuse_tex, uv, uv_dx, uv_dy);
 	}
 
 	vec3 rgb = primary.rgb;
 	float alpha = primary.a;
 
 	if (detail_mapped) {
-		// Laid-out size in UI units, off the model matrix so ancestor scale is included.
-		vec2 size = vec2(length(MODEL_MATRIX[0].xyz), length(MODEL_MATRIX[1].xyz))
-			* quad_base_size;
-
-		// V is negated exactly as the guest writes it (`uv1.y = -|dy| * 0.0025 + rand`).
-		vec2 detail_uv = vec2(UV.x, -UV.y) * size * detail_scale + detail_origin;
-		vec4 detail = texture(detail_tex, detail_uv);
+		vec4 detail = textureGrad(detail_tex, detail_uv, detail_dx, detail_dy);
 
 		// REPLACE, not blend — the stored factor is 1.0.
 		rgb = detail.rgb;
 		alpha *= detail.a;
 	}
 
-	// Discard after all implicit-derivative texture samples so DXIL/D3D12 quad derivatives stay uniform.
-	if (clipped || opacity <= 0.001) {
+	// Discard after all texture samples so DXIL/D3D12 control flow and quad state stay clean.
+	float final_alpha = alpha * opacity;
+	if (clipped || final_alpha <= 0.001) {
 		discard;
 	}
 
@@ -134,5 +144,5 @@ void fragment() {
 	rgb -= (vec3(1.0) - tint_rgb) * tint_amount;
 
 	ALBEDO = rgb;
-	ALPHA = alpha * opacity;
+	ALPHA = final_alpha;
 }

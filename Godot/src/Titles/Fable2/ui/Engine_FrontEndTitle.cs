@@ -55,11 +55,15 @@ public sealed class Engine_FrontEndTitle
 	/// <summary>True once the flash has been found and taken to zero.</summary>
 	public bool Finished { get; private set; }
 
+	/// <summary>Current normalized flash alpha (0..1), synced to the owned book's HostOpacity.</summary>
+	public float CurrentAlpha { get; private set; } = 1f;
+
 	/// <summary>Restarts the fade — the title screen has come up again.</summary>
 	public void Reset()
 	{
 		_elapsed = 0f;
 		Finished = false;
+		CurrentAlpha = 1f;
 		LastReport = "restarted";
 	}
 
@@ -108,6 +112,7 @@ public sealed class Engine_FrontEndTitle
 		float alpha = FadeSeconds <= 0f
 			? 0f
 			: Mathf.Clamp(1f - (_elapsed / FadeSeconds), 0f, 1f);
+		CurrentAlpha = alpha;
 
 		int faded = Fade(flash, alpha);
 
@@ -149,6 +154,11 @@ public sealed class Engine_FrontEndTitle
 			}
 			else if ((mesh.MaterialOverride ?? mesh.GetActiveMaterial(0)) is BaseMaterial3D material)
 			{
+				uint wantLayers = alpha > 0.001f ? 1u : 0u;
+				if (mesh.Layers != wantLayers)
+				{
+					mesh.Layers = wantLayers;
+				}
 				Color albedo = material.AlbedoColor;
 				material.AlbedoColor = new Color(albedo.R, albedo.G, albedo.B, alpha);
 				++faded;

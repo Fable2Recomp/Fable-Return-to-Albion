@@ -64,13 +64,41 @@ public sealed class Engine_UiTextureCache
 	}
 
 	/// <summary>
+	/// Pre-warms one UI texture when not already resolved, returning true if a decode/GPU upload ran
+	/// or false if it was already cached/empty/unavailable.
+	/// </summary>
+	public bool TryWarmOne(string relativePath)
+	{
+		if (relativePath.Length == 0 || Engine_RdHealth.IsDeviceLost)
+		{
+			return false;
+		}
+
+		int currentMountGen = Refii.Assets.Engine_GameAssets.Instance is { IsMounted: true } mounted
+			? mounted.MountGeneration
+			: 0;
+		if (currentMountGen == _mountGeneration)
+		{
+			string virtualPath = relativePath.Replace('\\', '/');
+			if (_resolved.TryGetValue(virtualPath, out Texture2D? cached) &&
+				(cached is null || GodotObject.IsInstanceValid(cached)))
+			{
+				return false;
+			}
+		}
+
+		_ = Load(relativePath);
+		return true;
+	}
+
+	/// <summary>
 	/// Resolves a path such as <c>art\gui\frames\frames_04.tex</c>, or null when the
 	/// asset is missing or its codec is not supported; the reason lands in
 	/// <see cref="Failures"/>.
 	/// </summary>
 	public Texture2D? Load(string relativePath)
 	{
-		if (relativePath.Length == 0)
+		if (relativePath.Length == 0 || Engine_RdHealth.IsDeviceLost)
 		{
 			return null;
 		}
@@ -119,7 +147,11 @@ public sealed class Engine_UiTextureCache
 
 		var texture = ResourceLoader.Load<Texture2D>(
 			Engine_BnkTextureLoader.PathPrefix + virtualPath);
-		if (texture is null || !GodotObject.IsInstanceValid(texture) || !texture.GetRid().IsValid)
+		if (texture is null || !GodotObject.IsInstanceValid(texture) ||
+			!Engine_RdHealth.CheckTextureValid(
+				texture.GetRid(),
+				$"Engine_UiTextureCache.Load({virtualPath})",
+				verifyRdBacking: Engine_TextureUpload.IsD3D12Driver))
 		{
 			// The bank HAS the bytes and the load still failed, so the fault is the loader
 			// route or the decode — not a missing asset.

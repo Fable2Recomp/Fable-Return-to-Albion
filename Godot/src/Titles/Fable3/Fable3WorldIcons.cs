@@ -85,15 +85,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		var root = new Node3D { Name = "Root" };
 		_viewport.AddChild(root);
 
-		_canvasCamera = new Camera3D
-		{
-			Name = "CanvasCamera",
-			Projection = Camera3D.ProjectionType.Orthogonal,
-			Position = new Vector3(0f, 0f, 100f),
-			Near = 0.1f,
-			Far = 500f,
-			Current = true,
-		};
+		_canvasCamera = Engine_UiSceneBuilder.CreateCanvasCamera("CanvasCamera", near: 0.1f, far: 500f, z: 100f);
 		root.AddChild(_canvasCamera);
 
 		_sprites = new Engine_HudWorldSprites

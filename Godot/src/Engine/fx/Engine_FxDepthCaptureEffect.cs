@@ -213,8 +213,8 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         if (renderData.GetRenderSceneBuffers() is not RenderSceneBuffersRD buffers) return;
         Vector2I size = buffers.GetInternalSize();
         if (size.X <= 0 || size.Y <= 0) return;
-        EnsureTarget(size);
         if (!HasActiveDepthConsumer(View)) return;
+        EnsureTarget(size);
         Rid depth = buffers.GetDepthLayer(0);
         // The set is held by the resources it binds: the RDUniforms and their Array were three
         // finalizable wrappers per frame for a set the cache already had.

@@ -584,6 +584,12 @@ public partial class GameUi : Node, IGameTitleUi
 		// _Process, because the reveal after the boot movies is not a screen change and
 		// would otherwise never reach a gated ShowDebugMenu.
 		_frontendUp = screen != Engine_UiModel.FrontEndScreen.None;
+		if (_frontendUp && _frontEndLeft)
+		{
+			_frontEndLeft = false;
+			_frontEndPrebuild.Reset();
+			_menuPrebuild = 0;
+		}
 		if (screen == Engine_UiModel.FrontEndScreen.MainMenu)
 		{
 			AdoptMenu();
@@ -701,6 +707,9 @@ public partial class GameUi : Node, IGameTitleUi
 		_presentation?.ReleasePatternBooks("frontendstartupscreen", "frontendmainmenu", "scrollingbackground", "logbookscreen");
 
 		_showing = null;
+		_frontEndLeft = true;
+		_frontEndPrebuild.Reset();
+		_menuPrebuild = 0;
 	}
 
 	private bool? _developerMenu;
@@ -5078,7 +5087,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// queue only moves when a button is pressed or a drain runs, so ten times a second
 		// misses nothing and costs nothing.
 		_pumpPoll += delta;
-		if (_pumpPoll < 0.1)
+		if (_pumpPoll < 2.0)
 		{
 			return;
 		}
@@ -7447,8 +7456,11 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			// Said on a drop, the first statement, and each doubling — the count alone moves
 			// every tick the pause menu stands.
-			bool say = dropped != _menuChunksDropped || recorded == 0 ||
-				(recorded & (recorded - 1)) == 0 || _menuChunksRecorded == 0;
+			bool say = (dropped != _menuChunksDropped &&
+					Refii.Core.Engine_RdHealth.ShouldLogThrottled("gameui.menumodel.drop", 5000, System.Environment.TickCount64, out _)) ||
+				recorded == 0 ||
+				(recorded <= 4096 && (recorded & (recorded - 1)) == 0) ||
+				_menuChunksRecorded == 0;
 			_menuChunksRecorded = recorded;
 			_menuChunksDropped = dropped;
 			if (say)
@@ -7561,6 +7573,7 @@ public partial class GameUi : Node, IGameTitleUi
 		if (guestFrame) DriveCoopFigures();
 
 		if (guestFrame) ScanWhenSettled();
+		DriveFrontEndPrebuild();
 		DriveTitle(delta);
 
 		// THE SHARED MODAL FLAG BELONGS TO WHICHEVER SURFACE STANDS A VIEW THIS FRAME — false
@@ -9125,11 +9138,28 @@ public partial class GameUi : Node, IGameTitleUi
 				$"a{paint.Opacity:F2}";
 		}
 
+		int unbuilt = 0;
+		for (int i = 0; i < screen.Nodes.Length; ++i)
+		{
+			UiNode authored = screen.Nodes[i];
+			string name = authored.HasAuthoredName ? authored.Name : $"#{i}";
+			if (!found.ContainsKey(name))
+			{
+				++unbuilt;
+			}
+		}
+
+		if (OS.GetEnvironment("REFII_UI_INVENTORY") != "1")
+		{
+			GD.Print($"[game-ui] inventory of '{_scanning}': {screen.Nodes.Length} authored, {found.Count} in tree, {unbuilt} unbuilt");
+			return;
+		}
+
 		var line = new System.Text.StringBuilder(
 			$"[game-ui] inventory of '{_scanning}' ({screen.Nodes.Length} authored element(s))");
 
 		bool builtOnly = screen.Nodes.Length > cap;
-		int unbuilt = 0;
+		unbuilt = 0;
 
 		for (int i = 0; i < screen.Nodes.Length; ++i)
 		{
@@ -9201,7 +9231,7 @@ public partial class GameUi : Node, IGameTitleUi
 
 		// Two seconds in. Long enough for a fade to finish, so an element caught mid-transition
 		// is not reported as a permanent one.
-		if (++_scanFrames == 120)
+		if (++_scanFrames == 120 && _scannedScreens.Add(current))
 		{
 			Scanline();
 		}
@@ -9210,6 +9240,9 @@ public partial class GameUi : Node, IGameTitleUi
 	private string? _scanning;
 
 	private int _scanFrames;
+
+	private readonly System.Collections.Generic.HashSet<string> _scannedScreens =
+		new(System.StringComparer.Ordinal);
 
 	/// <summary>
 	/// Runs the title screen's logo flash — see <see cref="Engine_FrontEndTitle"/>.
@@ -9249,9 +9282,11 @@ public partial class GameUi : Node, IGameTitleUi
 		// into the hidden mirror — fading that one leaves the white plate on screen and reports
 		// success. Falls back to the catalogue for the frames before the book has stood up.
 		Node? flash = null;
+		Engine_UiOwnedBook? activeTitleBook = null;
 		if (_books.Book(Engine_UiBookSet.TitleScreenId) is { } titleBook &&
 			IsInstanceValid(titleBook) && titleBook.Visible)
 		{
+			activeTitleBook = titleBook;
 			flash = titleBook.Find(Engine_FrontEndTitle.FlashName);
 		}
 
@@ -9263,6 +9298,12 @@ public partial class GameUi : Node, IGameTitleUi
 		else
 		{
 			_title.Advance(_presentation?.Theme, delta);
+		}
+
+		if (activeTitleBook is not null && flash is not null)
+		{
+			_titleFlashHostOpacity[Engine_FrontEndTitle.FlashName] = _title.CurrentAlpha;
+			activeTitleBook.HostOpacity = _titleFlashHostOpacity;
 		}
 
 		++_titleFrames;
@@ -9283,6 +9324,9 @@ public partial class GameUi : Node, IGameTitleUi
 	private int _titleFrames;
 
 	private readonly Engine_FrontEndTitle _title = new();
+
+	private readonly System.Collections.Generic.Dictionary<string, float> _titleFlashHostOpacity =
+		new(System.StringComparer.Ordinal);
 
 	private string? _titleScreen;
 

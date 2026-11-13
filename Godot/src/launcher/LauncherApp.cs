@@ -173,6 +173,9 @@ public partial class LauncherApp : Control
 			}
 
 			Refii.Game.GameElevatedLaunch.RunRelay(this);
+			SetProcess(false);
+			SetProcessInput(false);
+			SetProcessUnhandledInput(false);
 			return;
 		}
 
@@ -192,6 +195,9 @@ public partial class LauncherApp : Control
 			}
 
 			Refii.Game.GameWindow.Open(this);
+			SetProcess(false);
+			SetProcessInput(false);
+			SetProcessUnhandledInput(false);
 			return;
 		}
 

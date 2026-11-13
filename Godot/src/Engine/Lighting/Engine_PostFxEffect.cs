@@ -381,7 +381,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Initialise()
     {
-        if (_disposed)
+        if (_disposed || Refii.Core.Engine_RdHealth.IsDeviceLost)
         {
             return;
         }
@@ -502,6 +502,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _nearestSampler.IsValid && _exposureRd.IsValid;
         if (!ready)
         {
+            _ = Refii.Core.Engine_RdHealth.TripDeviceLost("Engine_PostFxEffect.Initialise", "buffer, sampler or exposure texture creation failed");
             GD.PrintErr("[postfx] buffer, sampler or exposure texture creation failed; chain disabled");
             return;
         }
@@ -513,7 +514,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             UniformBlock(_paramsBuffer, 2),
             Image(_exposureRd, 3),
         }, _reduceShader, 0);
-        if (!_reduceSet.IsValid)
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(_reduceSet, "Engine_PostFxEffect.Initialise.ReduceSet"))
         {
             GD.PrintErr("[postfx] reduce uniform set creation failed; chain disabled");
             return;
@@ -580,6 +581,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
         int width, int height, RenderingDevice.DataFormat format, byte[]? initial = null,
         bool readable = false)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            return default;
+        }
+
         var textureFormat = new RDTextureFormat
         {
             Width = (uint)width,
@@ -594,7 +600,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
         };
 
         Rid rid = _rd!.Texture(textureFormat, new RDTextureView(), initial);
-        if (rid.IsValid && initial is null)
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(rid, "Engine_PostFxEffect.CreateTexture"))
+        {
+            return default;
+        }
+        if (initial is null)
         {
             EndBatch();
             _rd!.TextureClear(rid, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
@@ -611,7 +621,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void BeginBatch()
     {
-        if (_batchList >= 0 || ClassicPost)
+        if (_batchList >= 0 || ClassicPost || Refii.Core.Engine_RdHealth.IsDeviceLost)
         {
             return;
         }
@@ -962,7 +972,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// <param name="renderData">Ephemeral native data, never retained outside this callback.</param>
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
-        if (!_ready || _rd is null)
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_ready || _rd is null)
         {
             return;
         }
@@ -998,6 +1008,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
         float dt = Elapsed();
         Engine_PostFxParams.Snapshot(_derived);
         EnsureTargets(size);
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_quarter.IsValid)
+        {
+            WriteDisabledMaterialExposure();
+            return;
+        }
         Engine_PostFxSunSources.Snapshot(out Engine_PostFxSunSources.Sources sun);
 
         bool bloomOn = Engine_PostFxParams.Bloom;
@@ -2421,6 +2436,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void Dispatch(Rid pipeline, Rid uniformSet, byte[]? push, int groupsX, int groupsY)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !pipeline.IsValid || !uniformSet.IsValid)
+        {
+            return;
+        }
+
         if (_batchList >= 0)
         {
             if (_batchHasDispatch)

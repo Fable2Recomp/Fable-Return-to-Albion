@@ -88,7 +88,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
     /// <summary>Render thread: the white texture, bound unless a pass has bound its target first.</summary>
     private static void BindWhite()
     {
-        if (_whiteRid.IsValid || RenderingServer.GetRenderingDevice() is not { } rd)
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || _whiteRid.IsValid || RenderingServer.GetRenderingDevice() is not { } rd)
         {
             return;
         }
@@ -97,6 +97,11 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             Width = 1, Height = 1, Format = RenderingDevice.DataFormat.R8Unorm,
             UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit,
         }, new RDTextureView(), new byte[] { 255 });
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(_whiteRid, "Engine_ClassicScreenShadow.BindWhite"))
+        {
+            _whiteRid = default;
+            return;
+        }
         if (!_target.IsValid && _whiteRid.IsValid)
         {
             Rid white = _whiteRid;
@@ -192,7 +197,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
 
     private void EnsureTarget(Vector2I size)
     {
-        if (_target.IsValid && size == _targetSize)
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || (_target.IsValid && size == _targetSize))
         {
             return;
         }
@@ -204,6 +209,11 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             UsageBits = RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.StorageBit
                 | RenderingDevice.TextureUsageBits.CanCopyFromBit,
         }, new RDTextureView());
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(_target, "Engine_ClassicScreenShadow.EnsureTarget"))
+        {
+            _target = default;
+            return;
+        }
         _targetSize = size;
         Rid rid = _target;
         Callable.From(() =>
@@ -219,7 +229,7 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
         {
             Refii.Core.Engine_RdRetire.Pump(_rd);
         }
-        if (!_ready || _rd is null || !Engine_ClassicMaterial.Active || Engine_ClassicShadows.Instance is not { } shadows)
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_ready || _rd is null || !Engine_ClassicMaterial.Active || Engine_ClassicShadows.Instance is not { } shadows)
         {
             return;
         }
@@ -239,6 +249,10 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             return;
         }
         EnsureTarget(size);
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_target.IsValid)
+        {
+            return;
+        }
         int view = Engine_ClassicViews.Count > 1 ? View : 0;
         if (Engine_ClassicViews.Count > 1)
         {
@@ -301,6 +315,12 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
             uniforms.Add(Sampled(5, _rotation));
             set = _set.Hold(UniformSetCacheRD.GetCache(_shader, 0, uniforms));
             GC.KeepAlive(uniforms);
+        }
+
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(set, "Engine_ClassicScreenShadow.UniformSet") ||
+            !Refii.Core.Engine_RdHealth.CheckRdValid(_target, "Engine_ClassicScreenShadow.Dispatch"))
+        {
+            return;
         }
 
         long list = _rd.ComputeListBegin();

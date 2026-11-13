@@ -43,15 +43,7 @@ public abstract partial class Fable3Canvas : SubViewportContainer
 		Root = new Node3D { Name = "Root" };
 		CanvasViewport.AddChild(Root);
 
-		CanvasCamera = new Camera3D
-		{
-			Name = "CanvasCamera",
-			Projection = Camera3D.ProjectionType.Orthogonal,
-			Position = new Vector3(0f, 0f, 100f),
-			Near = 0.1f,
-			Far = 500f,
-			Current = true,
-		};
+		CanvasCamera = Engine_UiSceneBuilder.CreateCanvasCamera("CanvasCamera", near: 0.1f, far: 500f, z: 100f);
 		Root.AddChild(CanvasCamera);
 		Build();
 	}

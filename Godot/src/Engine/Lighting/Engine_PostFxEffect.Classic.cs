@@ -186,10 +186,9 @@ public partial class Engine_PostFxEffect
         {
             pass?.Unbind(_rd);
         }
-        foreach (Engine_ClassicPostPass? pass in new[] { _cSunBeams, _cMoonBloom, _cSunDisc })
-        {
-            pass?.Unbind(_rd);
-        }
+        _cSunBeams?.Unbind(_rd);
+        _cMoonBloom?.Unbind(_rd);
+        _cSunDisc?.Unbind(_rd);
         FreeSet(ref _cHistogramSet);
         _cCopySet.Release(_rd);
         Free(ref _cHdr);
@@ -378,6 +377,11 @@ public partial class Engine_PostFxEffect
         pass.Set("ps_g_MaximumDisplacement", maximum, maximum, maximum, maximum);
         pass.Set("ps_g_InputResolution", 1f / w, 1f / h);
         _cDisplacement = displaced ? displacement : _exposureRd;
+
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_cLutPipeline.IsValid || !_cLutSet.IsValid)
+        {
+            return;
+        }
 
         long list = _rd!.ComputeListBegin();
         _rd.ComputeListBindComputePipeline(list, _cLutPipeline);
@@ -654,10 +658,9 @@ public partial class Engine_PostFxEffect
         {
             return;
         }
-        foreach (Engine_ClassicPostPass? pass in new[] { _cSunBeams, _cMoonBloom, _cSunDisc })
-        {
-            pass?.Free(_rd);
-        }
+        _cSunBeams?.Free(_rd);
+        _cMoonBloom?.Free(_rd);
+        _cSunDisc?.Free(_rd);
         _cSunBeams = _cMoonBloom = _cSunDisc = null;
         FreeSet(ref _cVisSet);
         Free(ref _cVisibility);

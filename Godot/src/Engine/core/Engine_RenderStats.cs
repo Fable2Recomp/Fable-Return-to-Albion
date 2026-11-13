@@ -144,6 +144,11 @@ public static class Engine_RenderStats
 	/// </summary>
 	public static void SampleFrame()
 	{
+		if (Engine_RdHealth.IsDeviceLost)
+		{
+			return;
+		}
+
 		using (Gate.Hold())
 		{
 			for (int i = _tracked.Count - 1; i >= 0; --i)
@@ -180,6 +185,11 @@ public static class Engine_RenderStats
 
 	private static void SampleOnRenderThread()
 	{
+		if (Engine_RdHealth.IsDeviceLost)
+		{
+			return;
+		}
+
 		const RenderingServer.ViewportRenderInfoType Visible = RenderingServer.ViewportRenderInfoType.Visible;
 		const RenderingServer.ViewportRenderInfoType Shadow = RenderingServer.ViewportRenderInfoType.Shadow;
 		const RenderingServer.ViewportRenderInfo Calls = RenderingServer.ViewportRenderInfo.DrawCallsInFrame;
@@ -191,6 +201,10 @@ public static class Engine_RenderStats
 			for (int i = 0; i < _pendingCount; ++i)
 			{
 				Rid rid = _pending[i];
+				if (!rid.IsValid)
+				{
+					continue;
+				}
 				_published[rid.Id] = new Sample
 				{
 					CpuMs = RenderingServer.ViewportGetMeasuredRenderTimeCpu(rid),

@@ -809,11 +809,20 @@ void main() {
 					BitConverter.TryWriteBytes(push.AsSpan(8), invInner);
 					BitConverter.TryWriteBytes(push.AsSpan(12), texelAngle);
 
+					if (Engine_RdHealth.IsDeviceLost)
+					{
+						return false;
+					}
+
 					uint readBytes = (uint)(batchCount * bytesPerLight);
 					byte[]? rawOut = null;
 					RenderingDevice localRd = rd;
 					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
 					{
+						if (Engine_RdHealth.IsDeviceLost)
+						{
+							return;
+						}
 						localRd.BufferUpdate(lightBuf, 0, (uint)(batchCount * 32), lightBytes);
 						long list = localRd.ComputeListBegin();
 						localRd.ComputeListBindComputePipeline(list, pipeline);
@@ -1196,12 +1205,21 @@ void main() {
 					BitConverter.TryWriteBytes(filterPush.AsSpan(24), 0.0f);
 					BitConverter.TryWriteBytes(filterPush.AsSpan(28), 0.0f);
 
+					if (Engine_RdHealth.IsDeviceLost)
+					{
+						return false;
+					}
+
 					int rowStrideBytes = terrainW * sizeof(uint);
 					uint readBytes = (uint)(stripH * rowStrideBytes);
 					byte[]? stripOut = null;
 					RenderingDevice localRd = rd;
 					Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
 					{
+						if (Engine_RdHealth.IsDeviceLost)
+						{
+							return;
+						}
 						long list1 = localRd.ComputeListBegin();
 						localRd.ComputeListBindComputePipeline(list1, tracePipeline);
 						localRd.ComputeListBindUniformSet(list1, traceSet, 0);

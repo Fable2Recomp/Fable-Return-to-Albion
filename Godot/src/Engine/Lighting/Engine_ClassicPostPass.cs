@@ -360,6 +360,11 @@ public sealed class Engine_ClassicPostPass
     /// </summary>
     public void Run(RenderingDevice rd, Rid target, Vector2I size, Rid state, ReadOnlySpan<(Rid Sampler, Rid Texture)> textures)
     {
+        if (Engine_RdHealth.IsDeviceLost || !_pipeline.IsValid || !target.IsValid || !state.IsValid)
+        {
+            return;
+        }
+
         Upload(rd);
 
         bool same = _set.IsValid && rd.UniformSetIsValid(_set) && _bound[0] == target && _bound[1] == state;
@@ -416,6 +421,11 @@ public sealed class Engine_ClassicPostPass
     public void RunSprite(RenderingDevice rd, Rid target, Rid state, Rid frame, Rid counters,
         (Rid Sampler, Rid Texture) depth, ReadOnlySpan<(Rid Sampler, Rid Texture)> textures, in SpriteDraw draw)
     {
+        if (Engine_RdHealth.IsDeviceLost || !_pipeline.IsValid || !target.IsValid || !state.IsValid)
+        {
+            return;
+        }
+
         int x0 = Math.Max((int)MathF.Floor(draw.Rect.X), 0), y0 = Math.Max((int)MathF.Floor(draw.Rect.Y), 0);
         int x1 = (int)MathF.Ceiling(draw.Rect.Z), y1 = (int)MathF.Ceiling(draw.Rect.W);
         if (x1 <= x0 || y1 <= y0)

@@ -233,6 +233,60 @@ public readonly partial struct GameWindowSettings
 	}
 
 	/// <summary>
+	/// Effective 3D quality configuration for the root viewport given whether a 3D world is active.
+	/// When no 3D world is mounted (startup videos, title, main menu), root 3D scalers/MSAA/SSAA/TAA
+	/// stay disabled so the root viewport does not allocate or run extra full-screen passes.
+	/// Pure logic safe for headless unit tests.
+	/// </summary>
+	public (
+		Viewport.Scaling3DModeEnum ScalingMode,
+		float ScalingScale,
+		float MeshLodThreshold,
+		Viewport.Msaa MsaaMode,
+		Viewport.ScreenSpaceAAEnum SsaaMode,
+		bool UseTaa) ResolveRoot3DQuality(Vector2I actualWindowSize, bool activeWorld)
+	{
+		if (!activeWorld)
+		{
+			return (
+				Viewport.Scaling3DModeEnum.Bilinear,
+				1.0f,
+				MeshLodPixels,
+				Viewport.Msaa.Disabled,
+				Viewport.ScreenSpaceAAEnum.Disabled,
+				false);
+		}
+
+		Viewport.Msaa msaaMode = Msaa switch
+		{
+			>= 8 => Viewport.Msaa.Msaa8X,
+			>= 4 => Viewport.Msaa.Msaa4X,
+			>= 2 => Viewport.Msaa.Msaa2X,
+			_ => Viewport.Msaa.Disabled,
+		};
+
+		Viewport.Scaling3DModeEnum scalingMode = Scaler switch
+		{
+			"fsr" => Viewport.Scaling3DModeEnum.Fsr,
+			"fsr2" => Viewport.Scaling3DModeEnum.Fsr2,
+			"nearest" => Viewport.Scaling3DModeEnum.Nearest,
+			_ => Viewport.Scaling3DModeEnum.Bilinear,
+		};
+
+		(float scaling3D, float lodThreshold) = ComputeViewport3DParameters(actualWindowSize);
+
+		Viewport.ScreenSpaceAAEnum ssaaMode = ScreenSpaceAa switch
+		{
+			"fxaa" => Viewport.ScreenSpaceAAEnum.Fxaa,
+			"smaa" => Viewport.ScreenSpaceAAEnum.Smaa,
+			_ => Viewport.ScreenSpaceAAEnum.Disabled,
+		};
+
+		bool useTaa = Taa && scalingMode != Viewport.Scaling3DModeEnum.Fsr2;
+		return (scalingMode, scaling3D, lodThreshold, msaaMode, ssaaMode, useTaa);
+	}
+
+	/// <summary>
 	/// The 3D render scale: AMD's ratio for the chosen FSR quality mode (1.3x Ultra Quality,
 	/// 1.5x Quality, 1.7x Balanced, 2x Performance, 3x Ultra Performance), else
 	/// <see cref="RenderScalePercent"/>.

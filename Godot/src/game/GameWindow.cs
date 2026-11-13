@@ -133,7 +133,7 @@ public partial class GameWindow : Node
 		{
 			if (IsInstanceValid(root) && IsInstanceValid(view))
 			{
-				ApplyViewport3DScaling(view, _windowSettings, root.Size);
+				ApplyRoot3DQuality(view, _windowSettings, root.Size, GameWorld.HasActiveWorld);
 			}
 		};
 		root.SizeChanged += _onRootSizeChanged;
@@ -352,6 +352,8 @@ public partial class GameWindow : Node
 	public override void _Process(double delta)
 	{
 		using var _framePhase = Refii.Core.Engine_FramePhases.Measure("gamewindow");
+		UpdateEffectiveMaxFps();
+		SyncRoot3DQualityWithWorldState();
 
 		// The guest frame is sampled at frame start by Engine_FrameStartNode (int.MinValue);
 		// on a new guest frame the entity walk runs on its worker while the UI and the world
@@ -706,34 +708,11 @@ public partial class GameWindow : Node
 		Engine.MaxFps = settings.MaxFps;
 		Refii.Core.Engine_TickClock.Pin = settings.DrawLatencyTicks;
 		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
-		view.Msaa3D = settings.Msaa switch
-		{
-			>= 8 => Viewport.Msaa.Msaa8X,
-			>= 4 => Viewport.Msaa.Msaa4X,
-			>= 2 => Viewport.Msaa.Msaa2X,
-			_ => Viewport.Msaa.Disabled,
-		};
-
-		// Set Scaling3DMode BEFORE ApplyViewport3DScaling writes Scaling3DScale so Godot's viewport
-		// buffer sizing configures both mode and scale in deterministic order on initial startup.
-		view.Scaling3DMode = settings.Scaler switch
-		{
-			"fsr" => Viewport.Scaling3DModeEnum.Fsr,
-			"fsr2" => Viewport.Scaling3DModeEnum.Fsr2,
-			"nearest" => Viewport.Scaling3DModeEnum.Nearest,
-			_ => Viewport.Scaling3DModeEnum.Bilinear,
-		};
-		ApplyViewport3DScaling(view, settings, actualWindowSize);
+		ApplyRoot3DQuality(view, settings, actualWindowSize, GameWorld.HasActiveWorld);
+		_appliedActiveWorld = GameWorld.HasActiveWorld;
 
 		view.FsrSharpness = settings.FsrSharpness;
 		view.TextureMipmapBias = settings.MipmapBias;
-		view.ScreenSpaceAA = settings.ScreenSpaceAa switch
-		{
-			"fxaa" => Viewport.ScreenSpaceAAEnum.Fxaa,
-			"smaa" => Viewport.ScreenSpaceAAEnum.Smaa,
-			_ => Viewport.ScreenSpaceAAEnum.Disabled,
-		};
-		view.UseTaa = settings.Taa && view.Scaling3DMode != Viewport.Scaling3DModeEnum.Fsr2;
 		view.AnisotropicFilteringLevel = settings.Anisotropic switch
 		{
 			>= 16 => Viewport.AnisotropicFiltering.Anisotropy16X,
@@ -751,17 +730,73 @@ public partial class GameWindow : Node
 		DisplayServer.VSyncMode wanted = ResolveVsyncMode(settings, isD3d12);
 		DisplayServer.WindowSetVsyncMode(wanted, (int)DisplayServer.MainWindowId);
 
-		// When V-Sync is disabled (`vsync_mode = "off"`) and no explicit MaxFps cap was set, apply a
-		// safe 240 FPS ceiling on both Vulkan and D3D12 so menus never spin uncapped at 800+ FPS.
-		if (wanted == DisplayServer.VSyncMode.Disabled && Engine.MaxFps == 0)
-		{
-			Engine.MaxFps = 240;
-		}
+		UpdateEffectiveMaxFps();
 
 		if (scheduleMailboxSettle && !isD3d12 && wanted == DisplayServer.VSyncMode.Mailbox)
 		{
 			_triedAdaptive = false;
 			GetTree().CreateTimer(1.0).Timeout += SettleVsync;
+		}
+	}
+
+	private bool _appliedActiveWorld;
+
+	private void SyncRoot3DQualityWithWorldState()
+	{
+		bool activeWorld = GameWorld.HasActiveWorld;
+		if (activeWorld == _appliedActiveWorld || !IsInsideTree() ||
+			GetTree()?.Root is not { } root || !IsInstanceValid(root))
+		{
+			return;
+		}
+
+		Viewport view = GetViewport();
+		if (!IsInstanceValid(view))
+		{
+			return;
+		}
+
+		_appliedActiveWorld = activeWorld;
+		ApplyRoot3DQuality(view, _windowSettings, root.Size, activeWorld);
+	}
+
+	private static void ApplyRoot3DQuality(
+		Viewport view,
+		GameWindowSettings settings,
+		Vector2I actualWindowSize,
+		bool activeWorld)
+	{
+		(Viewport.Scaling3DModeEnum scalingMode,
+			float scaling3D,
+			float lodThreshold,
+			Viewport.Msaa msaaMode,
+			Viewport.ScreenSpaceAAEnum ssaaMode,
+			bool useTaa) = settings.ResolveRoot3DQuality(actualWindowSize, activeWorld);
+
+		// Set Scaling3DMode BEFORE Scaling3DScale so Godot's viewport buffer sizing configures
+		// both mode and scale in deterministic order.
+		view.Msaa3D = msaaMode;
+		view.Scaling3DMode = scalingMode;
+		view.Scaling3DScale = scaling3D;
+		view.MeshLodThreshold = lodThreshold;
+		view.ScreenSpaceAA = ssaaMode;
+		view.UseTaa = useTaa;
+		if (actualWindowSize.X > 0 && actualWindowSize.Y > 0)
+		{
+			Refii.Textures.Engine_TexSemantic.UpdateUiMaxEdgeForResolution(actualWindowSize.X, actualWindowSize.Y);
+		}
+	}
+
+	private void UpdateEffectiveMaxFps()
+	{
+		bool focused = GetWindow()?.HasFocus() ?? true;
+		int configured = _windowSettings.MaxFps;
+		int want = !focused
+			? (configured > 0 ? System.Math.Min(configured, 30) : 30)
+			: configured;
+		if (Engine.MaxFps != want)
+		{
+			Engine.MaxFps = want;
 		}
 	}
 
@@ -780,21 +815,6 @@ public partial class GameWindow : Node
 
 		_windowSettings = GameWindowSettings.Load();
 		ApplyViewportQualityAndVsync(root, view, _windowSettings, root.Size, scheduleMailboxSettle: true);
-	}
-
-	/// <summary>
-	/// Updates 3D resolution scaling, mesh LOD threshold, and UI max texture edge when the root
-	/// window initializes, maximizes, enters fullscreen, or resizes.
-	/// </summary>
-	private static void ApplyViewport3DScaling(Viewport view, GameWindowSettings settings, Vector2I actualWindowSize)
-	{
-		(float scaling3D, float lodThreshold) = settings.ComputeViewport3DParameters(actualWindowSize);
-		view.Scaling3DScale = scaling3D;
-		view.MeshLodThreshold = lodThreshold;
-		if (actualWindowSize.X > 0 && actualWindowSize.Y > 0)
-		{
-			Refii.Textures.Engine_TexSemantic.UpdateUiMaxEdgeForResolution(actualWindowSize.X, actualWindowSize.Y);
-		}
 	}
 
 	public override void _ExitTree()

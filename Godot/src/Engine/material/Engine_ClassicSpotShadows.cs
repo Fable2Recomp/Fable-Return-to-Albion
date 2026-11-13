@@ -87,10 +87,23 @@ public partial class Engine_ClassicSpotShadows : Node
     /// <summary>Maps drawn on the last frame.</summary>
     public static int Drawn { get; private set; }
 
+    private bool _initialized;
+
     public override void _Ready()
     {
         Instance = this;
         System.Array.Fill(_owner, -1);
+        EnsureClassicInitialized();
+    }
+
+    private void EnsureClassicInitialized()
+    {
+        if (_initialized || !Engine_ClassicMaterial.Active || Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            return;
+        }
+
+        _initialized = true;
         for (int k = 0; k < MaxMaps; k++)
         {
             var capture = new Engine_ClassicShadows.Capture();
@@ -100,6 +113,7 @@ public partial class Engine_ClassicSpotShadows : Node
                 Size = new Vector2I(MapSize, MapSize),
                 RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled,
                 RenderTargetClearMode = SubViewport.ClearMode.Always,
+                Disable3D = true,
                 PositionalShadowAtlasSize = 0,
                 GuiDisableInput = true,
                 HandleInputLocally = false,
@@ -130,6 +144,11 @@ public partial class Engine_ClassicSpotShadows : Node
     /// <summary>The array: one R32F layer per map, cleared to 0 (no caster). Render thread.</summary>
     private void CreateArray()
     {
+        if (!Engine_ClassicMaterial.Active || Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            return;
+        }
+
         RenderingDevice? rd = RenderingServer.GetRenderingDevice();
         if (rd is null)
         {
@@ -152,6 +171,11 @@ public partial class Engine_ClassicSpotShadows : Node
                 | RenderingDevice.TextureUsageBits.CanCopyToBit
                 | RenderingDevice.TextureUsageBits.CanUpdateBit,
         }, new RDTextureView(), layers);
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(_arrayRid, "Engine_ClassicSpotShadows.CreateArray"))
+        {
+            _arrayRid = default;
+            return;
+        }
         Refii.Core.Engine_TracedMemory.Alloc(Refii.Core.Engine_RdRetire.TracedPool, _arrayRid.Id, (ulong)MapSize * MapSize * 4 * MaxMaps);
         Rid rid = _arrayRid;
         for (int k = 0; k < MaxMaps; k++)
@@ -194,6 +218,11 @@ public partial class Engine_ClassicSpotShadows : Node
     /// </summary>
     public static void WriteFrameDefaults()
     {
+        if (!Engine_ClassicMaterial.Active)
+        {
+            return;
+        }
+
         Span<float> inert = stackalloc float[16]
         {
             0f, 0f, 0f, 0.5f,
@@ -230,6 +259,11 @@ public partial class Engine_ClassicSpotShadows : Node
     /// </summary>
     public static void WriteRow(int row, int spot, float[] block)
     {
+        if (!Engine_ClassicMaterial.Active)
+        {
+            return;
+        }
+
         int layer = spot >= 0 ? Ask(spot) : -1;
         if (layer < 0 || !Engine_ClassicLights.TryLocal(spot, out Engine_ClassicLights.Local local))
         {
@@ -268,6 +302,11 @@ public partial class Engine_ClassicSpotShadows : Node
     /// <summary>The spot's layer this frame, or -1 when every map is taken.</summary>
     private static int Ask(int spot)
     {
+        if (!Engine_ClassicMaterial.Active)
+        {
+            return -1;
+        }
+
         _asked.Add(spot);
         if (_layerOf.TryGetValue(spot, out int layer))
         {
@@ -291,6 +330,26 @@ public partial class Engine_ClassicSpotShadows : Node
     /// </summary>
     public void Place()
     {
+        if (!Engine_ClassicMaterial.Active || Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            for (int k = 0; k < MaxMaps; k++)
+            {
+                _owner[k] = -1;
+                if (_viewports[k] is { } idleViewport)
+                {
+                    idleViewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+                    idleViewport.Disable3D = true;
+                }
+            }
+            _layerOf.Clear();
+            _asked.Clear();
+            _refused.Clear();
+            Drawn = 0;
+            Refused = 0;
+            return;
+        }
+
+        EnsureClassicInitialized();
         Refused = _refused.Count;
         _refused.Clear();
 
@@ -328,6 +387,7 @@ public partial class Engine_ClassicSpotShadows : Node
             if (owner < 0 || !Engine_ClassicLights.TryLocal(owner, out Engine_ClassicLights.Local local))
             {
                 viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+                viewport.Disable3D = true;
                 continue;
             }
             Vector3 up = Up(local.Direction);
@@ -339,6 +399,7 @@ public partial class Engine_ClassicSpotShadows : Node
             camera.Far = MathF.Max(local.Far, camera.Near + 0.01f);
             capture.BiasConstant = local.Bias;
             capture.BiasSlope = local.Slope;
+            viewport.Disable3D = false;
             viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Always;
             ++drawn;
         }

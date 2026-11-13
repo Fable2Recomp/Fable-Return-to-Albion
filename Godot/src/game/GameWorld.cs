@@ -116,6 +116,14 @@ public partial class GameWorld : Node3D
 		AddChild(_split);
 	}
 
+	public override void _ExitTree()
+	{
+		if (GetViewport() is { } rootViewport)
+		{
+			rootViewport.Disable3D = false;
+		}
+	}
+
 	public override void _Process(double delta)
 	{
 		using (Refii.Core.Engine_FramePhases.Measure("world_process"))
@@ -134,6 +142,14 @@ public partial class GameWorld : Node3D
 		if (!PumpRegionRetirement()) return;
 
 		FollowGuestIntoTheWorld();
+		if (GetViewport() is { } rootViewport)
+		{
+			bool disable3D = !HasActiveWorld;
+			if (rootViewport.Disable3D != disable3D)
+			{
+				rootViewport.Disable3D = disable3D;
+			}
+		}
 		ReleaseWhenPropsHaveStreamed();
 		UpdateGuestLoadFreeze();
 		Refii.Core.Engine_ServerSyncs.LoadCoverActive = CoverHeld;

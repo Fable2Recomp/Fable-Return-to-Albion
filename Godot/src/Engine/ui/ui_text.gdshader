@@ -93,15 +93,16 @@ void fragment() {
 	// Screen pixels per SHIPPED atlas texel, plus UV step per shipped texel (computed once in uniform control flow).
 	vec2 atlas_size = max(vec2(textureSize(atlas, 0)), vec2(1.0));
 	float safe_supersample = max(supersample, 1.0);
-	vec2 shipped = UV * atlas_size / safe_supersample;
 	vec2 texel_step = safe_supersample / atlas_size;
-	float magnified = 1.0 / max(max(fwidth(shipped.x), fwidth(shipped.y)), 1e-5);
+	vec2 shipped_fwidth = (abs(uv_dx) + abs(uv_dy)) / texel_step;
+	float magnified = 1.0 / max(max(shipped_fwidth.x, shipped_fwidth.y), 1e-5);
 
-	// Read the packed signed distance channel (`.g`) and compute its screen-space derivative
-	// unconditionally in uniform control flow across every 2x2 pixel quad (before any branch or `discard`)
-	// so DXIL/D3D12 coarse derivatives stay strictly well-defined on all D3D12 drivers.
+	// Read the packed signed distance channel (`.g`). Avoid `fwidth(distance)` on the sampled
+	// texel: dependent-sample derivatives trigger D3D12 GPU hangs (LiveKernelEvent 141) on Intel
+	// Arc GPUs. `Engine_BitmapFontTexture` / `Engine_SdfField` encode `.g` as `0.5 - s / (2 * spread)`
+	// with `spread = 2 * supersample`, so a 1-screen-pixel step changes `.g` by exact `0.25 / magnified`.
 	float distance = texel.g;
-	float df_width = max(fwidth(distance), 1e-4);
+	float df_width = clamp(0.25 / max(magnified, 1e-4), 1e-4, 0.5);
 
 	// THE FIELD ONLY WHERE THE TEXT IS MAGNIFIED. At or near the shipped size a screen pixel spans
 	// a whole shipped texel, the field is read from its mips, and the mip average erodes every
@@ -165,7 +166,9 @@ void fragment() {
 	// THE OUTLINE (ui_text_outline.gdshaderinc), gated by uniform `outline` so non-outlined titles skip it statically.
 	float cover = texel.a;
 	if (outline && outlined) {
-		cover = ui_text_outline_cover(atlas, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, texel_step);
+		if (!clipped && run_alpha >= 0.01) {
+			cover = ui_text_outline_cover(atlas, UV, texel.a, uv_dx, uv_dy, from_field, field_width, contrast, texel_step);
+		}
 	}
 
 	// The scissor, clip rect, and alpha floor (evaluated after all derivative and texture operations).

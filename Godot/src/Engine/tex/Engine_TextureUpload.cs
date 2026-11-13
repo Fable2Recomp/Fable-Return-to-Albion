@@ -57,21 +57,39 @@ public static class Engine_TextureUpload
     /// <returns>The ordinary Godot texture with capability-compatible storage.</returns>
     /// <param name="world">A world material's texture, which the low-memory tier may upload a size
     /// down; nothing that reads its own size to place itself may set this.</param>
-    public static ImageTexture CreateTexture(Image image, bool world = false) =>
-        Engine_ServerSyncs.RunGpuUpload(
+    public static ImageTexture CreateTexture(Image image, bool world = false)
+    {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            return new ImageTexture();
+        }
+
+        return Engine_ServerSyncs.RunGpuUpload(
             image.GetDataSize(),
             () =>
             {
+                if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+                {
+                    return new ImageTexture();
+                }
+
                 if (Prepares)
                 {
                     return AndroidTextureUpload.CreateTexture(image, world);
                 }
 
                 ImageTexture created = ImageTexture.CreateFromImage(image);
+                if (!Refii.Core.Engine_RdHealth.CheckTextureValid(
+                        created.GetRid(), "Engine_TextureUpload.CreateTexture", verifyRdBacking: IsD3D12Driver))
+                {
+                    return created;
+                }
+
                 Layouts.AddOrUpdate(created, new UploadLayout(
                     image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
                 return created;
             });
+    }
 
     /// <summary>
     /// The image in the form <see cref="CreateTexture"/> would upload it, for a worker that makes
@@ -87,8 +105,18 @@ public static class Engine_TextureUpload
     /// <param name="world">As <see cref="CreateTexture"/>.</param>
     public static void SetImage(ImageTexture texture, Image image, bool world = false)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            return;
+        }
+
         Engine_ServerSyncs.RunGpuUpload(image.GetDataSize(), () =>
         {
+            if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+            {
+                return;
+            }
+
             if (Prepares)
             {
                 AndroidTextureUpload.SetImage(texture, image, world);
@@ -105,6 +133,9 @@ public static class Engine_TextureUpload
                 Layouts.AddOrUpdate(texture, new UploadLayout(
                     image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
             }
+
+            _ = Refii.Core.Engine_RdHealth.CheckTextureValid(
+                texture.GetRid(), "Engine_TextureUpload.SetImage", verifyRdBacking: IsD3D12Driver);
         });
     }
 
@@ -115,6 +146,11 @@ public static class Engine_TextureUpload
     /// <param name="world">As <see cref="CreateTexture"/>.</param>
     public static Error CreateLayered(ImageTextureLayered texture, Godot.Collections.Array<Image> images, bool world = false)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            return Error.Failed;
+        }
+
         long bytes = 0;
         for (int i = 0; i < images.Count; i++)
         {
@@ -126,8 +162,17 @@ public static class Engine_TextureUpload
 
         return Engine_ServerSyncs.RunGpuUpload(bytes, () =>
         {
+            if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+            {
+                return Error.Failed;
+            }
             if (Prepares) return AndroidTextureUpload.CreateLayered(texture, images, world);
             Error created = texture.CreateFromImages(images);
+            if (created == Error.Ok)
+            {
+                _ = Refii.Core.Engine_RdHealth.CheckTextureValid(
+                    texture.GetRid(), "Engine_TextureUpload.CreateLayered", verifyRdBacking: IsD3D12Driver);
+            }
             GC.KeepAlive(images);
             return created;
         });

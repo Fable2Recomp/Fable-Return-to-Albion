@@ -15,63 +15,52 @@ public partial class GameUi
 	/// <summary>The title screen's presentation ("Press Start").</summary>
 	private const string TitlePresentation = "frontendstartupscreen";
 
-	/// <summary>Frames the title has stood with no movie on screen.</summary>
-	private int _menuPrebuildFrames;
+	private readonly Engine_UiFrontEndPrebuild _frontEndPrebuild = new();
+	private bool _frontEndLeft;
 
-	/// <summary>The main menu's prebuild: 0 not begun, 1 its template tree built, 2 its pattern book
-	/// catalogued, 3 done or given up.</summary>
+	/// <summary>Main-menu prebuild stage: 0 not begun/in progress, 3 done or retired for gameplay.</summary>
 	private int _menuPrebuild;
 
 	/// <summary>
-	/// THE MAIN MENU, BUILT WHILE THE TITLE WAITS FOR A PRESS. Its pattern book and owned book were
-	/// built on the frame the player pressed Start: a 0.9-1.1 s freeze on a OnePlus 7 Pro, 1.2 s on a
-	/// Galaxy S10e. Once the title has stood a second with no movie over it, they are built ahead,
-	/// one piece per frame (the file-only template tree, its catalogue, then the book), and
-	/// <see cref="Engine_UiBookSet.DriveFrontEnd"/> finds the book waiting. A press before then
-	/// builds them on demand as before.
+	/// Starts front-end prebuild immediately after shader warmup finishes while the startup `.bik`
+	/// videos play, spreading document loading, single-texture decode/upload batches, pattern-book
+	/// construction, and owned-book prebuild across separate frames so D3D12 never receives a large
+	/// synchronous burst on a single frame and video playback stays smooth.
 	/// </summary>
-	/// <remarks>NOT UNDER A MOVIE: the startup videos play over the title, and a long frame stops
-	/// them.</remarks>
-	private void PrebuildMenuAtTitle(string presentation, bool owned)
+	private void DriveFrontEndPrebuild()
 	{
-		if (_menuPrebuild >= 3 || !owned || _presentation is null ||
-			!string.Equals(presentation, TitlePresentation, System.StringComparison.OrdinalIgnoreCase))
-		{
-			return;
-		}
-
-		if (GameVideo.PlayedWithin(30))
-		{
-			_menuPrebuildFrames = 0;
-			return;
-		}
-
-		if (++_menuPrebuildFrames < 30)
+		if (_menuPrebuild >= 3 || _presentation is not { IsLoaded: true } ||
+			!Refii.Models.Engine_ShaderWarmup.Done ||
+			HostBridge.IsInGame || GameWorld.HasActiveWorld || _frontEndLeft ||
+			Refii.Core.Engine_RdHealth.IsDeviceLost)
 		{
 			return;
 		}
 
 		using (Refii.Core.Engine_FramePhases.Measure("ui.menu.prebuild"))
 		{
-			switch (_menuPrebuild)
-			{
-				case 0:
-					_presentation.DocumentFor(FrontEndMenuPresentation);
-					_menuPrebuild = 1;
-					break;
-				case 1:
-					_presentation.PatternBookFor(FrontEndMenuPresentation);
-					_menuPrebuild = 2;
-					break;
-				default:
-					if (_books.PrebuildFrontEnd(FrontEndMenuPresentation) || _menuPrebuildFrames > 300)
-					{
-						_menuPrebuild = 3;
-					}
+			_ = _frontEndPrebuild.Step(
+				canRun: true,
+				loadDocument: name => _presentation.DocumentFor(name),
+				warmOneTexture: path => _presentation.TryWarmTexture(path),
+				buildPatternBook: name => _presentation.PatternBookFor(name),
+				prebuildOwnedBook: name => _books.PrebuildFrontEnd(name));
 
-					break;
+			if (_frontEndPrebuild.CurrentStage == Engine_UiFrontEndPrebuild.Stage.Complete)
+			{
+				_menuPrebuild = 3;
 			}
 		}
+	}
+
+	private void PrebuildMenuAtTitle(string presentation, bool owned)
+	{
+		if (!owned || !string.Equals(presentation, TitlePresentation, System.StringComparison.OrdinalIgnoreCase))
+		{
+			return;
+		}
+
+		DriveFrontEndPrebuild();
 	}
 
 	/// <summary>

@@ -206,6 +206,9 @@ public sealed class Engine_UiSceneBuilder
 	private static readonly StringName ClipRectName = "clip_rect";
 	private static readonly StringName DiffuseTexName = "diffuse_tex";
 	private static readonly StringName HasDiffuseName = "has_diffuse";
+	private static readonly StringName DetailTexName = "detail_tex";
+	private static readonly StringName KeycapTexName = "keycap_tex";
+	private static readonly StringName HasKeycapName = "has_keycap";
 	private static readonly StringName TintRgbName = "tint_rgb";
 	private static readonly StringName TintAmountName = "tint_amount";
 	private static readonly StringName Uv1OffsetName = "uv1_offset";
@@ -217,6 +220,59 @@ public sealed class Engine_UiSceneBuilder
 	private static readonly StringName OpacityAccumulatedMeta = "opacity_accumulated";
 	private static readonly StringName LookAtPointMeta = "lookatpoint";
 	private static readonly StringName AuthoredAlphaMetaName = AuthoredAlphaMeta;
+
+	private static ImageTexture? _fallbackWhiteTexture;
+	private static Godot.Environment? _canvasEnvironment;
+
+	/// <summary>
+	/// Shared 4x4 white RGBA8 texture bound to unused sampler slots (<c>diffuse_tex</c>,
+	/// <c>detail_tex</c>, <c>keycap_tex</c>) on <c>ui_quad.gdshader</c> materials so D3D12
+	/// descriptor tables never sample unbound/null SRVs.
+	/// </summary>
+	public static ImageTexture FallbackWhiteTexture
+	{
+		get
+		{
+			if (_fallbackWhiteTexture is null || !GodotObject.IsInstanceValid(_fallbackWhiteTexture))
+			{
+				Image img = Image.CreateEmpty(4, 4, false, Image.Format.Rgba8);
+				img.Fill(Colors.White);
+				_fallbackWhiteTexture = ImageTexture.CreateFromImage(img);
+			}
+			return _fallbackWhiteTexture;
+		}
+	}
+
+	/// <summary>
+	/// Shared unlit, linear-tonemapped <see cref="Godot.Environment"/> with all 3D post-processing
+	/// (ambient light, reflections, glow, SSR/SSAO/SSIL/SDFGI, fog) explicitly disabled for UI canvases.
+	/// </summary>
+	public static Godot.Environment CanvasEnvironment
+	{
+		get
+		{
+			if (_canvasEnvironment is null || !GodotObject.IsInstanceValid(_canvasEnvironment))
+			{
+				_canvasEnvironment = new Godot.Environment
+				{
+					BackgroundMode = Godot.Environment.BGMode.ClearColor,
+					BackgroundColor = new Color(0f, 0f, 0f, 0f),
+					TonemapMode = Godot.Environment.ToneMapper.Linear,
+					AmbientLightSource = Godot.Environment.AmbientSource.Disabled,
+					ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled,
+					GlowEnabled = false,
+					SsrEnabled = false,
+					SsaoEnabled = false,
+					SsilEnabled = false,
+					SdfgiEnabled = false,
+					VolumetricFogEnabled = false,
+					FogEnabled = false,
+					AdjustmentEnabled = false,
+				};
+			}
+			return _canvasEnvironment;
+		}
+	}
 
 	/// <summary>
 	/// Writes a live SCALE onto a built or cloned node, keeping the position it states.
@@ -329,12 +385,14 @@ public sealed class Engine_UiSceneBuilder
 			if (material.Shader == QuadShader)
 			{
 				material.SetShaderParameter(OpacityName, accumulated);
+				SetVisibilityLayer(mesh, accumulated);
 			}
 			else if (material.Shader == TextShader)
 			{
 				Color colour = material.GetShaderParameter(ColourName).AsColor();
 				material.SetShaderParameter(
 					ColourName, new Color(colour.R, colour.G, colour.B, accumulated));
+				SetVisibilityLayer(mesh, accumulated);
 			}
 		}
 
@@ -565,6 +623,7 @@ public sealed class Engine_UiSceneBuilder
 				Mesh = Engine_UiTheme.IconQuad(icon.Size),
 				Position = new Vector3(icon.TopLeft.X, icon.TopLeft.Y, 0f),
 				MaterialOverride = iconMaterial,
+				Layers = _inheritedOpacity > 0.001f ? 1u : 0u,
 			});
 			MarkOwnedMaterial(quad, iconMaterial);
 			node.AddChild(quad);
@@ -582,6 +641,7 @@ public sealed class Engine_UiSceneBuilder
 			TextMaterial(new Color(text.R, text.G, text.B, _inheritedOpacity), font.Atlas);
 		ApplyClip(textMaterial, n);
 		node.MaterialOverride = textMaterial;
+		SetVisibilityLayer(node, _inheritedOpacity);
 		MarkOwnedMaterial(node, textMaterial);
 
 		node.SetMeta("text_lines", lines);
@@ -661,6 +721,7 @@ public sealed class Engine_UiSceneBuilder
 		}
 
 		m.SetShaderParameter(ColourName, colour);
+		SetVisibilityLayer(label, colour.A);
 		Engine_UiTheme.FadeInlineIcons(label, colour.A);
 		return true;
 	}
@@ -673,8 +734,12 @@ public sealed class Engine_UiSceneBuilder
 	public static ShaderMaterial IconMaterial(Texture2D art, float alpha)
 	{
 		var material = new ShaderMaterial { Shader = QuadShader };
-		material.SetShaderParameter(DiffuseTexName, art);
+		material.SetShaderParameter(DiffuseTexName, art ?? FallbackWhiteTexture);
+		material.SetShaderParameter(DetailTexName, FallbackWhiteTexture);
+		material.SetShaderParameter(KeycapTexName, FallbackWhiteTexture);
 		material.SetShaderParameter(HasDiffuseName, art is not null);
+		material.SetShaderParameter(DetailMappedName, false);
+		material.SetShaderParameter(HasKeycapName, false);
 		material.SetShaderParameter(OpacityName, alpha);
 		return material;
 	}
@@ -686,7 +751,11 @@ public sealed class Engine_UiSceneBuilder
 		if (q.IsDegenerate)
 			DegenerateQuads++;
 
-		var mesh = new MeshInstance3D { Mesh = SharedQuad };
+		var mesh = new MeshInstance3D
+		{
+			Mesh = SharedQuad,
+			Layers = _inheritedOpacity > 0.001f ? 1u : 0u,
+		};
 
 		// One shader for every quad, as the guest has: a single `guiquad` with a `g_DetailMapped`
 		// branch. See ui_quad.gdshader for the contract.
@@ -695,7 +764,12 @@ public sealed class Engine_UiSceneBuilder
 		// The accumulated alpha: BuildNode has already folded n.Opacity into _inheritedOpacity.
 		mat.SetShaderParameter(OpacityName, _inheritedOpacity);
 		mat.SetShaderParameter("quad_base_size", QuadBaseSize);
+		mat.SetShaderParameter(DiffuseTexName, FallbackWhiteTexture);
+		mat.SetShaderParameter(DetailTexName, FallbackWhiteTexture);
+		mat.SetShaderParameter(KeycapTexName, FallbackWhiteTexture);
 		mat.SetShaderParameter(HasDiffuseName, false);
+		mat.SetShaderParameter(DetailMappedName, false);
+		mat.SetShaderParameter(HasKeycapName, false);
 
 		// Colour and WEIGHT kept apart: the weight is 0 on most records, so most quads are untinted.
 		mat.SetShaderParameter(TintRgbName, new Vector3(q.R, q.G, q.B));
@@ -708,15 +782,16 @@ public sealed class Engine_UiSceneBuilder
 
 		// A controller button cut from a shared atlas — an `abyx` prompt, the menu cursor's select
 		// orb — carries the glyph it shows off the shipped art: keycap, style, pack or remap.
-		if (Engine_UiKeyGlyphs.AtlasButton(q.TexturePath, n, q.UMin, q.VMax) is { } button)
+		if (Engine_UiKeyGlyphs.AtlasButton(q.TexturePath, n, q.UMin, q.VMax) is { } button &&
+			Engine_UiKeyGlyphs.KeycapFor(button) is { } keycapTex)
 		{
-			mat.SetShaderParameter("keycap_tex", Engine_UiKeyGlyphs.KeycapFor(button));
-			mat.SetShaderParameter("has_keycap", true);
+			mat.SetShaderParameter(KeycapTexName, keycapTex);
+			mat.SetShaderParameter(HasKeycapName, true);
 		}
 		else if (Engine_UiKeyGlyphs.OrbFor(q.TexturePath, q.UMin, q.UMax, q.VMin, q.VMax) is { } orb)
 		{
-			mat.SetShaderParameter("keycap_tex", orb);
-			mat.SetShaderParameter("has_keycap", true);
+			mat.SetShaderParameter(KeycapTexName, orb);
+			mat.SetShaderParameter(HasKeycapName, true);
 		}
 
 		ApplyDetailMap(mat, q, n);
@@ -821,14 +896,14 @@ public sealed class Engine_UiSceneBuilder
 		QuadMaterial(mesh) is not null && EnsureOwnedMaterial(mesh) is not null;
 
 	/// <summary>Replaces a built quad's primary texture. Used where the guest names art we clone.</summary>
-	public static bool SetQuadTexture(MeshInstance3D mesh, Texture2D texture)
+	public static bool SetQuadTexture(MeshInstance3D mesh, Texture2D? texture)
 	{
 		if (QuadMaterial(mesh) is null || EnsureOwnedMaterial(mesh) is not { } material)
 		{
 			return false;
 		}
 
-		material.SetShaderParameter(DiffuseTexName, texture);
+		material.SetShaderParameter(DiffuseTexName, texture ?? FallbackWhiteTexture);
 		material.SetShaderParameter(HasDiffuseName, texture is not null);
 		return true;
 	}
@@ -853,9 +928,10 @@ public sealed class Engine_UiSceneBuilder
 		{
 			float opacity = shader.GetShaderParameter(OpacityName).AsSingle();
 			Vector3 tint = shader.GetShaderParameter(TintRgbName).AsVector3();
+			bool hasDiffuse = shader.GetShaderParameter(HasDiffuseName).AsBool();
 			return new QuadPaint(
 				opacity > 0.01f,
-				shader.GetShaderParameter(DiffuseTexName).As<Texture2D>(),
+				hasDiffuse ? shader.GetShaderParameter(DiffuseTexName).As<Texture2D>() : null,
 				opacity,
 				new Color(tint.X, tint.Y, tint.Z),
 				shader.GetShaderParameter(TintAmountName).AsSingle(),
@@ -937,10 +1013,33 @@ public sealed class Engine_UiSceneBuilder
 		return true;
 	}
 
+	/// <summary>Updates visibility layer bit 0 only when the opaque threshold changes.</summary>
+	public static void SetVisibilityLayer(MeshInstance3D mesh, float alpha)
+	{
+		uint wantLayers = alpha > 0.001f ? 1u : 0u;
+		if (mesh.Layers != wantLayers)
+		{
+			mesh.Layers = wantLayers;
+		}
+	}
+
 	/// <summary>Scales a built quad's opacity.</summary>
 	public static bool SetQuadOpacity(MeshInstance3D mesh, float opacity)
 	{
-		if (QuadMaterial(mesh) is null || EnsureOwnedMaterial(mesh) is not { } material)
+		if (QuadMaterial(mesh) is not { } existing)
+		{
+			return false;
+		}
+
+		SetVisibilityLayer(mesh, opacity);
+
+		float current = existing.GetShaderParameter(OpacityName).AsSingle();
+		if (Mathf.IsEqualApprox(current, opacity))
+		{
+			return true;
+		}
+
+		if (EnsureOwnedMaterial(mesh) is not { } material)
 		{
 			return false;
 		}
@@ -994,7 +1093,7 @@ public sealed class Engine_UiSceneBuilder
 		}
 
 		mat.SetShaderParameter(DetailMappedName, true);
-		mat.SetShaderParameter("detail_tex", detail);
+		mat.SetShaderParameter(DetailTexName, detail);
 
 		// Deterministic where the guest is random (`sub_8286F830` uses two
 		// LHMath_GFFloatRandom(1.0)); hashing the ordinal keeps a rebuild pixel-identical.
@@ -1265,22 +1364,31 @@ public sealed class Engine_UiSceneBuilder
 	/// </summary>
 	public const float MinimumWidth = 960f;
 
-	private static Camera3D AddCanvasCamera(Node3D root)
-	{
-		var camera = new Camera3D
+	/// <summary>
+	/// Creates a shared orthographic canvas camera using <see cref="CanvasEnvironment"/> so both
+	/// Fable 2 and Fable 3 UI canvases isolate their world from main scene tone mapping.
+	/// </summary>
+	public static Camera3D CreateCanvasCamera(
+		string name = "CanvasCamera",
+		float near = 0.05f,
+		float far = 100_000f,
+		float z = 10_000f) =>
+		new()
 		{
-			Name = "CanvasCamera",
+			Name = name,
 			Projection = Camera3D.ProjectionType.Orthogonal,
 			Size = CanvasHeight,
 			KeepAspect = Camera3D.KeepAspectEnum.Height,
-			Near = 0.05f,
-			Far = 100_000f,
+			Near = near,
+			Far = far,
 			Current = true,
-
-			// Orthographic, so this sets clipping only and not scale. Far enough back that
-			// no authored position.z falls behind the near plane.
-			Position = new Vector3(0f, 0f, 10_000f),
+			Environment = CanvasEnvironment,
+			Position = new Vector3(0f, 0f, z),
 		};
+
+	private static Camera3D AddCanvasCamera(Node3D root)
+	{
+		Camera3D camera = CreateCanvasCamera("CanvasCamera");
 
 		root.AddChild(camera);
 
@@ -1401,6 +1509,7 @@ public sealed class Engine_UiSceneBuilder
 		{
 			Name = name,
 			OwnWorld3D = true,
+			World3D = new World3D { Environment = CanvasEnvironment },
 			TransparentBg = true,
 			UseHdr2D = false,
 			Msaa3D = Viewport.Msaa.Disabled,
@@ -1418,6 +1527,11 @@ public sealed class Engine_UiSceneBuilder
 		if (viewport is null)
 		{
 			return;
+		}
+
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			active = false;
 		}
 
 		SubViewport.UpdateMode want = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;

@@ -4,7 +4,7 @@
 
 # Fable: Return to Albion
 
-**A modern, native open-world PC and Android remake of Fable II and Fable III**
+**A modern, native PC and Android remake of Fable II and Fable III**
 
 [![Discord](https://img.shields.io/discord/1375490057905111151?color=7289da&label=Discord&logo=discord&logoColor=white)](https://discord.gg/8UFM6p7UdR)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20Android%20ARM64-blue.svg)](#cross-platform-matrix)
@@ -36,8 +36,9 @@
 This is **not an emulator**. The original Xbox 360 PowerPC game code is decompiled and statically recompiled into native machine instructions via the [ReXGlue](https://github.com/rexglue/rexglue-sdk) recompiler SDK. The underlying simulation—quests, character progression, AI behaviour trees, physics, and world state—executes natively at hardware speed with cycle-accurate logic. 
 
 Everything surrounding the simulation is built completely anew inside **Godot 4.7.1 (.NET)**:
-- High-fidelity scene-referred rendering pipeline with custom shaders.
-- Decoupled framerate supporting high-refresh monitors (1440p+ @ 120 FPS+).
+- High-fidelity scene-referred HDR rendering pipeline with custom shaders.
+- Decoupled framerate supporting high-refresh monitors.
+- Native support for Ultrawide (21:9) and Super Ultrawide (32:9) monitors.
 - Modernized user interface, menus, accessibility settings, and gamepad/keyboard-and-mouse mapping.
 - Low-latency local and online co-op powered by the Rust-based **RexNet** netplay engine.
 - A fully integrated, hot-reloading modding architecture.

@@ -191,7 +191,9 @@ public partial class Fable3Hud : Fable3Canvas
 
 	protected override void Frame(double delta)
 	{
-		Engine_UiSceneBuilder.SetViewportActive(CanvasViewport, !Refii.Game.GameWorld.CoverHeld);
+		Engine_UiSceneBuilder.SetViewportActive(
+			CanvasViewport,
+			!Refii.Game.GameWorld.CoverHeld && !Refii.Game.GameVideo.PlayedWithin(2) && !Fable3Splash.Showing);
 		_fade.Drive();
 		Vector2 window = GetViewportRect().Size;
 		foreach (Fable3HudDocument document in _documents)
