@@ -564,7 +564,7 @@ public class FxModEffectsTests
 			return;
 		}
 
-		string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) +
+		string header = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) + File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "refii_mod_requests.h"))) +
 			File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
 		foreach (string native in new[] { "refii_mod_play_fx", "refii_mod_play_fx_on", "refii_mod_stop_fx" })
 		{

@@ -34,6 +34,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include <rex/logging.h>
 #include <rex/ppc.h>
@@ -41,7 +43,9 @@
 #include "box_answers.h"
 #include "core/payload_bridge.h"
 #include "keyboard_ui.h"
+#include "mod_lua.h"
 #include "../../vfs/include/fable3_guest_build.h"
+#include "../../vfs/include/fable3_vfs.h"
 
 REX_EXTERN(__imp__rex_App_TickInput);
 
@@ -100,6 +104,19 @@ void DrainPostedActions(PPCContext& ctx, uint8_t* base) {
     }
     if (std::strncmp(name, refii::fable3::kOptionsAction, sizeof(refii::fable3::kOptionsAction) - 1u) == 0) {
       refii::fable3::AnswerOptionsAction(ctx, base, name);
+      continue;
+    }
+    // The debug channel's probe of the game VM (GameDebugServer "lua" with "@game "): the chunk runs
+    // here, and the answer is whether it ran, or the Lua error.
+    constexpr const char kGameLua[] = "debug-gamelua:";
+    if (std::strncmp(name, kGameLua, sizeof(kGameLua) - 1u) == 0) {
+      std::vector<char> whole(needed + 1u, '\0');
+      refii_bridge_guest_tick_pump_taken_action(i, whole.data(), whole.size());
+      std::string error;
+      const bool ran = refii::fable3::modlua::Run(ctx, base, whole.data() + sizeof(kGameLua) - 1u,
+                                                  "=refii/debug", &error);
+      const std::string note = ran ? std::string("ok") : error;
+      refiii_vfs_note_debug_result(0u, ran ? 1u : 0u, note.c_str(), note.size());
       continue;
     }
     REXLOG_WARN("Refii guest-tick pump: action '{}'{} has no Fable 3 implementation; dropped",
@@ -184,6 +201,7 @@ REX_EXTERN(rex_App_TickInput) {
   refii_bridge_ensure_alternate_signal_stack();
 
   DrainPostedActions(ctx, base);
+  refii::fable3::modlua::Tick(ctx, base);
 
   const Clock::time_point before = Clock::now();
   __imp__rex_App_TickInput(ctx, base);

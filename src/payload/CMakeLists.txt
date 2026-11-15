@@ -50,6 +50,11 @@ set(REFII_PAYLOAD_EXPORT_SOURCE
 #                            the file authored them and as the guest last wrote them, and the
 #                            statements told to them. Title-neutral: each title hands it its
 #                            Gameface's addresses and offsets (a GamefaceTable) from its own hooks.
+#   mod_requests.cpp         a mod's requests for Godot (effects, lights, boxes, notices, menus,
+#                            marks, meters, the HUD, input): formatting posted on the bus's
+#                            host-only kinds, the same for every title (core/refii_mod_requests.h).
+#   mod_bus.cpp              the native text bus (core/refii_mod_bus.h): a hard mod's handler for any
+#                            catalog event by name, run by each title's bus over the fields Lua gets.
 #
 # Staged for the install-time build as recompile/payload_core_sources.cmake
 # (REFII_PAYLOAD_CORE_SOURCES), separately from a title's hook_sources.cmake.
@@ -57,6 +62,8 @@ set(REFII_PAYLOAD_CORE_SOURCES
     ${REFII_PAYLOAD_ROOT}/src/core/rex_bridge_payload.cpp
     ${REFII_PAYLOAD_ROOT}/src/core/guest_yield_backoff.cpp
     ${REFII_PAYLOAD_ROOT}/src/core/headless_presentation.cpp
+    ${REFII_PAYLOAD_ROOT}/src/core/mod_requests.cpp
+    ${REFII_PAYLOAD_ROOT}/src/core/mod_bus.cpp
 )
 
 add_library(refii_payload_core OBJECT ${REFII_PAYLOAD_CORE_SOURCES})

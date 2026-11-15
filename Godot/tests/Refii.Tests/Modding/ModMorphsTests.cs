@@ -66,7 +66,7 @@ public class ModMorphsTests
             return;
         }
 
-        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp")) + File.ReadAllText(Path.Combine(root, "src", "payload", "src", "core", "mod_requests.cpp")));
         string body = Regex.Match(api, @"extern ""C"" uint32_t refii_mod_morph_id\(const char\* scoped\) \{.*?\n\}", RegexOptions.Singleline).Value;
         AssertThat(body.Length > 0).IsTrue();
         AssertThat(body.Contains("hash = (hash * 0x01000193u) ^ (byte >= 'A' && byte <= 'Z' ? byte + 32u : byte);", StringComparison.Ordinal)).IsTrue();
@@ -284,7 +284,6 @@ public class ModMorphsTests
 
         string events = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod_events.h"));
         AssertThat(events.Contains("REFII_EVENT_MORPH_CHANGED = 115,", StringComparison.Ordinal)).IsTrue();
-        AssertThat(events.Contains("REFII_EVENT_COUNT = 116,", StringComparison.Ordinal)).IsTrue();
         string bus = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp"));
         AssertThat(bus.Contains("\"player=%d,morph='0x%08x',weight=%.9g,hero=%u\"", StringComparison.Ordinal)).IsTrue();
         string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));

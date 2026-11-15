@@ -24,6 +24,8 @@ public sealed partial class LuaScriptEditor : Window
 	private readonly BnkFile _file;
 	private readonly Action _remount;
 	private readonly byte[]? _original;   // the chunk the text was decompiled from, for Verify
+	private bool _kore;                   // a Fable 3 (Kore) chunk: decompiled in managed code, not verifiable here
+	private readonly string? _otherTitle; // the script's title when it is not the active one: read only
 
 	private CodeEdit _code = null!;
 	private OptionButton _mods = null!;
@@ -37,8 +39,13 @@ public sealed partial class LuaScriptEditor : Window
 	/// <summary>How often the live buttons re-check for a running game; a cheap file read.</summary>
 	private const double LivePollSeconds = 2.0;
 
-	public LuaScriptEditor(BnkFile file, string virtualPath, Action remount)
+	/// <summary>
+	/// <paramref name="otherTitle"/> names the title the script belongs to when it is not the active one:
+	/// it is read and checked, but saved only into a mod of its own title, so the mod controls are off.
+	/// </summary>
+	public LuaScriptEditor(BnkFile file, string virtualPath, Action remount, string? otherTitle = null)
 	{
+		_otherTitle = otherTitle;
 		_file = file;
 		_virtualPath = virtualPath;
 		_remount = remount;
@@ -116,6 +123,18 @@ public sealed partial class LuaScriptEditor : Window
 
 		RefreshMods();
 		Load(preferMod: true);
+
+		if (_otherTitle is not null)
+		{
+			foreach (Control control in new Control[] { _mods, _newMod, save, remove, _run, _rerunInit })
+			{
+				control.Set("disabled", true);
+				control.Set("editable", false);
+			}
+
+			SetStatus($"{_otherTitle} is not the active title: read only here. Switch to {_otherTitle} in the launcher " +
+					  "to save this script into one of its mods or run it in its game.");
+		}
 	}
 
 	// ---- the running game ------------------------------------------------------
@@ -123,7 +142,7 @@ public sealed partial class LuaScriptEditor : Window
 	/// <summary>Enables the live buttons only while a game publishes its channel and is alive.</summary>
 	private void RefreshLive()
 	{
-		bool live = Refii.EditorTools.LiveGameChannel.IsGameRunning();
+		bool live = _otherTitle is null && Refii.EditorTools.LiveGameChannel.IsGameRunning();
 		_run.Disabled = !live;
 		_rerunInit.Disabled = !live;
 		string offline = "No game is running — launch one from the launcher first.";
@@ -277,6 +296,13 @@ public sealed partial class LuaScriptEditor : Window
 			return;
 		}
 
+		// FABLE 3'S SCRIPTS ARE KORE (format byte 2), read by its own decompiler in managed code.
+		if (Refii.Lua.Kore.Engine_KoreDecompiler.IsKoreChunk(bytes))
+		{
+			LoadKore(bytes);
+			return;
+		}
+
 		if (!Engine_LuaDecompiler.Available)
 		{
 			_code.Text = string.Empty;
@@ -307,6 +333,28 @@ public sealed partial class LuaScriptEditor : Window
 		}
 		SetHeader($"{_virtualPath}  ·  could not be decompiled");
 		SetStatus(message);
+	}
+
+	/// <summary>
+	/// A Kore chunk (Fable 3): decompiled to Lua the game compiles. There is no Kore compiler on this
+	/// side to prove the round trip here, so the header says so rather than "byte-exact".
+	/// </summary>
+	private void LoadKore(byte[] bytes)
+	{
+		_kore = true;
+		if (Refii.Lua.Kore.Engine_KoreDecompiler.TryDecompile(bytes, out string text, out string error))
+		{
+			_code.Text = text;
+			SetHeader($"{_virtualPath}  ·  Fable 3 (Kore) script, decompiled from {SourceLabel()}");
+			SetStatus("Decompiled. Fable 3 compiles plain Lua: save it into a mod and the game reads the text.");
+			return;
+		}
+
+		_code.Text = Refii.Lua.Kore.Engine_KoreDecompiler.TryDisassemble(bytes, out string listing, out _)
+			? "-- This chunk did not decompile: " + error + "\n-- Listing follows.\n" + listing
+			: string.Empty;
+		SetHeader($"{_virtualPath}  ·  Fable 3 (Kore) script, could not be decompiled");
+		SetStatus(error);
 	}
 
 	private string SourceLabel()
@@ -340,7 +388,9 @@ public sealed partial class LuaScriptEditor : Window
 	{
 		if (Engine_LuaDecompiler.TryCheckSource(_code.Text, "=" + _virtualPath, out string error))
 		{
-			SetStatus("Compiles.");
+			SetStatus(_kore
+				? "Compiles under Lua 5.1's rules. Fable 3 has no `continue`; the game reports anything else when it loads the mod."
+				: "Compiles.");
 			return;
 		}
 		SetStatus("Compile error: " + error);
@@ -352,6 +402,11 @@ public sealed partial class LuaScriptEditor : Window
 		if (_original is null)
 		{
 			SetStatus("No shipped chunk to compare against.");
+			return;
+		}
+		if (_kore)
+		{
+			SetStatus("Fable 3 (Kore) scripts are not recompiled here: the game compiles the text when it loads the mod.");
 			return;
 		}
 		LuaVerifyResult verify = Engine_LuaDecompiler.Verify(_original, _code.Text, out string message);

@@ -159,7 +159,10 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_VORTEX_CAUGHT = 113,
   REFII_EVENT_APPEARANCE_CHANGED = 114,
   REFII_EVENT_MORPH_CHANGED = 115,
-  REFII_EVENT_COUNT = 116,
+  REFII_EVENT_GUILD_SEALS = 116,
+  REFII_EVENT_TREASURY = 117,
+  REFII_EVENT_KINGDOM_DECISION = 118,
+  REFII_EVENT_COUNT = 119,
 };
 
 /// What took a hero's camera and controls away from free play (CutsceneEvent's `kind`, and the
@@ -1998,6 +2001,37 @@ struct MorphChangedEvent : Event {
   float weight;
   /// The player's hero, 0 while it has none.
   uint32_t hero;
+};
+
+/// Fable 3: a hero's unspent guild seals changed — granted directly, spent on the Road to Rule, or
+/// earned as renown passed a threshold (`source` 'granted' / 'spent' / 'earned'). After the fact.
+/// Seams: Fable3/src/hooks/src/mod_events_hooks.cpp (the stats component's grant, spend and recompute).
+struct GuildSealsEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_GUILD_SEALS;
+  uint32_t entity;
+  int32_t player;
+  int32_t delta;
+  int32_t seals;
+  const char* source;
+};
+
+/// Fable 3: the kingdom's treasury changed through its writer (tax, transfers, the cost of a
+/// decision). After the fact. Seam: Fable3/src/hooks/src/mod_events_hooks.cpp.
+struct TreasuryEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TREASURY;
+  int32_t treasury;
+  int32_t delta;
+  int32_t type;
+};
+
+/// Fable 3: a town demand was decided, accepted or rejected, and its effects ran. After the fact.
+/// Seam: Fable3/src/hooks/src/mod_events_hooks.cpp (the demand's accept and reject).
+struct KingdomDecisionEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_KINGDOM_DECISION;
+  uint32_t demand;
+  uint32_t province;
+  uint32_t level;
+  bool accepted;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

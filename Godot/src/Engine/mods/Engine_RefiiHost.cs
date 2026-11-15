@@ -160,6 +160,9 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void vortex_caughtEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void appearance_changedEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void morph_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void guild_sealsEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void treasuryEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void kingdom_decisionEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
@@ -234,6 +237,9 @@ public partial class RefiiHost : Node
 		"vortex_caught",
 		"appearance_changed",
 		"morph_changed",
+		"guild_seals",
+		"treasury",
+		"kingdom_decision",
 	};
 
 	public const string SingletonName = "RefiiHost";

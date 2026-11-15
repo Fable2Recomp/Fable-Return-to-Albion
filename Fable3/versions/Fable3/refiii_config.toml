@@ -174,6 +174,71 @@
 # The per-game-tick Lua GC driver (L holder, force); Fable3/src/hooks/src/lua_gc_slice.cpp runs
 # its time-boxed loop against the real clock.
 0x8226DDB8 = { name = "rex_lhLua_GcSliceStep" }
+# Mods' Lua in the game VM (Fable3/src/hooks/src/mod_lua_hooks.cpp). The script system's startup
+# scripts (ss; the body runs once per VM, gated on byte ss+477), its save-table load (ss) and camera
+# scripts (ss); lua_close (L), whose game VM the runtime forgets. The Kore/Havok Script C API the
+# runtime calls, each matched TU3 to disc by size and instruction sequence: luaL_loadbuffer (L,
+# G+0x288, buf, size, name), lua_pcall (L, nargs, nresults, errfunc), settop, type, tonumber (f1),
+# toboolean, tolstring (L, idx, len*), pushlstring (L, s, len), pushcclosure (L, fn, nup, flags),
+# luaD_growstack (L+4, L, n). The CCharString constructor (s, chars, len) and destructor, and the
+# game's operator new and delete. lhLuaNamespace_RegisterFunctionHash, above, makes each native a
+# Pluto permanent.
+0x82315BD8 = { name = "rex_lhLuaScriptSystem_LoadStartupScripts" }
+0x82319248 = { name = "rex_lhLuaScriptSystem_LoadScriptSave" }
+0x82316E10 = { name = "rex_lhLuaScriptSystem_RunCameraScripts" }
+0x822D32C0 = { name = "rex_lua_close" }
+0x822D17E8 = { name = "rex_luaL_loadbuffer" }
+0x82237F28 = { name = "rex_lua_pcall" }
+0x82249E50 = { name = "rex_lua_rawgeti" }
+0x82241378 = { name = "rex_lua_settop" }
+0x8221D280 = { name = "rex_lua_type" }
+0x82234F38 = { name = "rex_lua_tonumber" }
+0x8227DEA0 = { name = "rex_lua_toboolean" }
+0x82282180 = { name = "rex_lua_tolstring" }
+0x8229FFE8 = { name = "rex_lua_pushlstring" }
+0x82239888 = { name = "rex_lua_pushcclosure" }
+0x8218D108 = { name = "rex_luaD_growstack" }
+0x8221F788 = { name = "rex_lhCharString_Ctor" }
+0x8221F208 = { name = "rex_lhCharString_Dtor" }
+0x8221F300 = { name = "rex_lhNew" }
+0x8221F2D8 = { name = "rex_lhDelete" }
+# The entity bridge for mods' Lua (mod_lua_hooks.cpp): the game's Entity push (L, entity: a 4-byte
+# userdata holding the interned script ref, the metatable the registry ref at ss+560), the ref's
+# resolve (ref -> entity, 0 once dead), lua_getmetatable (L, idx: pushes, 1) and lua_touserdata; the
+# entity's destroy (entity), where its handle is forgotten, and the entity manager's add (mgr,
+# entity: linked only when no entity holds its id, entity+0x18).
+0x828E4110 = { name = "rex_lhLua_PushEntity" }
+0x82212D00 = { name = "rex_lhScriptEntityRef_Resolve" }
+0x8221AD28 = { name = "rex_lua_getmetatable" }
+0x8221AF18 = { name = "rex_lua_touserdata" }
+0x823F36B0 = { name = "rex_lhEntity_Destroy" }
+0x82399558 = { name = "rex_lhEntityManager_Add" }
+# The gameplay seams mods hear (Fable3/src/hooks/src/mod_events_hooks.cpp), each matched TU3 to disc
+# by instruction sequence (Die, OnHeroDeath, SetAbilityLevel and the purse by their identical
+# prologues): CECCreature_Die (c, killer, category, hit); CECHealth_OnHeroDeath (h, killer);
+# CECHealth_Modify (h, -, f1 delta, attacker, hit) and GetMax (h) -> f1; the purse's writer (purse,
+# delta, type, alert, notify, notify, replay); the renown applier (stats, f1, source, group); guild
+# seals granted / spent (stats, n) and their recompute (stats, ...); the ability level setter
+# (stats, type, level, send); the treasury's writer (t, delta, type, popup); the quest tracker's
+# activate (tracker, name, -, primary), objective (tracker, name, tag) and end (tracker, record);
+# the world map's travel (map, level*, stop*, paid); a town demand's accept and reject (demand).
+0x8264DB88 = { name = "rex_CECCreature_Die" }
+0x82602B00 = { name = "rex_CECHealth_OnHeroDeath" }
+0x825FF9B0 = { name = "rex_CECHealth_Modify" }
+0x8227F7F8 = { name = "rex_CECHealth_GetMax" }
+0x823B16C0 = { name = "rex_CECMoney_Modify" }
+0x823B8AE8 = { name = "rex_CECStats_ApplyRenown" }
+0x823B90C8 = { name = "rex_CECStats_GrantGuildSeals" }
+0x823B9580 = { name = "rex_CECStats_SpendGuildSeals" }
+0x823B91B8 = { name = "rex_CECStats_RecomputeGuildSeals" }
+0x823C5028 = { name = "rex_CECStats_SetAbilityLevel" }
+0x823B48A8 = { name = "rex_CECTreasury_Modify" }
+0x824ECA48 = { name = "rex_CECQuestTracker_SetAsActive" }
+0x824EEE70 = { name = "rex_CECQuestTracker_SetObjectiveTagSilently" }
+0x824EEA80 = { name = "rex_CECQuestTracker_OnQuestEnded" }
+0x8244CE50 = { name = "rex_WorldMap_TravelToStop" }
+0x82907DE8 = { name = "rex_TownDemand_Accept" }
+0x82907FB0 = { name = "rex_TownDemand_Reject" }
 # The world (Fable3/src/hooks/src/world_hooks.cpp): the level manager's post-load pass (mgr, run
 # by the loader sub_82348AD0 on its success at 0x82348CBC) and its unload (mgr, flag); the
 # particle command wrappers — create (int* handle, name hash), start (handle), scene (handle,

@@ -195,8 +195,9 @@ public class TitleLiftPinTests
 	[TestCase]
 	public void TheGuidesHardModCardsAreFable2sWhicheverTitleIsActive()
 	{
+		// Fable 3 builds hard mods too (the native bus, core/refii_mod_bus.h) but states no guide cards of its own.
 		AssertThat(Engine_Title.Fable2.HasHardMods).IsTrue();
-		AssertThat(Engine_Title.Fable3.HasHardMods).IsFalse();
+		AssertThat(Engine_Title.Fable3.HasHardMods).IsTrue();
 		AssertThat(Engine_TitleGame.For(Engine_Title.Fable3).ModGuideCards(ModGuidePages.ScriptApiKey, false).Count).IsEqual(0);
 
 		ModGuidePage scriptApi = ModGuidePages.Find(ModGuidePages.ScriptApiKey)!;

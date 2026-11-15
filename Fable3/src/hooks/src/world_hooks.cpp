@@ -128,6 +128,7 @@
 
 #include "core/payload_bridge.h"
 #include "map_table_hooks.h"
+#include "mod_lua.h"
 #include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_LevelManager_LevelLoaded);
@@ -186,12 +187,14 @@ REX_EXTERN(rex_LevelManager_LevelLoaded) {
   const uint32_t manager = ctx.r3.u32;
   __imp__rex_LevelManager_LevelLoaded(ctx, base);
   refii_bridge_level_stated(manager, 1);
+  refii::fable3::modlua::NoteLevel(base, manager, true);
 }
 
 REX_EXTERN(rex_LevelManager_Unload) {
   const uint32_t manager = ctx.r3.u32;
   if (manager != 0u && LoadGuestU32(base, manager + 40u) != 0u) {
     refii_bridge_level_stated(manager, 0);
+    refii::fable3::modlua::NoteLevel(base, manager, false);
   }
   __imp__rex_LevelManager_Unload(ctx, base);
 }

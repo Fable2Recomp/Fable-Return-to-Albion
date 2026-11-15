@@ -44,10 +44,11 @@
 //
 // WHAT STAYS THE GUEST'S: a name the guest itself resolves to a DISK file — a CWin32File, vtable
 // 0x820FE1E4, stored by the disk file system's Open sub_82DB90D0 at 0x82DB9474 over CreateFileA
-// sub_83131BF0 -> NtCreateFile. The host's query does not tell a mod's file from the game's own
-// loose files (a loose file is an override to it), and the loose files are what the game streams
-// from disk — its videos run to 520 MB, which no memory file may hold. Replacing a loose file
-// (language\<culture>\text\book.babel) waits on the host stating the owning mod.
+// sub_83131BF0 -> NtCreateFile — unless the host states a MOD owns the path (refiii_vfs_find_override
+// answers REFIII_VFS_MOD_OWNED: a mod's file, or a book with a mod's text rows merged in, such as
+// language\<culture>\text\book.babel). The game's own loose files are overrides to the host too, and
+// they are what the game streams from disk — its videos run to 520 MB — so only a mod-owned file up
+// to kModOwnedDiskFileLimit replaces one.
 //
 // EXISTS is the same table search (disc 0x82D88598): a file only the host adds has no row there, so a
 // "no" is asked of the host too.
@@ -70,6 +71,10 @@ namespace {
 
 /// CWin32File, the disk file system's file (sub_82DB90D0, 0x82DB9474).
 const refii::guest::Addr kDiskFileVtable{0x820FE1E4u};
+
+/// The largest mod-owned file served in place of a disk file: a memory file holds the whole of it,
+/// and the game's own streamed loose files run to 520 MB.
+constexpr uint32_t kModOwnedDiskFileLimit = 64u * 1024u * 1024u;
 
 /// The name object's fields (sub_822D5CA0, sub_82DBA828 at disc 0x82D8820C).
 constexpr uint32_t kNameLength = 0x10u;
@@ -189,15 +194,18 @@ REX_EXTERN(rex_VfsComposite_Open) {
 
   char path[REFIII_VFS_PATH_CAPACITY];
   uint32_t size = 0;
-  if (hash == 0u || refiii_vfs_find_override(hash, &size, path, sizeof(path)) == 0) {
+  const int32_t kind = hash == 0u ? 0 : refiii_vfs_find_override(hash, &size, path, sizeof(path));
+  if (kind == 0) {
     __imp__rex_VfsComposite_Open(ctx, base);
     return;
   }
 
-  // The guest's own resolution first: a disk file stands (the file's header says why).
+  // The guest's own resolution first: a disk file stands unless a mod owns the path (the file's
+  // header says why), and then only when the whole file fits a memory file.
   __imp__rex_VfsComposite_Open(ctx, base);
   const uint32_t own = LoadGuestU32(base, out);
-  if (own != 0u && LoadGuestU32(base, own) == kDiskFileVtable) {
+  if (own != 0u && LoadGuestU32(base, own) == kDiskFileVtable &&
+      (kind != REFIII_VFS_MOD_OWNED || size > kModOwnedDiskFileLimit)) {
     refiii_vfs_note_override(hash, path, size, 0);
     return;
   }

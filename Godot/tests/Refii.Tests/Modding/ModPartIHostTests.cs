@@ -261,12 +261,12 @@ public class ModPartIHostTests
         string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));
         AssertThat(natives.Contains("char rows[1800]", StringComparison.Ordinal)).IsFalse();
         AssertThat(natives.Contains("lua.LongString(2, REFII_MOD_MENU_ROWS_MAX + 1)", StringComparison.Ordinal)).IsTrue();
-        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp")) + File.ReadAllText(Path.Combine(root, "src", "payload", "src", "core", "mod_requests.cpp")));
         AssertThat(api.Contains("QuotedField(rows, 1800)", StringComparison.Ordinal)).IsFalse();
         AssertThat(api.Contains("QuotedField(rows, REFII_MOD_MENU_ROWS_MAX + 1)", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("refii_bridge_mod_error_post(error, std::strlen(error));", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("',seq=\" + std::to_string(seq) + \",part=\"", StringComparison.Ordinal)).IsTrue();
-        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) + File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "refii_mod_requests.h")));
         AssertThat(header.Contains("#define REFII_MOD_MENU_ROWS_MAX 32768", StringComparison.Ordinal)).IsTrue();
         // 20 parts of 1800 hold the limit: Godot's assembly takes as many.
         AssertThat(Engine_UiModRows.MaxParts * 1800 >= 32768).IsTrue();
@@ -326,7 +326,7 @@ public class ModPartIHostTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) + File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "refii_mod_requests.h")));
         foreach (string declared in new[]
                  {
                      "extern \"C\" int32_t refii_mod_press(int32_t player, const char* button, int32_t held);",
@@ -354,7 +354,7 @@ public class ModPartIHostTests
             AssertThat(natives.Contains(row, StringComparison.Ordinal)).OverrideFailureMessage($"{row} is not registered").IsTrue();
         }
 
-        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp")) + File.ReadAllText(Path.Combine(root, "src", "payload", "src", "core", "mod_requests.cpp")));
         foreach (string op in new[] { "op='press'", "op='tap'", "op='signal'", "op='publish_text'" })
         {
             AssertThat(api.Contains(op, StringComparison.Ordinal)).OverrideFailureMessage($"{op} is never posted").IsTrue();
@@ -447,7 +447,7 @@ public class ModPartIHostTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) + File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "refii_mod_requests.h")));
         AssertThat(header.Contains("extern \"C\" int32_t refii_mod_attack_mode(int32_t player);", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("#define REFII_ATTACK_MODE_MAGIC 3", StringComparison.Ordinal)).IsTrue();
         string natives = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp"));

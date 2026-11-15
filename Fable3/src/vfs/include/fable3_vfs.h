@@ -21,9 +21,13 @@ extern "C" {
 #define REFIII_VFS_PATH_CAPACITY 512u
 
 /// The host's override for the resource the guest names by `hash` (the FNV-1 the root file
-/// system keys its table by). 1 when the host's hash index names a path for it and states that
-/// path an override, with its size in `out_size` and the path, NUL-terminated, in `out_path`;
-/// 0 otherwise, and for an empty file (the guest's memory file cannot hold zero bytes).
+/// system keys its table by), with its size in `out_size` and the path, NUL-terminated, in
+/// `out_path`: REFIII_VFS_OVERRIDE when the host's hash index names a path for it and states that
+/// path an override, REFIII_VFS_MOD_OWNED when the host states a mod composed or contributed it
+/// (core/host_asset_reader.h HostAssetOverrideKind); 0 otherwise, and for an empty file (the
+/// guest's memory file cannot hold zero bytes).
+#define REFIII_VFS_OVERRIDE 1
+#define REFIII_VFS_MOD_OWNED 2
 int32_t refiii_vfs_find_override(uint32_t hash, uint32_t* out_size, char* out_path,
                                  size_t path_capacity);
 
@@ -41,6 +45,12 @@ void refiii_vfs_note_added(uint32_t hash, const char* path);
 /// reported present. Any pointer may be null.
 void refiii_vfs_override_counts(uint64_t* out_served, uint64_t* out_left_to_disk,
                                 uint64_t* out_added);
+
+/// The debug channel's probe outcome (Fable3/src/vfs/src/debug_result.cpp): stated by the payload's
+/// tick after it ran one, read by the shell's RefiiHostGetDebugCallResult. 0 before any.
+void refiii_vfs_note_debug_result(uint32_t addr, uint64_t r3, const char* note, size_t length);
+uint32_t refiii_vfs_debug_result(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3, char* out_note,
+                                 uint32_t note_capacity);
 
 #ifdef __cplusplus
 }

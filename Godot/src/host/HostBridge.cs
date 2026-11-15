@@ -6202,6 +6202,7 @@ public static partial class HostBridge
 	private delegate int AssetIsOverrideDelegate(IntPtr path, UIntPtr length);
 
 	private static AssetIsOverrideDelegate? _assetIsOverride;
+	private static Func<string, bool>? _assetModOwnedSource;
 	private static Func<string, bool>? _assetOverrideSource;
 
 	/// <summary>
@@ -6307,12 +6308,16 @@ public static partial class HostBridge
 	/// <summary>
 	/// Points the guest VFS at Godot's asset override predicate.
 	/// When Godot serves a virtual mod overlay (e.g. globals.gdb or book.babel), this answers 1
-	/// so native VFS prioritizes Godot's virtual asset over loose files on disk.
+	/// so native VFS prioritizes Godot's virtual asset over loose files on disk; 2 when
+	/// <paramref name="modOwned"/> states a mod contributed or composed the path, which a title that
+	/// must tell a mod's file from the game's own loose file reads (core/host_asset_reader.h
+	/// HostAssetOverrideKind).
 	/// </summary>
-	public static void SetAssetOverrideQuery(Func<string, bool>? source)
+	public static void SetAssetOverrideQuery(Func<string, bool>? source, Func<string, bool>? modOwned = null)
 	{
 		// Preserve the predicate callback so HostBridge.Initialize() can bind it once ABI is ready.
 		_assetOverrideSource = source;
+		_assetModOwnedSource = modOwned;
 
 		if (TryGetAbiVersion() is null)
 		{
@@ -6352,11 +6357,12 @@ public static partial class HostBridge
 			}
 
 			bool isOverride = source(name);
+			bool modOwned = isOverride && _assetModOwnedSource is { } owned && owned(name);
 			if (isOverride || name.EndsWith(".gdb", StringComparison.OrdinalIgnoreCase) || name.EndsWith(".babel", StringComparison.OrdinalIgnoreCase))
 			{
-				GD.Print($"[host-bridge] IsAssetOverride('{name}') => {isOverride}");
+				GD.Print($"[host-bridge] IsAssetOverride('{name}') => {isOverride}{(modOwned ? " (mod-owned)" : string.Empty)}");
 			}
-			return isOverride ? 1 : 0;
+			return modOwned ? 2 : isOverride ? 1 : 0;
 		}
 		catch (Exception e)
 		{

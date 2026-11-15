@@ -57,6 +57,7 @@
 #include "core/guest_build.h"
 #include "core/mod_values.h"
 #include "core/rex_payload_bridge.h"
+#include "core/refii_mod_requests.h"
 
 /// Declares the game's own body of `name`, callable as __imp__name(ctx, base).
 #define REFII_MOD_ORIGINAL(name) extern "C" REX_FUNC(__imp__##name)
@@ -1512,43 +1513,6 @@ extern "C" uint32_t refii_mod_spawn(PPCContext* ctx, uint8_t* base, uint32_t def
 // modern look; the guest's instance has no colour of its own.
 // ---------------------------------------------------------------------------------------------
 
-/// How a played effect is shown. Null options mean refii_mod_fx_default_options().
-typedef struct refii_mod_fx_options {
-  /// Seconds before it is stopped; 0 plays until refii_mod_stop_fx (or, with loop 0, until the
-  /// effect has run out).
-  float duration;
-  /// A size multiplier on every position, motion and size of the effect, as a node's scale is.
-  float scale;
-  /// A colour multiplier on every particle (1, 1, 1 untinted).
-  float tint[3];
-  /// The instance intensity, an alpha term (1 as authored).
-  float intensity;
-  /// 1 repeats the effect, 0 plays it once.
-  int32_t loop;
-  /// From the entity (refii_mod_play_fx_on), along the ENTITY'S OWN axes: an effect on an entity
-  /// stands in its frame — the effect's axes are the entity's — and turns with it. An entity with
-  /// no drawn body of its own (a vortex, a fireball's shot) is followed by position only, the
-  /// effect unrotated and the offset in the guest's world axes.
-  float offset[3];
-  /// A HELPER POINT of the entity's model (refii_mod_play_fx_on): the name of a `.mdl.gmd`
-  /// attachment or node — a sword's "Weapon.Weapon.Top" / "Weapon.Weapon.Hold", a creature's
-  /// "Character.Carry.Hand.Right" — and the effect stands there, in the helper's own frame (its
-  /// position AND orientation when the gmd states one), `offset` along the helper's axes; on a
-  /// rigged body it hangs on the bone the helper hangs from, so it follows the pose. Null or ""
-  /// is the entity's own frame. An unknown name is warned once and the entity's frame used.
-  /// Under the classic look the helper's REST-pose point is folded into the offset.
-  const char* at;
-} refii_mod_fx_options;
-
-inline refii_mod_fx_options refii_mod_fx_default_options(void) {
-  refii_mod_fx_options options{};
-  options.scale = 1.0f;
-  options.tint[0] = options.tint[1] = options.tint[2] = 1.0f;
-  options.intensity = 1.0f;
-  options.loop = 1;
-  return options;
-}
-
 /// Plays effect `name` — any effect of the particle bank or of an enabled mod's fx/effects/, by
 /// its name or an "FX_XXXXXXXX" hash token — at the world position `xyz` (the guest's axes).
 /// Returns the id refii_mod_stop_fx takes (never 0 for a request that was posted; 0 for a null or
@@ -1573,26 +1537,6 @@ extern "C" uint32_t refii_mod_play_fx_at(const char* name, uint32_t entity, cons
 // Lights: a mod's omni light, placed as an effect is (posted as REFII_MOD_HOST_FX_KIND)
 // ---------------------------------------------------------------------------------------------
 
-/// The options of refii_mod_light. Zero-initialise and set what you need.
-typedef struct refii_mod_light_options {
-  /// From the entity, along its own axes (or the helper's when `at` names one), as
-  /// refii_mod_fx_options.offset; ignored for a world point.
-  float offset[3];
-  /// A helper point of the entity's model, as refii_mod_fx_options.at ("Weapon.Weapon.Top"): the
-  /// light stands there, on a rigged body on the helper's bone. Null or "" is the entity's frame.
-  const char* at;
-  /// 0..1: a waver of the energy (a torch, a brazier); 0 is steady.
-  float flicker;
-  /// A SPOT LIGHT when `cone` is above 0: the light shines along `direction` — in the entity's own
-  /// axes (or the helper's when `at` names one), the world's for a world point; any length — over a
-  /// cone `cone` degrees from its axis to its edge (the half-angle; at most 89). Zero: an omni light.
-  float direction[3];
-  float cone;
-  /// The cone's edge falloff, a spot's only: 1 (and 0) is linear from the edge to the axis — the
-  /// title's own spot form, 1/(1-cos) — higher tightens the beam. Modern only; the classic list
-  /// has the one form.
-  float attenuation;
-} refii_mod_light_options;
 
 /// Places a light of colour `rgb` (0..1 each) at `energy` (1 is a placed lamp's) reaching
 /// `range` metres (0: 6), on `entity` (an address; its handle crosses) in the entity's own frame
@@ -1847,7 +1791,6 @@ extern "C" uint32_t refii_mod_menu_box(int32_t player, const char* title, const 
 /// An empty text clears the list. Up to REFII_MOD_MENU_ROWS_MAX bytes of rows cross, in as many
 /// posts as the bus's 2 KB records take (Godot applies them once all have arrived); past it the
 /// rows are cut at the last whole row and a mod error names the menu. Returns 1 when posted.
-#define REFII_MOD_MENU_ROWS_MAX 32768
 extern "C" int32_t refii_mod_set_menu_rows(int32_t player, const char* menu, const char* rows);
 
 /// Opens a host-owned screen by id for `player` (1 or 2; 0 for whoever owns the menus here): the

@@ -130,6 +130,9 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
             return;
         }
         Instance = this;
+        // The game the editor works on, before anything is built for it: the launcher's, else the
+        // one last picked on the toolbar (EditorTitlePicker).
+        Refii.EditorTools.EditorTitlePicker.ApplyRemembered();
         var saved = new Callable(this, MethodName.OnEditorSceneSaved);
         if (!IsConnected(SignalName.SceneSaved, saved)) Connect(SignalName.SceneSaved, saved);
         // BEFORE THE MOUNT, ON THIS THREAD, AND BOTH HALVES MATTER. Godot restores the last-open
@@ -169,10 +172,21 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         SetupContextMenu();
         SetupModStudio();
         EnsureFileExtensionsRecognized();
+        _titlePicker = Refii.EditorTools.EditorTitlePicker.Create();
+        AddControlToContainer(CustomControlContainer.Toolbar, _titlePicker);
     }
+
+    /// <summary>The toolbar's game picker (Fable 2 / Fable 3).</summary>
+    private Control? _titlePicker;
 
     public override void _ExitTree()
     {
+        if (_titlePicker is not null && GodotObject.IsInstanceValid(_titlePicker))
+        {
+            RemoveControlFromContainer(CustomControlContainer.Toolbar, _titlePicker);
+            _titlePicker.QueueFree();
+        }
+        _titlePicker = null;
         var saved = new Callable(this, MethodName.OnEditorSceneSaved);
         if (IsConnected(SignalName.SceneSaved, saved)) Disconnect(SignalName.SceneSaved, saved);
         System.Threading.Interlocked.Increment(ref _mountVersion);
@@ -3935,12 +3949,17 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
     /// </summary>
     private void ActivateLua(string virtualPath)
     {
-        if (_filesystem is null || !_filesystem.TryGetFile(virtualPath, out BnkFile file))
+        // A title-prefixed path is read from that title's mount, so a Fable 3 script opens while
+        // Fable 2 is the active title (read only there: its mods are that title's).
+        (BnkFileSystem? banks, string inTitle, Refii.Core.Engine_Title title) = MountFor(virtualPath);
+        if (banks is null || !banks.TryGetFile(inTitle, out BnkFile file))
         {
             return;
         }
 
-        var editor = new LuaScriptEditor(file, virtualPath, StartMount);
+        bool active = title == Refii.Core.Engine_Title.Active;
+        var editor = new LuaScriptEditor(file, active ? inTitle : virtualPath, StartMount,
+            active ? null : title.Name);
         EditorInterface.Singleton.GetBaseControl().AddChild(editor);
         editor.PopupCentered();
     }

@@ -137,6 +137,7 @@ REFII_MOD_ON(Hit, OnHit);
 | [Cutscenes and the camera](cutscenes.md) | knowing when the game holds the hero's camera and controls; each player's camera mode, a first-person hold, hidden parts |
 | [Saves, sharing and co-op sync](saves-and-sharing.md) | installing and sharing, co-op mod checks, mod sync, how mods fuse into saves |
 | [Live iteration](live-iteration.md) | reloading into a running game, errors, the Studio's scripting class |
+| [Modding Fable III](fable3.md) | what Fable III mods can do today: its Lua, its natives, the events it raises, text and file overlays, what is not there yet |
 
 ## References
 

@@ -72,7 +72,7 @@ public class ModHostPrimitivesTests
             return;
         }
 
-        string header = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h"));
+        string header = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h")) + File.ReadAllText(Path.Combine(root, "src", "runtime", "include", "core", "refii_mod_requests.h")));
         foreach (string declared in new[]
                  {
                      "extern \"C\" int32_t refii_mod_input_claim(int32_t player, const char* action, int32_t on);",
@@ -95,7 +95,7 @@ public class ModHostPrimitivesTests
             AssertThat(natives.Contains(registered, StringComparison.Ordinal)).OverrideFailureMessage($"{registered} is not registered").IsTrue();
         }
 
-        string api = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp"));
+        string api = (File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp")) + File.ReadAllText(Path.Combine(root, "src", "payload", "src", "core", "mod_requests.cpp")));
         foreach (string op in new[] { "op='input_claim'", "op='hud_icon'", "op='hud_slide'", "op='hud_hold'" })
         {
             AssertThat(api.Contains(op, StringComparison.Ordinal)).OverrideFailureMessage($"{op} is never posted").IsTrue();

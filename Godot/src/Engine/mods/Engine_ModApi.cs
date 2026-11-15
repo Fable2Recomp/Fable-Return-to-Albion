@@ -1306,7 +1306,75 @@ public static class ModApi
 				F("weight", "float", "the weight the hook answers now: the stored one clamped to the declared range, else the default"),
 				F("hero", "uint32_t", "the player's hero, 0 while it has none"),
 			}),
+		new ModApiEvent("GuildSeals", "guild_seals", 116, "Fable 3: Fable3/src/hooks/src/mod_events_hooks.cpp — the stats component's guild-seal grant and spend, and their recompute (seals earned from renown), each compared before and after",
+			"Fable 3 only. A hero's unspent guild seals changed: granted directly (a quest, a script), spent on the Road to Rule, or earned as renown passed a threshold. After the fact, not cancellable.",
+			string.Empty,
+			new[]
+			{
+				F("entity", "uint32_t", "the hero"),
+				F("player", "int32_t", "1 or 2, 0 for another entity"),
+				F("delta", "int32_t", "the change in unspent seals"),
+				F("seals", "int32_t", "the unspent seals after it (Stats.GetNumberOfGuildSeals)"),
+				F("source", "const char* / string", "'granted', 'spent' or 'earned'"),
+			}),
+		new ModApiEvent("Treasury", "treasury", 117, "Fable 3: Fable3/src/hooks/src/mod_events_hooks.cpp — the kingdom treasury's writer, compared before and after (Treasury.Set writes directly and is not seen)",
+			"Fable 3 only. The kingdom's treasury changed: tax, a transfer to or from the hero's purse, the cost or gain of a decision. After the fact, not cancellable.",
+			string.Empty,
+			new[]
+			{
+				F("treasury", "int32_t", "the treasury after the change"),
+				F("delta", "int32_t", "the change"),
+				F("type", "int32_t", "the game's change type (0 tax, 1 transfer in, 2 a demand's gain, 15 a demand's cost, 17 transfer out)"),
+			}),
+		new ModApiEvent("KingdomDecision", "kingdom_decision", 118, "Fable 3: Fable3/src/hooks/src/mod_events_hooks.cpp — a town demand's accept and reject, after the call, when it was taken",
+			"Fable 3 only. A royal decision on a town demand was taken, accepted or rejected, and its effects ran. After the fact, not cancellable.",
+			string.Empty,
+			new[]
+			{
+				F("demand", "uint32_t", "the demand's TownDemandId"),
+				F("province", "uint32_t", "its ProvinceId"),
+				F("level", "uint32_t", "its LevelId"),
+				F("accepted", "bool", "true accepted, false rejected"),
+			}),
 	};
+
+	/// <summary>
+	/// WHAT FABLE 3 RAISES (Fable3/src/hooks/src/mod_lua_hooks.cpp and mod_events_hooks.cpp), by kind:
+	/// each with its note where the fields or the timing differ from the catalog's Fable 2 seam. Gold,
+	/// renown, ability_level, fast_travel and quest_started are decided inside the seam, as the catalog states them
+	/// (cancel, and their writable field); every other Fable 3 event is raised from the next guest tick
+	/// and reports. An event absent here is Fable 2's alone.
+	/// </summary>
+	public static readonly IReadOnlyDictionary<int, string> Fable3Raised = new Dictionary<int, string>
+	{
+		[0] = string.Empty,
+		[1] = string.Empty,
+		[2] = string.Empty,
+		[3] = string.Empty,
+		[4] = string.Empty,
+		[21] = string.Empty,
+		[22] = "raised after the death when no resurrection potion revived the hero",
+		[24] = "level only; from_save is not stated",
+		[25] = string.Empty,
+		[31] = string.Empty,
+		[32] = "entity, player, gold, delta; passive and share are not stated",
+		[34] = string.Empty,
+		[35] = "decided (a cancel leaves the quest inactive); the hero is player 1's",
+		[36] = "the hero is player 1's",
+		[37] = "the hero is player 1's",
+		[39] = "entity only",
+		[40] = "entity only",
+		[42] = "delta is a number (followers); share is not stated",
+		[56] = "the player is player 1",
+		[101] = string.Empty,
+		[116] = string.Empty,
+		[117] = string.Empty,
+		[118] = string.Empty,
+	};
+
+	/// <summary>Whether <paramref name="title"/> (its folder, <c>Fable2</c> / <c>Fable3</c>) raises the event.</summary>
+	public static bool RaisedOn(ModApiEvent e, string title) =>
+		title == "Fable3" ? Fable3Raised.ContainsKey(e.Kind) : e.Kind < 116 || e.Kind > 118;
 
 	/// <summary>REFII_CUTSCENE_* (core/refii_mod_events.h): the cutscene event's kinds and in_cutscene's bits.</summary>
 	public const int CutsceneFull = 1;

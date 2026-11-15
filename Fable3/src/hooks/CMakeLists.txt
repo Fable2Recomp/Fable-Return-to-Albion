@@ -72,6 +72,13 @@ set(REFIII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mouse_look.cpp
     # The per-tick Lua GC slice, run against the real clock instead of the host-granted time base.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/lua_gc_slice.cpp
+    # Mods' Lua in the game VM: the composed chunks after the startup scripts, the Refii.* natives,
+    # and the host's mod lanes (commands, input, tick, the Lua masks) on the VM's own thread.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_lua_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_lua.h
+    # The gameplay seams mods hear: deaths, health, gold, renown, guild seals, abilities, the treasury,
+    # quests, fast travel, the kingdom's decisions and the level edges, raised from the next tick.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_events_hooks.cpp
     # The CRT's pow/sin/cos/... answered by the host's libm.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/crt_math.cpp
     # The CRT's memcpy/memmove/memset/XMemCpy answered by the host's libc.

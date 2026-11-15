@@ -9,9 +9,10 @@
 // the disc is the FNV-1 of its stored lower-case, backslashed, data-relative name — so a hash
 // the guest asks for names the host's file without a second index here.
 //
-// THE OWNING MOD IS NOT STATED. The host's query answers yes or no; which mod contributed a
-// file (BnkFile.SourceMod) does not cross the shell ABI yet, so a hit names the mount, not the
-// mod.
+// WHO OWNS IT is stated as a kind, not a name: the host's query answers 2 for a file a mod
+// contributed or the host composed from mods (a text book with a mod's rows merged in), 1 for any
+// other override, the game's own loose files among them. Which mod (BnkFile.SourceMod) does not
+// cross, so a hit names the mount, not the mod.
 
 #include "fable3_vfs.h"
 
@@ -47,7 +48,8 @@ extern "C" int32_t refiii_vfs_find_override(uint32_t hash, uint32_t* out_size, c
   if (path.empty() || path.size() >= path_capacity) {
     return 0;
   }
-  if (!refii::vfs::HostAssetIsOverride(path)) {
+  const int32_t kind = refii::vfs::HostAssetOverrideKind(path);
+  if (kind <= 0) {
     return 0;
   }
 
@@ -66,7 +68,7 @@ extern "C" int32_t refiii_vfs_find_override(uint32_t hash, uint32_t* out_size, c
   if (out_size != nullptr) {
     *out_size = size;
   }
-  return 1;
+  return kind >= REFIII_VFS_MOD_OWNED ? REFIII_VFS_MOD_OWNED : REFIII_VFS_OVERRIDE;
 }
 
 extern "C" int32_t refiii_vfs_read_override(const char* path, uint8_t* out, uint32_t size) {

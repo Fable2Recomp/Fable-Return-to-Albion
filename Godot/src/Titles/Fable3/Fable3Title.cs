@@ -24,6 +24,9 @@ public sealed class Fable3Title : Engine_TitleGame
 	public override (string Named, string Release)? PackedShaderBanks =>
 		("shaders/shaders.sbk", "shaders/shadersrelease.sbk");
 
+	/// <summary>Fable 3's helper calls for mods' Lua (<see cref="Fable3CoreLua"/>), run before any mod's.</summary>
+	public override void OnAssetsMounted(Refii.Bnk.BnkFileSystem mounted) => Fable3CoreLua.Attach(mounted);
+
 	private Fable3Splash? _splash;
 
 	/// <summary>The loading screen's layer: over the screen fade (7), as Fable 2's is.</summary>

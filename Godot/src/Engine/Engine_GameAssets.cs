@@ -640,7 +640,7 @@ public partial class Engine_GameAssets : Node
 
 		// The guest reads through this same mount.
 		Refii.Host.HostBridge.SetAssetReader(ReadAllBytes, FileSize);
-		Refii.Host.HostBridge.SetAssetOverrideQuery(FileIsOverride);
+		Refii.Host.HostBridge.SetAssetOverrideQuery(FileIsOverride, FileIsModOwned);
 
 		// A mod's text for Lua's Refii.text and native refii_mod_text: the one lookup Godot's own surfaces use.
 		Refii.Host.HostBridge.SetModTextLookup(text => Refii.Mods.ModText.Text(text));
@@ -1113,6 +1113,19 @@ public partial class Engine_GameAssets : Node
 
 		return false;
 	}
+
+	/// <summary>
+	/// Whether a mod contributed <paramref name="virtualPath"/> or the host composed it from mods: a
+	/// mod's own file, a table with a mod's rows merged in, a database or save compositor's output.
+	/// The game's own loose and updated files are overrides (<see cref="FileIsOverride"/>) but not this.
+	/// </summary>
+	public bool FileIsModOwned(string virtualPath) =>
+		TryGetFile(virtualPath, out BnkFile file) &&
+		(file.SourceMod.Length != 0 ||
+			file.SourceArchivePath.StartsWith("<rows:", StringComparison.Ordinal) ||
+			file.SourceArchivePath.StartsWith("<save_tu:", StringComparison.Ordinal) ||
+			virtualPath.EndsWith(".gdb.tu", StringComparison.OrdinalIgnoreCase) ||
+			virtualPath.EndsWith(".save.tu", StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>The asset's length without reading it, or -1 if absent. Files with alternates
 	/// (`.mdl`, `.tex`) must be read: <see cref="BnkFile.ReadAllBytes"/> concatenates them.</summary>

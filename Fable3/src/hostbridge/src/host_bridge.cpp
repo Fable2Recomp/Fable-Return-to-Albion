@@ -19,3 +19,17 @@ const bool g_fable3_registered = [] {
 }();
 
 }  // namespace
+
+#include "host_abi.h"
+#include "../../vfs/include/fable3_vfs.h"
+
+extern "C" {
+
+/// The debug channel's last probe outcome: the game VM's `debug-gamelua:` chunk, run by the
+/// payload's tick (Fable3/src/hooks/src/game_tick_pump.cpp) — 1 and "ok", or 0 and the Lua error.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDebugCallResult(uint64_t* out_seq, uint32_t* out_addr, uint64_t* out_r3,
+                                                           char* out_note, uint32_t note_capacity) {
+    return refiii_vfs_debug_result(out_seq, out_addr, out_r3, out_note, note_capacity);
+}
+
+}  // extern "C"

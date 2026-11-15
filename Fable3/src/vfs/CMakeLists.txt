@@ -13,6 +13,8 @@ add_library(refiii_vfs SHARED
     # Which build is running (TU3 or disc), stated by the payload, and the TU3 -> disc address
     # table the hooks and the host bridge translate through (include/fable3_guest_build.h).
     ${CMAKE_CURRENT_LIST_DIR}/src/guest_build.cpp
+    # The debug channel's last probe outcome, stated by the payload's tick for the shell.
+    ${CMAKE_CURRENT_LIST_DIR}/src/debug_result.cpp
 )
 
 target_include_directories(refiii_vfs

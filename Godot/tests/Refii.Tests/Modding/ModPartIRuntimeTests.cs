@@ -123,10 +123,10 @@ public class ModPartIRuntimeTests
             return;
         }
 
-        string header = Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h");
+        string header = (Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h") + Read(root, "src", "runtime", "include", "core", "refii_mod_requests.h"));
         AssertThat(header.Contains("extern \"C\" uint32_t refii_mod_world_meter(int32_t player, uint32_t entity, const float* xyz, float value, float max,", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("extern \"C\" int32_t refii_mod_mark_meter(uint32_t id, float value, float max, const char* style);", StringComparison.Ordinal)).IsTrue();
-        string api = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp");
+        string api = (Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp") + Read(root, "src", "payload", "src", "core", "mod_requests.cpp"));
         AssertThat(api.Contains("\"op='mark_meter',id=\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains(",icon='',text='',meter=1,value=", StringComparison.Ordinal)).IsTrue();
         string natives = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp");
@@ -350,7 +350,7 @@ public class ModPartIRuntimeTests
             return;
         }
 
-        string header = Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h");
+        string header = (Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h") + Read(root, "src", "runtime", "include", "core", "refii_mod_requests.h"));
         foreach (string declared in new[]
                  {
                      "extern \"C\" int32_t refii_mod_record_number(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,",
@@ -376,7 +376,7 @@ public class ModPartIRuntimeTests
 
         AssertThat(commands.Contains("refii_mod_add_items(&ctx, base, E(w, 1), U(w, 2), w.size() >= 4 ? I(w, 3) : 1, nullptr);", StringComparison.Ordinal)).IsTrue();
         // The float and bool getters ask the database's own type bytes (Engine_GdbData.GdbFieldType).
-        string api = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp");
+        string api = (Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp") + Read(root, "src", "payload", "src", "core", "mod_requests.cpp"));
         AssertThat(api.Contains($"kGdbTypeBool = {(int)Refii.Gdb.GdbFieldType.Bool};", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains($"kGdbTypeFloat = {(int)Refii.Gdb.GdbFieldType.Float};", StringComparison.Ordinal)).IsTrue();
     }
@@ -424,7 +424,7 @@ public class ModPartIRuntimeTests
             return;
         }
 
-        string header = Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h");
+        string header = (Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h") + Read(root, "src", "runtime", "include", "core", "refii_mod_requests.h"));
         AssertThat(header.Contains("extern \"C\" void refii_mod_wheel_switches_target_sticky(PPCContext* ctx, uint8_t* base, uint32_t hero, int32_t on);", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("extern \"C\" int32_t refii_mod_allow_action_interrupt_at(PPCContext* ctx, uint8_t* base, uint32_t action, float seconds);", StringComparison.Ordinal)).IsTrue();
         string commands = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_commands.cpp");
@@ -433,7 +433,7 @@ public class ModPartIRuntimeTests
         string natives = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_lua_natives.cpp");
         AssertThat(natives.Contains("refii_mod_wheel_switches_target_sticky(&lua.ctx, lua.base, lua.Entity(1), on ? 1 : 0);", StringComparison.Ordinal)).IsTrue();
         AssertThat(natives.Contains("{\"allow_action_interrupt_at\", &NativeAllowActionInterruptAt, 0}", StringComparison.Ordinal)).IsTrue();
-        string api = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp");
+        string api = (Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp") + Read(root, "src", "payload", "src", "core", "mod_requests.cpp"));
         AssertThat(api.Contains("PumpActionInterrupts(ctx, base);", StringComparison.Ordinal)).IsTrue();
         string host = Read(root, "Godot", "src", "Engine", "mods", "Engine_RefiiHost.cs");
         AssertThat(host.Contains("Post($\"allow_action_interrupt_at {action} {Num(seconds)}\")", StringComparison.Ordinal)).IsTrue();

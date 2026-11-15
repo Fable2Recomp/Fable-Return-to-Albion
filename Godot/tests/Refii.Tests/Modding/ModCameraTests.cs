@@ -84,7 +84,7 @@ public class ModCameraTests
         string bus = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_events.cpp");
         AssertThat(bus.Contains("\"player=%d,mode=%d,previous=%d,hero=%u\"", StringComparison.Ordinal)).IsTrue();
 
-        string header = Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h");
+        string header = (Read(root, "Fable2", "src", "vfs", "include", "core", "refii_mod.h") + Read(root, "src", "runtime", "include", "core", "refii_mod_requests.h"));
         AssertThat(header.Contains("extern \"C\" int32_t refii_mod_camera_mode(int32_t player);", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("#define REFII_CAMERA_FIRST_PERSON 8", StringComparison.Ordinal)).IsTrue();
         AssertThat(header.Contains("#define REFII_CAMERA_HOLD_AIM 1", StringComparison.Ordinal)).IsTrue();
@@ -111,7 +111,7 @@ public class ModCameraTests
         AssertThat(commands.Contains("manager + 0xC0u", StringComparison.Ordinal)).IsTrue();
 
         // A held LookAt half is a mod's camera, not a scene's.
-        string api = Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp");
+        string api = (Read(root, "Fable2", "src", "vfs", "src", "hooks", "mod_api.cpp") + Read(root, "src", "payload", "src", "core", "mod_requests.cpp"));
         AssertThat(api.Contains("(refii::vfs::ModCameraHeldBits(player) & 2) == 0", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("op='hide_part',entity=", StringComparison.Ordinal)).IsTrue();
         AssertThat(api.Contains("\",player=\" + std::to_string(player)", StringComparison.Ordinal)).IsTrue();

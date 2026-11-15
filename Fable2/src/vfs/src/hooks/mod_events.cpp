@@ -35,6 +35,7 @@
 #include "core/guest_state.h"
 #include "core/mod_values.h"
 #include "core/refii_mod.h"
+#include "core/refii_mod_bus.h"
 #include "core/refii_mod_events.h"
 #include "hooks/ppc_externs.h"
 #include "vfs_hooks_private.h"
@@ -1109,6 +1110,25 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
       std::snprintf(out, size, "player=%d,automatic=%s,hero=%u", e.player, e.automatic ? "true" : "false", H(e.hero));
       return;
     }
+    case REFII_EVENT_GUILD_SEALS: {
+      const auto& e = *static_cast<const GuildSealsEvent*>(event);
+      char source[32];
+      LuaString(e.source, source, sizeof(source));
+      std::snprintf(out, size, "entity=%u,player=%d,delta=%d,seals=%d,source='%s'", H(e.entity), e.player, e.delta,
+                    e.seals, source);
+      return;
+    }
+    case REFII_EVENT_TREASURY: {
+      const auto& e = *static_cast<const TreasuryEvent*>(event);
+      std::snprintf(out, size, "treasury=%d,delta=%d,type=%d", e.treasury, e.delta, e.type);
+      return;
+    }
+    case REFII_EVENT_KINGDOM_DECISION: {
+      const auto& e = *static_cast<const KingdomDecisionEvent*>(event);
+      std::snprintf(out, size, "demand=%u,province=%u,level=%u,accepted=%s", e.demand, e.province, e.level,
+                    e.accepted ? "true" : "false");
+      return;
+    }
     case REFII_EVENT_MORPH_CHANGED: {
       const auto& e = *static_cast<const MorphChangedEvent*>(event);
       std::snprintf(out, size, "player=%d,morph='0x%08x',weight=%.9g,hero=%u", e.player, e.morph, static_cast<double>(e.weight),
@@ -1554,6 +1574,81 @@ bool ReplicaRun(int32_t kind, void* event) {
   return CallGuest(work, base, refii::guest::Address(0x82214AF8u)) && work.r3.u32 == 0u;
 }
 
+namespace {
+
+/// The catalog's Lua names by kind (Godot/src/Engine/mods/Engine_ModApi.cs, held to it by
+/// Fable3ModEventsTests), for the native text bus (core/refii_mod_bus.h).
+constexpr std::pair<const char*, int32_t> kBusNames[] = {
+    {"tick", 0}, {"hero_ready", 1}, {"hero_gone", 2}, {"lua_ready", 3}, {"save_loaded", 4}, {"game_action", 5},
+    {"ability_request", 6}, {"melee_swing", 7}, {"roll_can_start", 8}, {"roll_started", 9}, {"block", 10},
+    {"anim_event", 11}, {"hit", 12}, {"hit_landed", 13}, {"hit_response", 14}, {"spell_charge", 15},
+    {"spell_charge_level", 16}, {"spell_launch", 17}, {"spell_launched", 18}, {"spell_created", 19},
+    {"experience", 20}, {"entity_died", 21}, {"hero_downed", 22}, {"damage", 23}, {"level_loaded", 24},
+    {"level_unloading", 25}, {"game_saving", 26}, {"item_added", 27}, {"item_used", 28}, {"held_item", 29},
+    {"weapon_equipped", 30}, {"ability_level", 31}, {"gold", 32}, {"relation", 33}, {"input_action", 34},
+    {"quest_started", 35}, {"quest_ended", 36}, {"quest_objective", 37}, {"dialogue", 38}, {"entity_spawned", 39},
+    {"entity_removed", 40}, {"expression_started", 41}, {"renown", 42}, {"morality", 43}, {"purity", 44},
+    {"marriage", 45}, {"dog_trick", 46}, {"ranged_shot", 47}, {"status_effect", 48}, {"target_changed", 49},
+    {"opinion_deed", 50}, {"opinion_modified", 51}, {"time_of_day", 52}, {"weather_theme", 53}, {"sleep_menu", 54},
+    {"travel", 55}, {"fast_travel", 56}, {"menu_opened", 57}, {"menu_closed", 58}, {"menu_screen", 59},
+    {"weather_region", 60}, {"sleep_chosen", 61}, {"slow_time", 62}, {"summoned", 63}, {"crime", 64},
+    {"achievement", 65}, {"collectable_taken", 66}, {"partner_consent", 67}, {"property_bought", 68},
+    {"property_sold", 69}, {"rent_paid", 70}, {"property_rented", 71}, {"property_condition", 72}, {"divorce", 73},
+    {"widowed", 74}, {"child_born", 75}, {"gift_given", 76}, {"gift_accepted", 77}, {"engaged", 78},
+    {"follow", 79}, {"furniture_upgraded", 80}, {"redecorating", 81}, {"household_budget", 82},
+    {"tracked_stat", 83}, {"partnership", 84}, {"household_restored", 85}, {"dynamic_weather", 86},
+    {"mod_menu_row", 87}, {"mod_message_box", 88}, {"mod_notice", 89}, {"mod_menu_box", 90}, {"mod_ability", 91},
+    {"spell_pick", 92}, {"partner_message", 93}, {"look_at_button", 94}, {"vortex_started", 95},
+    {"vortex_ended", 96}, {"fireball_impact", 97}, {"paused", 98}, {"start_game", 99}, {"cutscene", 100},
+    {"health_changed", 101}, {"status_applying", 102}, {"save_written", 103}, {"lock_lost", 104},
+    {"attack_mode_changed", 105}, {"item_removed", 106}, {"expression_wheel", 107}, {"spell_ended", 108},
+    {"spell_charge_ended", 109}, {"melee_swing_ended", 110}, {"action_move_interrupt", 111},
+    {"camera_changed", 112}, {"vortex_caught", 113}, {"appearance_changed", 114}, {"morph_changed", 115},
+    {"guild_seals", 116}, {"treasury", 117}, {"kingdom_decision", 118},
+};
+
+/// The native text bus, after the typed subscribers and before Lua: a hard mod's handler by event
+/// name, answering as a Godot verdict does (`cancel=1`, `field=number`) — the same contract Fable 3
+/// serves, so one native mod source hears both titles.
+void RunNativeBus(int32_t kind, void* event) {
+  static const bool named = [] {
+    for (const auto& name : kBusNames) {
+      refii_mod_bus_name(name.first, name.second);
+    }
+    return true;
+  }();
+  (void)named;
+  if (refii_mod_bus_wants(kind) == 0) {
+    return;
+  }
+  char fields[640];
+  HostFields(kind, event, refii_mod_event_replica() != 0, fields, sizeof(fields));
+  char answer[512];
+  if (refii_mod_bus_run(kind, fields, std::strlen(fields), answer, sizeof(answer)) <= 0) {
+    return;
+  }
+  for (char* cursor = answer; cursor != nullptr && *cursor != 0;) {
+    char* comma = std::strchr(cursor, ',');
+    if (comma != nullptr) {
+      *comma = 0;
+    }
+    if (char* equals = std::strchr(cursor, '='); equals != nullptr) {
+      *equals = 0;
+      const double value = std::strtod(equals + 1, nullptr);
+      if (std::strcmp(cursor, "cancel") == 0) {
+        if (value != 0.0) {
+          static_cast<Event*>(event)->cancel = true;
+        }
+      } else {
+        WriteEventField(kind, event, cursor, value);
+      }
+    }
+    cursor = comma != nullptr ? comma + 1 : nullptr;
+  }
+}
+
+}  // namespace
+
 extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
   if (event == nullptr) {
     return;
@@ -1567,6 +1662,7 @@ extern "C" void refii_mod_dispatch(int32_t kind, void* event) {
       s.fn(event, s.user);
     }
   }
+  RunNativeBus(kind, event);
   DispatchLua(kind, event);
   RunGodotVerdict(kind, event);
   if (replica) {

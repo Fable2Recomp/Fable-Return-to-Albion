@@ -34,10 +34,12 @@ public static partial class ModValidate
 
 	/// <summary>
 	/// Every issue of one mod: a <c>.f2mod</c> package (its metadata checked as the <c>mod.toml</c> it
-	/// was packed from, re-stated) or a loose folder (its own <c>mod.toml</c> and every file).
+	/// was packed from, re-stated) or a loose folder (its own <c>mod.toml</c> and every file), with what
+	/// <paramref name="title"/> (its folder; the active title's when null) does not read or raise.
 	/// </summary>
-	public static List<ModIssue> ValidateSource(string source)
+	public static List<ModIssue> ValidateSource(string source, string? title = null)
 	{
+		title ??= Refii.Core.Engine_Title.Active.Folder;
 		var issues = new List<ModIssue>();
 		if (File.Exists(source) && source.EndsWith(ModWorkspace.PackageExtension, StringComparison.OrdinalIgnoreCase))
 		{
@@ -56,6 +58,7 @@ public static partial class ModValidate
 				issues.AddRange(Validate(ModWorkspace.ModMetadataFilename, texts[ModWorkspace.ModMetadataFilename]));
 				foreach (F2ModEntry entry in package.Entries)
 				{
+					issues.AddRange(TitleIssues(entry.Path, () => Encoding.UTF8.GetString(package.ReadEntryBytes(entry)), title));
 					if (Normalize(entry.Path) == EnglishTable)
 					{
 						texts[EnglishTable] = Encoding.UTF8.GetString(package.ReadEntryBytes(entry));
@@ -103,6 +106,7 @@ public static partial class ModValidate
 		foreach (string file in ModManifest.EnumerateAssets(source))
 		{
 			string relative = Path.GetRelativePath(source, file);
+			issues.AddRange(TitleIssues(relative, () => ReadText(file), title));
 			if (Normalize(relative) == EnglishTable)
 			{
 				loose[EnglishTable] = ReadText(file);

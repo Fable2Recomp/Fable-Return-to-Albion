@@ -217,7 +217,7 @@ public sealed class Engine_Title
 	/// <summary>Fable 3 in Return to Albion.</summary>
 	public static readonly Engine_Title Fable3 = new(
 		"refiii", "Fable 3", "Fable 3: Return to Albion", 0x4D5308D6, "Fable3", "refiii_generated",
-		"Fable3", "Fable3TU3", hasHardMods: false, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
+		"Fable3", "Fable3TU3", hasHardMods: true, ".f3mod", 0xE0474CFFu, hashedModelNodes: true,
 		"refii_hostbridge", "refii_vfs")
 	{
 		UiText = Refii.Ui.Engine_UiTextContract.Fable3,

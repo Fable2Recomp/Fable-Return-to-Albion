@@ -38,10 +38,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostFrontEndPresentation(void) {
     return 0;
 }
 
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDebugCallResult(uint64_t* /*out_seq*/, uint32_t* /*out_addr*/, uint64_t* /*out_r3*/, char* /*out_note*/, uint32_t /*note_capacity*/) {
-    return 0;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDisplayBox(uint32_t* /*out_vtable*/) {
     return 0;
 }

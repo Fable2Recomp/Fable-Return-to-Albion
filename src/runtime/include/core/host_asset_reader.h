@@ -64,6 +64,14 @@ inline bool HostAssetIsOverride(std::string_view path) {
   return refii_bridge_host_asset_is_override(path.data(), path.size()) != 0;
 }
 
+/// What Godot's query states about the path: 0 not an override, 1 an override (the game's own
+/// loose or updated file among them), 2 a file a mod contributed or the host composed from mods
+/// (HostBridge.SetAssetOverrideQuery). A title that must tell a mod's file from the game's own
+/// loose file — Fable 3's disk files — reads the kind.
+inline int32_t HostAssetOverrideKind(std::string_view path) {
+  return refii_bridge_host_asset_is_override(path.data(), path.size());
+}
+
 /// Godot's hash index: the guest names most resources by a 32-bit hash of the asset name.
 /// `out` receives the path; returns the length written, 0 for no such hash. A truncated
 /// answer is a miss, not a short string.
