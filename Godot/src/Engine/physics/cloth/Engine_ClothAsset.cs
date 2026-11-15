@@ -130,6 +130,13 @@ public sealed class ClothAsset
     /// </summary>
     public bool FollowRotation { get; set; } = true;
 
+    /// <summary>
+    /// The skin-retention weight is the attribute alone, <c>attr / 64</c> per guest step, not
+    /// <c>pow(attr * scale / 64, dt)</c>. Set for a block read by Fable 3's engine
+    /// (<see cref="MdlClothBlock.RetainsPerStep"/>); see <see cref="Engine_ClothSolver.UpdateTimeLuts"/>.
+    /// </summary>
+    public bool RetainsPerStep { get; set; }
+
     public string SourcePath { get; set; } = string.Empty;
 
     public uint RecordIndex { get; set; }

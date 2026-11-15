@@ -76,6 +76,9 @@ public sealed class ClothInstance
 
     public float LutDt { get; set; } = float.NaN;
 
+    /// <summary>Which retention <see cref="BlendWeight"/> was built for (<see cref="ClothAsset.RetainsPerStep"/>).</summary>
+    public bool LutPerStep { get; set; }
+
     /// <summary>The largest squared velocity the last integration saw, for sleeping a still prop.</summary>
     public float LastMoveSquared { get; set; }
 

@@ -229,6 +229,62 @@ public static class Engine_BitmapFontTexture
 	public static Texture2D? DistanceFieldOf(Texture2D? atlas) =>
 		HasDistanceField(atlas) ? atlas : null;
 
+	private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Texture2D, Texture2D> PlainAtlases = new();
+
+	/// <summary>
+	/// The atlas for a plain 2D draw (<see cref="Engine_UiCanvasText"/>): <c>DrawTextureRectRegion</c>
+	/// multiplies the texel's RGB by the text colour, and a packed atlas's RGB is (1, field, 1), which
+	/// drew every canvas string magenta. A packed atlas gets a copy with white RGB and the same
+	/// coverage and mips, built once per font on its first canvas draw; the 3D text keeps the packed one.
+	/// </summary>
+	public static Texture2D PlainAtlasOf(Texture2D atlas)
+	{
+		if (!HasDistanceField(atlas))
+		{
+			return atlas;
+		}
+
+		lock (PlainAtlases)
+		{
+			if (PlainAtlases.TryGetValue(atlas, out Texture2D? plain))
+			{
+				return plain;
+			}
+		}
+
+		Image? image = atlas.GetImage();
+		if (image is null || image.IsEmpty())
+		{
+			return atlas;
+		}
+
+		if (image.GetFormat() != Image.Format.Rgba8)
+		{
+			image.Convert(Image.Format.Rgba8);
+		}
+
+		byte[] rgba = image.GetData();
+		for (int i = 0; i + 3 < rgba.Length; i += 4)
+		{
+			rgba[i] = 255;
+			rgba[i + 1] = 255;
+			rgba[i + 2] = 255;
+		}
+
+		Image white = Image.CreateFromData(image.GetWidth(), image.GetHeight(), image.HasMipmaps(), Image.Format.Rgba8, rgba);
+		image.Dispose();
+		ImageTexture texture = Engine_TextureUpload.CreateTexture(white);
+		white.Dispose();
+		texture.SetMeta(SupersampleMeta, SupersampleOf(atlas));
+
+		lock (PlainAtlases)
+		{
+			PlainAtlases.AddOrUpdate(atlas, texture);
+		}
+
+		return texture;
+	}
+
 	/// <summary>Bump when the field's encoding changes, so cached fields are rebuilt.</summary>
 	private const int DistanceFieldVersion = 1;
 

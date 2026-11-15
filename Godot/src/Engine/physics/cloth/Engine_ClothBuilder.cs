@@ -40,6 +40,7 @@ public static class Engine_ClothBuilder
             GravityStrength = Finite(block.SimParams[4], 1.0f),
             Inertia = Finite(block.SimParams[5], 1.0f),
             FollowRotation = block.FollowByte1 != 0,
+            RetainsPerStep = block.RetainsPerStep,
         };
 
         asset.BindPos = ReadPositions(bytes, block.RestPosOffset, vertexCount);

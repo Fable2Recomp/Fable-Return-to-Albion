@@ -45,6 +45,7 @@ public static class Engine_UiCanvasText
 		Vector2 origin, float scale, Color colour)
 	{
 		float pen = 0f;
+		Texture2D atlas = Engine_BitmapFontTexture.PlainAtlasOf(font.Atlas);
 		foreach (char c in text)
 		{
 			BitmapGlyph glyph = font.Font.GetGlyph(c);
@@ -61,7 +62,7 @@ public static class Engine_UiCanvasText
 				// The atlas texture is supersampled; the metrics stay in shipped texels.
 				float super = Engine_BitmapFontTexture.SupersampleOf(font.Atlas);
 				into.DrawTextureRectRegion(
-					font.Atlas, destination,
+					atlas, destination,
 					new Rect2(source.Position * super, source.Size * super), colour);
 			}
 

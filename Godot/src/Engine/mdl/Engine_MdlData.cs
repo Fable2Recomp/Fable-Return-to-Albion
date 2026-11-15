@@ -438,6 +438,12 @@ public sealed class MdlClothBlock
     /// <summary>Data+269: the follow keeps the rotation of the root delta; clear, the pass is a no-op.</summary>
     public byte FollowByte1 { get; set; }
 
+    /// <summary>
+    /// Read by Fable 3's engine (<c>sub_82CFD7C8</c>), whose step retains the skinned pose by the
+    /// attribute alone (<see cref="Refii.Physics.ClothAsset.RetainsPerStep"/>).
+    /// </summary>
+    public bool RetainsPerStep { get; set; }
+
     public int RestPosOffset { get; set; }
 
     /// <summary>Per sim vertex float2 UV (Data+136); the guest's tangent build reads it.</summary>

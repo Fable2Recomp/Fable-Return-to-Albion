@@ -2282,7 +2282,8 @@ public partial class LauncherApp : Control
 		OS.LowProcessorUsageMode = true;
 		_backgrounds.Suspend();
 		RenderingServer.ViewportSetActive(GetViewport().GetViewportRid(), false);
-		System.GC.Collect(2, System.GCCollectionMode.Aggressive, blocking: true, compacting: false);
+		// Aggressive requires compacting: true and threw here, skipping everything below.
+		System.GC.Collect(2, System.GCCollectionMode.Forced, blocking: true, compacting: false);
 		System.GC.WaitForPendingFinalizers();
 		System.Runtime.GCSettings.LargeObjectHeapCompactionMode =
 			System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;

@@ -768,6 +768,7 @@ public static class Engine_MdlEngine47
         if (clothTarget.ClothBlocks.Count != before + 1) return false;
 
         MdlClothBlock block = clothTarget.ClothBlocks[before];
+        block.RetainsPerStep = true;
         int delta = body.Copy(data, block.BlockOffset, block.BlockSize) - block.BlockOffset;
         Rebase(block, delta);
         return true;

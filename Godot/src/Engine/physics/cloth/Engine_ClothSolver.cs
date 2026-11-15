@@ -13,6 +13,9 @@ namespace Refii.Physics;
 public static class Engine_ClothSolver
 {
     public const float DampRateHz = 30.0f;
+
+    /// <summary>Fable 3's cloth steps per second: one per guest frame (<see cref="UpdateTimeLuts"/>).</summary>
+    public const float GuestStepRateHz = 30.0f;
     public const float DtRatioClamp = 2.0f;
     public const float ConvergeEps = 0.01f;
     public const float DegenerateEps = 1.0e-7f;
@@ -29,8 +32,17 @@ public static class Engine_ClothSolver
     /// differs from the last (<c>sub_82A94818</c>); ours live on the instance so bodies can
     /// step on worker threads at once. A[k] = k * scale / 64 weights the forces;
     /// B[k] = pow(k * scale / 64, dt) is the per-step retention against the skinned pose.
+    ///
+    /// FABLE 3 RETAINS BY THE ATTRIBUTE ALONE (<paramref name="perStep"/>). Its blend
+    /// <c>sub_82CB73F8</c> converts the byte and multiplies by 1/64 (<c>82cb74bc fcfid</c>,
+    /// <c>82cb74d0 fmuls f10, f11, f0</c> with f0 = <c>flt_82073EF0</c> = 0.015625) and blends
+    /// skin + (pos - skin) * w (<c>82cb74e4 vmaddfp</c>): no pow, no dt, no scale. Its LUT
+    /// <c>sub_82CB5738</c> builds only the force table. The guest takes one such step per 30 Hz
+    /// frame (<c>sub_821C6800</c> pushes one step per frame, <c>0x821C6B3C</c>); a host step of
+    /// dt applies w^(dt * 30), the same retention per second at any step rate. Hair kept
+    /// pow(9/64, dt) ≈ 0.97 per step here, where the guest keeps 0.14, and swung loose.
     /// </summary>
-    public static void UpdateTimeLuts(ClothInstance inst, float dt, float attrScale)
+    public static void UpdateTimeLuts(ClothInstance inst, float dt, float attrScale, bool perStep = false)
     {
         if (inst.ForceWeight.Length != ForceWeightEntries)
         {
@@ -47,18 +59,22 @@ public static class Engine_ClothSolver
                 inst.ForceWeight[k] = PhysVec4.Splat(k * attrScale * Inv64);
             }
         }
-        else if (dt == inst.LutDt)
+        else if (dt == inst.LutDt && perStep == inst.LutPerStep)
         {
             return;
         }
 
         for (int k = 0; k < BlendWeightEntries; k++)
         {
-            inst.BlendWeight[k] = PhysVec4.Splat(MathF.Pow(k * attrScale * Inv64, dt));
+            float retained = perStep
+                ? MathF.Pow(k * Inv64, dt * GuestStepRateHz)
+                : MathF.Pow(k * attrScale * Inv64, dt);
+            inst.BlendWeight[k] = PhysVec4.Splat(retained);
         }
 
         inst.LutScale = attrScale;
         inst.LutDt = dt;
+        inst.LutPerStep = perStep;
     }
 
     /// <summary>
@@ -631,7 +647,7 @@ public static class Engine_ClothSolver
             return;
         }
 
-        UpdateTimeLuts(inst, dt, asset.AttrScale);
+        UpdateTimeLuts(inst, dt, asset.AttrScale, asset.RetainsPerStep);
 
         if (dt > 0.0f)
         {

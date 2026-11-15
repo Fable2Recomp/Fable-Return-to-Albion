@@ -135,6 +135,13 @@ def ask(payload, timeout=5.0):
                 if not part:
                     break
                 chunks += part
+            if not chunks.strip():
+                return {
+                    "ok": False,
+                    "error": f"pid {info.get('pid')} closed the connection without a reply"
+                             + (" — the game has exited" if not alive(info.get("pid"))
+                                else " — it is still running"),
+                }
             reply = json.loads(chunks.decode().splitlines()[0])
     except (OSError, ValueError, IndexError) as failure:
         return {
