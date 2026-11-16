@@ -221,6 +221,17 @@ public partial class Fable3WorldIcons : SubViewportContainer
 				sprite.Scale * SizeFor(sprite.Type), sprite.Title, sprite.Opinion, sprite.Object, Texture: glyph));
 		}
 
+		// THE MODS' MARKERS (mark / unmark on every surface) through the one composition after the game's
+		// icons, on the same layer and projector. Fable 3 has one screen: a couch pair shares it (both
+		// players' markers), an online machine shows its own player's.
+		if (!Fable3Elements.HudHidden && Engine_HudModMarkers.Count != 0)
+		{
+			Engine_HudModMarkers.LoadIcon ??= name => Engine_HudModMarkers.LoadIconWith(name, Fable3Art.Load);
+			uint owned = HostBridge.PlayerOwned();
+			Engine_HudModMarkers.ComposeMarkers(_list, owned == 2u ? 2 : 1, owned == 3u,
+				_markerDistance ??= MarkerDistanceSquared, Godot.Time.GetTicksMsec() / 1000.0);
+		}
+
 		_sprites.Feed(_list);
 
 		bool reticuleActive = false;
@@ -302,6 +313,14 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	/// then into 720-high canvas units centred on the screen. No line-of-sight depth is captured
 	/// for this title, so the marker is left untested (sight.x &lt; 0).
 	/// </summary>
+	private System.Func<Vector3, float?>? _markerDistance;
+
+	/// <summary>The window camera's squared distance to a guest point, for the markers' size curve.</summary>
+	private float? MarkerDistanceSquared(Vector3 guest) =>
+		GetWindow().GetCamera3D() is { } camera && GodotObject.IsInstanceValid(camera)
+			? camera.GlobalPosition.DistanceSquaredTo(GameWorld.GuestToGodot(guest))
+			: null;
+
 	private Engine_HudWorldSprites.Placed? PlaceSprite(Vector3 guest, uint entity)
 	{
 		Camera3D? camera = GetWindow().GetCamera3D();

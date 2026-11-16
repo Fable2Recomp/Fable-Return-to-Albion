@@ -1,0 +1,91 @@
+{
+	"pieces": [
+		{
+			"id": "souls_combat.health",
+			"kind": "meter",
+			"each": true,
+			"anchor": [
+				0,
+				0
+			],
+			"offset": [
+				64,
+				30
+			],
+			"size": [
+				0,
+				9
+			],
+			"value": "player:souls_combat.health",
+			"max": "player:souls_combat.health_max",
+			"widthFrom": "player:souls_combat.health_max",
+			"widthPerUnit": 0.48,
+			"minWidth": 120,
+			"maxWidth": 480,
+			"fill": "#a8231c",
+			"back": "#000000a0",
+			"chip": "#d8c27a",
+			"border": "#8a7a52",
+			"borderWidth": 1.5,
+			"corner": 1.5
+		},
+		{
+			"id": "souls_combat.mana",
+			"kind": "meter",
+			"each": true,
+			"anchor": [
+				0,
+				0
+			],
+			"offset": [
+				64,
+				46
+			],
+			"size": [
+				0,
+				8
+			],
+			"value": "player:souls_combat.mana",
+			"max": "player:souls_combat.mana_max",
+			"widthFrom": "player:souls_combat.mana_max",
+			"widthPerUnit": 1.2,
+			"minWidth": 120,
+			"maxWidth": 480,
+			"fill": "#3f6fc4",
+			"back": "#000000a0",
+			"chip": "#c9b27a",
+			"border": "#8a7a52",
+			"borderWidth": 1.5,
+			"corner": 1.5
+		},
+		{
+			"id": "souls_combat.stamina",
+			"kind": "meter",
+			"each": true,
+			"anchor": [
+				0,
+				0
+			],
+			"offset": [
+				64,
+				62
+			],
+			"size": [
+				0,
+				8
+			],
+			"value": "player:souls_combat.stamina",
+			"max": "player:souls_combat.stamina_max",
+			"widthFrom": "player:souls_combat.stamina_max",
+			"widthPerUnit": 1.2,
+			"minWidth": 120,
+			"maxWidth": 480,
+			"fill": "#5f9a3c",
+			"back": "#000000a0",
+			"chip": "#c9b27a",
+			"border": "#8a7a52",
+			"borderWidth": 1.5,
+			"corner": 1.5
+		}
+	]
+}

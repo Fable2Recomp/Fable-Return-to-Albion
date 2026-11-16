@@ -220,6 +220,14 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
     /// </summary>
     public IReadOnlyList<(string Mod, string Text)>? ModFiles { get; set; }
 
+    /// <summary>
+    /// Whether this view draws what mods put on the HUD (<c>ui/hud.json</c> pieces and the
+    /// <c>meter</c> calls). A title that builds a view per presentation (Fable 3: the HUD, the
+    /// interaction mode, the end screens, the box screens' frames) states it for its HUD's alone,
+    /// so a mod's piece is drawn once.
+    /// </summary>
+    public bool HostsMods { get; init; } = true;
+
     /// <summary>The mods' own pieces, once built — an editor's preview sets their stand-in values.</summary>
     public Engine_HudModPieces? ModPieces => _modPieces;
 
@@ -567,7 +575,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         int generation = Engine_HudModMeters.Generation;
         if (_modMeters is null)
         {
-            if (Engine_HudModMeters.Count == 0 || Engine.IsEditorHint())
+            if (!HostsMods || Engine_HudModMeters.Count == 0 || Engine.IsEditorHint())
             {
                 return;
             }
@@ -644,7 +652,7 @@ public sealed partial class Engine_HudView : Node3D, IEvaluatedExpressionHud
         // piece's player's and is drawn wherever it is (FindDrawn); a free piece is the screen's
         // and stays out of player two's half, unless it is each player's ("each": true).
         bool ownsMods = Seat != Engine_UiSeats.Seat.PlayerTwo;
-        if (_modPieces is null)
+        if (_modPieces is null && HostsMods)
         {
             _modPieces = new Engine_HudModPieces { Name = "ModPieces" };
             _modPieces.FindPiece = FindDrawn;

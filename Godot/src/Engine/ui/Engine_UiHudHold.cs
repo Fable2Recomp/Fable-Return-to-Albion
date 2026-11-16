@@ -3,9 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace Refii.Titles.Fable2;
-
-using Refii.Ui;
+namespace Refii.Ui;
 
 /// <summary>
 /// A HUD PIECE HELD VISIBLE (<c>hud_hold</c>, <see cref="Engine_UiHudOverrides.SetHold"/>): the
@@ -46,7 +44,9 @@ public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 	/// <summary>The trunk elements the hold lifts, by ordinal.</summary>
 	public IEnumerable<int> Faded => _faded.Select(f => f.Ordinal);
 
-	public Engine_UiHudHold(Engine_UiScreen screen, IReadOnlyList<string> pieces)
+	/// <param name="keep">When given, only paths it keeps can be held: a title with one document for both
+	/// players (Fable 3's dpad / dpad2) keeps the other player's twin out.</param>
+	public Engine_UiHudHold(Engine_UiScreen screen, IReadOnlyList<string> pieces, Func<string, bool>? keep = null)
 	{
 		_screen = screen;
 		Pieces = pieces;
@@ -57,7 +57,8 @@ public sealed class Engine_UiHudHold : IReadOnlyList<float?[]?>
 		{
 			foreach ((string path, UiNode node) in paths)
 			{
-				if (!Engine_UiHudOverrides.MatchesPath(path, piece) && !string.Equals(node.Name, piece, StringComparison.OrdinalIgnoreCase))
+				if ((!Engine_UiHudOverrides.MatchesPath(path, piece) && !string.Equals(node.Name, piece, StringComparison.OrdinalIgnoreCase)) ||
+					(keep is not null && !keep(path)))
 				{
 					continue;
 				}

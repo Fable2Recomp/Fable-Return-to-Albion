@@ -121,13 +121,140 @@ public static class Engine_MdlWriter
 	public static int TangentOffsetFor(MdlMeshBuffer buffer) => buffer.IsEngineSkinned ? 24 : 16;
 
 	/// <summary>
-	/// The writer edits a version-36 file in place at its buffers' file offsets. A model whose
-	/// buffers were repacked (<see cref="MdlInfo.Body"/>, Fable 3's version 47) has no such
-	/// offsets in its file, and is refused.
+	/// These writers edit a version-36 file at its buffers' file offsets. A model whose buffers
+	/// were repacked (<see cref="MdlInfo.Body"/>, Fable 3's versions 46 and 47) has no such offsets
+	/// in its file; its vertices are rewritten by <see cref="TryRewritePlanarVertices"/>.
 	/// </summary>
 	private const string RepackedRefusal =
-		"this model's buffers were repacked from Fable 3's planar layout; the writer edits a " +
-		"version-36 file in place and cannot rewrite it";
+		"this model's buffers were repacked from Fable 3's planar layout; only its vertices can be " +
+		"rewritten, at the same counts, in place in its planar blocks";
+
+	/// <summary>The largest magnitude a FLOAT16 position holds.</summary>
+	private const float HalfMax = 65504f;
+
+	/// <summary>
+	/// Fable 3 (MeshFile 46/47): moves LOD-0 parts' vertices in place, at the file offsets the
+	/// reader kept (<see cref="Engine_MdlEngine47.PlanarStreams"/>), into a copy of
+	/// <paramref name="original"/>.
+	/// </summary>
+	/// <remarks>
+	/// <paramref name="info"/> must be <see cref="Engine_MdlEngine47.TryParse"/>'s parse of these
+	/// same bytes. Per vertex: position x, y, z as FLOAT16 at stream 0 +0/+2/+4 (w, the PRT
+	/// cluster, is kept); normal at the 8-byte block +0 (<see cref="EncodeNormal_11_11_10"/>);
+	/// tangent at +4 (<see cref="EncodeTangent_DEC3N"/>). Nothing is resized: every count, index,
+	/// UV, bone index, weight, bound, cloth table and coarser LOD's own stream stays the
+	/// template's. A coarser part under the shared-stream flag draws LOD 0's stream and so moves
+	/// with it. An edit's empty array leaves that element alone; UVs and indices are refused.
+	/// </remarks>
+	public static bool TryRewritePlanarVertices(
+		byte[] original, MdlInfo info, IReadOnlyList<MdlGeometryEdit> edits, out byte[] result, out string error)
+	{
+		result = original;
+		error = string.Empty;
+
+		if (info.Body is null || !Engine_MdlEngine47.IsMeshFile47(original))
+		{
+			error = "not a Fable 3 MeshFile (version 46 or 47) parsed from these bytes";
+			return false;
+		}
+
+		var seen = new HashSet<int>();
+		var streams = new Engine_MdlEngine47.PlanarStreams[edits.Count];
+		for (int e = 0; e < edits.Count; e++)
+		{
+			MdlGeometryEdit edit = edits[e];
+			if (edit.BufferIndex < 0 || edit.BufferIndex >= info.MeshBuffers.Count)
+			{
+				error = $"this model has {info.MeshBuffers.Count} part(s) in LOD 0; there is no part {edit.BufferIndex}";
+				return false;
+			}
+
+			if (!seen.Add(edit.BufferIndex))
+			{
+				error = $"part {edit.BufferIndex} is edited twice";
+				return false;
+			}
+
+			if (edit.Uvs.Length != 0 || edit.Indices.Length != 0)
+			{
+				error = $"part {edit.BufferIndex}: UVs and indices stay the template's; only positions, normals and tangents are rewritten";
+				return false;
+			}
+
+			MdlMeshBuffer buffer = info.MeshBuffers[edit.BufferIndex];
+			if (!Engine_MdlEngine47.TryGetPlanarStreams(buffer, out Engine_MdlEngine47.PlanarStreams planar) ||
+				planar.SharesLod0Stream || planar.PositionOffset < 0 || planar.NormalOffset < 0 ||
+				planar.VertexCount != buffer.VertexCount)
+			{
+				error = $"part {edit.BufferIndex} has no vertex stream of its own recorded in this file";
+				return false;
+			}
+
+			int vc = planar.VertexCount;
+			if ((edit.Positions.Length != 0 && edit.Positions.Length != vc * 3) ||
+				(edit.Normals.Length != 0 && edit.Normals.Length != vc * 3) ||
+				(edit.Tangents.Length != 0 && edit.Tangents.Length != vc * 4))
+			{
+				error =
+					$"part {edit.BufferIndex} holds {vc} vertices; the replacement states " +
+					$"{edit.Positions.Length / 3} positions, {edit.Normals.Length / 3} normals and " +
+					$"{edit.Tangents.Length / 4} tangents. A Fable 3 model is rewritten at its own counts.";
+				return false;
+			}
+
+			foreach (float value in edit.Positions)
+			{
+				if (!float.IsFinite(value) || MathF.Abs(value) > HalfMax)
+				{
+					error = $"part {edit.BufferIndex}: a position of {value} does not fit a FLOAT16";
+					return false;
+				}
+			}
+
+			if (!Fits(original, planar.PositionOffset, ((long)(vc - 1) * planar.PositionStride) + 6) ||
+				!Fits(original, planar.NormalOffset, (long)vc * Engine_MdlEngine47.PlanarStreams.NormalStride))
+			{
+				error = $"part {edit.BufferIndex}'s vertex blocks run past the end of the file";
+				return false;
+			}
+
+			streams[e] = planar;
+		}
+
+		var bytes = (byte[])original.Clone();
+		for (int e = 0; e < edits.Count; e++)
+		{
+			MdlGeometryEdit edit = edits[e];
+			Engine_MdlEngine47.PlanarStreams planar = streams[e];
+			for (int v = 0; v < planar.VertexCount; v++)
+			{
+				if (edit.Positions.Length != 0)
+				{
+					int p = planar.PositionOffset + (v * planar.PositionStride);
+					WriteHalf(bytes, p, edit.Positions[v * 3]);
+					WriteHalf(bytes, p + 2, edit.Positions[(v * 3) + 1]);
+					WriteHalf(bytes, p + 4, edit.Positions[(v * 3) + 2]);
+				}
+
+				int n = planar.NormalOffset + (v * Engine_MdlEngine47.PlanarStreams.NormalStride);
+				if (edit.Normals.Length != 0)
+				{
+					WriteU32(bytes, n, EncodeNormal_11_11_10(
+						edit.Normals[v * 3], edit.Normals[(v * 3) + 1], edit.Normals[(v * 3) + 2]));
+				}
+
+				if (edit.Tangents.Length != 0)
+				{
+					WriteU32(bytes, n + Engine_MdlEngine47.PlanarStreams.TangentInBlock, EncodeTangent_DEC3N(
+						edit.Tangents[v * 4], edit.Tangents[(v * 4) + 1],
+						edit.Tangents[(v * 4) + 2], edit.Tangents[(v * 4) + 3]));
+				}
+			}
+		}
+
+		result = bytes;
+		return true;
+	}
 
 	/// <summary>
 	/// Writes <paramref name="edit"/> into a copy of <paramref name="original"/>.

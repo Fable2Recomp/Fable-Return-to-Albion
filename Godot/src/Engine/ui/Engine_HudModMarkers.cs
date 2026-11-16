@@ -527,9 +527,11 @@ public static class Engine_HudModMarkers
 		["morph_evil"] = "art/gui/wheelicons/splashopinions/morph_evil.tex",
 	};
 
-	/// <summary>The texture path an icon name loads: an alias's game texture, else the name itself.</summary>
+	/// <summary>The texture path an icon name loads: an alias's game texture (the title's table, else this one), else the name itself.</summary>
 	public static string IconPath(string icon) =>
-		IconAliases.TryGetValue(icon ?? string.Empty, out string? path) ? path : icon ?? string.Empty;
+		(Refii.Core.Engine_TitleGame.Active.MarkerIconAliases ?? IconAliases).TryGetValue(icon ?? string.Empty, out string? path)
+			? path
+			: icon ?? string.Empty;
 
 	/// <summary>The icon's texture, loaded once per name (a miss is remembered too); an alias loads its game texture.</summary>
 	private static Texture2D? Icon(string name)
@@ -551,5 +553,27 @@ public static class Engine_HudModMarkers
 		}
 
 		return texture;
+	}
+
+	/// <summary>
+	/// A marker's icon by what the call named: a PNG of an enabled mod (<c>art/x.png</c>, through the
+	/// mount or the package itself), else a game texture path through the title's own loader.
+	/// </summary>
+	public static Texture2D? LoadIconWith(string name, Func<string, Texture2D?> gameTexture)
+	{
+		string path = name.Replace('\\', '/').TrimStart('/');
+		if (!path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+		{
+			return gameTexture(path);
+		}
+
+		byte[]? bytes = Refii.Textures.Engine_BnkTextureLoader.ReadBytes(path) ?? Refii.Mods.ModEntries.ReadEnabledBytes(path);
+		if (bytes is null)
+		{
+			return null;
+		}
+
+		var image = new Image();
+		return image.LoadPngFromBuffer(bytes) == Error.Ok ? ImageTexture.CreateFromImage(image) : null;
 	}
 }

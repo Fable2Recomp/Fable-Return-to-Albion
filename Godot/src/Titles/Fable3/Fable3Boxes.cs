@@ -3,6 +3,7 @@ namespace Refii.Titles.Fable3;
 using System.Collections.Generic;
 using Godot;
 using Refii.Text;
+using Refii.Mods;
 using Refii.Ui;
 
 /// <summary>
@@ -47,6 +48,15 @@ public partial class Fable3Boxes : Control
 	{
 		SetAnchorsPreset(LayoutPreset.FullRect);
 		MouseFilter = MouseFilterEnum.Ignore;
+		Engine_UiHostScreens.Books = OpenHostScreen;
+	}
+
+	public override void _ExitTree()
+	{
+		if (Engine_UiHostScreens.Books == OpenHostScreen)
+		{
+			Engine_UiHostScreens.Books = null;
+		}
 	}
 
 	public override void _Process(double delta)
@@ -61,11 +71,122 @@ public partial class Fable3Boxes : Control
 		}
 
 		Engine_UiGuiBoxes boxes = _natives.Boxes;
-		Answer(boxes, delta);
-		if (boxes.Generation != _drawn)
+		// The game's own dialog or menu box comes first; its headline, counters and messages do not hold Refii's off.
+		bool guestBox = boxes.Boxes.Count != 0 || boxes.Menu is not null;
+		RefiiUp = !guestBox && Refii.Host.HostBridge.IsGuestUp && RefiiShown() is not null;
+		string state = $"{RefiiShown() ?? "none"} guestBox={guestBox} guestUp={Refii.Host.HostBridge.IsGuestUp} font={_font is not null}";
+		if (state != _refiiState)
+		{
+			_refiiState = state;
+			GD.Print($"[fable3-boxes] refii: {state}");
+		}
+		// A box a mod's menu row raises draws and answers over the menu; the menu takes the pad otherwise.
+		bool menuInput = !guestBox && !RefiiUp;
+		bool menuUp = DriveModMenu(delta, menuInput);
+		WatchModWheel();
+		if (RefiiUp)
+		{
+			AnswerRefii(delta);
+		}
+		else if (!menuUp)
+		{
+			Answer(boxes, delta);
+		}
+
+		string shown = RefiiUp ? RefiiShown() ?? string.Empty : string.Empty;
+		if (boxes.Generation != _drawn || shown != _refiiDrawn)
 		{
 			_drawn = boxes.Generation;
+			_refiiDrawn = shown;
 			QueueRedraw();
+		}
+	}
+
+	// ---------------------------------------------------------------- Refii's own boxes
+	// A mod's menu box (Engine_UiModMenuBox), and the host's questions and notices (Engine_UiHostBoxes: a mod's
+	// message box, the co-op and mod questions), drawn as Fable 3's own boxes when the game shows none; the
+	// pad is held from the game meanwhile (Fable3Input, RefiiUp).
+
+	/// <summary>A Refii box is up and has the pad.</summary>
+	public static bool RefiiUp { get; private set; }
+
+	private string _refiiDrawn = string.Empty;
+	private string _refiiState = string.Empty;
+
+	/// <summary>What Refii shows now, as a key that changes when it does; null for nothing.</summary>
+	private static string? RefiiShown()
+	{
+		if (Engine_UiModMenuBox.Active is { Menu: { } menu } box)
+		{
+			return "menu:" + box.Id + ":" + menu.Highlight + ":" + menu.Text.GetHashCode() + ":" + menu.Options.Count;
+		}
+
+		if (Engine_UiHostBoxes.Question is { } question)
+		{
+			return "question:" + question.GetHashCode();
+		}
+
+		return Engine_UiHostBoxes.Notice is { } notice ? "notice:" + notice.GetHashCode() : null;
+	}
+
+	private void AnswerRefii(double delta)
+	{
+		uint down = Refii.Game.GameInput.Pad0.Buttons;
+		uint pressed = down & ~_wasDown;
+		_wasDown = down;
+		bool a = (pressed & Refii.Game.GameInput.ButtonA) != 0;
+		bool b = (pressed & Refii.Game.GameInput.ButtonB) != 0;
+		if (Engine_UiModMenuBox.Active is { } box)
+		{
+			int direction = (pressed & Refii.Game.GameInput.DpadDown) != 0 ? 1 : (pressed & Refii.Game.GameInput.DpadUp) != 0 ? -1 : 0;
+			box.Drive(delta, direction, a, b);
+			if (a || b)
+			{
+				Refii.Core.Engine_TitleGame.Active.Input.HoldUntilReleased();
+			}
+
+			return;
+		}
+
+		if (Engine_UiHostBoxes.Question is not null)
+		{
+			if (a || b)
+			{
+				Engine_UiHostBoxes.Answer(a);
+				Refii.Core.Engine_TitleGame.Active.Input.HoldUntilReleased();
+			}
+
+			return;
+		}
+
+		if (Engine_UiHostBoxes.Notice is not null && (a || b))
+		{
+			Engine_UiHostBoxes.Dismiss();
+			Refii.Core.Engine_TitleGame.Active.Input.HoldUntilReleased();
+		}
+	}
+
+	private void DrawRefii(Vector2 size, float scale, Engine_BabelDatabase? strings)
+	{
+		if (Engine_UiModMenuBox.Active is { Menu: { } menu })
+		{
+			DrawMenu(menu, size, scale, strings);
+			return;
+		}
+
+		if (Engine_UiHostBoxes.Question is { } question)
+		{
+			DrawPanel(Engine_UiHostBoxes.PageTitle ?? string.Empty, question, new List<(string, string)>
+			{
+				("A", Engine_UiHostBoxes.AcceptCaption ?? Label(null, "GUI_YES", strings)),
+				("B", Engine_UiHostBoxes.CancelCaption ?? Label(null, "GUI_NO", strings)),
+			}, size, scale);
+			return;
+		}
+
+		if (Engine_UiHostBoxes.Notice is { } notice)
+		{
+			DrawPanel(string.Empty, notice, new List<(string, string)> { ("A", Label(null, "GUI_DIALOG_ACCEPT", strings)) }, size, scale);
 		}
 	}
 
@@ -160,14 +281,29 @@ public partial class Fable3Boxes : Control
 		}
 
 		Engine_UiGuiBoxes boxes = _natives.Boxes;
+		Vector2 size = GetViewportRect().Size;
+		float scale = size.Y / ReferenceHeight;
+		Engine_BabelDatabase? strings = Fable3Strings.Current;
+		if (ModMenuUp && !(boxes.Boxes.Count != 0 || boxes.Menu is not null))
+		{
+			DrawModMenu(size, scale, strings);
+		}
+
+		if (ModWheel.OpenPlayer != 0)
+		{
+			DrawModWheels(size, scale, strings);
+		}
+
+		if (RefiiUp)
+		{
+			DrawRefii(size, scale, strings);
+			return;
+		}
+
 		if (!boxes.Any)
 		{
 			return;
 		}
-
-		Vector2 size = GetViewportRect().Size;
-		float scale = size.Y / ReferenceHeight;
-		Engine_BabelDatabase? strings = Fable3Strings.Current;
 
 		Engine_UiGuiBoxes.Box? card = null;
 		Engine_UiGuiBoxes.Box? front = null;
@@ -200,10 +336,6 @@ public partial class Fable3Boxes : Control
 
 	private void DrawFront(Engine_UiGuiBoxes.Box box, Vector2 size, float scale, Engine_BabelDatabase? strings)
 	{
-		float width = Mathf.Min(BoxWidth * scale, size.X - (2f * Padding * scale));
-		float inner = width - (2f * Padding * scale);
-		float lineHeight = _font!.Font.LineHeight * scale;
-
 		var buttons = new List<(string Button, string Label)>();
 		if (box.Kind == Engine_UiGuiBoxes.BoxKind.Question)
 		{
@@ -237,7 +369,16 @@ public partial class Fable3Boxes : Control
 		string body = box.Kind == Engine_UiGuiBoxes.BoxKind.Adjuster && _natives.Boxes.Adjusting is { } adjusting
 			? box.Text + "\n" + adjusting.Display
 			: box.Text;
-		int titleLines = box.Title.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, box.Title, inner, scale);
+		DrawPanel(box.Title, body, buttons, size, scale);
+	}
+
+	/// <summary>The front box's panel: the title, the body and the prompts right-aligned on the last line.</summary>
+	private void DrawPanel(string title, string body, List<(string Button, string Label)> buttons, Vector2 size, float scale)
+	{
+		float width = Mathf.Min(BoxWidth * scale, size.X - (2f * Padding * scale));
+		float inner = width - (2f * Padding * scale);
+		float lineHeight = _font!.Font.LineHeight * scale;
+		int titleLines = title.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, title, inner, scale);
 		int bodyLines = body.Length == 0 ? 0 : Engine_UiCanvasText.MeasureWrappedLines(_font, body, inner, scale);
 		float height = ((titleLines + bodyLines + 1) * lineHeight) + (3f * Padding * scale);
 		var rect = new Rect2(new Vector2((size.X - width) * 0.5f, size.Y - (BoxBottom * scale) - height), new Vector2(width, height));
@@ -246,7 +387,7 @@ public partial class Fable3Boxes : Control
 		Vector2 pen = rect.Position + new Vector2(Padding * scale, Padding * scale);
 		if (titleLines > 0)
 		{
-			pen.Y += Engine_UiCanvasText.DrawWrapped(this, _font, box.Title, pen, inner, scale, TitleColour);
+			pen.Y += Engine_UiCanvasText.DrawWrapped(this, _font, title, pen, inner, scale, TitleColour);
 		}
 
 		if (bodyLines > 0)
@@ -336,6 +477,18 @@ public partial class Fable3Boxes : Control
 	}
 
 	/// <summary>A stated label tag, else the guest's default tag, resolved.</summary>
-	private static string Label(string? stated, string fallback, Engine_BabelDatabase? strings) =>
-		Engine_UiGuiText.Resolve(string.IsNullOrEmpty(stated) ? fallback : stated, strings);
+	private static string Label(string? stated, string fallback, Engine_BabelDatabase? strings)
+	{
+		string tag = string.IsNullOrEmpty(stated) ? fallback : stated;
+		string text = Engine_UiGuiText.Resolve(tag, strings);
+		// A prompt tag Fable 3's text does not carry (GUI_DIALOG_BACK is Fable 2's) reads as its word, not the tag.
+		return text != tag ? text : tag switch
+		{
+			"GUI_DIALOG_BACK" => "Back",
+			"GUI_DIALOG_ACCEPT" => "Accept",
+			"GUI_YES" => "Yes",
+			"GUI_NO" => "No",
+			_ => text,
+		};
+	}
 }

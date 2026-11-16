@@ -14,12 +14,18 @@ public static partial class ModValidate
 	/// <summary>Content Fable 3 does not read yet, by package path prefix or suffix, with the reason.</summary>
 	private static readonly (string Pattern, string Reason)[] Fable3Unread =
 	{
-		(ModLua.ModFrontendPath, "Fable 3 runs no front-end Lua: its menus are Godot's"),
+		(ModLua.ModFrontendPath, "Fable 3 runs no front-end Lua: its game VM stands from START, so mod/init.lua runs on the front end too (Refii.screen, signed_in, save_count answer there)"),
 		(ModSpells.Folder, "custom spells are Fable 2's spell system"),
-		(Engine_ModUiFiles.AbilitiesPath, "mod abilities are Fable 2's abilities screen"),
 		(Engine_ModUiFiles.SpellWheelPath, "the spell wheel is Fable 2's"),
 		("fx/", "mod effects are composed into Fable 2's particle bank"),
 	};
+
+	/// <summary>A generic for over <c>pairs</c>: group 1 its loop variables.</summary>
+	private static readonly Regex PairsLoop =
+		new(@"\bfor\s+([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s+in\s+pairs\s*\(", RegexOptions.Compiled);
+
+	/// <summary>A Lua comment: a long one (<c>--[[ ]]</c>, <c>--[==[ ]==]</c>) or one to the end of its line.</summary>
+	private static readonly Regex LuaComment = new(@"--\[(=*)\[.*?\]\1\]|--[^\n]*", RegexOptions.Compiled | RegexOptions.Singleline);
 
 	/// <summary>Lua subscriptions: <c>Refii.on("name"</c>.</summary>
 	private static readonly Regex LuaSubscription = new(@"Refii\s*\.\s*on\s*\(\s*[""'](\w+)[""']", RegexOptions.Compiled);
@@ -57,8 +63,25 @@ public static partial class ModValidate
 			return issues;
 		}
 
+		string source = text();
+		if (lua)
+		{
+			// Fable 3's `pairs` is Havok Script's kpairs: it iterates only in a for with exactly two
+			// loop variables (the VM's TFORLOOP walks it inline for two, TU3 0x822A46E0), and runs zero
+			// times otherwise.
+			foreach (Match m in PairsLoop.Matches(LuaComment.Replace(source, string.Empty)))
+			{
+				int variables = m.Groups[1].Value.Split(',').Length;
+				if (variables != 2)
+				{
+					issues.Add(new ModIssue(normalized, m.Value.Trim(), false,
+						$"on Fable 3 a pairs loop needs exactly two variables ('for k, v in pairs(t)'); with {variables} it runs zero times (or use 'for k in next, t')"));
+				}
+			}
+		}
+
 		var named = new HashSet<string>(StringComparer.Ordinal);
-		foreach (Match m in (lua ? LuaSubscription : GodotSubscription).Matches(text()))
+		foreach (Match m in (lua ? LuaSubscription : GodotSubscription).Matches(source))
 		{
 			string name = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
 			if (ModApi.Find(name) is { } e && !ModApi.RaisedOn(e, "Fable3") && named.Add(name))

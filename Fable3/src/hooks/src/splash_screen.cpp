@@ -110,6 +110,14 @@ void Post(const uint8_t* base, uint32_t splash, uint32_t state) {
 
 }  // namespace
 
+namespace refii::fable3::splash {
+/// The "Press START" splash stands: built and not yet closed (F+0x265), as last stated.
+bool Up() {
+  std::lock_guard<std::mutex> guard(g_lock);
+  return g_last_splash != 0u && g_last_closed == 0u;
+}
+}  // namespace refii::fable3::splash
+
 // (F, engine): F's build, timers and teardown — the transitions with no other source.
 REX_EXTERN(rex_Splash_Update) {
   const uint32_t splash = ctx.r3.u32;

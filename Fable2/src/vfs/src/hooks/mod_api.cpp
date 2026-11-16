@@ -150,21 +150,6 @@ constexpr uint32_t kManagerDefinitions = 400;
 constexpr uint32_t kSpellSerial = 0x44;
 
 bool Plausible(uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; }
-
-bool LuaIdentifier(const char* key) {
-  if (key == nullptr || *key == 0) {
-    return false;
-  }
-  for (const char* c = key; *c != 0; ++c) {
-    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || *c == '_' ||
-                    (c != key && *c >= '0' && *c <= '9');
-    if (!ok) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /// A guest C string into `out`, bounded; false for a null or implausible pointer.
 bool CopyGuestString(uint8_t* base, uint32_t text, char* out, uint32_t size) {
   if (out == nullptr || size == 0) {
@@ -196,19 +181,9 @@ uint32_t LhStringText(uint8_t* base, uint32_t handle_at) {
 
 namespace {
 
-// Function-local, so a mod's static registrar can run before this TU's own statics.
-std::vector<refii_mod_tick_fn>& Ticks() {
-  static std::vector<refii_mod_tick_fn> ticks;
-  return ticks;
-}
 
 }  // namespace
 
-extern "C" void refii_mod_register_tick(refii_mod_tick_fn fn) {
-  if (fn != nullptr) {
-    Ticks().push_back(fn);
-  }
-}
 
 extern "C" uint32_t refii_mod_local_hero(uint8_t* base) { return refii::vfs::HeroEntity(base); }
 
@@ -312,38 +287,6 @@ extern "C" int32_t refii_mod_run_game_lua(PPCContext* ctx, uint8_t* base, const 
   return refii::vfs::RunGameLua(*ctx, base, chunk) ? 1 : 0;
 }
 
-extern "C" int32_t refii_mod_game_lua_int(PPCContext* ctx, uint8_t* base, const char* expr,
-                                          int32_t lo, int32_t hi, int32_t* out) {
-  if (ctx == nullptr || expr == nullptr || lo > hi) {
-    return 0;
-  }
-
-  const auto holds = [&](const char* op, int32_t value) {
-    char chunk[512];
-    std::snprintf(chunk, sizeof(chunk),
-                  "local v = (%s) assert(type(v) == 'number' and v %s %d)", expr, op, value);
-    return refii::vfs::RunGameLua(*ctx, base, chunk);
-  };
-
-  if (!holds(">=", lo) || !holds("<=", hi)) {
-    return 0;
-  }
-
-  // The greatest integer m with v >= m: `v >= mid` halves the range each run.
-  while (lo < hi) {
-    const int32_t mid = static_cast<int32_t>(static_cast<int64_t>(lo) + (static_cast<int64_t>(hi) - lo + 1) / 2);
-    if (holds(">=", mid)) {
-      lo = mid;
-    } else {
-      hi = mid - 1;
-    }
-  }
-
-  if (out != nullptr) {
-    *out = lo;
-  }
-  return 1;
-}
 
 extern "C" uint32_t refii_mod_lua_generation(void) {
   return refii::vfs::g_lua_generation.load(std::memory_order_relaxed);
@@ -418,7 +361,6 @@ void DrivePlayerState(uint8_t* base) {
 /// OnGuestTick, on the guest tick thread, where guest calls are legal.
 void RunModTicks(PPCContext& ctx, uint8_t* base) {
   DrivePlayerState(base);
-  std::vector<refii_mod_tick_fn>& ticks = Ticks();
 
   using Clock = std::chrono::steady_clock;
   static Clock::time_point last = Clock::now();
@@ -432,10 +374,7 @@ void RunModTicks(PPCContext& ctx, uint8_t* base) {
 
   DriveHouseholds(ctx, base, seconds);
   PumpActionInterrupts(ctx, base);
-  for (refii_mod_tick_fn fn : ticks) {
-    PPCContext work = ctx;
-    fn(&work, base, seconds);
-  }
+  refii_mod_run_ticks(&ctx, base, seconds);
   RunModEventsTick(ctx, base, seconds);
 }
 
@@ -444,10 +383,6 @@ void RunModTicks(PPCContext& ctx, uint8_t* base) {
 // ---------------------------------------------------------------------------------------------
 // Entities, stats, spells, the save
 // ---------------------------------------------------------------------------------------------
-
-extern "C" uint32_t refii_mod_handle(uint32_t address) { return refii_bridge_mod_handle(address); }
-
-extern "C" uint32_t refii_mod_handle_address(uint32_t handle) { return refii_bridge_mod_handle_address(handle); }
 
 // ---------------------------------------------------------------------------------------------
 // A mod's requests for Godot: shared by every title (src/payload/src/core/mod_requests.cpp,
@@ -467,13 +402,6 @@ uint32_t PlaceModLightOnHandle(uint32_t handle, const float* xyz, const float* r
 
 }  // namespace refii::vfs
 
-extern "C" uint32_t refii_mod_fnv1(const char* text) {
-  uint32_t hash = 0x811C9DC5u;
-  for (const char* c = text; c != nullptr && *c != 0; ++c) {
-    hash = (hash * 0x01000193u) ^ static_cast<uint8_t>(*c);
-  }
-  return hash;
-}
 
 extern "C" int32_t refii_mod_player_of(uint8_t* base, uint32_t entity) {
   if (entity == 0) {
@@ -609,197 +537,26 @@ extern "C" uint32_t refii_mod_focus(uint8_t* base, int32_t player) {
   return target;
 }
 
-// --- player state (core/player_state.h) -------------------------------------------------------
-
-extern "C" float refii_mod_player_value(int32_t player, const char* key, float fallback) {
-  float value = fallback;
-  return key != nullptr && refii_bridge_player_get(player, key, std::strlen(key), &value) != 0 ? value : fallback;
-}
-
-extern "C" int32_t refii_mod_player_get(int32_t player, const char* key, float* out) {
-  return key != nullptr ? refii_bridge_player_get(player, key, std::strlen(key), out) : 0;
-}
-
-extern "C" void refii_mod_player_set(int32_t player, const char* key, float value) {
-  if (key != nullptr) {
-    refii_bridge_player_write(player, key, std::strlen(key), value, 0, 0);
-  }
-}
-
-extern "C" void refii_mod_player_add(int32_t player, const char* key, float delta, int32_t saved) {
-  if (key != nullptr) {
-    refii_bridge_player_write(player, key, std::strlen(key), delta, 1, saved);
-  }
-}
-
-extern "C" void refii_mod_player_save(int32_t player, const char* key, float value) {
-  if (key != nullptr) {
-    refii_bridge_player_write(player, key, std::strlen(key), value, 0, 1);
-  }
-}
-
-extern "C" int32_t refii_mod_player_text(int32_t player, const char* key, char* out, uint32_t capacity) {
-  return key != nullptr ? refii_bridge_player_get_text(player, key, std::strlen(key), out, capacity) : -1;
-}
-
-extern "C" void refii_mod_player_set_text(int32_t player, const char* key, const char* text) {
-  if (key != nullptr) {
-    refii_bridge_player_write_text(player, key, std::strlen(key), text != nullptr ? text : "",
-                                   text != nullptr ? std::strlen(text) : 0u, 0);
-  }
-}
-
-extern "C" void refii_mod_player_save_text(int32_t player, const char* key, const char* text) {
-  if (key != nullptr) {
-    refii_bridge_player_write_text(player, key, std::strlen(key), text != nullptr ? text : "",
-                                   text != nullptr ? std::strlen(text) : 0u, 1);
-  }
-}
-
-extern "C" int32_t refii_mod_player_hash(int32_t player, const char* key, uint32_t* out) {
-  char text[REFII_MOD_PLAYER_TEXT_MAX + 1];
-  if (refii_mod_player_text(player, key, text, sizeof(text)) <= 0) {
-    return 0;
-  }
-  char* end = nullptr;
-  const unsigned long long value = std::strtoull(text, &end, 0);
-  if (end == text || *end != 0 || value > 0xFFFFFFFFull) {
-    return 0;
-  }
-  if (out != nullptr) {
-    *out = static_cast<uint32_t>(value);
-  }
-  return 1;
-}
-
-extern "C" void refii_mod_player_save_hash(int32_t player, const char* key, uint32_t hash) {
-  char text[16];
-  std::snprintf(text, sizeof(text), "0x%08x", hash);
-  refii_mod_player_save_text(player, key, text);
-}
-
-extern "C" int32_t refii_mod_event_replica(void) { return refii_bridge_player_in_replica(); }
-
-extern "C" int32_t refii_mod_player_here(int32_t player) {
-  return (player == 1 || player == 2) && ((refii_bridge_player_owned() >> (player - 1)) & 1u) != 0u ? 1 : 0;
-}
 
 // --- partner messages: the route's mod lane (core/event_relay.h, `pm:` lines) -------------------
 
 namespace {
 
-/// A partner message's name or mod: letters, digits, '_', '.', '-', 1 .. REFII_MOD_PARTNER_NAME_MAX.
-bool PartnerWord(const char* text) {
-  if (text == nullptr || text[0] == 0) {
-    return false;
-  }
-  size_t n = 0;
-  for (const char* c = text; *c != 0; ++c, ++n) {
-    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_' ||
-                    *c == '.' || *c == '-';
-    if (!ok || n >= REFII_MOD_PARTNER_NAME_MAX) {
-      return false;
-    }
-  }
-  return true;
-}
 
-/// Standard base64 (the route line carries no ';', '|' or line break; the payload may hold any byte).
-std::string Base64(const char* bytes, size_t size) {
-  static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve((size + 2) / 3 * 4);
-  for (size_t i = 0; i < size; i += 3) {
-    const uint32_t a = static_cast<uint8_t>(bytes[i]);
-    const uint32_t b = i + 1 < size ? static_cast<uint8_t>(bytes[i + 1]) : 0u;
-    const uint32_t c = i + 2 < size ? static_cast<uint8_t>(bytes[i + 2]) : 0u;
-    const uint32_t word = (a << 16) | (b << 8) | c;
-    out += kAlphabet[(word >> 18) & 63u];
-    out += kAlphabet[(word >> 12) & 63u];
-    out += i + 1 < size ? kAlphabet[(word >> 6) & 63u] : '=';
-    out += i + 2 < size ? kAlphabet[word & 63u] : '=';
-  }
-  return out;
-}
 
 }  // namespace
 
-extern "C" int32_t refii_mod_send_to_partner(const char* mod, const char* name, const char* payload) {
-  // Only inside an online session: outside one both players are owned here and there is no partner
-  // machine (a line posted then would wait on the route for the next peer).
-  const uint32_t owned = refii_bridge_player_owned();
-  if (owned != 1u && owned != 2u) {
-    return 0;
-  }
-  if (!PartnerWord(mod) || !PartnerWord(name)) {
-    return 0;
-  }
-  const size_t size = payload != nullptr ? std::strlen(payload) : 0u;
-  if (size > REFII_MOD_PARTNER_PAYLOAD_MAX) {
-    return 0;
-  }
-  // pm:<from>:<mod>:<name>:<base64 payload> — the lane Engine/mod_events.cpp drains on the peer.
-  const std::string line = "pm:" + std::to_string(owned) + ":" + mod + ":" + name + ":" + Base64(payload, size);
-  refii_bridge_route_post(line.c_str());
-  return 1;
-}
 
 namespace {
 
-/// A signal name or text key: "<mod>.<name>" of letters, digits, '_', '.', '-', a '.' after a
-/// non-empty mod, at most REFII_MOD_SIGNAL_NAME_MAX.
-bool ScopedName(const char* text) {
-  if (text == nullptr || text[0] == 0 || text[0] == '.' || std::strchr(text, '.') == nullptr) {
-    return false;
-  }
-  size_t n = 0;
-  for (const char* c = text; *c != 0; ++c, ++n) {
-    const bool ok = (*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == '_' ||
-                    *c == '.' || *c == '-';
-    if (!ok || n >= REFII_MOD_SIGNAL_NAME_MAX) {
-      return false;
-    }
-  }
-  return true;
-}
 
-/// The payload's bytes, cut to REFII_MOD_SIGNAL_PAYLOAD_MAX with a mod error naming what was cut.
-size_t BoundedPayload(const char* what, const char* name, const char* payload) {
-  const size_t size = payload != nullptr ? std::strlen(payload) : 0u;
-  if (size <= REFII_MOD_SIGNAL_PAYLOAD_MAX) {
-    return size;
-  }
-  char error[256];
-  std::snprintf(error, sizeof(error), "%s '%s': %zu bytes, cut at %d", what, name, size, REFII_MOD_SIGNAL_PAYLOAD_MAX);
-  refii_bridge_mod_error_post(error, std::strlen(error));
-  REXLOG_WARN("[mods] {}", error);
-  return REFII_MOD_SIGNAL_PAYLOAD_MAX;
-}
 
 }  // namespace
 
 // A signal and a published text for Godot on this machine, on the host-only UI kind: the payload
 // crosses base64 (the bus's quoted field carries no quote), so it arrives exactly.
 
-extern "C" int32_t refii_mod_signal(const char* name, const char* payload) {
-  if (!ScopedName(name)) {
-    return 0;
-  }
-  const size_t size = BoundedPayload("signal", name, payload);
-  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND,
-                         std::string("op='signal',name='") + name + "',payload='" + Base64(payload, size) + "'");
-  return 1;
-}
 
-extern "C" int32_t refii_mod_publish_text(const char* key, const char* text) {
-  if (!ScopedName(key)) {
-    return 0;
-  }
-  const size_t size = BoundedPayload("publish_text", key, text);
-  refii::mods::PostEvent(REFII_MOD_HOST_UI_KIND,
-                         std::string("op='publish_text',key='") + key + "',text='" + Base64(text, size) + "'");
-  return 1;
-}
 
 extern "C" int32_t refii_mod_entity_alive(uint8_t* base, uint32_t entity) {
   return Plausible(entity) && (base[entity + 0x90u] & 0x40u) != 0 ? 1 : 0;
@@ -1315,24 +1072,6 @@ extern "C" uint32_t refii_mod_live_spell(PPCContext* ctx, uint8_t* base, int32_t
   return Plausible(work.r3.u32) ? work.r3.u32 : 0u;
 }
 
-extern "C" int32_t refii_mod_save_set_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t value) {
-  if (ctx == nullptr || !LuaIdentifier(key)) {
-    return 0;
-  }
-  char chunk[160];
-  std::snprintf(chunk, sizeof(chunk), "RefiiModSave = RefiiModSave or {} RefiiModSave.%s = %d", key, value);
-  return refii_mod_run_game_lua(ctx, base, chunk);
-}
-
-extern "C" int32_t refii_mod_save_get_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t lo, int32_t hi,
-                                          int32_t* out) {
-  if (ctx == nullptr || !LuaIdentifier(key)) {
-    return 0;
-  }
-  char expr[160];
-  std::snprintf(expr, sizeof(expr), "RefiiModSave and RefiiModSave.%s", key);
-  return refii_mod_game_lua_int(ctx, base, expr, lo, hi, out);
-}
 
 namespace {
 
@@ -3146,144 +2885,6 @@ void AppearanceState(int32_t player, bool automatic, const refii_mod_appearance_
 
 }  // namespace refii::vfs
 
-// --- Mods' own morph types (refii_mod_morph_*) ------------------------------------------------
-
-namespace {
-
-/// One registered mod morph, as Engine_ModMorphs.Publish states it.
-struct ModMorphEntry {
-  uint32_t id;
-  float initial, minimum, maximum;
-};
-
-/// Engine_ModMorphs.Capacity.
-constexpr int32_t kMaxModMorphs = 256;
-
-std::mutex g_mod_morph_lock;
-std::vector<ModMorphEntry> g_mod_morphs;
-float g_mod_morph_generation = -1.0f;
-
-/// The registry Godot published (`refii.morphs.*`), read again when its generation moved.
-void RefreshModMorphs() {
-  const float generation = refii::mods::Setting("refii.morphs.generation", 0.0f);
-  std::lock_guard<std::mutex> lock(g_mod_morph_lock);
-  if (generation == g_mod_morph_generation) {
-    return;
-  }
-  g_mod_morph_generation = generation;
-  g_mod_morphs.clear();
-  const int32_t count = std::clamp(static_cast<int32_t>(refii::mods::Setting("refii.morphs.count", 0.0f)), 0, kMaxModMorphs);
-  char key[64];
-  const auto read = [&key](int32_t index, const char* field, float fallback) {
-    std::snprintf(key, sizeof(key), "refii.morphs.%d.%s", index, field);
-    return refii::mods::Setting(key, fallback);
-  };
-  for (int32_t i = 0; i < count; ++i) {
-    const float hi = read(i, "hi", -1.0f);
-    const float lo = read(i, "lo", -1.0f);
-    if (!(hi >= 0.0f && hi <= 0x7FFF && lo >= 0.0f && lo <= 0xFFFF)) {
-      continue;
-    }
-    ModMorphEntry entry{(static_cast<uint32_t>(hi) << 16) | static_cast<uint32_t>(lo), read(i, "default", 0.0f),
-                        read(i, "min", 0.0f), read(i, "max", 1.0f)};
-    if (entry.id < 0x100u || !(entry.maximum > entry.minimum) || !std::isfinite(entry.initial)) {
-      continue;
-    }
-    g_mod_morphs.push_back(entry);
-  }
-}
-
-bool FindModMorph(uint32_t id, ModMorphEntry& out) {
-  if (id < 0x100u) {
-    return false;
-  }
-  RefreshModMorphs();
-  std::lock_guard<std::mutex> lock(g_mod_morph_lock);
-  for (const ModMorphEntry& entry : g_mod_morphs) {
-    if (entry.id == id) {
-      out = entry;
-      return true;
-    }
-  }
-  return false;
-}
-
-void ModMorphKey(char* out, size_t size, uint32_t id) { std::snprintf(out, size, "morph.%u", id); }
-
-}  // namespace
-
-extern "C" uint32_t refii_mod_morph_id(const char* scoped) {
-  const char* begin = scoped != nullptr ? scoped : "";
-  while (*begin == ' ' || *begin == '\t') {
-    ++begin;
-  }
-  const char* end = begin + std::strlen(begin);
-  while (end > begin && (end[-1] == ' ' || end[-1] == '\t')) {
-    --end;
-  }
-  uint32_t hash = 0x811C9DC5u;
-  for (const char* c = begin; c < end; ++c) {
-    const uint8_t byte = static_cast<uint8_t>(*c);
-    hash = (hash * 0x01000193u) ^ (byte >= 'A' && byte <= 'Z' ? byte + 32u : byte);
-  }
-  const uint32_t id = hash & 0x7FFFFFFFu;
-  return id < 0x100u ? id + 0x100u : id;
-}
-
-extern "C" int32_t refii_mod_morph_list(uint32_t* out, int32_t capacity) {
-  RefreshModMorphs();
-  std::lock_guard<std::mutex> lock(g_mod_morph_lock);
-  const int32_t count = static_cast<int32_t>(g_mod_morphs.size());
-  for (int32_t i = 0; out != nullptr && i < count && i < capacity; ++i) {
-    out[i] = g_mod_morphs[i].id;
-  }
-  return count;
-}
-
-extern "C" int32_t refii_mod_morph_registered(uint32_t id, float* out_default, float* out_min, float* out_max) {
-  ModMorphEntry entry{};
-  if (!FindModMorph(id, entry)) {
-    return 0;
-  }
-  if (out_default != nullptr) {
-    *out_default = entry.initial;
-  }
-  if (out_min != nullptr) {
-    *out_min = entry.minimum;
-  }
-  if (out_max != nullptr) {
-    *out_max = entry.maximum;
-  }
-  return 1;
-}
-
-extern "C" int32_t refii_mod_morph_weight(int32_t player, uint32_t id, float* out) {
-  ModMorphEntry entry{};
-  if ((player != 1 && player != 2) || !FindModMorph(id, entry)) {
-    return 0;
-  }
-  char key[32];
-  ModMorphKey(key, sizeof(key), id);
-  float weight = entry.initial;
-  if (refii_mod_player_get(player, key, &weight) == 0 || !std::isfinite(weight)) {
-    weight = entry.initial;
-  }
-  if (out != nullptr) {
-    *out = std::clamp(weight, entry.minimum, entry.maximum);
-  }
-  return 1;
-}
-
-extern "C" int32_t refii_mod_set_morph_weight(int32_t player, uint32_t id, float weight) {
-  ModMorphEntry entry{};
-  if ((player != 1 && player != 2) || !FindModMorph(id, entry)) {
-    return 0;
-  }
-  char key[32];
-  ModMorphKey(key, sizeof(key), id);
-  refii_mod_player_save(player, key, std::clamp(std::isfinite(weight) ? weight : entry.initial, entry.minimum, entry.maximum));
-  return 1;
-}
 
 namespace {
 /// The inventory item's own "usable from the inventory" test (TU1 0x827649C8 / disc 0x827417E0):

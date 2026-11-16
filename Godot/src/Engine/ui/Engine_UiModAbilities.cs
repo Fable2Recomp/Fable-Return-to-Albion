@@ -3,9 +3,7 @@ using System.Globalization;
 using Godot;
 using Refii.Host;
 
-namespace Refii.Titles.Fable2;
-
-using Refii.Ui;
+namespace Refii.Ui;
 
 /// <summary>
 /// Abilities a MOD adds to the abilities book — mod state, not the guest's: the guest's ability
@@ -79,7 +77,8 @@ public static class Engine_UiModAbilities
 		string Stat = "",
 		string Image = "",
 		IReadOnlyList<string>? Disciplines = null,
-		string TotalXpTag = "");
+		string TotalXpTag = "",
+		IReadOnlyList<int>? Seals = null);
 
 	private static List<Ability>? _all;
 	private static bool _declared;
@@ -141,7 +140,8 @@ public static class Engine_UiModAbilities
 	}
 
 	/// <summary>The player a call names, or the book's player (whose menus are open here) for 0.</summary>
-	private static int Reader(int player) => player is 1 or 2 ? player : Engine_UiModMenus.MenuPlayer;
+	/// <summary>Whose values a player argument means: its own, or 0 as this machine's menu owner.</summary>
+	public static int Reader(int player) => player is 1 or 2 ? player : Engine_UiModMenus.MenuPlayer;
 
 	private static float? Stated(int player, string key) =>
 		key.Length == 0 ? null : HostBridge.GetPlayerValue(Reader(player), key);
@@ -217,49 +217,6 @@ public static class Engine_UiModAbilities
 		return true;
 	}
 
-	/// <summary>
-	/// Y on a mod ability's row, as the game's own unlearn runs it (TU1 sub_8246D510 and the
-	/// screen's confirm before it): nothing to unlearn says so; otherwise the game's confirm
-	/// question, and on yes the refund and the game's result notice — "some knowledge" for a
-	/// level given up, "all knowledge" for the last. The game's own texts, from Babel, with the
-	/// ability's name and the refund filled in.
-	/// </summary>
-	public static void AskRefund(Ability ability, int player = 0)
-	{
-		if (!ability.Refunds)
-		{
-			return;
-		}
-
-		int reader = Reader(player);
-		Refii.Text.Engine_BabelDatabase? book = Engine_UiInventorySource.Strings;
-		string Text(string tag)
-		{
-			string text = book is not null && book.TryGetString(tag, out string found) ? found : string.Empty;
-			string name = book is not null && book.TryGetString(ability.NameTag, out string named) ? named : ability.Name;
-			return text
-				.Replace("%1", name, System.StringComparison.Ordinal)
-				.Replace("%2", (RefundAmount(ability, reader) ?? 0).ToString(CultureInfo.InvariantCulture),
-					System.StringComparison.Ordinal);
-		}
-
-		int level = Level(ability, reader);
-		if (level <= 0)
-		{
-			Engine_UiHostBoxes.Tell(Text("GUI_SCREEN_ABILITY_CANNOT_DISCARD_ABILITY"));
-			return;
-		}
-
-		string result = Text(level == 1
-			? "GUI_SCREEN_ABILITY_DISCARD_ALL_KNOWLEDGE_OF_ABILITY"
-			: "GUI_SCREEN_ABILITY_DISCARD_SOME_KNOWLEDGE_OF_ABILITY");
-		Engine_UiHostBoxes.Ask(Text("GUI_SCREEN_ABILITIES_DISCARD_CONFIRM"), () =>
-		{
-			Refund(ability, reader);
-			Engine_UiHostBoxes.Tell(result);
-		});
-	}
-
 	/// <summary>The card for the preview frame, by host texture key, or null.</summary>
 	public static uint? ImageKey(Ability ability)
 	{
@@ -280,6 +237,10 @@ public static class Engine_UiModAbilities
 	/// Declares the loaded abilities to the engine once per guest (and again after a remount);
 	/// call every frame with whether the guest is up.
 	/// </summary>
+	/// <summary>Declares the abilities again on the next <see cref="Pump"/>: a title whose engine keeps them in the
+	/// game VM loses them when the VM is rebuilt (Fable 3).</summary>
+	public static void Redeclare() => _declared = false;
+
 	public static void Pump(bool guestUp)
 	{
 		if (!guestUp)
@@ -295,15 +256,20 @@ public static class Engine_UiModAbilities
 
 		_declared = true;
 		Post("ability_clear");
+		bool seals = Refii.Core.Engine_TitleGame.Active.PricesAbilitiesInSeals;
 		foreach (Ability ability in All)
 		{
-			Post(DeclarationLine(ability));
+			// Declared only where this title can price it: experience (costLike) or guild seals.
+			if (seals ? ability.Seals is { Count: > 0 } : ability.CostLike is >= 1 and <= 14)
+			{
+				Post(DeclarationLine(ability));
+			}
 		}
 	}
 
 	/// <summary>
 	/// The engine's declaration of <paramref name="ability"/>:
-	/// <c>ability_declare NAME MOD MAX COSTLIKE COSTLIKE_SETTING LEVELKEY POOLS REFUND LEGACY</c>,
+	/// <c>ability_declare NAME MOD MAX COSTLIKE COSTLIKE_SETTING LEVELKEY POOLS REFUND LEGACY SEALS</c>,
 	/// '-' for an empty word (Fable2/src/vfs/src/hooks/mod_abilities.cpp).
 	/// </summary>
 	public static string DeclarationLine(Ability ability)
@@ -315,7 +281,8 @@ public static class Engine_UiModAbilities
 			ability.MaxLevel.ToString(CultureInfo.InvariantCulture),
 			ability.CostLike.ToString(CultureInfo.InvariantCulture), W(ability.CostLikeSetting), W(ability.LevelKey),
 			pools.Count == 0 ? "-" : string.Join(',', pools), ability.Refunds ? HalfRefund : "none",
-			W(ability.LegacySaveKey));
+			W(ability.LegacySaveKey),
+			ability.Seals is { Count: > 0 } seals ? string.Join(',', seals) : "-");
 	}
 
 	/// <summary>A press for the engine: <c>ability_buy|ability_refund PLAYER NAME</c>.</summary>
@@ -402,10 +369,23 @@ public static class Engine_UiModAbilities
 				record.TryGetValue("costLike", out Variant like) ? like.AsInt32() : 0,
 				Text("costLikeSetting"), Text("refund") == HalfRefund, Text("legacySaveKey"),
 				stats, Text("stat"), Text("image"), disciplines, Text("totalXpTag"));
-			if (ability.Name.Length == 0 || ability.Category.Length == 0 || ability.LevelKey.Length == 0 ||
-				ability.CostLike is < 1 or > 14)
+			// "seals": a guild-seal price per level, the price where the game's progression is bought in seals
+			// (Fable 3); a list of whole numbers, level 1 first.
+			if (record.TryGetValue("seals", out Variant sealList) && sealList.VariantType == Variant.Type.Array)
 			{
-				GD.PushWarning($"[mod-abilities] {mod}: an ability needs name, category, levelKey and costLike (1..14); skipped");
+				var seals = new List<int>();
+				foreach (Variant price in sealList.AsGodotArray())
+				{
+					seals.Add(price.AsInt32());
+				}
+
+				ability = ability with { Seals = seals };
+			}
+
+			if (ability.Name.Length == 0 || ability.Category.Length == 0 || ability.LevelKey.Length == 0 ||
+				(ability.CostLike is < 1 or > 14 && ability.Seals is not { Count: > 0 }))
+			{
+				GD.PushWarning($"[mod-abilities] {mod}: an ability needs name, category, levelKey and costLike (1..14) or seals; skipped");
 				continue;
 			}
 

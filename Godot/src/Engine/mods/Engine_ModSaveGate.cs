@@ -181,6 +181,34 @@ public static class ModSaveGate
 			GD.Print($"[mod-save] '{save}': {diff.Added.Count} mod(s) new since it was saved, {diff.Changed.Count} changed — loads as it is, re-stamped on the next save");
 		}
 
+		// A TITLE THAT CANNOT ASK (no host page book) loads it as Continue would: held records of mods
+		// enabled again back, the missing mods' values held out of the save, and the start let through.
+		if (!Refii.Core.Engine_TitleGame.Active.AsksHostQuestions)
+		{
+			RestoreHeldQuietly(save, directory, sidecar, current);
+			bool missing = diff.Missing.Count != 0;
+			if (missing)
+			{
+				try
+				{
+					FilterSave(directory, diff);
+				}
+				catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+				{
+					GD.PushError($"[mod-save] '{save}' could not be filtered: {e.Message} — loads as it is");
+				}
+
+				lock (Lock)
+				{
+					_luaClear = ModSaveFilter.LuaClearKeys(diff.MissingKeys());
+				}
+			}
+
+			GD.Print($"[mod-save] '{save}' was saved under {own} mod(s), {diff.Missing.Count} not enabled now — " +
+				(missing ? "their values held out" : "loads as it is") + " (this title asks no question)");
+			return false;
+		}
+
 		// EVERY STAMPED SAVE IS TOLD ABOUT: the player sees which mods it was made with before it
 		// loads, and which of them are not enabled now. Refused once, asked on the page book, and
 		// let through on Continue.
@@ -321,7 +349,7 @@ public static class ModSaveGate
 
 		string main = Path.Combine(directory, "mainsave.bin");
 		SaveSidecar.HeldRecords held = new();
-		if (records.Count != 0 && File.Exists(main))
+		if (records.Count != 0 && File.Exists(main) && Refii.Core.Engine_TitleGame.Active.FiltersSaveRecords)
 		{
 			SaveStream stream = SaveStream.ReadFile(main);
 			if (ModSaveFilter.RecordsIn(stream).Overlaps(records))
@@ -455,7 +483,8 @@ public static class ModSaveGate
 				continue;
 			}
 
-			if ((held.Inventory.Count != 0 || held.Worn.Count != 0 || held.Melee != 0 || held.Ranged != 0) && File.Exists(main))
+			if ((held.Inventory.Count != 0 || held.Worn.Count != 0 || held.Melee != 0 || held.Ranged != 0) && File.Exists(main) &&
+				Refii.Core.Engine_TitleGame.Active.FiltersSaveRecords)
 			{
 				stream ??= SaveStream.ReadFile(main);
 				if (!ModSaveFilter.Restore(stream, held))

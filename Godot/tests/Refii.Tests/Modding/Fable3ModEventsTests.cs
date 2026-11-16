@@ -33,11 +33,16 @@ public class Fable3ModEventsTests
         return null;
     }
 
-    /// <summary>The kinds the hooks declare: every int32 constant of the events file, the kEvent* of the runtime's.</summary>
+    /// <summary>The seam files: every int32 constant in them is a kind.</summary>
+    private static readonly string[] SeamFiles = { "mod_events_hooks.cpp", "mod_combat_hooks.cpp" };
+
+    private static string Seams(string root) =>
+        string.Concat(SeamFiles.Select(f => File.ReadAllText(Path.Combine(root, "Fable3", "src", "hooks", "src", f))));
+
+    /// <summary>The kinds the hooks declare: every int32 constant of the seam files, the kEvent* of the runtime's.</summary>
     private static IEnumerable<(string Name, int Kind)> DeclaredKinds(string root)
     {
-        string events = File.ReadAllText(Path.Combine(root, "Fable3", "src", "hooks", "src", "mod_events_hooks.cpp"));
-        foreach (Match m in Regex.Matches(events, @"constexpr int32_t k(\w+) = (\d+);"))
+        foreach (Match m in Regex.Matches(Seams(root), @"constexpr int32_t k(\w+) = (\d+);"))
         {
             yield return (m.Groups[1].Value, int.Parse(m.Groups[2].Value));
         }
@@ -91,7 +96,7 @@ public class Fable3ModEventsTests
             return;
         }
 
-        string text = File.ReadAllText(Path.Combine(root, "Fable3", "src", "hooks", "src", "mod_events_hooks.cpp"));
+        string text = Seams(root);
         var names = new Dictionary<string, int>();
         foreach (Match m in Regex.Matches(text, @"constexpr int32_t k(\w+) = (\d+);"))
         {
@@ -121,18 +126,30 @@ public class Fable3ModEventsTests
     }
 
     [TestCase]
+    public void AOneVariablePairsLoopIsFlaggedOnFable3()
+    {
+        // Havok Script's kpairs walks only a two-variable generic for (TFORLOOP, TU3 0x822A46E0).
+        const string lua = "for k in pairs(t) do end\nfor k, v in pairs(t) do end\nfor a, b, c in pairs(t) do end\nfor k in next, t do end\n" +
+            "-- `for k in pairs(t)` explained in a comment\n--[[ for k in pairs(t) do end ]]";
+        IReadOnlyList<ModIssue> issues = ModValidate.TitleIssues("mod/init.lua", () => lua, "Fable3");
+        AssertThat(issues.Count).IsEqual(2);
+        AssertThat(issues.All(i => !i.Error)).IsTrue();
+        AssertThat(ModValidate.TitleIssues("mod/init.lua", () => lua, "Fable2").Count).IsEqual(0);
+    }
+
+    [TestCase]
     public void AFable3ModHearsWhatFable3DoesNotRaise()
     {
-        const string lua = "Refii.on(\"gold\", function(e) end)\nRefii.on(\"hit\", function(e) end)\nRefii.on('hit', f)";
+        const string lua = "Refii.on(\"gold\", function(e) end)\nRefii.on(\"household_restored\", function(e) end)\nRefii.on('household_restored', f)";
         IReadOnlyList<ModIssue> issues = ModValidate.TitleIssues("mod/init.lua", () => lua, "Fable3");
         AssertThat(issues.Count).IsEqual(1);
-        AssertThat(issues[0].Pointer).IsEqual("hit");
+        AssertThat(issues[0].Pointer).IsEqual("household_restored");
         AssertThat(issues[0].Error).IsFalse();
         AssertThat(ModValidate.TitleIssues("mod/init.lua", () => lua, "Fable2").Count).IsEqual(0);
 
-        const string gd = "func _ready():\n\thost.tick.connect(_t)\n\thost.on_verdict(\"block\", _b)\n\tbutton.pressed.connect(_p)";
+        const string gd = "func _ready():\n\thost.tick.connect(_t)\n\thost.on_verdict(\"household_restored\", _b)\n\tbutton.pressed.connect(_p)";
         IReadOnlyList<ModIssue> godot = ModValidate.TitleIssues("godot/x.gd", () => gd, "Fable3");
-        AssertThat(string.Join(",", godot.Select(i => i.Pointer))).IsEqual("block");
+        AssertThat(string.Join(",", godot.Select(i => i.Pointer))).IsEqual("household_restored");
 
         AssertThat(ModValidate.TitleIssues("native/handler.cpp", null, "Fable3").Count).IsEqual(0);
         AssertThat(ModValidate.TitleIssues("ui/spellwheel.json", null, "Fable3").Count).IsEqual(1);

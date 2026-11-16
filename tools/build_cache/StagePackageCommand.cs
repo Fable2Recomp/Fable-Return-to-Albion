@@ -83,6 +83,9 @@ public static class StagePackageCommand
         @"^\s*DLL Name:\s*(.+?)\s*$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    /// <summary>The titles whose <c>&lt;Title&gt;/mods-src</c> ships as <c>bundled-mods/&lt;Title&gt;</c>.</summary>
+    private static readonly string[] BundledModTitles = { "Fable2", "Fable3" };
+
     private static readonly HashSet<string> ExcludedSdkDirs = new(StringComparer.OrdinalIgnoreCase)
     {
         ".godot",
@@ -230,26 +233,31 @@ public static class StagePackageCommand
             }
         }
 
-        // 5. Bundled mods (Fable2/mods-src -> bundled-mods/Fable2 + manifest.txt).
-        string? bundledManifestContent = null;
-        string modsSrcDir = Path.Combine(options.RepoRoot, "Fable2", "mods-src");
-        if (Directory.Exists(modsSrcDir))
+        // 5. Bundled mods, each title's (<Title>/mods-src -> bundled-mods/<Title> + manifest.txt).
+        var bundledManifests = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string title in BundledModTitles)
         {
+            string modsSrcDir = Path.Combine(options.RepoRoot, title, "mods-src");
+            if (!Directory.Exists(modsSrcDir))
+            {
+                continue;
+            }
+
             List<ScannedEntry> modEntries = FileHashIndex.ScanDirectory(modsSrcDir);
             var modRelNames = new List<string>(modEntries.Count);
             foreach (ScannedEntry entry in modEntries)
             {
                 modRelNames.Add(entry.RelativePath);
-                string destRel = $"bundled-mods/Fable2/{entry.RelativePath}";
+                string destRel = $"bundled-mods/{title}/{entry.RelativePath}";
                 expectedPaths.Add(destRel);
                 copyPlan[destRel] = entry with { RelativePath = destRel };
             }
 
             modRelNames.Sort(StringComparer.Ordinal);
-            bundledManifestContent = modRelNames.Count == 0
+            bundledManifests[title] = modRelNames.Count == 0
                 ? "\n"
                 : string.Join("\n", modRelNames) + "\n";
-            expectedPaths.Add("bundled-mods/Fable2/manifest.txt");
+            expectedPaths.Add($"bundled-mods/{title}/manifest.txt");
         }
 
         // 6. Modding SDK (Godot/ -> sdk/ + sdk/pins.json).
@@ -334,9 +342,9 @@ public static class StagePackageCommand
         }
 
         // Write generated text manifests only when bytes actually changed.
-        if (bundledManifestContent is not null)
+        foreach ((string title, string content) in bundledManifests)
         {
-            if (WriteUtf8IfChanged(Path.Combine(appDir, "bundled-mods", "Fable2", "manifest.txt"), bundledManifestContent))
+            if (WriteUtf8IfChanged(Path.Combine(appDir, "bundled-mods", title, "manifest.txt"), content))
             {
                 copiedCount++;
             }

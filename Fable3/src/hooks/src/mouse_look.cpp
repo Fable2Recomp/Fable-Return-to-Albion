@@ -381,6 +381,15 @@ class CameraScript {
     return number;
   }
 
+  /// `self[name]` is neither nil nor false.
+  bool Truth(const char* name) {
+    GetField(-1, name);
+    const uint32_t tag = Tag(-1);
+    const bool truth = tag != kTagNil && !(tag == kTagBoolean && LoadU32(base_, Slot(-1)) == 0u);
+    SetTop(-2);
+    return truth;
+  }
+
   /// `self[name] or fallback`.
   double NumberOr(const char* name, double fallback) {
     double value = fallback;
@@ -648,10 +657,114 @@ void FlickTheLock(CameraScript& script, uint32_t mode, float yaw) {
   g_flick.window = 0.0;
 }
 
+// SACCamera:ProcessGameAction (stringandcagecamera.lua main.117) is Fable 2's lock gate, read from the
+// Kore disassembly:
+//   pc  80..95   LastRotateFrame nil, or `LastRotateFrame + 1 < Timing.GetProgramFrame()`:
+//                FirstRotateFrame = now, ClearToRotate = true
+//   pc  96..102  else |x| < 0.8: ClearToRotate = true
+//   pc 103..106  LastRotateFrame = Timing.GetProgramFrame()
+//   pc 107..133  IsTargetLocking: direction = (x < 0); ClearToRotate and |x| >= 0.8 ->
+//                Targeting.CheckForBetterTargetInDirection(self.Player, direction, 20), GrabTarget,
+//                ClearToRotate = false
+// So a notch is ONE ROTATE of x = +-1 through the receiver (the flick's own Send), sent only when it
+// would switch now (ClearToSwitch below); at most one notch waits for the next update. Down +1 the
+// next target right, up -1 left: refii_bridge_mouse_look_take_wheel's sign, as Fable 2's.
+// Timing.GetProgramFrame (Lua_Timing_GetProgramFrame TU3 0x8225A750 / disc 0x8225B078 exact):
+//   TU3  8225a758 lwz r10,0xC(r11) / 8225a75c lwz r3,0xB0(r10)      (r11 = dword_83597034, kGame)
+//   disc 8225b080 lwz r10,0xC(r11) / 8225b084 lwz r3,0xB0(r10)      (r11 = dword_83556540)
+// The Lua compares 32-bit floats: the frame is compared as one.
+
+/// The game state's frame counter Timing.GetProgramFrame answers.
+constexpr uint32_t kStateProgramFrame = 0xB0u;
+
+uint32_t ProgramFrame(const uint8_t* base) {
+  const uint32_t state = Word(base, Word(base, kGame) + 0xCu);  // as mouse_look reads the state (line 283)
+  return Plausible(state) ? LoadU32(base, state + kStateProgramFrame) : 0u;
+}
+
+/// The heroes whose lock a mod states switches by the wheel: the frame each was last stated on, and
+/// whether the statement is sticky.
+struct WheelStated {
+  uint32_t hero = 0u;
+  uint32_t frame = 0u;
+  bool sticky = false;
+};
+
+std::array<WheelStated, 4> g_wheel_stated{};
+
+/// A statement holds for the frame it was made on and the two after it, so a lock stated each tick
+/// never lapses between the mod's tick and the camera's update.
+constexpr uint32_t kWheelStatementFrames = 2u;
+
+bool WheelSwitches(const uint8_t* base, uint32_t hero) {
+  if (!Plausible(hero)) {
+    return false;
+  }
+  const uint32_t frame = ProgramFrame(base);
+  for (const WheelStated& stated : g_wheel_stated) {
+    if (stated.hero == hero &&
+        (stated.sticky || (frame >= stated.frame && frame - stated.frame <= kWheelStatementFrames))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Sticky statements end with their hero's lock (or the hero): checked each camera update.
+void ExpireWheelStatements(PPCContext& ctx, uint8_t* base) {
+  for (WheelStated& stated : g_wheel_stated) {
+    // Live: +0x94 & 0x40, the test Camera.GetFOV's trampoline makes (TU3 826a65f0 `lbz r11,0x94(r4)`,
+    // 826a65f4 `rlwinm r10,r11,0,25,25`).
+    const bool live = Plausible(stated.hero) && (base[stated.hero + 0x94u] & 0x40u) != 0u;
+    if (stated.hero != 0u && stated.sticky && (!live || !TargetLocked(ctx, base, stated.hero))) {
+      stated = WheelStated{};
+    }
+  }
+}
+
+/// The wheel notch waiting on the lock's gate, by camera mode: 0 none, else its direction.
+struct WheelSwitch {
+  uint32_t mode = 0u;
+  int waiting = 0;
+};
+
+WheelSwitch g_wheel_switch;
+
+/// Whether a ROTATE of |x| 1 sent now would switch target (the gate above).
+bool ClearToSwitch(CameraScript& script, const uint8_t* base) {
+  double last = 0.0;
+  if (!script.Number("LastRotateFrame", &last)) {
+    return true;
+  }
+  if (static_cast<float>(last) + 1.0f < static_cast<float>(ProgramFrame(base))) {
+    return true;
+  }
+  return script.Truth("ClearToRotate");
+}
+
+/// Under a lock a mod states switches by the wheel: this update's notches become at most one switch.
+void SwitchByWheel(CameraScript& script, const uint8_t* base, uint32_t mode, int32_t notches) {
+  if (g_wheel_switch.mode != mode) {
+    g_wheel_switch = WheelSwitch{};
+    g_wheel_switch.mode = mode;
+  }
+  const int direction = notches > 0 ? 1 : -1;
+  int count = (notches > 0 ? notches : -notches) + (g_wheel_switch.waiting != 0 ? 1 : 0);
+  const int first = g_wheel_switch.waiting != 0 ? g_wheel_switch.waiting : direction;
+  const int latest = notches != 0 ? direction : g_wheel_switch.waiting;
+  if (count > 0 && ClearToSwitch(script, base)) {
+    script.Send(mode, kRotateCamera, static_cast<float>(first), 0.0f);
+    refii_bridge_mouse_look_flicked();
+    --count;
+  }
+  g_wheel_switch.waiting = count > 0 ? latest : 0;
+}
+
 /// SAC: the rotate through the mode's receiver, made whole — or, under a target lock, a flick.
 /// Sets the update's account.
 void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, uint32_t mode,
-                         uint32_t hero, float yaw, float pitch, Update& update) {
+                         uint32_t hero, float yaw, float pitch, int32_t wheel, const WheelSwitch& waiting,
+                         Update& update) {
   update.factor = 1.0f;
   const bool locked = TargetLocked(ctx, base, hero);
   double speed = 0.0;
@@ -672,7 +785,14 @@ void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, u
   }
 
   if (locked) {
-    FlickTheLock(script, mode, yaw);
+    if (WheelSwitches(base, hero)) {
+      // The lock holds still under the mouse's movement; a mod stated the wheel switches it.
+      g_flick = Flick{};
+      g_wheel_switch = waiting;
+      SwitchByWheel(script, base, mode, wheel);
+    } else {
+      FlickTheLock(script, mode, yaw);
+    }
     g_refused = mode;
   } else if (x != 0.0f) {
     g_flick.spent = 0;
@@ -743,9 +863,13 @@ void HandToFirstPerson(CameraScript& script, uint32_t mode, float yaw, float pit
 /// Before the manager's update: hands the mouse's pending turn to the mode it is about to run.
 void BeforeCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager) {
   g_update = Update{};
-  // The wheel has no use in Fable 3 yet (no lock a mod states switches by it): taken and dropped,
-  // as Fable 2 drops it without such a statement.
-  refii_bridge_mouse_look_take_wheel();
+  // The wheel, taken once per update: it switches a lock a mod states switches by it
+  // (Refii.wheel_switches_target), else it is dropped, as on Fable 2. A waiting notch is kept only by
+  // an update of a wheel-switched lock.
+  const int32_t wheel = refii_bridge_mouse_look_take_wheel();
+  const WheelSwitch waiting = g_wheel_switch;
+  g_wheel_switch = WheelSwitch{};
+  ExpireWheelStatements(ctx, base);
 
   const uint32_t mode = ActiveCamera(base, manager);
   const uint32_t hero = HeroOf(base, mode);
@@ -782,7 +906,7 @@ void BeforeCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager) {
 
   switch (g_update.kind) {
     case Kind::kStringAndCage:
-      HandToStringAndCage(ctx, script, base, mode, hero, yaw, pitch, g_update);
+      HandToStringAndCage(ctx, script, base, mode, hero, yaw, pitch, wheel, waiting, g_update);
       break;
     case Kind::kFirstPerson:
       HandToFirstPerson(script, mode, yaw, pitch, g_update);
@@ -870,6 +994,47 @@ void AfterCameraUpdate(PPCContext& ctx, uint8_t* base, uint32_t manager) {
 }
 
 }  // namespace
+
+namespace refii::fable3::mouselook {
+
+void StateWheel(const uint8_t* base, uint32_t hero, int32_t mode) {
+  if (!Plausible(hero)) {
+    return;
+  }
+  WheelStated* slot = nullptr;
+  for (WheelStated& stated : g_wheel_stated) {
+    if (stated.hero == hero) {
+      slot = &stated;
+      break;
+    }
+  }
+  if (mode == 0) {
+    if (slot != nullptr) {
+      *slot = WheelStated{};
+    }
+    return;
+  }
+  const uint32_t frame = ProgramFrame(base);
+  if (slot == nullptr) {
+    for (WheelStated& stated : g_wheel_stated) {
+      // A free slot, else the oldest lapsed tick statement (a sticky one is never taken).
+      if (stated.hero == 0u || (!stated.sticky && frame - stated.frame > kWheelStatementFrames &&
+                                (slot == nullptr || stated.frame < slot->frame))) {
+        slot = &stated;
+        if (stated.hero == 0u) {
+          break;
+        }
+      }
+    }
+  }
+  if (slot == nullptr) {
+    return;  // four heroes already stated: more than any session has players
+  }
+  const bool sticky = mode == 2 || (slot->hero == hero && slot->sticky);
+  *slot = WheelStated{hero, frame, sticky};
+}
+
+}  // namespace refii::fable3::mouselook
 
 // The camera manager's update (r3 the manager): the mouse's turn handed before, its account
 // stated after.

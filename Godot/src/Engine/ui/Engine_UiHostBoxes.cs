@@ -98,6 +98,13 @@ public static class Engine_UiHostBoxes
 
 	private static void Ask(PendingQuestion question)
 	{
+		if (!Refii.Core.Engine_TitleGame.Active.PresentsHostBoxes)
+		{
+			Godot.GD.Print($"[host-box] no presenter on this title: answered as withdrawn: {question.Body}");
+			question.Answered?.Invoke(-1);
+			return;
+		}
+
 		if (Question is not null)
 		{
 			_questions.Add(question);
@@ -181,6 +188,12 @@ public static class Engine_UiHostBoxes
 	/// </summary>
 	public static void Tell(string body, Action<int>? dismissed)
 	{
+		if (!Refii.Core.Engine_TitleGame.Active.PresentsHostBoxes)
+		{
+			Engine_UiNotices.Post(0u, Engine_UiModBoxes.Resolve(0), string.Empty, body, 0f, done: _ => dismissed?.Invoke(0));
+			return;
+		}
+
 		if (Notice is not null)
 		{
 			_notices.Add(new PendingNotice(body, dismissed));

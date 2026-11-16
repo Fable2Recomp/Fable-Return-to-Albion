@@ -96,6 +96,47 @@ public static class Fable3IconArt
 	}
 
 	/// <summary>The mount entry for a type-table path: the guest's own `art\&lt;path&gt;.tex`, lower-cased, forward slashes.</summary>
+	/// <summary>
+	/// A mod marker's icon names (the shared table's, Engine_HudModMarkers.IconAliases) to this game's
+	/// textures of the same world-icon kinds, plus its own: the gift, the heart, the guild seals and the
+	/// property signs. Fable 2's <c>reward_quest</c> has no Fable 3 texture and loads as written.
+	/// </summary>
+	public static readonly IReadOnlyDictionary<string, string> MarkerAliases = BuildMarkerAliases();
+
+	private static Dictionary<string, string> BuildMarkerAliases()
+	{
+		var byType = new Dictionary<uint, string>();
+		foreach ((uint type, string path) in Paths)
+		{
+			byType.TryAdd(type, BankPath(path));
+		}
+
+		var aliases = new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase);
+		void Alias(string name, uint type) => aliases[name] = byType[type];
+		Alias("quest", 27); Alias("reward", 50); Alias("freebie", 50); Alias("gold", 36);
+		Alias("engaged", 24); Alias("married", 25); Alias("child", 26); Alias("follow", 29); Alias("wait", 30);
+		Alias("romance", 22); Alias("love", 23); Alias("exit", 31); Alias("button_a", 32);
+		Alias("player1", 52); Alias("player2", 53); Alias("dig", 55); Alias("chest", 56); Alias("pet_quest", 57);
+		Alias("talk", 63); Alias("lock", 0); Alias("gift", 51); Alias("heart", 76); Alias("funny", 75);
+		Alias("guild_seal_bronze", 70); Alias("guild_seal_silver", 71); Alias("guild_seal_gold", 72);
+		Alias("property_owned", 58); Alias("property_marital", 59); Alias("property_rented", 60);
+		string[] opinions = { "attractiveness", "ridiculousness", "love", "morality", "respect", "ugly", "fear", "hate", "evil", "disrespect" };
+		for (uint i = 0; i < opinions.Length; ++i)
+		{
+			Alias("opinion_" + opinions[i], 1u + i);
+			Alias("opinion_" + opinions[i] + "_gold", 11u + i);
+		}
+
+		Alias("opinion_renown", 21);
+		string[] morphs = { "fat", "thin", "tall", "short", "strong", "weak", "attractive", "ugly", "good", "evil" };
+		for (uint i = 0; i < morphs.Length; ++i)
+		{
+			Alias("morph_" + morphs[i], 40u + i);
+		}
+
+		return aliases;
+	}
+
 	public static string BankPath(string path) => ("art\\" + path + ".tex").Replace('\\', '/').ToLowerInvariant();
 
 	/// <summary>The button a pooled prompt icon stands for, by the type the registry gave it; empty for the markers.</summary>

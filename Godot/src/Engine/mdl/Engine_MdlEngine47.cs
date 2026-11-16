@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace Refii.Models;
 
@@ -16,7 +17,8 @@ namespace Refii.Models;
 /// indices, D3DCOLOR weights — but splits each part's vertices into planar blocks. The reader
 /// copies each element's bytes into the interleaved version-36 layout the decoders read
 /// (rigid 20, skinned 28, tree 36), followed by the part's u16 indices, into
-/// <see cref="MdlInfo.Body"/>, and every buffer offset points into that array.
+/// <see cref="MdlInfo.Body"/>, and every buffer offset points into that array. Each part's
+/// file offsets are kept as its <see cref="PlanarStreams"/>.
 /// </remarks>
 public static class Engine_MdlEngine47
 {
@@ -38,6 +40,54 @@ public static class Engine_MdlEngine47
     public const int GlobalLightingModeOffset = 88;
 
     private const uint MaxCount = 4_000_000u;
+
+    /// <summary>
+    /// Where one part's own vertex blocks sit in the bytes the model was parsed from: the offsets
+    /// <see cref="Engine_MdlWriter.TryRewritePlanarVertices"/> writes at. Every value is big-endian,
+    /// as the repack copies it.
+    /// </summary>
+    public sealed class PlanarStreams
+    {
+        /// <summary>The 8-byte block: normal u32 at +0, tangent u32 at +4.</summary>
+        public const int NormalStride = 8;
+
+        /// <summary>The tangent's place in the 8-byte block.</summary>
+        public const int TangentInBlock = 4;
+
+        /// <summary>The payload the part was read from; 0 is LOD 0.</summary>
+        public int Lod { get; init; }
+
+        public int VertexCount { get; init; }
+
+        /// <summary>
+        /// A coarser part under the header's shared-stream flag: it ships no vertex stream and
+        /// both offsets are -1.
+        /// </summary>
+        public bool SharesLod0Stream { get; init; }
+
+        /// <summary>Stream 0: FLOAT16_4 position at +0 of each vertex, w the PRT cluster.</summary>
+        public int PositionOffset { get; init; } = -1;
+
+        /// <summary>Stream 0's stride: 12 rigid, instanced and tree; 20 skinned.</summary>
+        public int PositionStride { get; init; }
+
+        /// <summary>
+        /// The 8-byte block: FMT_10_11_11 SNORM normal (<see cref="MdlReader.DecodeNormal_11_11_10"/>)
+        /// and DEC4N tangent (<see cref="MdlReader.DecodeTangent_DEC3N"/>).
+        /// </summary>
+        public int NormalOffset { get; init; } = -1;
+    }
+
+    /// <summary>
+    /// Each parsed buffer's <see cref="PlanarStreams"/>. Kept beside the buffer rather than on it:
+    /// <see cref="MdlMeshBuffer.VertexOffset"/> points into <see cref="MdlInfo.Body"/>, these into
+    /// the file.
+    /// </summary>
+    private static readonly ConditionalWeakTable<MdlMeshBuffer, PlanarStreams> Planar = new();
+
+    /// <summary>The file offsets of a buffer this reader produced; false for any other buffer.</summary>
+    public static bool TryGetPlanarStreams(MdlMeshBuffer buffer, out PlanarStreams streams) =>
+        Planar.TryGetValue(buffer, out streams!);
 
     private enum PartKind
     {
@@ -273,6 +323,20 @@ public static class Engine_MdlEngine47
         public bool SharesVertices;
         public uint Lod0PartIndex;
         public MdlMeshBuffer Buffer = new();
+
+        /// <summary>File offset of stream 0, -1 without one.</summary>
+        public int PositionAt = -1;
+        public int PositionStride;
+
+        /// <summary>File offset of the 8-byte normal/tangent block, -1 without one.</summary>
+        public int NormalAt = -1;
+
+        public void Streams(int s0, int stride, int s3)
+        {
+            PositionAt = s0;
+            PositionStride = stride;
+            NormalAt = s3;
+        }
     }
 
     /// <summary>
@@ -355,6 +419,19 @@ public static class Engine_MdlEngine47
         {
             if (!ReadInstanced(r, data, body, out Part part)) return false;
             payload.Parts.Add(part);
+        }
+
+        foreach (Part part in payload.Parts)
+        {
+            Planar.AddOrUpdate(part.Buffer, new PlanarStreams
+            {
+                Lod = payload.Index,
+                VertexCount = (int)part.Buffer.VertexCount,
+                SharesLod0Stream = part.SharesVertices,
+                PositionOffset = part.PositionAt,
+                PositionStride = part.PositionStride,
+                NormalOffset = part.NormalAt,
+            });
         }
 
         // FLOAT16_2 per rigid and tree vertex, model order (`sub_82C73690(*v172, v146, 4, ...)`).
@@ -604,6 +681,7 @@ public static class Engine_MdlEngine47
             int s3 = r.Position;
             if (!r.Skip((int)(vc * 8))) return false;
             mb.VertexOffset = RepackRigid(data, s0, s3, (int)vc, body);
+            part.Streams(s0, 12, s3);
         }
         else
         {
@@ -646,6 +724,7 @@ public static class Engine_MdlEngine47
             int s3 = r.Position;
             if (!r.Skip((int)(vc * 8))) return false;
             mb.VertexOffset = RepackSkinned(data, s0, s3, (int)vc, body);
+            part.Streams(s0, 20, s3);
         }
         else
         {
@@ -694,6 +773,7 @@ public static class Engine_MdlEngine47
         int s2 = r.Position;
         if (!r.Skip((int)(vc * 8))) return false;
         mb.VertexOffset = RepackTree(data, s0, wind, s2, (int)vc, body);
+        part.Streams(s0, 12, s2);
 
         return ReadIndices(r, data, ic, body, mb);
     }
@@ -739,6 +819,7 @@ public static class Engine_MdlEngine47
         int s1 = r.Position;
         if (!r.Skip((int)(vc * 8))) return false;
         mb.VertexOffset = RepackRigid(data, s0, s1, (int)vc, body);
+        part.Streams(s0, 12, s1);
 
         return ReadIndices(r, data, ic, body, mb);
     }

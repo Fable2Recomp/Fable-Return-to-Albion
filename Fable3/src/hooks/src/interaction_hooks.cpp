@@ -74,6 +74,8 @@
 #include <rex/ppc.h>
 
 #include "gui_statements.h"
+#include "mod_lua.h"
+#include "mod_seam.h"
 #include "../../vfs/include/fable3_guest_build.h"
 
 REX_EXTERN(__imp__rex_InteractionMode_Set);
@@ -84,6 +86,10 @@ REX_EXTERN(__imp__rex_InteractionMode_Clear);
 REX_EXTERN(__imp__rex_InteractionButton_Hold);
 REX_EXTERN(__imp__rex_OverlayBar_Show);
 REX_EXTERN(__imp__rex_OverlayBar_CommitText);
+REX_EXTERN(__imp__rex_InteractionMode_OpenRealEstate);
+REX_EXTERN(__imp__rex_InteractionMode_OpenShop);
+REX_EXTERN(__imp__rex_InteractionMode_OpenPawnShop);
+REX_EXTERN(__imp__rex_InteractionMode_OpenOrb);
 
 namespace {
 
@@ -111,6 +117,49 @@ constexpr uint32_t kBarShown = 26u;
 
 std::atomic<int32_t> g_panel{kPanelClosed};
 
+/// interaction_mode (catalog kind 135).
+constexpr int32_t kInteractionModeEvent = 135;
+/// IM+4, the open flag: set by the clear every opener runs first (`li r27,1` 0x825EEE68, `stb
+/// r27,4(r29)` 0x825EEE90, r29 = IM `mr r29,r3` 0x825EEDA0; disc 0x825C3FD8 / 0x825C4000 / 0x825C3F10),
+/// cleared by the close on its one exit path (`li r26,0` 0x825F0CE8, `stb r26,4(r30)` 0x825F134C, r30 =
+/// IM; disc `li r28,0` 0x825C5D28, `stb r28,4(r29)` 0x825C62E4).
+constexpr uint32_t kImOpenFlag = 4u;
+/// The hero's (IM+0x2C) and the target's (IM+0x34) smart pointers, each opener's stores (Set `addi
+/// r23,r28,0x2C` 0x825EF39C / `addi r22,r28,0x34` 0x825EF364, disc 0x825C450C / 0x825C44D4; the
+/// others listed at their hooks) and the guest's getters (0x823B528C, 0x82289B14).
+constexpr uint32_t kImHeroRef = 0x2Cu;
+constexpr uint32_t kImTargetRef = 0x34u;
+/// The clears run so far. The clear sub_825EED90 has exactly five callers — Set and the four openers
+/// below — and each calls it as its body's first act, past its own refusals (GUI+0x88, the hero's
+/// interaction test), then stores IM+0x14 = the mode with no return between: a clear during an
+/// opener is that opener opening.
+uint32_t g_im_clears = 0u;
+
+/// The mode an opener left in IM, raised as opened; `was_open`/`previous` as IM stood before it.
+void RaiseModeOpened(const uint8_t* base, uint32_t im, bool was_open, int32_t previous) {
+  if (!modlua::Wants(kInteractionModeEvent)) {
+    return;
+  }
+  const uint32_t hero = seam::Deref(base, im + kImHeroRef);
+  modlua::QueueEvent(kInteractionModeEvent,
+                     seam::Fields("hero=%u,player=%d,target=%u,mode=%d,previous=%d,open=true", seam::Handle(base, hero),
+                                  modlua::PlayerOf(base, hero), seam::Handle(base, seam::Deref(base, im + kImTargetRef)),
+                                  static_cast<int32_t>(LoadGuestU32(base, im + kImMode)), was_open ? previous : -1));
+}
+
+/// Runs an opener and raises it when its body ran (a clear happened inside it).
+void OpenAndRaise(PPCContext& ctx, uint8_t* base, PPCFunc* original) {
+  const uint32_t im = ctx.r3.u32;
+  const bool readable = base != nullptr && Plausible(im);
+  const bool was_open = readable && base[im + kImOpenFlag] != 0u;
+  const int32_t previous = readable ? static_cast<int32_t>(LoadGuestU32(base, im + kImMode)) : -1;
+  const uint32_t clears = g_im_clears;
+  original(ctx, base);
+  if (readable && g_im_clears != clears) {
+    RaiseModeOpened(base, im, was_open, previous);
+  }
+}
+
 void StatePanelId(int32_t panel) {
   if (g_panel.exchange(panel) == panel) {
     return;
@@ -135,6 +184,10 @@ void StatePanel(const uint8_t* base, uint32_t im) {
 REX_EXTERN(rex_InteractionMode_Set) {
   const uint32_t im = ctx.r3.u32;
   const uint32_t mode = ctx.r4.u32;
+  const bool readable = base != nullptr && Plausible(im);
+  const bool was_open = readable && base[im + kImOpenFlag] != 0u;
+  const int32_t previous = readable ? static_cast<int32_t>(LoadGuestU32(base, im + kImMode)) : -1;
+  const uint32_t clears = g_im_clears;
   __imp__rex_InteractionMode_Set(ctx, base);
   if (base == nullptr || !Plausible(im)) {
     return;
@@ -144,17 +197,31 @@ REX_EXTERN(rex_InteractionMode_Set) {
                 LoadGuestU32(base, im + kImObject) != 0u ? "open" : "no mode object");
   }
   StatePanel(base, im);
+  if (g_im_clears != clears) {
+    RaiseModeOpened(base, im, was_open, previous);
+  }
 }
 
 // (IM, keepTarget).
 REX_EXTERN(rex_InteractionMode_Close) {
   const uint32_t im = ctx.r3.u32;
   const bool open = base != nullptr && Plausible(im) && LoadGuestU32(base, im + kImObject) != 0u;
+  const bool flagged = base != nullptr && Plausible(im) && base[im + kImOpenFlag] != 0u;
+  const bool raise = flagged && modlua::Wants(kInteractionModeEvent);
+  const uint32_t hero = raise ? seam::Deref(base, im + kImHeroRef) : 0u;
+  const uint32_t target = raise ? seam::Deref(base, im + kImTargetRef) : 0u;
+  const int32_t mode = raise ? static_cast<int32_t>(LoadGuestU32(base, im + kImMode)) : -1;
   __imp__rex_InteractionMode_Close(ctx, base);
   if (open) {
     REXLOG_INFO("Refii interaction mode: mode {} closed", LoadGuestU32(base, im + kImMode));
   }
   StatePanel(base, im);
+  if (raise) {
+    modlua::QueueEvent(kInteractionModeEvent,
+                       seam::Fields("hero=%u,player=%d,target=%u,mode=%d,previous=-1,open=false",
+                                    seam::Handle(base, hero), modlua::PlayerOf(base, hero),
+                                    seam::Handle(base, target), mode));
+  }
 }
 
 // (mode object, id): the id as asked, at entry — its store `stw r4,0x40(r11)` (0x82971D04) sits
@@ -242,6 +309,7 @@ REX_EXTERN(rex_InteractionMode_Tick) {
 
 // (IM): the root on slide 1.
 REX_EXTERN(rex_InteractionMode_Clear) {
+  ++g_im_clears;
   const uint32_t im = ctx.r3.u32;
   __imp__rex_InteractionMode_Clear(ctx, base);
   if (base == nullptr || !Plausible(im)) {
@@ -253,6 +321,13 @@ REX_EXTERN(rex_InteractionMode_Clear) {
   }
   StatePanel(base, im);
 }
+
+// interaction_mode (135): the four dedicated openers. Each runs the clear first, past its own refusals, then
+// stores IM+0x14 its mode, +0x2C the hero and +0x34 the target: a clear inside one is it opening.
+REX_EXTERN(rex_InteractionMode_OpenRealEstate) { OpenAndRaise(ctx, base, __imp__rex_InteractionMode_OpenRealEstate); }
+REX_EXTERN(rex_InteractionMode_OpenShop) { OpenAndRaise(ctx, base, __imp__rex_InteractionMode_OpenShop); }
+REX_EXTERN(rex_InteractionMode_OpenPawnShop) { OpenAndRaise(ctx, base, __imp__rex_InteractionMode_OpenPawnShop); }
+REX_EXTERN(rex_InteractionMode_OpenOrb) { OpenAndRaise(ctx, base, __imp__rex_InteractionMode_OpenOrb); }
 
 /// A mode's own IM+64 store (the value register at the `stw rX,0x40(r11)`).
 void RefiiF3InteractionPanelStored(PPCRegister& value) { StatePanelId(static_cast<int32_t>(value.u32)); }

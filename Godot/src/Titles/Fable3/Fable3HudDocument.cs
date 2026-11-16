@@ -24,7 +24,7 @@ using Refii.Ui;
 /// The position is the element's local `position.x/.y/.z` (sub_82818580), the column the view's
 /// stated transform takes; the texture is the path the renderable hashes (sub_82818EF0).
 /// </remarks>
-public sealed class Fable3HudDocument
+public sealed partial class Fable3HudDocument
 {
 	/// <summary>
 	/// FABLE 3'S TOPBOX, from the 360 fit (the same scheme as Fable 2's, Engine_UiHudTopBox): both
@@ -166,6 +166,8 @@ public sealed class Fable3HudDocument
 			// quads, the Subtitles and Corner boxes' nine-slices under their X / Y meters — drawn at the
 			// size the meters state, never Fable 2's fitted rounded panel.
 			AuthoredTextBoxPanels = true,
+			// A mod's HUD pieces and meters are drawn once, on the HUD's own view.
+			HostsMods = Document == Fable3Elements.HudDocument,
 		};
 		View.Values.Strings = host.Strings ?? Fable3Strings.Current;
 		parent.AddChild(View);
@@ -349,7 +351,7 @@ public sealed class Fable3HudDocument
 			_barClones.Drive(View, bar, _screen, _resolve, _statements.Resolve);
 		}
 
-		if (Fable3Elements.Generation == _fed && !Refii.Core.Engine_GuestFrame.Changed)
+		if (Fable3Elements.Generation == _fed && !Refii.Core.Engine_GuestFrame.Changed && !OverridesChanged)
 		{
 			return;
 		}
@@ -393,6 +395,7 @@ public sealed class Fable3HudDocument
 		_gathered.AddRange(Fable3ScreenFrames.StatementsFor(Document));
 		_statements!.Apply(_gathered, _slides, _opacity, _texts, _times, _transforms, _textures,
 			_playback is null ? null : _slideStamps, _colours);
+		ApplyModOverrides();
 		_meterTimes.Clear();
 		StatePlaced();
 		StateWidescreen();
@@ -934,6 +937,12 @@ public sealed class Fable3HudDocument
 	/// <summary>A texture the view asks for by hash, through the host's name table; a miss is named once.</summary>
 	private Texture2D? ResolveTexture(Fable3Presentations host, uint hash)
 	{
+		// A mod's HUD icon (hud_icon) is a host texture's key, not a bank name.
+		if (Engine_UiHostTextures.TryGet(hash) is { } stated)
+		{
+			return stated;
+		}
+
 		if (host.TextureNames is { } names && names.TryResolve(hash, out string path))
 		{
 			if (host.LoadTexture(path) is { } texture)

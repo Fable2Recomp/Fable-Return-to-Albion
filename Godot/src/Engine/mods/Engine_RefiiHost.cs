@@ -163,6 +163,51 @@ public partial class RefiiHost : Node
 	[Signal] public delegate void guild_sealsEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void treasuryEventHandler(Godot.Collections.Dictionary e);
 	[Signal] public delegate void kingdom_decisionEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void chest_openedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void item_boughtEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void item_soldEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void shop_priceEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dig_spot_dugEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void demon_doorEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void drinkEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void sanctuaryEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void sanctuary_requestEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void weapon_level_upEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void weapon_augment_unlockedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void weapon_upgrade_readyEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void hand_holdingEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void hand_holding_requestEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void interaction_startedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void interaction_resultEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void interaction_modeEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void relationship_stageEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dog_digEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dog_leadingEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dog_trick_learnedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dog_learnedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void dive_spot_usedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void vomitEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void job_startedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void job_levelEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void job_earningsEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void job_workedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void job_multiplierEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void job_summaryEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void guild_messageEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void title_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void title_unlockedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void chapter_progressEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void scar_addedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void scar_removedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void age_changedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void hero_stageEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void clothing_wornEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void clothing_removedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void clothing_dyedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void pub_game_startedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void pub_game_finishedEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void village_wealthEventHandler(Godot.Collections.Dictionary e);
+	[Signal] public delegate void gargoyle_destroyedEventHandler(Godot.Collections.Dictionary e);
 
 	/// <summary>A <see cref="message_box"/>'s answer: the id it returned, and the button's index (0 is A, 1 is B; -1 when another box replaced it).</summary>
 	[Signal] public delegate void message_box_answeredEventHandler(long id, long button);
@@ -240,6 +285,14 @@ public partial class RefiiHost : Node
 		"guild_seals",
 		"treasury",
 		"kingdom_decision",
+		"chest_opened", "item_bought", "item_sold", "shop_price", "dig_spot_dug", "demon_door", "drink",
+		"sanctuary", "sanctuary_request", "weapon_level_up", "weapon_augment_unlocked", "weapon_upgrade_ready", "hand_holding",
+		"hand_holding_request", "interaction_started", "interaction_result", "interaction_mode", "relationship_stage", "dog_dig",
+		"dog_leading", "dog_trick_learned", "dog_learned", "dive_spot_used", "vomit", "job_started",
+		"job_level", "job_earnings", "job_worked", "job_multiplier", "job_summary", "guild_message",
+		"title_changed", "title_unlocked", "chapter_progress", "scar_added", "scar_removed", "age_changed",
+		"hero_stage", "clothing_worn", "clothing_removed", "clothing_dyed", "pub_game_started", "pub_game_finished",
+		"village_wealth", "gargoyle_destroyed",
 	};
 
 	public const string SingletonName = "RefiiHost";

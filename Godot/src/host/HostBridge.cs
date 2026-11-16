@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 240;
+	public const int ExpectedAbiVersion = 241;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -3374,6 +3374,28 @@ public static partial class HostBridge
 		catch (EntryPointNotFoundException)
 		{
 			return false;
+		}
+	}
+
+	/// <summary>Who this machine plays (core/player_state): 3 both, 1 player one (online host), 2 player two (online joiner); 3 without a payload.</summary>
+	public static uint PlayerOwned()
+	{
+		if (TryGetAbiVersion() is null)
+		{
+			return 3u;
+		}
+
+		try
+		{
+			return RefiiHostPlayerOwned();
+		}
+		catch (DllNotFoundException)
+		{
+			return 3u;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return 3u;
 		}
 	}
 
@@ -8771,6 +8793,8 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostPlayerStateDescribe(byte[] outBuffer, uint capacity);
+	[DllImport(Library)]
+	private static extern uint RefiiHostPlayerOwned();
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostModHandleAddress(uint handle);

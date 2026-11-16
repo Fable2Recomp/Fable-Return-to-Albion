@@ -24,7 +24,20 @@ public sealed class Fable3Input : GameTitleInput
 
 	public override Published PublishPad(int pad, bool connected, GameInput.PadState seen, GameInput.PadState guest)
 	{
-		if (Fable3Keyboard.IsOpen || Fable3HostOptions.IsOpen)
+		// The mods' wheel (Fable3BoxesModWheel): Back while it has it, the whole pad while it stands.
+		if (Fable3Boxes.FollowModWheel(ModPlayer(pad), ref guest, WorldHasInput))
+		{
+			return new(new GameControllerPacket(pad, connected, 0u, 0u, 0u, 0, 0, 0, 0), guest.Buttons, 0u, 0u);
+		}
+
+		// A mod's own screen (ModScreen) has the pad; only Start reaches the game, to enter and leave the pause.
+		if (Refii.Mods.ModScreen.Owned && Refii.Host.HostBridge.IsInGame)
+		{
+			uint start = guest.Buttons & GameInput.Start;
+			return new(new GameControllerPacket(pad, connected, start, 0u, 0u, 0, 0, 0, 0), guest.Buttons, 0u, 0u);
+		}
+
+		if (Fable3Keyboard.IsOpen || Fable3HostOptions.IsOpen || Fable3Boxes.RefiiUp || Fable3Boxes.ModMenuUp)
 		{
 			return new(new GameControllerPacket(pad, connected, 0u, 0u, 0u, 0, 0, 0, 0), guest.Buttons, 0u, 0u);
 		}
@@ -74,7 +87,8 @@ public sealed class Fable3Input : GameTitleInput
 	/// them. Under one the keys take their menu meanings and the cursor is free for the menus.
 	/// </summary>
 	public override bool WorldHasInput => base.WorldHasInput && !Fable3Elements.HudHidden && !Fable3MapTable.Presented &&
-		!Fable3Keyboard.IsOpen && !Fable3HostOptions.IsOpen;
+		!Fable3Keyboard.IsOpen && !Fable3HostOptions.IsOpen && !Fable3Boxes.RefiiUp && !Fable3Boxes.ModMenuUp &&
+		!Refii.Mods.ModScreen.Owned;
 
 	public override bool PointerOverlay => Fable3Keyboard.IsOpen || Fable3HostOptions.IsOpen;
 

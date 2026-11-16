@@ -486,11 +486,11 @@
 0x823069A8 = { size = 0x44 }
 0x823069F0 = { size = 0xB4 }
 0x82306AA8 = { size = 0x6C }
-0x82306B18 = { size = 0x60 }
-0x82306B78 = { size = 0x78 }
-0x82306BF0 = { size = 0x78 }
+0x82306B18 = { name = "rex_GUI_SetJobMultiplierLevel", size = 0x60 }
+0x82306B78 = { name = "rex_GUI_TurnJobMultiplierOff", size = 0x78 }
+0x82306BF0 = { name = "rex_GUI_TurnOnMiniGameComplete", size = 0x78 }
 0x82306C68 = { size = 0x34 }
-0x82306CA0 = { size = 0x5C }
+0x82306CA0 = { name = "rex_GUI_AddAmountToMiniGameComplete", size = 0x5C }
 0x82306D00 = { size = 0x2E4 }
 0x82306FE8 = { size = 0x34 }
 0x82307020 = { size = 0x14 }
@@ -1943,7 +1943,7 @@
 0x824E1900 = { size = 0x1DC }
 0x824E39D0 = { size = 0x8 }
 0x824E4A38 = { size = 0x94 }
-0x824E5678 = { size = 0x14 }
+0x824E5678 = { name = "rex_CECStats_SetChapterProgress", size = 0x14 }
 0x824E5690 = { size = 0x8 }
 0x824E5698 = { size = 0x44 }
 0x824E56E0 = { size = 0x74 }
@@ -2440,7 +2440,7 @@
 0x82593C00 = { size = 0xC }
 0x82593C10 = { size = 0x8 }
 0x825947A0 = { size = 0x6C }
-0x82594BD8 = { size = 0x3C }
+0x82594BD8 = { name = "rex_CECChest_KeysNeeded", size = 0x3C }
 0x82595B08 = { size = 0x40 }
 0x82595B48 = { size = 0x174 }
 0x82595CC0 = { size = 0x160 }
@@ -2624,7 +2624,7 @@
 0x825F1CF8 = { size = 0x160 }
 0x825F1F38 = { size = 0xB4 }
 0x825F3220 = { size = 0x8C }
-0x825F32B0 = { size = 0xD8 }
+0x825F32B0 = { name = "rex_CECMorph_RemoveRandomScar", size = 0xD8 }
 0x825F3390 = { size = 0x14 }
 0x825F33A8 = { size = 0x18 }
 0x825F4D48 = { size = 0x40 }
@@ -3718,7 +3718,7 @@
 0x827FA6B0 = { size = 0xC }
 0x827FB268 = { size = 0xF8 }
 0x827FB3D0 = { size = 0xD4 }
-0x827FB4A8 = { size = 0x90 }
+0x827FB4A8 = { name = "rex_CWorldMapInfo_IncrementGargoylesKilled", size = 0x90 }
 0x82801B20 = { size = 0x40 }
 0x82801B60 = { size = 0x8 }
 0x82801B68 = { size = 0x160 }
@@ -3738,7 +3738,7 @@
 0x82810F20 = { size = 0x64 }
 0x82811290 = { size = 0x110 }
 0x828113A0 = { size = 0x130 }
-0x828114D0 = { size = 0x518 }
+0x828114D0 = { name = "rex_CECDog_UnlockTrick", size = 0x518 }
 0x828119E8 = { size = 0x14 }
 0x82811A00 = { size = 0x10 }
 0x82811A10 = { size = 0x60 }
@@ -3793,7 +3793,7 @@
 0x82812E70 = { size = 0x10 }
 0x82812E80 = { size = 0x8 }
 0x828133B0 = { size = 0x524 }
-0x82813E10 = { size = 0x288 }
+0x82813E10 = { name = "rex_CECDog_SetLeadingHero", size = 0x288 }
 0x82814098 = { size = 0x90 }
 0x82814128 = { size = 0x8 }
 0x82814130 = { size = 0x18 }
@@ -3820,14 +3820,14 @@
 0x82815280 = { size = 0x8 }
 0x82815288 = { size = 0x8 }
 0x82815290 = { size = 0x8 }
-0x828152A0 = { size = 0x164 }
+0x828152A0 = { name = "rex_CECDog_RaiseSniffingLevel", size = 0x164 }
 0x82815408 = { size = 0x8 }
-0x82815410 = { size = 0x164 }
+0x82815410 = { name = "rex_CECDog_RaiseCombatLevel", size = 0x164 }
 0x82815660 = { size = 0x1C4 }
 0x82815828 = { size = 0xE8 }
 0x82815910 = { size = 0x8 }
 0x82815918 = { size = 0x8 }
-0x82815920 = { size = 0x1F0 }
+0x82815920 = { name = "rex_CECDog_SetEntityBeingDug", size = 0x1F0 }
 0x82815B68 = { size = 0x64 }
 0x8281C3E0 = { size = 0x8 }
 0x8281C3E8 = { size = 0x18C }
@@ -3906,7 +3906,7 @@
 0x82839680 = { size = 0x8 }
 0x82839688 = { size = 0x8 }
 0x828397E0 = { size = 0x38 }
-0x82839818 = { size = 0x440 }
+0x82839818 = { name = "rex_CECDiggingSpot_OnDug", size = 0x440 }
 0x8283A7B0 = { size = 0x40 }
 0x8283A7F0 = { size = 0x8 }
 0x8283A7F8 = { size = 0x174 }
@@ -4470,7 +4470,7 @@
 0x829327E8 = { size = 0x174 }
 0x82932D80 = { size = 0x344 }
 0x829330C8 = { size = 0x1A4 }
-0x82933270 = { size = 0x284 }
+0x82933270 = { name = "rex_CECDemonDoor_Open", size = 0x284 }
 0x82933F58 = { size = 0x40 }
 0x82933F98 = { size = 0x160 }
 0x829340F8 = { size = 0x174 }
@@ -4551,7 +4551,22 @@
 0x82951AD0 = { size = 0x498 }
 0x829524A8 = { size = 0x40 }
 0x829524E8 = { size = 0x1D0 }
-0x82952A38 = { size = 0x1C }
+0x82952A38 = { name = "rex_CECPlayerDrunkenness_Drink", size = 0x1C }
+# Wave 3 mod events (Sanctuary, weapons, social, dog, jobs, guild, titles, scars, age, clothing, pub games,
+# village wealth, gargoyles): the seams' comments in mod_events_hooks.cpp / mod_events.cpp state each.
+0x82919030 = { name = "rex_CECDiveSpot_Use" }
+0x82952A78 = { name = "rex_CECPlayerDrunkenness_Vomit" }
+0x82173408 = { name = "rex_CECGuildMessages_PlayNext" }
+0x824D8568 = { name = "rex_CECStats_SetTitleRecord" }
+0x824D86D0 = { name = "rex_CECStats_AddUnlockedTitle" }
+0x825F3040 = { name = "rex_CECMorph_AddScar" }
+0x82535528 = { name = "rex_CECAge_SetAge" }
+0x823E1510 = { name = "rex_CPlayer_SetHeroStage" }
+0x824BECF8 = { name = "rex_CECAppearanceModifiers_AddAndReplaceItem" }
+0x824BF208 = { name = "rex_CECAppearanceModifiers_RemoveItem" }
+0x824C0398 = { name = "rex_CECAppearanceModifiers_SetDyeColour" }
+0x824684F8 = { name = "rex_lhPubGameManager_Settle" }
+0x82494E60 = { name = "rex_CECVillage_AdjustWealthIndex" }
 0x82952A58 = { size = 0x1C }
 0x82953840 = { size = 0x40 }
 0x82953880 = { size = 0x160 }
@@ -11775,6 +11790,11 @@
 0x825DD5E0 = { name = "rex_CECRewardGiver_GiveReward" }
 0x828727B8 = { name = "rex_CECShopkeeper_BuyPrice" }
 0x82872910 = { name = "rex_CECShopkeeper_SellPrice" }
+# Shared mod events (mod_events.cpp): the chest's Open and its open action's update, the shopkeeper's buy and sell.
+0x82593E08 = { name = "rex_CECChest_Open" }
+0x8276DC58 = { name = "rex_CAction_OpenChest_Update" }
+0x82872A68 = { name = "rex_CECShopkeeper_Buy" }
+0x82872D70 = { name = "rex_CECShopkeeper_Sell" }
 0x82873F18 = { name = "rex_CECShopkeeper_FrontPage" }
 0x828731A8 = { name = "rex_CECShopkeeper_Greet" }
 0x82789BB0 = { name = "rex_CECOpinionReaction_Copy" }

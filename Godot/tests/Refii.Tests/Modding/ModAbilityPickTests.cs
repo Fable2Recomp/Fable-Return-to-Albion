@@ -50,12 +50,12 @@ public class ModAbilityPickTests
         Engine_UiModAbilities.Ability weaving = Weaving();
         AssertThat(string.Join(',', Engine_UiModAbilities.PoolsOf(weaving))).IsEqual("3,2");
         AssertThat(Engine_UiModAbilities.DeclarationLine(weaving)).IsEqual(
-            "ability_declare SpellWeaving spell_weaving 5 8 spell_weaving.cost_like spell_weaving.ability 3,2 half SpellWeaving");
+            "ability_declare SpellWeaving spell_weaving 5 8 spell_weaving.cost_like spell_weaving.ability 3,2 half SpellWeaving -");
 
         var stamina = new Engine_UiModAbilities.Ability(
             "SoulsCombatStamina", "souls_combat", "Strength", "N", "D", 5, "souls_combat.stamina_ability", 3);
         AssertThat(Engine_UiModAbilities.DeclarationLine(stamina)).IsEqual(
-            "ability_declare SoulsCombatStamina souls_combat 5 3 - souls_combat.stamina_ability 1 none -");
+            "ability_declare SoulsCombatStamina souls_combat 5 3 - souls_combat.stamina_ability 1 none - -");
 
         var general = stamina with { Category = "Mystery" };
         AssertThat(Engine_UiModAbilities.DeclarationLine(general)).Contains(" - none -");

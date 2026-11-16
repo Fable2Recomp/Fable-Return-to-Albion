@@ -20,6 +20,7 @@
 // command in its state 4, and the game tick's loading-screen fade holds on it. Answering 1 while
 // the host builds keeps the guest in its own loading screen, the hold Fable 2's bridge makes.
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 
@@ -36,6 +37,9 @@ REX_EXTERN(__imp__rex_Engine_IsPreLoading);
 namespace {
 
 const refii::guest::Addr kPresentedGame{0x83597030u};
+
+/// The presented view's last stated horizontal FOV at 4:3, radians (block +0x30); 0 before the first.
+std::atomic<float> g_stated_fov{0.0f};
 
 uint32_t LoadGuestU32(const uint8_t* base, uint32_t address) {
   uint32_t value = 0;
@@ -74,6 +78,10 @@ uint32_t PresentedView(const uint8_t* base) {
 
 }  // namespace
 
+namespace refii::fable3::view {
+float StatedFovRadians() { return g_stated_fov.load(std::memory_order_relaxed); }
+}  // namespace refii::fable3::view
+
 REX_EXTERN(rex_View_SetRenderCamera) {
   const uint32_t view = ctx.r3.u32;
   const uint32_t block = ctx.r4.u32;
@@ -85,8 +93,9 @@ REX_EXTERN(rex_View_SetRenderCamera) {
     LoadGuestVec3(base, block + 0x00u, position);
     LoadGuestVec3(base, block + 0x10u, up);
     LoadGuestVec3(base, block + 0x20u, forward);
-    refii_bridge_camera_stated(position, up, forward, LoadGuestF32(base, block + 0x30u),
-                               base[block + 0x34u] != 0u ? 1 : 0);
+    const float fov = LoadGuestF32(base, block + 0x30u);
+    g_stated_fov.store(fov, std::memory_order_relaxed);
+    refii_bridge_camera_stated(position, up, forward, fov, base[block + 0x34u] != 0u ? 1 : 0);
   }
 
   __imp__rex_View_SetRenderCamera(ctx, base);

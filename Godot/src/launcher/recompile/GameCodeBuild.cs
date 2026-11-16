@@ -2651,6 +2651,9 @@ public static class GameCodeBuild
 			}
 		}
 
+		// What this build reuses: the units the content-addressed cache already holds, and the ones it compiles.
+		LogWrite($"compile cache: {sources.Count - missIndices.Count} of {sources.Count} units cached, {missIndices.Count} to compile");
+
 		// 2. Precompile (or load cached) generated header only when at least one PCH-eligible unit missed cache.
 		//    Units with per-unit extra flags (-fvisibility=hidden, mod -I/-D) skip -include-pch so Clang never
 		//    rejects the PCH due to macro or visibility differences.
@@ -2729,6 +2732,11 @@ public static class GameCodeBuild
 		if (!compiled.Ok)
 		{
 			return new Result(false, "Compiling the game code failed: " + compiled.Error);
+		}
+
+		if (cache.StoreFailure is { } notKept)
+		{
+			LogWrite("compile cache: units not kept for the next build: " + notKept);
 		}
 
 		// 4. Link.

@@ -1129,6 +1129,288 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
                     e.accepted ? "true" : "false");
       return;
     }
+    case REFII_EVENT_CHEST_OPENED: {
+      const auto& e = *static_cast<const ChestOpenedEvent*>(event);
+      std::snprintf(out, size, "chest=%u,opener=%u,player=%d,keys=%d,seals=%d,first=%s", H(e.chest), H(e.opener), e.player, e.keys,
+                    e.seals, e.first ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_ITEM_BOUGHT: {
+      const auto& e = *static_cast<const ItemBoughtEvent*>(event);
+      std::snprintf(out, size, "shopkeeper=%u,buyer=%u,player=%d,definition='0x%08x',price=%d,stolen=%s", H(e.shopkeeper), H(e.buyer),
+                    e.player, e.definition, e.price, e.stolen ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_ITEM_SOLD: {
+      const auto& e = *static_cast<const ItemSoldEvent*>(event);
+      std::snprintf(out, size, "shopkeeper=%u,seller=%u,player=%d,definition='0x%08x',price=%d,count=%d", H(e.shopkeeper), H(e.seller),
+                    e.player, e.definition, e.price, e.count);
+      return;
+    }
+    case REFII_EVENT_SHOP_PRICE: {
+      const auto& e = *static_cast<const ShopPriceEvent*>(event);
+      std::snprintf(out, size, "shopkeeper=%u,customer=%u,player=%d,definition='0x%08x',kind='%s',price=%d", H(e.shopkeeper),
+                    H(e.customer), e.player, e.definition, e.kind != nullptr ? e.kind : "", e.price);
+      return;
+    }
+    case REFII_EVENT_DIG_SPOT_DUG: {
+      const auto& e = *static_cast<const DigSpotDugEvent*>(event);
+      std::snprintf(out, size, "spot=%u,digger=%u,player=%d,by_dog=%s,criminal=%s", H(e.spot), H(e.digger), e.player,
+                    e.by_dog ? "true" : "false", e.criminal ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_DEMON_DOOR: {
+      const auto& e = *static_cast<const DemonDoorEvent*>(event);
+      std::snprintf(out, size, "door=%u,state='%s',player=%d", H(e.door), e.state != nullptr ? e.state : "", e.player);
+      return;
+    }
+    case REFII_EVENT_DRINK: {
+      const auto& e = *static_cast<const DrinkEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,amount=%.9g,drinks=%d", H(e.hero), e.player, Fin(e.amount), e.drinks);
+      return;
+    }
+    case REFII_EVENT_SANCTUARY: {
+      const auto& e = *static_cast<const SanctuaryEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,entered=%s,reason=%d", H(e.hero), e.player, e.entered ? "true" : "false",
+                    e.reason);
+      return;
+    }
+    case REFII_EVENT_SANCTUARY_REQUEST: {
+      const auto& e = *static_cast<const SanctuaryRequestEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,reason=%d,to_sanctuary=%s", H(e.hero), e.player, e.reason,
+                    e.to_sanctuary ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_WEAPON_LEVEL_UP: {
+      const auto& e = *static_cast<const WeaponLevelUpEvent*>(event);
+      std::snprintf(out, size, "weapon=%u,owner=%u,player=%d,level_from=%d,level=%d,cause='%s'", H(e.weapon), H(e.owner), e.player,
+                    e.level_from, e.level, e.cause != nullptr ? e.cause : "");
+      return;
+    }
+    case REFII_EVENT_WEAPON_AUGMENT_UNLOCKED: {
+      const auto& e = *static_cast<const WeaponAugmentUnlockedEvent*>(event);
+      std::snprintf(out, size, "weapon=%u,owner=%u,player=%d,augment='0x%08x',source='%s',level=%d", H(e.weapon), H(e.owner), e.player,
+                    e.augment, e.source != nullptr ? e.source : "", e.level);
+      return;
+    }
+    case REFII_EVENT_WEAPON_UPGRADE_READY: {
+      const auto& e = *static_cast<const WeaponUpgradeReadyEvent*>(event);
+      std::snprintf(out, size, "weapon=%u,owner=%u,player=%d,added=%d,pending=%d,level=%d", H(e.weapon), H(e.owner), e.player, e.added,
+                    e.pending, e.level);
+      return;
+    }
+    case REFII_EVENT_HAND_HOLDING: {
+      const auto& e = *static_cast<const HandHoldingEvent*>(event);
+      std::snprintf(out, size, "villager=%u,leader=%u,player=%d,holding=%s,dragged=%s,forced=%s", H(e.villager), H(e.leader), e.player,
+                    e.holding ? "true" : "false", e.dragged ? "true" : "false", e.forced ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_HAND_HOLDING_REQUEST: {
+      const auto& e = *static_cast<const HandHoldingRequestEvent*>(event);
+      std::snprintf(out, size, "villager=%u,leader=%u,player=%d,forced=%s", H(e.villager), H(e.leader), e.player,
+                    e.forced ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_INTERACTION_STARTED: {
+      const auto& e = *static_cast<const InteractionStartedEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,target=%u,interaction='0x%08x',scripted=%s", H(e.hero), e.player, H(e.target),
+                    e.interaction, e.scripted ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_INTERACTION_RESULT: {
+      const auto& e = *static_cast<const InteractionResultEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,target=%u,kind=%d,success=%s", H(e.hero), e.player, H(e.target), e.kind,
+                    e.success ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_INTERACTION_MODE: {
+      const auto& e = *static_cast<const InteractionModeEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,target=%u,mode=%d,previous=%d,open=%s", H(e.hero), e.player, H(e.target), e.mode,
+                    e.previous, e.open ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_RELATIONSHIP_STAGE: {
+      const auto& e = *static_cast<const RelationshipStageEvent*>(event);
+      std::snprintf(out, size, "villager=%u,hero=%u,player=%d,stage=%d,previous=%d,cause='%s'", H(e.villager), H(e.hero), e.player,
+                    e.stage, e.previous, e.cause != nullptr ? e.cause : "");
+      return;
+    }
+    case REFII_EVENT_DOG_DIG: {
+      const auto& e = *static_cast<const DogDigEvent*>(event);
+      std::snprintf(out, size, "dog=%u,spot=%u,player=%d,first=%s", H(e.dog), H(e.spot), e.player, e.first ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_DOG_LEADING: {
+      const auto& e = *static_cast<const DogLeadingEvent*>(event);
+      std::snprintf(out, size, "dog=%u,player=%d,target=%u,quest=%s", H(e.dog), e.player, H(e.target), e.quest ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_DOG_TRICK_LEARNED: {
+      const auto& e = *static_cast<const DogTrickLearnedEvent*>(event);
+      std::snprintf(out, size, "dog=%u,player=%d,trick='0x%08x',shown=%s,tricks=%d", H(e.dog), e.player, e.trick,
+                    e.shown ? "true" : "false", e.tricks);
+      return;
+    }
+    case REFII_EVENT_DOG_LEARNED: {
+      const auto& e = *static_cast<const DogLearnedEvent*>(event);
+      std::snprintf(out, size, "dog=%u,player=%d,track=%d,level=%d,up=%s,xp=%d", H(e.dog), e.player, e.track, e.level,
+                    e.up ? "true" : "false", e.xp);
+      return;
+    }
+    case REFII_EVENT_DIVE_SPOT_USED: {
+      const auto& e = *static_cast<const DiveSpotUsedEvent*>(event);
+      std::snprintf(out, size, "spot=%u,diver=%u,player=%d", H(e.spot), H(e.diver), e.player);
+      return;
+    }
+    case REFII_EVENT_VOMIT: {
+      const auto& e = *static_cast<const VomitEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,vomits=%d", H(e.hero), e.player, e.vomits);
+      return;
+    }
+    case REFII_EVENT_JOB_STARTED: {
+      const auto& e = *static_cast<const JobStartedEvent*>(event);
+      char job[128];
+      LuaString(e.job, job, sizeof(job));
+      std::snprintf(out, size, "sign=%u,hero=%u,player=%d,job='%s'", H(e.sign), H(e.hero), e.player, job);
+      return;
+    }
+    case REFII_EVENT_JOB_LEVEL: {
+      const auto& e = *static_cast<const JobLevelEvent*>(event);
+      char job[128];
+      LuaString(e.job, job, sizeof(job));
+      std::snprintf(out, size, "hero=%u,player=%d,job='%s',level=%d,previous=%d", H(e.hero), e.player, job, e.level, e.previous);
+      return;
+    }
+    case REFII_EVENT_JOB_EARNINGS: {
+      const auto& e = *static_cast<const JobEarningsEvent*>(event);
+      char job[128];
+      LuaString(e.job, job, sizeof(job));
+      std::snprintf(out, size, "hero=%u,player=%d,job='%s',total=%d,earned=%d", H(e.hero), e.player, job, e.total, e.earned);
+      return;
+    }
+    case REFII_EVENT_JOB_WORKED: {
+      const auto& e = *static_cast<const JobWorkedEvent*>(event);
+      char job[128];
+      LuaString(e.job, job, sizeof(job));
+      std::snprintf(out, size, "hero=%u,player=%d,job='%s',times=%d,level=%d", H(e.hero), e.player, job, e.times, e.level);
+      return;
+    }
+    case REFII_EVENT_JOB_MULTIPLIER: {
+      const auto& e = *static_cast<const JobMultiplierEvent*>(event);
+      std::snprintf(out, size, "level=%d,on=%s,player=%d", e.level, e.on ? "true" : "false", e.player);
+      return;
+    }
+    case REFII_EVENT_JOB_SUMMARY: {
+      const auto& e = *static_cast<const JobSummaryEvent*>(event);
+      char text[128];
+      char subtitle[128];
+      LuaString(e.text, text, sizeof(text));
+      LuaString(e.subtitle, subtitle, sizeof(subtitle));
+      std::snprintf(out, size, "part='%s',text='%s',subtitle='%s',amount=%d", e.part != nullptr ? e.part : "", text, subtitle, e.amount);
+      return;
+    }
+    case REFII_EVENT_GUILD_MESSAGE: {
+      const auto& e = *static_cast<const GuildMessageEvent*>(event);
+      char message[128];
+      char narrator[128];
+      LuaString(e.message, message, sizeof(message));
+      LuaString(e.narrator, narrator, sizeof(narrator));
+      std::snprintf(out, size, "message='%s',narrator='%s',player=%d", message, narrator, e.player);
+      return;
+    }
+    case REFII_EVENT_TITLE_CHANGED: {
+      const auto& e = *static_cast<const TitleChangedEvent*>(event);
+      char title[128];
+      LuaString(e.title, title, sizeof(title));
+      std::snprintf(out, size, "hero=%u,player=%d,title='%s'", H(e.hero), e.player, title);
+      return;
+    }
+    case REFII_EVENT_TITLE_UNLOCKED: {
+      const auto& e = *static_cast<const TitleUnlockedEvent*>(event);
+      char title[128];
+      LuaString(e.title, title, sizeof(title));
+      std::snprintf(out, size, "hero=%u,player=%d,title='%s',titles=%d", H(e.hero), e.player, title, e.titles);
+      return;
+    }
+    case REFII_EVENT_CHAPTER_PROGRESS: {
+      const auto& e = *static_cast<const ChapterProgressEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,progress=%.9g,previous=%.9g", H(e.hero), e.player, Fin(e.progress),
+                    Fin(e.previous));
+      return;
+    }
+    case REFII_EVENT_SCAR_ADDED: {
+      const auto& e = *static_cast<const ScarAddedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,area='0x%08x',scars=%d", H(e.entity), e.player, e.area, e.scars);
+      return;
+    }
+    case REFII_EVENT_SCAR_REMOVED: {
+      const auto& e = *static_cast<const ScarRemovedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,scars=%d", H(e.entity), e.player, e.scars);
+      return;
+    }
+    case REFII_EVENT_AGE_CHANGED: {
+      const auto& e = *static_cast<const AgeChangedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,age=%.9g,previous=%.9g,limit=%.9g", H(e.entity), e.player, Fin(e.age),
+                    Fin(e.previous), Fin(e.limit));
+      return;
+    }
+    case REFII_EVENT_HERO_STAGE: {
+      const auto& e = *static_cast<const HeroStageEvent*>(event);
+      std::snprintf(out, size, "hero=%u,player=%d,stage=%d,previous=%d", H(e.hero), e.player, e.stage, e.previous);
+      return;
+    }
+    case REFII_EVENT_CLOTHING_WORN: {
+      const auto& e = *static_cast<const ClothingWornEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,definition='0x%08x',category=%d", H(e.entity), e.player, e.definition,
+                    e.category);
+      return;
+    }
+    case REFII_EVENT_CLOTHING_REMOVED: {
+      const auto& e = *static_cast<const ClothingRemovedEvent*>(event);
+      std::snprintf(out, size, "entity=%u,player=%d,definition='0x%08x',category=%d,count=%d", H(e.entity), e.player,
+                    e.definition, e.category, e.count);
+      return;
+    }
+    case REFII_EVENT_CLOTHING_DYED: {
+      const auto& e = *static_cast<const ClothingDyedEvent*>(event);
+      std::snprintf(out, size,
+                    "entity=%u,player=%d,definition='0x%08x',dye='0x%08x',red=%d,green=%d,blue=%d,brightness=%.9g,secondary=%s",
+                    H(e.entity), e.player, e.definition, e.dye, e.red, e.green, e.blue, Fin(e.brightness),
+                    e.secondary ? "true" : "false");
+      return;
+    }
+    case REFII_EVENT_PUB_GAME_STARTED: {
+      const auto& e = *static_cast<const PubGameStartedEvent*>(event);
+      char game[64];
+      char variation[64];
+      LuaString(e.game, game, sizeof(game));
+      LuaString(e.variation, variation, sizeof(variation));
+      std::snprintf(out, size, "game='%s',variation='%s',hero=%u,player=%d", game, variation, H(e.hero), e.player);
+      return;
+    }
+    case REFII_EVENT_PUB_GAME_FINISHED: {
+      const auto& e = *static_cast<const PubGameFinishedEvent*>(event);
+      char game[64];
+      char variation[64];
+      LuaString(e.game, game, sizeof(game));
+      LuaString(e.variation, variation, sizeof(variation));
+      std::snprintf(out, size, "game='%s',variation='%s',hero=%u,player=%d,gold=%d,result=%d", game, variation, H(e.hero),
+                    e.player, e.gold, e.result);
+      return;
+    }
+    case REFII_EVENT_VILLAGE_WEALTH: {
+      const auto& e = *static_cast<const VillageWealthEvent*>(event);
+      std::snprintf(out, size, "village=%u,delta=%.9g,scaled=%s,wealth=%.9g,min=%.9g,max=%.9g", H(e.village), Fin(e.delta),
+                    e.scaled ? "true" : "false", Fin(e.wealth), Fin(e.min), Fin(e.max));
+      return;
+    }
+    case REFII_EVENT_GARGOYLE_DESTROYED: {
+      const auto& e = *static_cast<const GargoyleDestroyedEvent*>(event);
+      char level[128];
+      LuaString(e.level, level, sizeof(level));
+      std::snprintf(out, size, "level='%s',player=%d", level, e.player);
+      return;
+    }
     case REFII_EVENT_MORPH_CHANGED: {
       const auto& e = *static_cast<const MorphChangedEvent*>(event);
       std::snprintf(out, size, "player=%d,morph='0x%08x',weight=%.9g,hero=%u", e.player, e.morph, static_cast<double>(e.weight),
@@ -1182,6 +1464,14 @@ bool HasWritableFields(int32_t kind) {
     case REFII_EVENT_PURITY:
     case REFII_EVENT_RELATION:
     case REFII_EVENT_RENOWN:
+    case REFII_EVENT_SHOP_PRICE:
+    case REFII_EVENT_DRINK:
+    case REFII_EVENT_JOB_LEVEL:
+    case REFII_EVENT_WEAPON_LEVEL_UP:
+    case REFII_EVENT_INTERACTION_RESULT:
+    case REFII_EVENT_AGE_CHANGED:
+    case REFII_EVENT_CLOTHING_DYED:
+    case REFII_EVENT_VILLAGE_WEALTH:
     case REFII_EVENT_SLEEP_CHOSEN:
     case REFII_EVENT_SLOW_TIME:
     case REFII_EVENT_SPELL_CHARGE_LEVEL:
@@ -1604,7 +1894,16 @@ constexpr std::pair<const char*, int32_t> kBusNames[] = {
     {"attack_mode_changed", 105}, {"item_removed", 106}, {"expression_wheel", 107}, {"spell_ended", 108},
     {"spell_charge_ended", 109}, {"melee_swing_ended", 110}, {"action_move_interrupt", 111},
     {"camera_changed", 112}, {"vortex_caught", 113}, {"appearance_changed", 114}, {"morph_changed", 115},
-    {"guild_seals", 116}, {"treasury", 117}, {"kingdom_decision", 118},
+    {"guild_seals", 116}, {"treasury", 117}, {"kingdom_decision", 118}, {"chest_opened", 119}, {"item_bought", 120},
+    {"item_sold", 121}, {"shop_price", 122}, {"dig_spot_dug", 123}, {"demon_door", 124}, {"drink", 125},
+    {"sanctuary", 126}, {"sanctuary_request", 127}, {"weapon_level_up", 128}, {"weapon_augment_unlocked", 129}, {"weapon_upgrade_ready", 130},
+    {"hand_holding", 131}, {"hand_holding_request", 132}, {"interaction_started", 133}, {"interaction_result", 134}, {"interaction_mode", 135},
+    {"relationship_stage", 136}, {"dog_dig", 137}, {"dog_leading", 138}, {"dog_trick_learned", 139}, {"dog_learned", 140},
+    {"dive_spot_used", 141}, {"vomit", 142}, {"job_started", 143}, {"job_level", 144}, {"job_earnings", 145},
+    {"job_worked", 146}, {"job_multiplier", 147}, {"job_summary", 148}, {"guild_message", 149}, {"title_changed", 150},
+    {"title_unlocked", 151}, {"chapter_progress", 152}, {"scar_added", 153}, {"scar_removed", 154}, {"age_changed", 155},
+    {"hero_stage", 156}, {"clothing_worn", 157}, {"clothing_removed", 158}, {"clothing_dyed", 159}, {"pub_game_started", 160},
+    {"pub_game_finished", 161}, {"village_wealth", 162}, {"gargoyle_destroyed", 163},
 };
 
 /// The native text bus, after the typed subscribers and before Lua: a hard mod's handler by event
@@ -1791,6 +2090,72 @@ bool WriteEventField(int32_t kind, void* event, const char* field, double value)
         return true;
       }
       return false;
+    case REFII_EVENT_SHOP_PRICE:
+      if (is("price")) {
+        const int32_t price = ClampInt(value);
+        static_cast<ShopPriceEvent*>(event)->price = price < 0 ? 0 : price;
+        return true;
+      }
+      return false;
+    case REFII_EVENT_DRINK:
+      if (is("amount")) {
+        static_cast<DrinkEvent*>(event)->amount = static_cast<float>(value);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_JOB_LEVEL:
+      if (is("level")) {
+        const int32_t level = ClampInt(value);
+        static_cast<JobLevelEvent*>(event)->level = level < 0 ? 0 : level;
+        return true;
+      }
+      return false;
+    case REFII_EVENT_WEAPON_LEVEL_UP:
+      if (is("level")) {
+        const int32_t level = ClampInt(value);
+        static_cast<WeaponLevelUpEvent*>(event)->level = level < 1 ? 1 : level;
+        return true;
+      }
+      return false;
+    case REFII_EVENT_INTERACTION_RESULT:
+      if (is("success")) {
+        static_cast<InteractionResultEvent*>(event)->success = value != 0.0;
+        return true;
+      }
+      return false;
+    case REFII_EVENT_AGE_CHANGED:
+      if (is("age")) {
+        static_cast<AgeChangedEvent*>(event)->age = static_cast<float>(value);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_VILLAGE_WEALTH:
+      if (is("delta")) {
+        static_cast<VillageWealthEvent*>(event)->delta = static_cast<float>(value);
+        return true;
+      }
+      return false;
+    case REFII_EVENT_CLOTHING_DYED: {
+      auto* e = static_cast<ClothingDyedEvent*>(event);
+      const int32_t byte = ClampInt(value) < 0 ? 0 : ClampInt(value) > 255 ? 255 : ClampInt(value);
+      if (is("red")) {
+        e->red = byte;
+        return true;
+      }
+      if (is("green")) {
+        e->green = byte;
+        return true;
+      }
+      if (is("blue")) {
+        e->blue = byte;
+        return true;
+      }
+      if (is("brightness")) {
+        e->brightness = static_cast<float>(value);
+        return true;
+      }
+      return false;
+    }
     case REFII_EVENT_OPINION_MODIFIED:
       if (is("delta")) {
         static_cast<OpinionModifiedEvent*>(event)->delta = static_cast<float>(value);
@@ -5623,11 +5988,35 @@ REX_EXTERN(rex_CECRewardGiver_GiveReward) {
 // the shopkeeper at +4; `sub_828731A8` greeting: r4 it). The customer is not passed; in local co-op
 // player two is the customer while their menu is open. TU1 0x828727B8 / 0x82872910 / 0x82873F18 /
 // 0x828731A8.
+// shop_price. The shopkeeper's BuyPrice / SellPrice (r3 the shopkeeper component, the shopkeeper at +4;
+// r4 the item holder, the item at *r4, its record at item+4; r3 back the price): the buy and the sell call
+// these themselves, so a written price is what is shown and what is charged. The customer is the hero whose
+// shop menu is open: player two's while their menu is open, else player one's.
+void RaiseShopPrice(PPCContext& ctx, uint8_t* base, const PPCContext& entry, const char* kind) {
+  if (!AnySubscriber(REFII_EVENT_SHOP_PRICE)) {
+    return;
+  }
+  const uint32_t item = entry.r4.u32 != 0u ? Load32(base, entry.r4.u32) : 0u;
+  ShopPriceEvent e{};
+  PPCContext e_ctx = entry;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.shopkeeper = ComponentOwner(base, entry.r3.u32);
+  e.customer = refii_mod_player_hero(base, PlayerTwoShops(base) ? 2 : 1);
+  e.player = PlayerOf(base, e.customer);
+  e.definition = item != 0u ? Load32(base, item + 4u) : 0u;
+  e.kind = kind;
+  e.price = static_cast<int32_t>(ctx.r3.u32);
+  Dispatch(e);
+  ctx.r3.s64 = e.price < 0 ? 0 : e.price;
+}
+
 REX_EXTERN(rex_CECShopkeeper_BuyPrice) {
   PPCContext entry = ctx;
   OpinionHeroScope scope(entry, base, PlayerTwoShops(base) ? OpinionOf(base, ComponentOwner(base, ctx.r3.u32)) : 0u,
                          refii_mod_player_hero(base, 2));
   __imp__rex_CECShopkeeper_BuyPrice(ctx, base);
+  RaiseShopPrice(ctx, base, entry, "buy");
 }
 
 REX_EXTERN(rex_CECShopkeeper_SellPrice) {
@@ -5635,6 +6024,7 @@ REX_EXTERN(rex_CECShopkeeper_SellPrice) {
   OpinionHeroScope scope(entry, base, PlayerTwoShops(base) ? OpinionOf(base, ComponentOwner(base, ctx.r3.u32)) : 0u,
                          refii_mod_player_hero(base, 2));
   __imp__rex_CECShopkeeper_SellPrice(ctx, base);
+  RaiseShopPrice(ctx, base, entry, "sell");
 }
 
 REX_EXTERN(rex_CECShopkeeper_FrontPage) {
@@ -8696,4 +9086,1017 @@ REX_EXTERN(rex_CActionSpellCast_Start) {
   REX_FUNC_PROLOGUE();
   NoteCastStart(ctx, base, ctx.r3.u32, refii::cast_pairing::kMessageSpellCast);
   __imp__rex_CActionSpellCast_Start(ctx, base);
+}
+
+
+// ---------------------------------------------------------------------------------------------
+// The shared events both titles raise: chests, shops, digging spots, demon doors and drinking.
+
+PPC_EXTERN_FUNC(__imp__rex_CECChest_Open);
+PPC_EXTERN_FUNC(__imp__rex_CAction_OpenChest_Update);
+PPC_EXTERN_FUNC(rex_CECChest_KeysNeeded);
+PPC_EXTERN_FUNC(__imp__rex_CECShopkeeper_Buy);
+PPC_EXTERN_FUNC(__imp__rex_CECShopkeeper_Sell);
+PPC_EXTERN_FUNC(__imp__rex_CECDiggingSpot_OnDug);
+PPC_EXTERN_FUNC(__imp__rex_CECDemonDoor_Open);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerDrunkenness_Drink);
+
+namespace {
+
+/// The opener of the chest an open action is opening: the action's owner (its weak reference, the
+/// holder at +8), while its update runs (it calls the chest's Open: NAction::CAction_OpenChest_vf19).
+uint32_t g_chest_opener = 0u;
+
+}  // namespace
+
+// The open action's update (r3 the action): it finds the target's chest component and opens it.
+REX_EXTERN(rex_CAction_OpenChest_Update) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t outer = g_chest_opener;
+  const uint32_t holder = ctx.r3.u32 != 0u ? Load32(base, ctx.r3.u32 + 8u) : 0u;
+  g_chest_opener = holder != 0u ? Load32(base, holder) : 0u;
+  __imp__rex_CAction_OpenChest_Update(ctx, base);
+  g_chest_opener = outer;
+}
+
+// chest_opened. The chest's Open (r3 the chest component 40, the chest at +4), before it; the keys it needs
+// from Chest.GetNumberOfSilverKeysNeeded (r3 the component). TU1 0x82593E08 / disc 0x8253D358.
+REX_EXTERN(rex_CECChest_Open) {
+  REX_FUNC_PROLOGUE();
+  if (AnySubscriber(REFII_EVENT_CHEST_OPENED) && ctx.r3.u32 != 0u) {
+    ChestOpenedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.chest = Owner(base, ctx.r3.u32);
+    e.opener = g_chest_opener;
+    e.player = PlayerOf(base, e.opener);
+    PPCContext work = refii::mods::Frame(ctx);
+    work.r3.u32 = ctx.r3.u32;
+    rex_CECChest_KeysNeeded(work, base);
+    e.keys = static_cast<int32_t>(work.r3.u32);
+    Dispatch(e);
+  }
+  __imp__rex_CECChest_Open(ctx, base);
+}
+
+// item_bought. The shopkeeper's buy (r3 the shopkeeper component; r4 the item holder; r5 out; r6 the buyer):
+// it prices the item (BuyPrice), takes the gold and moves the item. Reported before it.
+// TU1 0x82872A68 / disc 0x827AF850.
+REX_EXTERN(rex_CECShopkeeper_Buy) {
+  REX_FUNC_PROLOGUE();
+  if (AnySubscriber(REFII_EVENT_ITEM_BOUGHT) && ctx.r4.u32 != 0u) {
+    ItemBoughtEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.shopkeeper = ComponentOwner(base, ctx.r3.u32);
+    e.buyer = ctx.r6.u32;
+    e.player = PlayerOf(base, e.buyer);
+    const uint32_t item = Load32(base, ctx.r4.u32);
+    e.definition = item != 0u ? Load32(base, item + 4u) : 0u;
+    PPCContext work = refii::mods::Frame(ctx);
+    work.r3.u32 = ctx.r3.u32;
+    work.r4.u32 = ctx.r4.u32;
+    __imp__rex_CECShopkeeper_BuyPrice(work, base);
+    e.price = static_cast<int32_t>(work.r3.u32);
+    Dispatch(e);
+  }
+  __imp__rex_CECShopkeeper_Buy(ctx, base);
+}
+
+// item_sold. The shopkeeper's sell (r3 the shopkeeper component; r4 the item holder; r5 the seller): it pays
+// SellPrice and takes the item. Reported before it. TU1 0x82872D70 / disc 0x827AFB58.
+REX_EXTERN(rex_CECShopkeeper_Sell) {
+  REX_FUNC_PROLOGUE();
+  if (AnySubscriber(REFII_EVENT_ITEM_SOLD) && ctx.r4.u32 != 0u) {
+    ItemSoldEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.shopkeeper = ComponentOwner(base, ctx.r3.u32);
+    e.seller = ctx.r5.u32;
+    e.player = PlayerOf(base, e.seller);
+    const uint32_t item = Load32(base, ctx.r4.u32);
+    e.definition = item != 0u ? Load32(base, item + 4u) : 0u;
+    PPCContext work = refii::mods::Frame(ctx);
+    work.r3.u32 = ctx.r3.u32;
+    work.r4.u32 = ctx.r4.u32;
+    __imp__rex_CECShopkeeper_SellPrice(work, base);
+    e.price = static_cast<int32_t>(work.r3.u32);
+    e.count = 1;
+    Dispatch(e);
+  }
+  __imp__rex_CECShopkeeper_Sell(ctx, base);
+}
+
+// dig_spot_dug. DiggingSpot.OnDug (r3 the spot's component, the spot at +4; r4 the digger): +16 dug by a dog
+// (HasBeenDugByDog), +19 a crime to dig (IsCriminalToDig, `return *(a1+19)`), read before. After it.
+// TU1 0x82839818 / disc 0x827E7C88.
+REX_EXTERN(rex_CECDiggingSpot_OnDug) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t digger = ctx.r4.u32;
+  const bool by_dog = component != 0u && Load8(base, component + 16u) != 0u;
+  const bool criminal = component != 0u && Load8(base, component + 19u) != 0u;
+  __imp__rex_CECDiggingSpot_OnDug(ctx, base);
+  if (component != 0u && AnySubscriber(REFII_EVENT_DIG_SPOT_DUG)) {
+    DigSpotDugEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.spot = Owner(base, component);
+    e.digger = digger;
+    e.player = PlayerOf(base, digger);
+    e.by_dog = by_dog;
+    e.criminal = criminal;
+    Dispatch(e);
+  }
+}
+
+// demon_door. DemonDoor.Open (r3 the door component, the door at +4), before it. TU1 0x82933270 / disc
+// 0x829607E8.
+REX_EXTERN(rex_CECDemonDoor_Open) {
+  REX_FUNC_PROLOGUE();
+  if (ctx.r3.u32 != 0u && AnySubscriber(REFII_EVENT_DEMON_DOOR)) {
+    DemonDoorEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.door = Owner(base, ctx.r3.u32);
+    e.state = "opened";
+    e.player = 0;
+    Dispatch(e);
+  }
+  __imp__rex_CECDemonDoor_Open(ctx, base);
+}
+
+// drink. PlayerDrunkenness.Drink (r3 the component, the hero at +4; f1 the amount: `lfs f0,0x10(r3); fadds;
+// stfs` and +0x1C counted). Decided before it: a cancel skips it, a written amount replaces f1.
+// TU1 0x82952A38 / disc 0x82941128.
+REX_EXTERN(rex_CECPlayerDrunkenness_Drink) {
+  REX_FUNC_PROLOGUE();
+  if (ctx.r3.u32 != 0u && AnySubscriber(REFII_EVENT_DRINK)) {
+    DrinkEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = Owner(base, ctx.r3.u32);
+    e.player = PlayerOf(base, e.hero);
+    e.amount = static_cast<float>(ctx.f1.f64);
+    e.drinks = static_cast<int32_t>(Load32(base, ctx.r3.u32 + 0x1Cu));
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.f1.f64 = e.amount;
+  }
+  __imp__rex_CECPlayerDrunkenness_Drink(ctx, base);
+}
+
+// The dog, the dive spots, vomiting, the job HUD and the guild voice (wave 3; Fable 3 raises the shared
+// ones from Fable3/src/hooks/src/mod_events_hooks.cpp).
+
+PPC_EXTERN_FUNC(__imp__rex_CECDog_SetEntityBeingDug);
+PPC_EXTERN_FUNC(__imp__rex_CECDog_SetLeadingHero);
+PPC_EXTERN_FUNC(__imp__rex_CECDog_UnlockTrick);
+PPC_EXTERN_FUNC(__imp__rex_CECDog_RaiseSniffingLevel);
+PPC_EXTERN_FUNC(__imp__rex_CECDog_RaiseCombatLevel);
+PPC_EXTERN_FUNC(__imp__rex_CECDiveSpot_Use);
+PPC_EXTERN_FUNC(__imp__rex_CECPlayerDrunkenness_Vomit);
+PPC_EXTERN_FUNC(__imp__rex_GUI_SetJobMultiplierLevel);
+PPC_EXTERN_FUNC(__imp__rex_GUI_TurnJobMultiplierOff);
+PPC_EXTERN_FUNC(__imp__rex_GUI_TurnOnMiniGameComplete);
+PPC_EXTERN_FUNC(__imp__rex_GUI_AddAmountToMiniGameComplete);
+PPC_EXTERN_FUNC(__imp__rex_CECGuildMessages_PlayNext);
+
+namespace {
+
+/// DiggingSpot: the dig setter's own lookup of it (`cmpwi r7,0x5F` TU1 0x82815A48 / disc 0x8278BA20).
+constexpr uint32_t kDiggingSpotComponent95 = 95u;
+
+/// Whose dog: its master, the dog component's weak reference at +300 (Dog.GetMaster sub_82174410
+/// `addi r3,r3,0x12C`, disc sub_82174238), else the players' dog records (an online joiner's replica is
+/// never bound), as dog_trick does.
+int32_t DogPlayer(const PPCContext& ctx, uint8_t* base, uint32_t component) {
+  const uint32_t dog = Owner(base, component);
+  int32_t player = component != 0u ? PlayerOf(base, Deref(ctx, base, component + 300u)) : 0;
+  if (player == 0 && dog != 0u) {
+    player = dog == RefiiCoopPlayerDog(base, 1) ? 1 : (dog == RefiiCoopPlayerDog(base, 2) ? 2 : 0);
+  }
+  return player;
+}
+
+/// One of the dog's two training levels (Dog.RaiseSniffingLevelTo +0xB8, RaiseCombatLevelTo +0xBC):
+/// each raises only (`lwz r11,off(r31); cmpw r4,r11; ble`; `stw r4,off(r31)`), then plays DogLearningFX
+/// and the HUD's GUI_DOG_HUNTER / GUI_DOG_FIGHTER message.
+void RaiseDogLearned(PPCContext& ctx, uint8_t* base, uint32_t component, int32_t track, int32_t before, int32_t after) {
+  if (after == before || component == 0u || !AnySubscriber(REFII_EVENT_DOG_LEARNED)) {
+    return;
+  }
+  DogLearnedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.dog = Owner(base, component);
+  e.player = DogPlayer(ctx, base, component);
+  e.track = track;
+  e.level = after;
+  e.up = after > before;
+  e.xp = 0;
+  Dispatch(e);
+}
+
+void RaiseJobMultiplier(PPCContext& ctx, uint8_t* base, int32_t level, bool on) {
+  if (!AnySubscriber(REFII_EVENT_JOB_MULTIPLIER)) {
+    return;
+  }
+  JobMultiplierEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.level = level;
+  e.on = on;
+  e.player = 0;
+  Dispatch(e);
+}
+
+}  // namespace
+
+// dog_dig. Dog.SetEntityBeingDug (r3 the dog component, `mr r31,r3` TU1 0x82815944 / disc 0x8278B91C;
+// r4 the entity it digs, taken by the smart-pointer constructor as it came in, `bl` 0x82815950 /
+// 0x8278B928): it keeps the target (+0x174) and, when the target is live and has a DiggingSpot (95),
+// marks it dug by a dog (`stb r11,0x10(r31)` 0x82815AF4 / 0x8278BACC: HasBeenDugByDog's +16). After it.
+// TU1 0x82815920 / disc 0x8278B8F8.
+REX_EXTERN(rex_CECDog_SetEntityBeingDug) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t target = ctx.r4.u32;
+  if (component == 0u || target == 0u || !AnySubscriber(REFII_EVENT_DOG_DIG)) {
+    __imp__rex_CECDog_SetEntityBeingDug(ctx, base);
+    return;
+  }
+  const uint32_t spot = refii_mod_component(base, target, kDiggingSpotComponent95);
+  const bool first = spot != 0u && Load8(base, spot + 0x10u) == 0u;
+  __imp__rex_CECDog_SetEntityBeingDug(ctx, base);
+  DogDigEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.dog = Owner(base, component);
+  e.spot = target;
+  e.player = DogPlayer(ctx, base, component);
+  e.first = first;
+  Dispatch(e);
+}
+
+// dog_leading. Dog.SetIsInLeadingHeroBehaviour (r3 the dog component, `mr r31,r3` TU1 0x82813E1C / disc
+// 0x82789DFC; r4 quest, `clrlwi r10,r4,24` 0x82813E24 / 0x82789E04): it sets the leading byte +0x1E
+// (`stb r9,0x1E(r31)` 0x82813E30 / 0x82789E10) and tells the HUD what the dog found. Not a quest: the
+// find is the smart pointer at +0x154 while +0xD4 is negative (`lwz r11,0xD4(r31)` 0x82813E40 /
+// 0x82789E20; `addi r3,r31,0x154` 0x82813E54 / 0x82789E34). After it. TU1 0x82813E10 / disc 0x82789DF0.
+REX_EXTERN(rex_CECDog_SetLeadingHero) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const bool quest = (ctx.r4.u32 & 0xFFu) != 0u;
+  __imp__rex_CECDog_SetLeadingHero(ctx, base);
+  if (component == 0u || !AnySubscriber(REFII_EVENT_DOG_LEADING)) {
+    return;
+  }
+  DogLeadingEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.dog = Owner(base, component);
+  e.player = DogPlayer(ctx, base, component);
+  e.target = !quest && static_cast<int32_t>(Load32(base, component + 0xD4u)) < 0 ? Deref(ctx, base, component + 0x154u) : 0u;
+  e.quest = quest;
+  Dispatch(e);
+}
+
+// dog_trick_learned. Dog.UnlockTrickIfNecessary (r3 the dog component, `mr r29,r3` TU1 0x828114E4 / disc
+// 0x827874AC; r4 the {hash, record} pair, `mr r31,r4` 0x828114E0 / 0x827874A8): for an
+// expression-category-7 record whose hash (`lwz r9,0(r31)` 0x82811528 / 0x827874F0) is not on the
+// unlocked list +0x2E4..+0x2E8 (`lwz r11,0x2E4(r29); lwz r10,0x2E8(r29)` 0x82811518/1C / 0x827874E0/E4),
+// it appends the pair (`bl` 0x82811560 / 0x82787528) and always shows DogTrickTutorial and DogLearningFX.
+// After it, when the list grew. TU1 0x828114D0 / disc 0x82787498.
+REX_EXTERN(rex_CECDog_UnlockTrick) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t pair = ctx.r4.u32;
+  if (component == 0u || pair == 0u || !AnySubscriber(REFII_EVENT_DOG_TRICK_LEARNED)) {
+    __imp__rex_CECDog_UnlockTrick(ctx, base);
+    return;
+  }
+  const uint32_t trick = Load32(base, pair);
+  const uint32_t before = (Load32(base, component + 0x2E8u) - Load32(base, component + 0x2E4u)) / 8u;
+  __imp__rex_CECDog_UnlockTrick(ctx, base);
+  const uint32_t after = (Load32(base, component + 0x2E8u) - Load32(base, component + 0x2E4u)) / 8u;
+  if (after <= before) {
+    return;
+  }
+  DogTrickLearnedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.dog = Owner(base, component);
+  e.player = DogPlayer(ctx, base, component);
+  e.trick = trick;
+  e.shown = true;
+  e.tricks = static_cast<int32_t>(after);
+  Dispatch(e);
+}
+
+// dog_learned. Dog.RaiseSniffingLevelTo (r3 the dog component, `mr r31,r3` TU1 0x828152B4 / disc
+// 0x8278B28C; r4 the level: `lwz r11,0xB8(r31); cmpw r4,r11` 0x828152B8, `stw r4,0xB8(r31)` 0x828152C4 /
+// 0x8278B290, 0x8278B29C) is track 0 (Fable 3's explore); Dog.RaiseCombatLevelTo (`mr r31,r3` 0x82815424
+// / 0x8278B3FC; `lwz r11,0xBC(r31)` 0x82815428 / 0x8278B400, `stw r4,0xBC(r31)` 0x82815434 / 0x8278B40C)
+// track 1. After each, when the level rose. TU1 0x828152A0, 0x82815410 / disc 0x8278B278, 0x8278B3E8.
+REX_EXTERN(rex_CECDog_RaiseSniffingLevel) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const int32_t before = component != 0u ? static_cast<int32_t>(Load32(base, component + 0xB8u)) : 0;
+  __imp__rex_CECDog_RaiseSniffingLevel(ctx, base);
+  RaiseDogLearned(ctx, base, component, 0, before, component != 0u ? static_cast<int32_t>(Load32(base, component + 0xB8u)) : 0);
+}
+
+REX_EXTERN(rex_CECDog_RaiseCombatLevel) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const int32_t before = component != 0u ? static_cast<int32_t>(Load32(base, component + 0xBCu)) : 0;
+  __imp__rex_CECDog_RaiseCombatLevel(ctx, base);
+  RaiseDogLearned(ctx, base, component, 1, before, component != 0u ? static_cast<int32_t>(Load32(base, component + 0xBCu)) : 0);
+}
+
+// dive_spot_used. The dive spot's use (r3 the DiveSpot component 96, `mr r29,r3` TU1 0x82919044 / disc
+// 0x82992864; r4 the diver, `mr r31,r4` 0x8291903C / 0x8299285C): it counts the find on the diver's stats
+// (component 57) and runs the spot's script. Its one caller, CAction_SwimDiveLevelExit's slot 18, hands it
+// the target's component 96 (`cmpwi r11,0x60` 0x82849AC0 / 0x827D9950) and the action's owner (`mr
+// r4,r3; mr r3,r31; bl` 0x82849B24..2C / 0x827D99B4..BC). After it. TU1 0x82919030 / disc 0x82992850.
+REX_EXTERN(rex_CECDiveSpot_Use) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t diver = ctx.r4.u32;
+  __imp__rex_CECDiveSpot_Use(ctx, base);
+  if (component == 0u || diver == 0u || !AnySubscriber(REFII_EVENT_DIVE_SPOT_USED)) {
+    return;
+  }
+  DiveSpotUsedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.spot = Owner(base, component);
+  e.diver = diver;
+  e.player = PlayerOf(base, diver);
+  Dispatch(e);
+}
+
+// vomit. The drunkenness component's vomit (r3 the component, `mr r30,r3` TU1 0x82952A8C / disc
+// 0x8294117C; the hero at +4, `lwz r11,4(r30)` 0x82952AC8 / 0x829411B8): when the hero's action manager
+// takes "Vomit" it plays DrunkVomit, empties the reservoir and counts +0x20 (`lwz r10,0x20(r30)`
+// 0x82952CD0 / 0x829413C0, `stw r7,0x20(r30)` 0x82952CFC / 0x829413EC). After it, when the count moved.
+// TU1 0x82952A78 / disc 0x82941168.
+REX_EXTERN(rex_CECPlayerDrunkenness_Vomit) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const uint32_t before = component != 0u ? Load32(base, component + 0x20u) : 0u;
+  __imp__rex_CECPlayerDrunkenness_Vomit(ctx, base);
+  const uint32_t after = component != 0u ? Load32(base, component + 0x20u) : 0u;
+  if (after == before || !AnySubscriber(REFII_EVENT_VOMIT)) {
+    return;
+  }
+  VomitEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.hero = Owner(base, component);
+  e.player = PlayerOf(base, e.hero);
+  e.vomits = static_cast<int32_t>(after);
+  Dispatch(e);
+}
+
+// job_multiplier. GUI.SetJobMultiplierLevel (r3 the level: `mr r30,r3` TU1 0x82306B34 / disc 0x8290875C,
+// handed to the HUD element `mr r4,r30` 0x82306B54 / 0x8290877C) and GUI.TurnJobMulitplierOff (r3 a byte,
+// `clrlwi r10,r3,24` 0x82306B8C / 0x829087B4). The blacksmith, woodcutting and bartending scripts state
+// them; no hero is stated. After each. TU1 0x82306B18, 0x82306B78 / disc 0x82908740, 0x829087A0.
+REX_EXTERN(rex_GUI_SetJobMultiplierLevel) {
+  REX_FUNC_PROLOGUE();
+  const int32_t level = static_cast<int32_t>(ctx.r3.u32);
+  __imp__rex_GUI_SetJobMultiplierLevel(ctx, base);
+  RaiseJobMultiplier(ctx, base, level, true);
+}
+
+REX_EXTERN(rex_GUI_TurnJobMultiplierOff) {
+  REX_FUNC_PROLOGUE();
+  __imp__rex_GUI_TurnJobMultiplierOff(ctx, base);
+  RaiseJobMultiplier(ctx, base, 0, false);
+}
+
+// job_summary. GUI.TurnOnMiniGameComplete (r3 the title, r4 the subtitle, both CCharString*: `mr r31,r3;
+// mr r30,r4` TU1 0x82306C08 / 0x82306C00, disc 0x82908830 / 0x82908828) and
+// GUI.AddAmountToMiniGameComplete (r3 the line's text, r4 its amount: `mr r31,r3` 0x82306CB8 / 0x829088E0,
+// `mr r30,r4` 0x82306CB0 / 0x829088D8): the shift's summary screen (screen handler 11). The text is the
+// script's key, localised by the screen. Read before each, raised after it. TU1 0x82306BF0, 0x82306CA0 /
+// disc 0x82908818, 0x829088C8.
+REX_EXTERN(rex_GUI_TurnOnMiniGameComplete) {
+  REX_FUNC_PROLOGUE();
+  const bool wanted = AnySubscriber(REFII_EVENT_JOB_SUMMARY);
+  const std::string title = wanted ? LhString(base, ctx.r3.u32) : "";
+  const std::string subtitle = wanted ? LhString(base, ctx.r4.u32) : "";
+  __imp__rex_GUI_TurnOnMiniGameComplete(ctx, base);
+  if (wanted) {
+    JobSummaryEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.part = "title";
+    e.text = title.c_str();
+    e.subtitle = subtitle.c_str();
+    e.amount = 0;
+    Dispatch(e);
+  }
+}
+
+REX_EXTERN(rex_GUI_AddAmountToMiniGameComplete) {
+  REX_FUNC_PROLOGUE();
+  const bool wanted = AnySubscriber(REFII_EVENT_JOB_SUMMARY);
+  const std::string line = wanted ? LhString(base, ctx.r3.u32) : "";
+  const int32_t amount = static_cast<int32_t>(ctx.r4.u32);
+  __imp__rex_GUI_AddAmountToMiniGameComplete(ctx, base);
+  if (wanted) {
+    JobSummaryEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.part = "line";
+    e.text = line.c_str();
+    e.subtitle = "";
+    e.amount = amount;
+    Dispatch(e);
+  }
+}
+
+// guild_message. The guild messages component's play-next (r3 the component, `mr r27,r3` TU1 0x82173414 /
+// disc 0x8217328C): with a message queued (`lwz r11,0x24(r27)` 0x82173418 / 0x82173290), the first node
+// (`lwz r11,0x20(r27)` then `lwz r11,0(r11)` 0x82173580..8C / 0x821733F8..404) is voiced — +8 its TextTag
+// (`addi r29,r11,8` 0x821735AC / 0x82173424), +0xC its NarratorTag (`addi r30,r11,0xC` 0x82173604 /
+// 0x8217347C), both CCharStrings (CECGuildMessages' save writes them under those names) — made the
+// component's current +0x14 (`addi r4,r11,8; addi r3,r27,0x14; bl lhCharString_Assign` 0x82173818..20 /
+// 0x82173690..98) and popped and freed. Read before it, raised after it. TU1 0x82173408 / disc 0x82173280.
+REX_EXTERN(rex_CECGuildMessages_PlayNext) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  std::string message;
+  std::string narrator;
+  bool queued = false;
+  if (component != 0u && Load32(base, component + 0x24u) != 0u && AnySubscriber(REFII_EVENT_GUILD_MESSAGE)) {
+    const uint32_t head = Load32(base, component + 0x20u);
+    const uint32_t node = head != 0u ? Load32(base, head) : 0u;
+    if (node != 0u && node != head) {
+      queued = true;
+      message = LhString(base, node + 8u);
+      narrator = LhString(base, node + 0xCu);
+    }
+  }
+  __imp__rex_CECGuildMessages_PlayNext(ctx, base);
+  if (queued) {
+    GuildMessageEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.message = message.c_str();
+    e.narrator = narrator.c_str();
+    e.player = 0;
+    Dispatch(e);
+  }
+}
+
+// The hero, appearance, scar, age, title, town-wealth and pub-game events.
+
+PPC_EXTERN_FUNC(__imp__rex_CECStats_SetTitleRecord);
+PPC_EXTERN_FUNC(__imp__rex_CECStats_AddUnlockedTitle);
+PPC_EXTERN_FUNC(__imp__rex_CECStats_SetChapterProgress);
+PPC_EXTERN_FUNC(__imp__rex_CECMorph_AddScar);
+PPC_EXTERN_FUNC(__imp__rex_CECMorph_RemoveRandomScar);
+PPC_EXTERN_FUNC(__imp__rex_CECAge_SetAge);
+PPC_EXTERN_FUNC(__imp__rex_CPlayer_SetHeroStage);
+PPC_EXTERN_FUNC(__imp__rex_CECAppearanceModifiers_AddAndReplaceItem);
+PPC_EXTERN_FUNC(__imp__rex_CECAppearanceModifiers_RemoveItem);
+PPC_EXTERN_FUNC(__imp__rex_CECAppearanceModifiers_RemoveWornByCategory);
+PPC_EXTERN_FUNC(__imp__rex_CECAppearanceModifiers_SetDyeColour);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiInventory_ApplyDyeToItem);
+PPC_EXTERN_FUNC(__imp__rex_lhPubGameManager_StartPubGame);
+PPC_EXTERN_FUNC(__imp__rex_lhPubGameManager_Settle);
+PPC_EXTERN_FUNC(__imp__rex_CECVillage_AdjustWealthIndex);
+PPC_EXTERN_FUNC(__imp__rex_CWorldMapInfo_IncrementGargoylesKilled);
+
+namespace {
+
+/// A guest char* as text ("" for none).
+const char* CText(uint8_t* base, uint32_t chars) {
+  return chars >= 0x10000u && chars < 0xC0000000u ? reinterpret_cast<const char*>(base + chars) : "";
+}
+
+/// The appearance component's worn list (+0xC: begin +0x10, end +0x14; 0x18-byte entries whose +0 is
+/// the item: RemoveItem `lwz r31,0x10(r29); lwz r8,0x14(r29) ... addi r31,r31,0x18`).
+int32_t WornCount(uint8_t* base, uint32_t appearance) {
+  const uint32_t first = Load32(base, appearance + 0x10u);
+  const uint32_t last = Load32(base, appearance + 0x14u);
+  return last >= first ? static_cast<int32_t>((last - first) / 0x18u) : 0;
+}
+
+/// A morph component's scars (+0x14: begin +0x18, end +0x1C; 12-byte entries: AddScar `lwz r10,0x18(r30);
+/// lwz r11,0x1C(r30); subf; divw. r6,r7,r9` with r9 = 0xC).
+int32_t ScarCount(uint8_t* base, uint32_t morph) {
+  const uint32_t first = Load32(base, morph + 0x18u);
+  const uint32_t last = Load32(base, morph + 0x1Cu);
+  return last >= first ? static_cast<int32_t>((last - first) / 12u) : 0;
+}
+
+/// An item holder's {item, record}: the item is *holder, its record at item+4, its category at item+0x10
+/// (AddAndReplaceItem `lwz r10,0(r31); lwz r5,0x10(r10)`, RemoveWornByCategory `lwz r11,0x10(r3); cmpw r11,r25`).
+uint32_t ItemOf(uint8_t* base, uint32_t holder) { return holder != 0u ? Load32(base, holder) : 0u; }
+uint32_t RecordOf(uint8_t* base, uint32_t item) { return item != 0u ? Load32(base, item + 4u) : 0u; }
+int32_t CategoryOf(uint8_t* base, uint32_t item) { return item != 0u ? static_cast<int32_t>(Load32(base, item + 0x10u)) : -1; }
+
+/// The inventory dye's wearer: the GUI's player (`sub_821C7CE0(*0x83496B08)`, then `sub_8229EE78`), the
+/// entity whose appearance component the dye refresh is handed (0x826caccc..0x826cadf4).
+uint32_t GuiDyeWearer(PPCContext& ctx, uint8_t* base) {
+  PPCContext work = refii::mods::Frame(ctx);
+  work.r3.u64 = Load32(base, refii::guest::Address(0x83496B08u));
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(0x821C7CE0u))) {
+    return 0u;
+  }
+  const uint32_t player = work.r3.u32;
+  work = refii::mods::Frame(ctx);
+  work.r3.u64 = player;
+  return player != 0u && refii::mods::CallGuest(work, base, refii::guest::Address(0x8229EE78u)) ? work.r3.u32 : 0u;
+}
+
+/// The dye block the inventory just wrote, found the way it found it (0x826cac74..0x826caca0): the item's
+/// own dye component (sub_823A1E18: r3 the item, r4 out; r3 back nonzero when found), else through the
+/// item's handle (sub_823A2040: r3 the item, r4 the holder's +4, r5 out).
+uint32_t GuiDyeBlock(PPCContext& ctx, uint8_t* base, uint32_t holder) {
+  const uint32_t item = ItemOf(base, holder);
+  if (item == 0u) {
+    return 0u;
+  }
+  PPCContext work = refii::mods::Frame(ctx, 0x100u);
+  const uint32_t out = (work.r1.u32 + 0x80u) & ~0xFu;
+  refii::mods::StoreU32(base, out, 0u);
+  PPCContext step = work;
+  step.r3.u64 = item;
+  step.r4.u64 = out;
+  if (!refii::mods::CallGuest(step, base, refii::guest::Address(0x823A1E18u))) {
+    return 0u;
+  }
+  if ((step.r3.u32 & 0xFFu) == 0u) {
+    step = work;
+    step.r3.u64 = item;
+    step.r4.u64 = Load32(base, holder + 4u);
+    step.r5.u64 = out;
+    if (!refii::mods::CallGuest(step, base, refii::guest::Address(0x823A2040u))) {
+      return 0u;
+    }
+  }
+  return Load32(base, out);
+}
+
+void RaiseClothingRemoved(PPCContext& ctx, uint8_t* base, uint32_t appearance, uint32_t definition, int32_t category,
+                          int32_t count) {
+  ClothingRemovedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.entity = Owner(base, appearance);
+  e.player = PlayerOf(base, e.entity);
+  e.definition = definition;
+  e.category = category;
+  e.count = count;
+  Dispatch(e);
+}
+
+/// While the inventory applies a dye: the script setter is not reached from it (lhGuiInventory_ApplyDyeToItem
+/// writes the block itself), so this only keeps a nested call honest.
+int g_gui_dye_depth = 0;
+
+}  // namespace
+
+// title_changed. Stats.SetTitleRecord (r3 the stats component, the hero at +4; r4 the title name's LHString
+// handle: `mr r30,r3; mr r27,r4; lwz r4,0(r27)`): it walks the unlocked titles (+0x68..+0x6C) and, for the
+// one that matches, writes the title record at +0x5C (`std r26,0x5C(r30)`). Raised after it when +0x5C..+0x63
+// moved: a title the hero does not hold, or the one already worn, changes nothing. TU1 0x824D8568 / disc
+// 0x8249F6E0.
+REX_EXTERN(rex_CECStats_SetTitleRecord) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t stats = ctx.r3.u32;
+  const uint32_t name = ctx.r4.u32;
+  const bool wanted = stats != 0u && AnySubscriber(REFII_EVENT_TITLE_CHANGED);
+  const uint32_t record = wanted ? Load32(base, stats + 0x5Cu) : 0u;
+  const uint32_t entry = wanted ? Load32(base, stats + 0x60u) : 0u;
+  __imp__rex_CECStats_SetTitleRecord(ctx, base);
+  if (wanted && (Load32(base, stats + 0x5Cu) != record || Load32(base, stats + 0x60u) != entry)) {
+    TitleChangedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = Owner(base, stats);
+    e.player = PlayerOf(base, e.hero);
+    e.title = LhString(base, name);
+    Dispatch(e);
+  }
+}
+
+// title_unlocked. Stats.AddUnlockedTitle (r3 the stats component; r4 the title name's LHString handle):
+// when the name is a record it pushes the handle onto the unlocked titles at +0x64 (`addi r3,r30,0x64;
+// bl sub_82321308`, whose push is `stw r11,8(r30)`: the end at +0x6C, 4-byte entries). Raised after it when
+// the end advanced (a repeated unlock is pushed again and raised again). TU1 0x824D86D0 / disc 0x8249F848.
+REX_EXTERN(rex_CECStats_AddUnlockedTitle) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t stats = ctx.r3.u32;
+  const uint32_t name = ctx.r4.u32;
+  const bool wanted = stats != 0u && AnySubscriber(REFII_EVENT_TITLE_UNLOCKED);
+  const uint32_t end = wanted ? Load32(base, stats + 0x6Cu) : 0u;
+  __imp__rex_CECStats_AddUnlockedTitle(ctx, base);
+  if (wanted && Load32(base, stats + 0x6Cu) != end) {
+    TitleUnlockedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = Owner(base, stats);
+    e.player = PlayerOf(base, e.hero);
+    e.title = LhString(base, name);
+    const uint32_t first = Load32(base, stats + 0x68u);
+    const uint32_t last = Load32(base, stats + 0x6Cu);
+    e.titles = last >= first ? static_cast<int32_t>((last - first) / 4u) : 0;
+    Dispatch(e);
+  }
+}
+
+// chapter_progress. Stats.SetChapterProgress (r3 the stats component; f1 the progress): `lfs f0,0x58(r3);
+// fcmpu cr6,f1,f0; bltlr cr6; stfs f1,0x58(r3)` — it only rises. Raised after it when +0x58 changed.
+// TU1 0x824E5678 / disc 0x824ABDE8.
+REX_EXTERN(rex_CECStats_SetChapterProgress) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t stats = ctx.r3.u32;
+  const bool wanted = stats != 0u && AnySubscriber(REFII_EVENT_CHAPTER_PROGRESS);
+  const float previous = wanted ? LoadF(base, stats + 0x58u) : 0.0f;
+  __imp__rex_CECStats_SetChapterProgress(ctx, base);
+  if (wanted && LoadF(base, stats + 0x58u) != previous) {
+    ChapterProgressEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = Owner(base, stats);
+    e.player = PlayerOf(base, e.hero);
+    e.progress = LoadF(base, stats + 0x58u);
+    e.previous = previous;
+    Dispatch(e);
+  }
+}
+
+// scar_added. Morph.AddScar (r3 the morph component, the entity at +4 `lwz r11,4(r30)`; r4 the area mask):
+// it refuses when two scars already cover the area (`and r6,r7,r4 ... cmpwi cr6,r8,2; bge` to the return),
+// else appends a 12-byte scar to +0x14 and redraws. Decided before it: a cancel returns as that refusal
+// does. Morph.AddRandomScar discards r3 (its `bl` is its last call, `addi r1,r1,0x70` after it); the other
+// callers are Debug.AddHeroScar and the Lua binding (sub_825F4530). TU1 0x825F3040 / disc 0x8248B178.
+REX_EXTERN(rex_CECMorph_AddScar) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t morph = ctx.r3.u32;
+  if (morph != 0u && AnySubscriber(REFII_EVENT_SCAR_ADDED)) {
+    ScarAddedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.entity = Owner(base, morph);
+    e.player = PlayerOf(base, e.entity);
+    e.area = ctx.r4.u32;
+    e.scars = ScarCount(base, morph);
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  __imp__rex_CECMorph_AddScar(ctx, base);
+}
+
+// scar_removed. Morph.RemoveRandomScar (r3 the morph component): with any scar (`lwz r11,0x1C(r3); lwz
+// r8,0x18(r3); divw. r6,r7,r10; beqlr`) it erases a random one and shrinks +0x1C by 12. Raised after it
+// when the count dropped. TU1 0x825F32B0 / disc 0x8248B3E8.
+REX_EXTERN(rex_CECMorph_RemoveRandomScar) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t morph = ctx.r3.u32;
+  const bool wanted = morph != 0u && AnySubscriber(REFII_EVENT_SCAR_REMOVED);
+  const int32_t before = wanted ? ScarCount(base, morph) : 0;
+  __imp__rex_CECMorph_RemoveRandomScar(ctx, base);
+  if (wanted && ScarCount(base, morph) < before) {
+    ScarRemovedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.entity = Owner(base, morph);
+    e.player = PlayerOf(base, e.entity);
+    e.scars = ScarCount(base, morph);
+    Dispatch(e);
+  }
+}
+
+// age_changed. Age.SetAge (r3 the age component, the entity at +4; f1 the age): `lfs f12,0x10(r3);
+// stfs f1,0xC(r3)` then clamps to [0, +0x10] (`fsel f10,f11,f13,f0; fsubs f9,f10,f12; ... fsel f7,f8,f12,f10;
+// stfs f7,0xC(r3)`) and tail-calls the age's refresh. Decided before it when f1 differs from +0xC: a cancel
+// skips it (the age stays), a written age replaces f1 and is clamped by the game. A hero ageing over time
+// (CECStats_vf13, `bl` at TU1 0x824DF5AC: age + rate/3600) raises on every update that moves it.
+// TU1 0x82535528 / disc 0x824D2888.
+REX_EXTERN(rex_CECAge_SetAge) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t age = ctx.r3.u32;
+  if (age != 0u && static_cast<float>(ctx.f1.f64) != LoadF(base, age + 0xCu) && AnySubscriber(REFII_EVENT_AGE_CHANGED)) {
+    AgeChangedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.entity = Owner(base, age);
+    e.player = PlayerOf(base, e.entity);
+    e.age = static_cast<float>(ctx.f1.f64);
+    e.previous = LoadF(base, age + 0xCu);
+    e.limit = LoadF(base, age + 0x10u);
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.f1.f64 = e.age;
+  }
+  __imp__rex_CECAge_SetAge(ctx, base);
+}
+
+// hero_stage. Player.SetHeroStage (r3 the player component 33, the hero at +4 `lwz r11,4(r10)`; r4 the
+// stage): `stw r4,0x54(r10)` unconditionally, then replicates it. Raised after it when +0x54 changed.
+// TU1 0x823E1510 / disc 0x823BFED8.
+REX_EXTERN(rex_CPlayer_SetHeroStage) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  const bool wanted = component != 0u && AnySubscriber(REFII_EVENT_HERO_STAGE);
+  const int32_t previous = wanted ? static_cast<int32_t>(Load32(base, component + 0x54u)) : 0;
+  __imp__rex_CPlayer_SetHeroStage(ctx, base);
+  if (wanted && static_cast<int32_t>(Load32(base, component + 0x54u)) != previous) {
+    HeroStageEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.hero = Owner(base, component);
+    e.player = PlayerOf(base, e.hero);
+    e.stage = static_cast<int32_t>(Load32(base, component + 0x54u));
+    e.previous = previous;
+    Dispatch(e);
+  }
+}
+
+// clothing_worn. AppearanceModifierManager.AddAndReplaceItem (r3 the appearance component 15, the entity
+// at +4 `lwz r31,4(r28)`; r4 the item holder: `mr r31,r4; lwz r11,0(r31)`, the item's category passed on as
+// `lwz r5,0x10(r10)`): it refuses an item whose slot is blocked (`lwz r11,0x60(r28); and r10,r11,r4; bne`
+// to the return) or that cannot go on (sub_824C1000 false), else wears it, replacing what it covers.
+// Decided before it: a cancel returns as those refusals do. Every caller discards r3 (WearItemByDefHash
+// 0x824BF1D4 and sub_823A9A58 0x823A9D4C reload r3, sub_824C2D88 / sub_824C5718 / the shop's sub_8296CBE8
+// go on, the inventory's sub_826CB218 is void). TU1 0x824BECF8 / disc 0x8256F910.
+REX_EXTERN(rex_CECAppearanceModifiers_AddAndReplaceItem) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t appearance = ctx.r3.u32;
+  const uint32_t item = ItemOf(base, ctx.r4.u32);
+  if (appearance != 0u && item != 0u && AnySubscriber(REFII_EVENT_CLOTHING_WORN)) {
+    ClothingWornEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.entity = Owner(base, appearance);
+    e.player = PlayerOf(base, e.entity);
+    e.definition = RecordOf(base, item);
+    e.category = CategoryOf(base, item);
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+  }
+  __imp__rex_CECAppearanceModifiers_AddAndReplaceItem(ctx, base);
+}
+
+
+// clothing_removed. AppearanceModifierManager.RemoveItem (r3 the appearance component, `mr r29,r3`; r4 the
+// item holder, matched word for word against each worn entry: `lwz r11,0(r31); lwz r6,0(r4); cmpw`) erases
+// the match from the worn list (+0x10..+0x14, 0x18 each). RemoveWornByCategory (r3 the component; r4 the
+// category, `mr r25,r4`, matched as `lwz r11,0x10(r3); cmpw r11,r25`) erases every worn item of it. Raised
+// after each when the worn list shrank. TU1 0x824BF208 / 0x824BF4D8, disc 0x8256FE20 / 0x825700F0.
+REX_EXTERN(rex_CECAppearanceModifiers_RemoveItem) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t appearance = ctx.r3.u32;
+  const bool wanted = appearance != 0u && AnySubscriber(REFII_EVENT_CLOTHING_REMOVED);
+  const uint32_t item = wanted ? ItemOf(base, ctx.r4.u32) : 0u;
+  const uint32_t definition = RecordOf(base, item);
+  const int32_t category = CategoryOf(base, item);
+  const int32_t before = wanted ? WornCount(base, appearance) : 0;
+  __imp__rex_CECAppearanceModifiers_RemoveItem(ctx, base);
+  if (wanted && WornCount(base, appearance) < before) {
+    RaiseClothingRemoved(ctx, base, appearance, definition, category, before - WornCount(base, appearance));
+  }
+}
+
+REX_EXTERN(rex_CECAppearanceModifiers_RemoveWornByCategory) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t appearance = ctx.r3.u32;
+  const int32_t category = static_cast<int32_t>(ctx.r4.u32);
+  const bool wanted = appearance != 0u && AnySubscriber(REFII_EVENT_CLOTHING_REMOVED);
+  const int32_t before = wanted ? WornCount(base, appearance) : 0;
+  __imp__rex_CECAppearanceModifiers_RemoveWornByCategory(ctx, base);
+  if (wanted && WornCount(base, appearance) < before) {
+    RaiseClothingRemoved(ctx, base, appearance, 0u, category, before - WornCount(base, appearance));
+  }
+}
+
+// clothing_dyed, the script's dye. AppearanceModifierManager.SetClothingItemDyeColour (r3 the appearance
+// component, `mr r26,r3`; r4 the item holder `mr r28,r4`; r5 the slot byte `mr r27,r5`: nonzero writes
+// +4/+8, zero +0xC/+0x10 of the item's dye block; r6 red `mr r31,r6` -> byte +2, r7 green `mr r30,r7` -> +1,
+// r8 blue `mr r29,r8` -> +0 (`stb r31,..+2; stb r30,..+1; stb r29,..`, the bytes the inventory's dye fills
+// from "Red" / "Green" / "Blue"); f1 brightness `fmr f31,f1`). Decided before it: a cancel skips it (the
+// block is unchanged; its callers SetClothingItemDye and Debug.SetHeroWornItemDyeColour return after it),
+// written colours and brightness replace r6..r8 and f1. TU1 0x824C0398 / disc 0x82570FB0.
+REX_EXTERN(rex_CECAppearanceModifiers_SetDyeColour) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t appearance = ctx.r3.u32;
+  const uint32_t item = ItemOf(base, ctx.r4.u32);
+  if (appearance != 0u && item != 0u && g_gui_dye_depth == 0 && AnySubscriber(REFII_EVENT_CLOTHING_DYED)) {
+    ClothingDyedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.entity = Owner(base, appearance);
+    e.player = PlayerOf(base, e.entity);
+    e.definition = RecordOf(base, item);
+    e.dye = 0u;
+    e.red = static_cast<int32_t>(ctx.r6.u32 & 0xFFu);
+    e.green = static_cast<int32_t>(ctx.r7.u32 & 0xFFu);
+    e.blue = static_cast<int32_t>(ctx.r8.u32 & 0xFFu);
+    e.brightness = static_cast<float>(ctx.f1.f64);
+    e.secondary = (ctx.r5.u32 & 0xFFu) == 0u;
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.r6.u64 = static_cast<uint32_t>(e.red) & 0xFFu;
+    ctx.r7.u64 = static_cast<uint32_t>(e.green) & 0xFFu;
+    ctx.r8.u64 = static_cast<uint32_t>(e.blue) & 0xFFu;
+    ctx.f1.f64 = e.brightness;
+  }
+  __imp__rex_CECAppearanceModifiers_SetDyeColour(ctx, base);
+}
+
+// clothing_dyed, the inventory's dye. lhGuiInventory_ApplyDyeToItem (r4 the dye item's holder, its record at
+// `lwz r11,0(r4); lwz r10,4(r11)`; r5 the clothing item's holder `mr r26,r5`; r6 the slot `mr r27,r6`:
+// nonzero writes +0xC/+0x10, zero +4/+8): it reads the dye record's Colour.Red/Green/Blue and Brightness,
+// writes the block, and hands the GUI player's appearance component to the dye refresh (`bl sub_824BFD78`).
+// Reported after it, the colours read back from the block it wrote. TU1 0x826CAB78 / disc 0x825A6B00.
+REX_EXTERN(rex_lhGuiInventory_ApplyDyeToItem) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t dye_holder = ctx.r4.u32;
+  const uint32_t holder = ctx.r5.u32;
+  const bool secondary = (ctx.r6.u32 & 0xFFu) != 0u;
+  const bool wanted = holder != 0u && ItemOf(base, holder) != 0u && AnySubscriber(REFII_EVENT_CLOTHING_DYED);
+  const uint32_t dye = wanted ? RecordOf(base, ItemOf(base, dye_holder)) : 0u;
+  ++g_gui_dye_depth;
+  __imp__rex_lhGuiInventory_ApplyDyeToItem(ctx, base);
+  --g_gui_dye_depth;
+  if (!wanted) {
+    return;
+  }
+  const uint32_t block = GuiDyeBlock(ctx, base, holder);
+  if (block == 0u) {
+    return;
+  }
+  const uint32_t colour = block + (secondary ? 0xCu : 0x4u);
+  ClothingDyedEvent e{};
+  PPCContext e_ctx = ctx;
+  e.ctx = &e_ctx;
+  e.base = base;
+  e.entity = GuiDyeWearer(ctx, base);
+  e.player = PlayerOf(base, e.entity);
+  e.definition = RecordOf(base, ItemOf(base, holder));
+  e.dye = dye;
+  e.red = Load8(base, colour + 2u);
+  e.green = Load8(base, colour + 1u);
+  e.blue = Load8(base, colour);
+  e.brightness = LoadF(base, colour + 4u);
+  e.secondary = secondary;
+  Dispatch(e);
+}
+
+// pub_game_started. StartPubGame (r3 the game's name, a char* `mr r4,r3` into lhCharString_CtorFromCStr and
+// lower-cased; r4 the variation `mr r29,r4`; r3 back 1 started / 0 refused): on the manager 0x834C20B8
+// (sub_82180418 `addi r31,r9,dword_834C20B8@l`) it refuses while its state +0x34 is set (`lwz r11,0x34(r31);
+// cmpwi; beq` else `li r31,0`), else stores the name (+8) and variation (+0xC) and enters state 1. Decided
+// before it while the state is 0: a cancel answers r3 = 0, the guest's own refusal, which the Lua glue
+// pushes to the script as false. The games are player one's (the settlement pays player 1's hero).
+// TU1 0x824679F8 / disc 0x825AB2C0.
+REX_EXTERN(rex_lhPubGameManager_StartPubGame) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t manager = refii::guest::Address(0x834C20B8u);
+  if (Load32(base, manager + 0x34u) == 0u && AnySubscriber(REFII_EVENT_PUB_GAME_STARTED)) {
+    PubGameStartedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.game = CText(base, ctx.r3.u32);
+    e.variation = CText(base, ctx.r4.u32);
+    e.hero = refii_mod_player_hero(base, 1);
+    e.player = e.hero != 0u ? 1 : 0;
+    Dispatch(e);
+    if (e.cancel) {
+      ctx.r3.u64 = 0u;
+      return;
+    }
+  }
+  __imp__rex_lhPubGameManager_StartPubGame(ctx, base);
+}
+
+// pub_game_finished. The settlement (r3 the pub game manager, `mr r27,r3`), from the manager's tick in state 9,
+// which clears +0x60 / +0x64 after it: it pays player one's hero (`lwz r8,0x58(r9); lwz r7,4(r8); lwz r11,0(r7);
+// lwz r11,0x6C(r11)`) gold = the profile's gold - +0x60 (profile `lwz r3,0x7C(r27)`, `ld r3,0x108(r11)`;
+// `extsw r10,r3; lwz r9,0x60(r27); subf r31,r9,r10` into CECMoney_Modify), and records the session's
+// result = +0x64 - the profile's debt + gold (`ld r3,0x130(r11)`; `lwz r11,0x64(r27); extsw r10,r3;
+// subf r11,r10,r11; add r28,r11,r31`) in the per-game stats, the gossip (±25) and the purity balancing.
+// Reported before it. The 64-bit profile values are read as the game reads them, their low word.
+// TU1 0x824684F8 / disc 0x825ABDC0.
+REX_EXTERN(rex_lhPubGameManager_Settle) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t manager = ctx.r3.u32;
+  if (manager != 0u && AnySubscriber(REFII_EVENT_PUB_GAME_FINISHED)) {
+    const uint32_t profile = Load32(base, manager + 0x7Cu);
+    const int32_t gold = profile != 0u ? static_cast<int32_t>(Load32(base, profile + 0x10Cu)) : 0;
+    const int32_t debt = profile != 0u ? static_cast<int32_t>(Load32(base, profile + 0x134u)) : 0;
+    PubGameFinishedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.game = LhString(base, manager + 8u);
+    e.variation = LhString(base, manager + 0xCu);
+    e.hero = refii_mod_player_hero(base, 1);
+    e.player = e.hero != 0u ? 1 : 0;
+    e.gold = gold - static_cast<int32_t>(Load32(base, manager + 0x60u));
+    e.result = static_cast<int32_t>(Load32(base, manager + 0x64u)) - debt + e.gold;
+    Dispatch(e);
+  }
+  __imp__rex_lhPubGameManager_Settle(ctx, base);
+}
+
+// village_wealth. Village.AdjustWealthIndex (r3 the village component, the village at +4 `lwz r11,4(r31)`;
+// f1 the change; r5 the unscaled byte: `clrlwi r11,r5,24; bne` past `lfs f0,0x1C(r31); fmuls f1,f0,f1`):
+// wealth +0x10 += f1, clamped to [+0x14, +0x18] (`lfs f0,0x10(r31); fadds f13,f0,f1; lfs f12,0x18(r31);
+// lfs f9,0x14(r31)` ... `stfs f4,0x10(r31)`). Decided before it: a cancel skips it (its callers — the shop,
+// AdjustWealthIndexByGiftValue's tail branch, the Lua glue — go on or return), a written delta replaces f1
+// and is still scaled when `scaled`. TU1 0x82494E60 / disc 0x825DC448.
+REX_EXTERN(rex_CECVillage_AdjustWealthIndex) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t village = ctx.r3.u32;
+  if (village != 0u && AnySubscriber(REFII_EVENT_VILLAGE_WEALTH)) {
+    VillageWealthEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.village = Owner(base, village);
+    e.delta = static_cast<float>(ctx.f1.f64);
+    e.scaled = (ctx.r5.u32 & 0xFFu) == 0u;
+    e.wealth = LoadF(base, village + 0x10u);
+    e.min = LoadF(base, village + 0x14u);
+    e.max = LoadF(base, village + 0x18u);
+    Dispatch(e);
+    if (e.cancel) {
+      return;
+    }
+    ctx.f1.f64 = e.delta;
+  }
+  __imp__rex_CECVillage_AdjustWealthIndex(ctx, base);
+}
+
+// gargoyle_destroyed. WorldMapInfo.IncrementGargoylesKilled (r3 the world map info): it counts the kill
+// for the region of the current level, whose name it reaches as root+0xC, +0x58, +4, +8, +4, then +0x24,
+// +4, +0xAC (`lwz r10,0xC(r11); lwz r9,0x58(r10); lwz r8,4(r9); lwz r7,8(r8); lwz r6,4(r7); lwz r5,0x24(r6);
+// lwz r11,4(r5); addi r4,r11,0xAC`), and counts nothing while that name is empty (`lwz r11,0xAC(r11);
+// cmplwi; beq` / `lwz r11,4(r11); cmpwi; beq`). Reported before it when it counts; the script that calls it
+// does not state who shot. TU1 0x827FB4A8 / disc 0x8288E550.
+REX_EXTERN(rex_CWorldMapInfo_IncrementGargoylesKilled) {
+  REX_FUNC_PROLOGUE();
+  if (AnySubscriber(REFII_EVENT_GARGOYLE_DESTROYED)) {
+    uint32_t at = Load32(base, refii::guest::Address(0x83496AB8u));
+    for (uint32_t offset : {0xCu, 0x58u, 0x4u, 0x8u, 0x4u}) {
+      at = at >= 0x10000u && at < 0xC0000000u ? Load32(base, at + offset) : 0u;
+    }
+    const char* level = at != 0u ? LevelName(base, at) : "";
+    if (level[0] != 0) {
+      GargoyleDestroyedEvent e{};
+      PPCContext e_ctx = ctx;
+      e.ctx = &e_ctx;
+      e.base = base;
+      e.level = level;
+      e.player = 0;
+      Dispatch(e);
+    }
+  }
+  __imp__rex_CWorldMapInfo_IncrementGargoylesKilled(ctx, base);
 }

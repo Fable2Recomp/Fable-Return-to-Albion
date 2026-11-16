@@ -79,6 +79,14 @@ set(REFIII_HOOK_SOURCES
     # The gameplay seams mods hear: deaths, health, gold, renown, guild seals, abilities, the treasury,
     # quests, fast travel, the kingdom's decisions and the level edges, raised from the next tick.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_events_hooks.cpp
+    # The combat and control seams: hits, the health's take, the flinch, the block, strikes, rolls,
+    # ability requests, animation events, movement's interrupt, GameActions, the target and its lock,
+    # spells, the look-at flag and the cutscene statements; the action and lock helpers.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_combat_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_seam.h
+    # The native (hard) mod C API of core/refii_mod.h and core/refii_mod_events.h, answered on Fable 3:
+    # the exported seams, the game VM's Refii.* helpers, and the typed events over the text bus.
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/mod_api.cpp
     # The CRT's pow/sin/cos/... answered by the host's libm.
     ${CMAKE_CURRENT_SOURCE_DIR}/src/crt_math.cpp
     # The CRT's memcpy/memmove/memset/XMemCpy answered by the host's libc.
@@ -124,6 +132,13 @@ set_target_properties(refiii_hooks PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # carries the payload's rex/thread/mutex.h and the C logging bridge.
 target_include_directories(refiii_hooks PRIVATE ${REFII_RUNTIME_INCLUDE_DIRS})
 target_link_libraries(refiii_hooks PRIVATE rex::runtime)
+
+# The hard-mod contract (core/refii_mod.h, core/refii_mod_events.h, core/guest_build.h) lives in
+# Fable2/src/vfs/include, which the player's build stages among its include directories; the dev
+# build gives it to mod_api.cpp alone, whose refii::guest is Fable 2's header's (no other hook here
+# may see that namespace beside fable3_guest_build.h's).
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/mod_api.cpp PROPERTIES
+    INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/Fable2/src/vfs/include")
 
 # Payload-shaped, as Fable2/src/hooks/CMakeLists.txt explains: logging crosses as C, no Tracy.
 target_compile_definitions(refiii_hooks PRIVATE REFII_PAYLOAD_LOG_BRIDGE=1)

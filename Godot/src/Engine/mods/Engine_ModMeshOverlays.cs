@@ -667,6 +667,9 @@ public static class ModMeshOverlays
 	/// bones, so the glTF's skin joints are matched to the template's bone table BY NAME and the
 	/// weights packed to bytes; a joint the template has no bone for is refused by name, because
 	/// a character that loads and deforms wrongly is worse than one that is refused.
+	///
+	/// A FABLE 3 TEMPLATE (MeshFile 46/47, <see cref="MdlInfo.Body"/> set) keeps its topology: see
+	/// <see cref="TryConvertPlanar"/>.
 	/// </summary>
 	public static bool TryConvert(
 		byte[] gltf,
@@ -711,6 +714,11 @@ public static class ModMeshOverlays
 		{
 			error = loadError;
 			return false;
+		}
+
+		if (info.Body is not null)
+		{
+			return TryConvertPlanar(originalMdl, info, surfaces, out rebuilt, out error, out vertexCount, out triangleCount);
 		}
 
 		int requiredMaterials = 1;
@@ -829,6 +837,123 @@ public static class ModMeshOverlays
 
 		vertexCount = totalVertices;
 		triangleCount = totalIndices / 3;
+		return true;
+	}
+
+	/// <summary>
+	/// A Fable 3 template's vertices moved to the glTF's, in place
+	/// (<see cref="Engine_MdlWriter.TryRewritePlanarVertices"/>).
+	/// </summary>
+	/// <remarks>
+	/// The glTF's vertices, primitives in order, are the template's LOD-0 parts' vertices in part
+	/// order. With one primitive per part each primitive's count must be its part's; otherwise the
+	/// totals must agree. Normals and tangents are written when every primitive states them and
+	/// are otherwise the template's. The glTF's triangles, UVs, joints and weights are not
+	/// written: the template's stand.
+	/// </remarks>
+	private static bool TryConvertPlanar(
+		byte[] originalMdl,
+		MdlInfo info,
+		List<MdlImportedSurface> surfaces,
+		out byte[] rebuilt,
+		out string error,
+		out int vertexCount,
+		out int triangleCount)
+	{
+		rebuilt = Array.Empty<byte>();
+		error = string.Empty;
+		vertexCount = 0;
+		triangleCount = 0;
+
+		List<MdlMeshBuffer> parts = info.MeshBuffers;
+		if (surfaces.Count == parts.Count)
+		{
+			for (int i = 0; i < parts.Count; i++)
+			{
+				if (surfaces[i].VertexCount != parts[i].VertexCount)
+				{
+					error =
+						$"glTF primitive {i} has {surfaces[i].VertexCount} vertices, the template's part {i} " +
+						$"{parts[i].VertexCount}. A Fable 3 model is rewritten at its own vertex counts: " +
+						"its vertices moved — same vertices, same order — and its triangles kept.";
+					return false;
+				}
+			}
+		}
+
+		int total = 0;
+		bool allNormals = true;
+		bool allTangents = true;
+		foreach (MdlImportedSurface surface in surfaces)
+		{
+			total += surface.VertexCount;
+			triangleCount += surface.TriangleCount;
+			allNormals &= surface.Normals.Length >= surface.VertexCount * 3;
+			allTangents &= surface.Tangents.Length >= surface.VertexCount * 4;
+		}
+
+		long templateTotal = 0;
+		foreach (MdlMeshBuffer part in parts)
+		{
+			templateTotal += part.VertexCount;
+		}
+
+		if (total != templateTotal)
+		{
+			error =
+				$"the glTF has {total} vertices over {surfaces.Count} primitive(s); the template's " +
+				$"{parts.Count} part(s) hold {templateTotal} ({string.Join(", ", parts.Select(p => p.VertexCount))}). " +
+				"A Fable 3 model is rewritten at its own vertex counts: its vertices moved — same " +
+				"vertices, same order — and its triangles kept.";
+			return false;
+		}
+
+		var positions = new float[total * 3];
+		var normals = allNormals ? new float[total * 3] : Array.Empty<float>();
+		var tangents = allTangents ? new float[total * 4] : Array.Empty<float>();
+		int at = 0;
+		foreach (MdlImportedSurface surface in surfaces)
+		{
+			int count = surface.VertexCount;
+			Array.Copy(surface.Positions, 0, positions, at * 3, count * 3);
+			if (allNormals)
+			{
+				Array.Copy(surface.Normals, 0, normals, at * 3, count * 3);
+			}
+
+			if (allTangents)
+			{
+				Array.Copy(surface.Tangents, 0, tangents, at * 4, count * 4);
+			}
+
+			at += count;
+		}
+
+		var edits = new List<MdlGeometryEdit>(parts.Count);
+		int vertexBase = 0;
+		for (int i = 0; i < parts.Count; i++)
+		{
+			int count = (int)parts[i].VertexCount;
+			if (count != 0)
+			{
+				edits.Add(new MdlGeometryEdit
+				{
+					BufferIndex = i,
+					Positions = positions[(vertexBase * 3)..((vertexBase + count) * 3)],
+					Normals = allNormals ? normals[(vertexBase * 3)..((vertexBase + count) * 3)] : Array.Empty<float>(),
+					Tangents = allTangents ? tangents[(vertexBase * 4)..((vertexBase + count) * 4)] : Array.Empty<float>(),
+				});
+			}
+
+			vertexBase += count;
+		}
+
+		if (!Engine_MdlWriter.TryRewritePlanarVertices(originalMdl, info, edits, out rebuilt, out error))
+		{
+			return false;
+		}
+
+		vertexCount = total;
 		return true;
 	}
 

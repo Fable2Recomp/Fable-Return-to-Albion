@@ -60,7 +60,7 @@ public static class SaveExport
 			}
 
 			string target = Path.Combine(destination, name);
-			if (name == "mainsave.bin" && records.Count != 0)
+			if (name == "mainsave.bin" && records.Count != 0 && Refii.Core.Engine_TitleGame.Active.FiltersSaveRecords)
 			{
 				SaveStream stream = SaveStream.ReadFile(source);
 				SaveSidecar.HeldRecords held = Refii.Mods.ModSaveFilter.Filter(stream, records);

@@ -2,6 +2,7 @@ namespace Refii.Titles.Fable2;
 
 using System.Runtime.CompilerServices;
 using Refii.Core;
+using Refii.Ui;
 
 /// <summary>
 /// Fable 2 to the shell: its game-level pieces, installed into the shell's registries when it is the
@@ -13,6 +14,15 @@ public sealed class Fable2Title : Engine_TitleGame
 	internal static void RegisterTitle() => Register(new Fable2Title());
 
 	public override Engine_Title Title => Engine_Title.Fable2;
+
+	/// <summary>The save stream and the guest's tolerance of unknown records are proven (ModSaveFilter).</summary>
+	public override bool FiltersSaveRecords => true;
+
+	/// <summary>The host page book (Engine_UiHostBoxPage) presents the mod save gate's question.</summary>
+	public override bool AsksHostQuestions => true;
+
+	/// <summary>The front-end dialog, the page book and the query paper present them.</summary>
+	public override bool PresentsHostBoxes => true;
 
 	private static readonly ArchonModManager Archon = new();
 

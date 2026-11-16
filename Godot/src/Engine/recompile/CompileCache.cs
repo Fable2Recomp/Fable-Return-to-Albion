@@ -137,6 +137,10 @@ public sealed class CompileCache
     public bool Complete { get; private set; } = true;
 
     /// <summary>Relative paths read from the tracked primary root (e.g. <c>bundle/</c> or <c>recompile/</c>) across all units.</summary>
+    /// <summary>The first reason a compiled unit was not kept this run (null when every unit was): the input path
+    /// no root holds, an input that cannot be hashed, or the unit's missing precompiled-header record.</summary>
+    public string? StoreFailure { get; private set; }
+
     public IReadOnlyCollection<string> TrackedInputs
     {
         get
@@ -530,6 +534,9 @@ public sealed class CompileCache
                 string? id = name == null ? null : UnitId(name, extraFlags);
                 if (id == null || !TryNames(dependencies, built, name, out var names) || (usesPch && _pchId == null))
                 {
+                    StoreFailure ??= id == null ? "no unit id for " + source
+                        : usesPch && _pchId == null ? "no precompiled-header record for " + source
+                        : _namesFailure ?? "the dependencies of " + source + " could not be read";
                     Complete = false;
                     return built;
                 }
@@ -919,6 +926,8 @@ public sealed class CompileCache
         return holds;
     }
 
+    private string? _namesFailure;
+
     private bool TryNames(string dependencies, string output, string? source, out List<string> names)
     {
         names = new List<string>();
@@ -949,6 +958,7 @@ public sealed class CompileCache
             string? name = NameOf(full);
             if (name == null || CurrentHash(name) == null)
             {
+                _namesFailure ??= (name == null ? "an input under no root: " : "an input that cannot be hashed: ") + full;
                 return false;
             }
 

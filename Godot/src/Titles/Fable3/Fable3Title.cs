@@ -20,6 +20,121 @@ public sealed class Fable3Title : Engine_TitleGame
 	/// </summary>
 	public override bool MorphedModelsKeepCloth => true;
 
+	/// <summary>An online joiner, as the payload states it from the game's own Network.IsClient each tick.</summary>
+	public override bool OnlineClient => Refii.Host.HostBridge.PlayerOwned() == 2u;
+
+	/// <summary>Online, as the game answers it (Network.IsInLiveGame, stated by the payload each tick).</summary>
+	public override bool PeerJoined => Refii.Host.HostBridge.PlayerOwned() is 1u or 2u;
+
+	/// <summary>Fable3Boxes presents the host's questions and notices and a mod's menu box in Fable 3's own box look.</summary>
+	public override bool PresentsHostBoxes => true;
+
+	/// <summary>Whose menu a host menu or box is: this machine's player, 2 on an online joiner, else 1.</summary>
+	public override int MenuPlayer => Refii.Host.HostBridge.PlayerOwned() == 2u ? 2 : 1;
+
+	/// <summary>A mod marker's icon names to this game's own world-icon art.</summary>
+	public override System.Collections.Generic.IReadOnlyDictionary<string, string>? MarkerIconAliases => Fable3IconArt.MarkerAliases;
+
+	/// <summary>Fable 3's progression is bought in guild seals: a mod ability's price is its <c>seals</c> list.</summary>
+	public override bool PricesAbilitiesInSeals => true;
+
+	/// <summary>
+	/// The mod abilities, declared to the payload's Lua engine (Fable3CoreLua: Refii._ability_declare), which
+	/// lives in the game VM and so is emptied when a load rebuilds it: the engine publishes how many it holds
+	/// (<c>refii.abilities</c>), and a count short of the declared ones declares them again.
+	/// </summary>
+	public override void PumpMods(bool guestUp)
+	{
+		DriveModScreen(guestUp);
+		// The mods' own morphs (Engine_ModMorphs) for the morph hook to answer, as Fable 2's GameCharacterMorphs
+		// publishes them: again after each mount.
+		if (_morphRegistry != Refii.Hero.Engine_ModMorphs.Generation)
+		{
+			_morphRegistry = Refii.Hero.Engine_ModMorphs.Generation;
+			foreach (string problem in Refii.Hero.Engine_ModMorphs.Problems)
+			{
+				Godot.GD.PushWarning("[mods] morphs " + problem);
+			}
+
+			Refii.Hero.Engine_ModMorphs.Publish(Refii.Hero.Engine_ModMorphs.All, Refii.Host.HostBridge.SetModSetting, ++_morphsPublished);
+		}
+
+		Refii.Ui.Engine_UiModAbilities.Pump(guestUp);
+		if (!guestUp || !Refii.Host.HostBridge.IsInGame)
+		{
+			return;
+		}
+
+		int declared = 0;
+		foreach (Refii.Ui.Engine_UiModAbilities.Ability ability in Refii.Ui.Engine_UiModAbilities.All)
+		{
+			declared += ability.Seals is { Count: > 0 } ? 1 : 0;
+		}
+
+		if (declared == 0)
+		{
+			return;
+		}
+
+		ulong now = Godot.Time.GetTicksMsec();
+		if (now - _lastAbilityCheck < 2000)
+		{
+			return;
+		}
+
+		_lastAbilityCheck = now;
+		float held = Refii.Host.HostBridge.TryGetModValue("refii.abilities", out float value) ? value : 0f;
+		if (held < declared)
+		{
+			Refii.Ui.Engine_UiModAbilities.Redeclare();
+		}
+	}
+
+	private ulong _lastAbilityCheck;
+	private Godot.CanvasItem? _hud;
+	private Godot.CanvasItem? _statedScreen;
+	private bool _modScreenUp;
+	private bool _wasInGame;
+	private int _morphRegistry = -1;
+	private int _morphsPublished;
+
+	/// <summary>
+	/// A MOD'S SCREEN (<see cref="Refii.Mods.ModScreen"/>: a Godot script's <c>own_screen</c>) stands where
+	/// the game's own screens would, as on Fable 2: they and the HUD draw nothing, and only Start reaches the
+	/// game (<see cref="Fable3Input"/>), so the script's screen has the pad, the mouse and the keys. Released
+	/// when the game is left.
+	/// </summary>
+	private void DriveModScreen(bool guestUp)
+	{
+		bool inGame = guestUp && Refii.Host.HostBridge.IsInGame;
+		// A mod's HUD overrides go when the game is left, as on Fable 2 (GameUi's leave).
+		if (_wasInGame && !inGame)
+		{
+			Refii.Ui.Engine_UiHudOverrides.Clear();
+		}
+
+		_wasInGame = inGame;
+		if (Refii.Mods.ModScreen.Owned && !inGame)
+		{
+			Refii.Mods.ModScreen.Release();
+		}
+
+		bool up = Refii.Mods.ModScreen.Owned && inGame;
+		if (up == _modScreenUp)
+		{
+			return;
+		}
+
+		_modScreenUp = up;
+		foreach (Godot.CanvasItem? item in new[] { _hud, _statedScreen })
+		{
+			if (item is not null && Godot.GodotObject.IsInstanceValid(item))
+			{
+				item.Visible = !up;
+			}
+		}
+	}
+
 	/// <summary>Fable 3's shader banks are entries of levels.bnk, not loose files.</summary>
 	public override (string Named, string Release)? PackedShaderBanks =>
 		("shaders/shaders.sbk", "shaders/shadersrelease.sbk");
@@ -42,19 +157,27 @@ public sealed class Fable3Title : Engine_TitleGame
 		layer.AddChild(new Fable3MapTable { Name = "MapTable" });
 		// The HUD on the shared view, under every other surface as the guest's HUD layer is; its
 		// screen fade stands on its own canvas layer over all of them.
-		layer.AddChild(new Fable3Hud { Name = "Hud" });
+		var hud = new Fable3Hud { Name = "Hud" };
+		_hud = hud;
+		layer.AddChild(hud);
 		var natives = new Fable3GuiNatives { Name = "GuiNatives" };
 		layer.AddChild(natives);
 		// The world icons sit under the boxes and screens, as the guest's HUD layer does.
 		layer.AddChild(new Fable3WorldIcons { Name = "WorldIcons" });
 		layer.AddChild(new Fable3Options { Name = "Options" });
 		layer.AddChild(new Fable3HostOptions { Name = "HostOptions" });
-		layer.AddChild(new Fable3StatedScreen { Name = "StatedScreen" });
+		var statedScreen = new Fable3StatedScreen { Name = "StatedScreen" };
+		_statedScreen = statedScreen;
+		layer.AddChild(statedScreen);
 		layer.AddChild(new Fable3Boxes(natives) { Name = "Boxes" });
 		// The console's keyboard, over every screen that asks for it.
 		layer.AddChild(new Fable3Keyboard { Name = "Keyboard" });
 		// Over the HUD, as Fable 2's toast stands above every presentation.
 		layer.AddChild(new Fable3Achievements { Name = "Achievements" });
+		// A mod's notices, as the game's own TopBox messages.
+		layer.AddChild(new Fable3Notices { Name = "Notices" });
+		// Refii's own co-op channel: the players' values, the relayed events and the route (partner messages).
+		layer.AddChild(new Fable3CoopChannel { Name = "CoopChannel" });
 		_splash = new Fable3Splash { Name = "Splash" };
 		layer.AddChild(_splash);
 		layer.AddChild(new Fable3Culture { Name = "Culture" });

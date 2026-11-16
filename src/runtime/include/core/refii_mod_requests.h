@@ -111,3 +111,173 @@ extern "C" int32_t refii_mod_press(int32_t player, const char* button, int32_t h
 extern "C" int32_t refii_mod_tap(int32_t player, const char* button, int32_t ticks);
 extern "C" int32_t refii_mod_set_menu_rows(int32_t player, const char* menu, const char* rows);
 extern "C" int32_t refii_mod_open_screen(int32_t player, uint32_t screen);
+
+// The mod lane's partner messages, signals and published texts (moved from Fable 2's mod_api.cpp; both titles
+// post through these).
+#ifndef REFII_MOD_PARTNER_PAYLOAD_MAX
+#define REFII_MOD_PARTNER_PAYLOAD_MAX 256
+#define REFII_MOD_PARTNER_NAME_MAX 32
+#endif
+#ifndef REFII_MOD_SIGNAL_PAYLOAD_MAX
+#define REFII_MOD_SIGNAL_PAYLOAD_MAX 1024
+#define REFII_MOD_SIGNAL_NAME_MAX 96
+#endif
+/// A partner message's name and mod: letters, digits, '_', '.', '-', at most REFII_MOD_PARTNER_NAME_MAX;
+/// its payload any text up to REFII_MOD_PARTNER_PAYLOAD_MAX bytes.
+/// A signal's or published text's payload, and its scoped "<mod>.<name>".
+
+/// A mod's message to THE OTHER MACHINE of an online session, raised there as partner_message
+/// (mod, name, payload, from: the player this machine plays). 0 outside an online session (owned is
+/// neither 1 nor 2), for a bad word or an over-long payload. Any thread.
+extern "C" int32_t refii_mod_send_to_partner(const char* mod, const char* name, const char* payload);
+/// "<mod>.<name>" and its payload to Godot on this machine (RefiiHost.mod_signal). 1 when posted.
+extern "C" int32_t refii_mod_signal(const char* name, const char* payload);
+/// A text Godot reads with get_text(key), a change raising value_changed. 1 when posted.
+extern "C" int32_t refii_mod_publish_text(const char* key, const char* text);
+
+
+// ---------------------------------------------------------------------------------------------
+// PLAYER STATE: a mod's values for one player, right on both co-op machines.
+// ---------------------------------------------------------------------------------------------
+//
+// Keep anything that belongs to a player here rather than in a mod's own array: a pool, a level,
+// a cooldown. `player` is 1 or 2, `key` "<mod>.<name>". The values are THE SAME ON BOTH MACHINES
+// of an online session: each player's are owned by the machine that plays that hero, and a write
+// on either machine reaches the owner (an add merges, so a spend on the host and a refill on the
+// joiner both count). SAVED values go home with the hero: they are written beside the save the
+// game writes that hero into — player one's main save, a local player two's own save, an online
+// joiner's own save on the joiner's machine — and come back when the game loads the hero from it.
+// So a mod written as if for one player is right for both, in every co-op mode.
+
+/// The value, or `fallback` when the player has none under `key`.
+extern "C" float refii_mod_player_value(int32_t player, const char* key, float fallback);
+/// Whether the player has a value under `key` (written to `out` when not null).
+extern "C" int32_t refii_mod_player_get(int32_t player, const char* key, float* out);
+/// Sets a session value (kept while the hero is in play, never saved).
+extern "C" void refii_mod_player_set(int32_t player, const char* key, float value);
+/// Adds to a value (a missing one counts as 0). `saved` keeps the key with the hero's save.
+extern "C" void refii_mod_player_add(int32_t player, const char* key, float delta, int32_t saved);
+/// Sets a SAVED value: kept with the hero's own save and back when it loads.
+extern "C" void refii_mod_player_save(int32_t player, const char* key, float value);
+
+/// TYPED VALUES in the same store, under the same keys and owners: a TEXT (at most
+/// REFII_MOD_PLAYER_TEXT_MAX bytes) and a HASH, kept exactly (a 32-bit record hash does not survive a
+/// float). A key holds one type: a number written over a text replaces it and the other way round;
+/// the number readers answer 0 / the fallback for a text key. A hash is stored as the text "0x%08x",
+/// so either reader reads it.
+#define REFII_MOD_PLAYER_TEXT_MAX 256
+/// The text under `key` into `out` (NUL-terminated, cut to `capacity`); its length, -1 when the
+/// player has no text there.
+extern "C" int32_t refii_mod_player_text(int32_t player, const char* key, char* out, uint32_t capacity);
+/// Sets a session text (null clears to ""). Longer than REFII_MOD_PLAYER_TEXT_MAX is cut.
+extern "C" void refii_mod_player_set_text(int32_t player, const char* key, const char* text);
+/// Sets a SAVED text: kept with the hero's own save and back when it loads.
+extern "C" void refii_mod_player_save_text(int32_t player, const char* key, const char* text);
+/// The hash under `key` (a text that reads as a "0x…" or decimal number) into `out`; 1 when there is one.
+extern "C" int32_t refii_mod_player_hash(int32_t player, const char* key, uint32_t* out);
+/// Sets a SAVED hash (stored as the text "0x%08x").
+extern "C" void refii_mod_player_save_hash(int32_t player, const char* key, uint32_t hash);
+/// Whether this machine plays that player's hero (both outside an online session; the host plays
+/// player one and the joiner player two inside one). Work that runs on its own every tick for a
+/// player — a refill, a timer — runs where the hero is played, so it runs once per session.
+extern "C" int32_t refii_mod_player_here(int32_t player);
+/// Whether the event being handled is the game's COPY of something the other co-op machine
+/// decides — a cloned action's animation event, a replicated cast's charge or launch, a hit
+/// response predicted for a body played elsewhere, a received experience change. The game runs
+/// those on both machines, so a handler runs on both: its verdict (cancel, a written field) applies
+/// on both, from the same player values, but PLAYER-STATE WRITES ARE DROPPED during the copy — the
+/// deciding machine makes them, so a spend counts once. A handler with an effect on the body itself
+/// (holding the hero in place) skips it during the copy; nothing else needs this.
+///
+/// RELAYED events are copies too. An event the game raises on one machine only, but whose effect
+/// belongs on the other — a swing, a roll or an item use where that hero is played (the host's AI
+/// must see player two's), a hit landing on the host (the joiner's looks follow its victims) — is
+/// sent by refii over the co-op channel and dispatched on the other machine as a replica, its
+/// actor that machine's copy of the hero (or the entity of the same UniqueID). Its objects of the
+/// deciding machine's own (a hit record, an ability, an action, an item) are 0, cancel and writes
+/// do nothing (it already happened), and it arrives a network moment later. The catalog marks
+/// each relayed event; a handler that makes a world or body effect skips the copy.
+extern "C" int32_t refii_mod_event_replica(void);
+
+/// LUA AND GODOT SEE HANDLES, NOT ADDRESSES. The game's Lua number is a 32-bit float, so a
+/// guest address above 2^24 is not exact there; every entity or object the bus hands to Lua or
+/// to a Godot script is a HANDLE: a small integer assigned to that address for the session (0 for
+/// 0). These convert both ways; a native mod needs them only to talk to those two sides.
+extern "C" uint32_t refii_mod_handle(uint32_t address);
+extern "C" uint32_t refii_mod_handle_address(uint32_t handle);
+
+/// The game's own 32-bit FNV-1 of a name (basis 0x811C9DC5): a GDB record's hash from its name,
+/// a text tag's hash as the TextManager keys it.
+extern "C" uint32_t refii_mod_fnv1(const char* text);
+
+
+// ---------------------------------------------------------------------------------------------
+// THE GUEST TICK AND THE GAME VM, for native mods on every title.
+// ---------------------------------------------------------------------------------------------
+struct PPCContext;
+
+/// A mod's per-tick callback: the guest's context (a copy, safe to use for guest calls), guest
+/// memory, and the real seconds since the last tick (capped at a quarter second across a hitch).
+/// Runs on the guest tick thread every game tick, menus included.
+typedef void (*refii_mod_tick_fn)(PPCContext* ctx, uint8_t* base, float seconds);
+
+extern "C" void refii_mod_register_tick(refii_mod_tick_fn fn);
+
+/// Registers `fn` (a refii_mod_tick_fn) when the game module loads:
+///   static void Tick(PPCContext* ctx, uint8_t* base, float seconds) { ... }
+///   REFII_MOD_ON_TICK(Tick);
+#define REFII_MOD_ON_TICK(fn) \
+  static const int refii_mod_on_tick_##fn = (refii_mod_register_tick(&fn), 0)
+
+/// Runs every registered tick callback with `seconds` (the title's guest tick calls it once a tick).
+void refii_mod_run_ticks(PPCContext* ctx, uint8_t* base, float seconds);
+
+/// Runs a Lua source chunk of any length in the GAME VM — the shipped game scripts' and
+/// mods' Lua. True when it ran without error. Guest tick thread only (a tick callback or a hook).
+extern "C" int32_t refii_mod_run_game_lua(PPCContext* ctx, uint8_t* base, const char* chunk);
+
+/// The integer value of the Lua expression `expr` in [lo, hi], by a binary search of assertions —
+/// a handful of chunk runs, so read it when it can have changed (see refii_mod_lua_generation),
+/// not every tick. False when the expression is not a number in that range.
+extern "C" int32_t refii_mod_game_lua_int(PPCContext* ctx, uint8_t* base, const char* expr,
+                                          int32_t lo, int32_t hi, int32_t* out);
+
+/// Changes every time the game's Lua state is rebuilt (a new session's startup scripts) or a
+/// save's Lua state is loaded into it. A mod keeping state in the save re-reads it on a change.
+extern "C" uint32_t refii_mod_lua_generation(void);
+
+/// Writes `RefiiModSave.<key> = value` in the game VM: an integer that persists with the save
+/// game (Engine_ModLua's preamble carries the table through GetSaveTable / LoadScriptSave).
+/// `key` is a Lua identifier. True when written. Guest tick thread only.
+extern "C" int32_t refii_mod_save_set_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t value);
+
+/// Reads `RefiiModSave.<key>` in [lo, hi] (a binary search of chunk runs — read it on a
+/// refii_mod_lua_generation change, not every tick). False when absent or out of range.
+extern "C" int32_t refii_mod_save_get_int(PPCContext* ctx, uint8_t* base, const char* key, int32_t lo, int32_t hi,
+                                          int32_t* out);
+
+/// MODS' OWN MORPH TYPES. The weight function `sub_822DA028(CECMorph, type)` weighs types 1..18 and
+/// answers 0 for 11, 13 and every type at or above 19 (its bound, TU1 0x822DA274..7C); the vertex,
+/// texture, skeletal and particle readers pass a record's `MorphType` to it unchecked. A mod declares
+/// morphs in `morphs.json` (name, label, default, min, max, step); each one's type is
+/// refii_mod_morph_id("<mod>.<name>"), and a GDB record carrying that type — a MorphTargets pair, a
+/// TextureMorphs layer, a SkeletalMorphs item, a ParticleMorphs item — is drawn at the player's weight
+/// for it, which the morph hook answers for either player's hero, manual look or automatic.
+/// The weights are the player store's `morph.<id>` (id in decimal), saved with the hero's save and
+/// the same on both co-op machines; the registry (id, default, range) is what Godot read from the
+/// enabled mods.
+/// The type of a morph named "<mod>.<name>": FNV-1 of the name in lower case, the top bit cleared,
+/// plus 0x100 when under it (never a shipped or special type).
+extern "C" uint32_t refii_mod_morph_id(const char* scoped);
+/// The registered mod morphs' ids into `out` (up to `capacity`), in the mods' load order; the count.
+extern "C" int32_t refii_mod_morph_list(uint32_t* out, int32_t capacity);
+/// Whether `id` is a registered mod morph; its default and range into the outputs that are not null.
+extern "C" int32_t refii_mod_morph_registered(uint32_t id, float* out_default, float* out_min, float* out_max);
+/// Player `player`'s weight for mod morph `id` into `out`: the stored weight clamped to the range,
+/// else the default. False for an unregistered id or an invalid player.
+extern "C" int32_t refii_mod_morph_weight(int32_t player, uint32_t id, float* out);
+/// Sets player `player`'s weight for mod morph `id`, clamped to its range and saved with the hero. A
+/// write on the machine that does not play the hero reaches the one that does. False for an
+/// unregistered id or an invalid player. The morph hook redraws that hero on its next tick and
+/// raises MorphChanged.
+extern "C" int32_t refii_mod_set_morph_weight(int32_t player, uint32_t id, float weight);

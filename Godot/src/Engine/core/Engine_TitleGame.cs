@@ -61,6 +61,36 @@ public abstract class Engine_TitleGame
 	public virtual bool MorphedModelsKeepCloth => false;
 
 	/// <summary>
+	/// The mod save filter may rewrite this title's <c>mainsave.bin</c> (a missing mod's records out,
+	/// held for restore): only where the save stream's layout and the guest's tolerance of a record it
+	/// cannot resolve were read in the binary. Fable 2's were; elsewhere a stamped save loads with its
+	/// records as they are and only the player store is filtered.
+	/// </summary>
+	public virtual bool FiltersSaveRecords => false;
+
+	/// <summary>
+	/// The title presents a host question on a page (Engine_UiHostBoxes.AskPage, the host page book).
+	/// Where it cannot, the mod save gate does not refuse a start to ask: a save made with mods that are
+	/// not enabled loads with their values held out, as Continue on the question would.
+	/// </summary>
+	public virtual bool AsksHostQuestions => false;
+
+	/// <summary>
+	/// The title presents the host's questions and notices (Engine_UiHostBoxes: a mod's message box from
+	/// Godot, the co-op consent and mod questions, refunds). Where it does not, a question is answered at
+	/// once as withdrawn (-1) instead of waiting for a box nobody draws, and a notice is shown as a mod
+	/// notice (Engine_UiNotices, which every title presents).
+	/// </summary>
+	public virtual bool PresentsHostBoxes => false;
+
+	/// <summary>
+	/// Mod abilities are priced in guild seals (abilities.json <c>seals</c>, Fable 3's progression) rather than
+	/// by the game's experience table (<c>costLike</c>, Fable 2's). An ability with no price this title reads
+	/// is not declared to it.
+	/// </summary>
+	public virtual bool PricesAbilitiesInSeals => false;
+
+	/// <summary>
 	/// The title's UI over the world, standing up beside the session before any guest runs (it
 	/// draws from the shipped assets); null when the title has none. The game window drives it
 	/// through <c>Refii.Game.IGameTitleUi</c> when the node implements it.
@@ -427,6 +457,12 @@ public abstract class Engine_TitleGame
 
 	/// <summary>The title's string book in the running culture, for shared consumers resolving a Babel tag; null before it is read.</summary>
 	public virtual Refii.Text.Engine_BabelDatabase? Strings => null;
+
+	/// <summary>
+	/// A mod marker's icon names (<c>quest</c>, <c>gold</c>, <c>follow</c>…) to this title's own textures;
+	/// null keeps the shared table (<see cref="Refii.Ui.Engine_HudModMarkers.IconAliases"/>, Fable 2's art).
+	/// </summary>
+	public virtual System.Collections.Generic.IReadOnlyDictionary<string, string>? MarkerIconAliases => null;
 
 	/// <summary>The player whose menus are open on this machine (0 when the title has no such notion).</summary>
 	public virtual int MenuPlayer => 0;

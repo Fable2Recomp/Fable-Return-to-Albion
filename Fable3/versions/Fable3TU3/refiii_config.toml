@@ -191,6 +191,7 @@
 0x8231CAA8 = { name = "rex_lhLuaScriptSystem_LoadStartupScripts" }
 0x82320140 = { name = "rex_lhLuaScriptSystem_LoadScriptSave" }
 0x8231DCE0 = { name = "rex_lhLuaScriptSystem_RunCameraScripts" }
+0x8231CE70 = { name = "rex_lhLuaScriptSystem_RunPostLoadScripts" }
 0x822D1808 = { name = "rex_lua_close" }
 0x822CFD30 = { name = "rex_luaL_loadbuffer" }
 0x82236DD8 = { name = "rex_lua_pcall" }
@@ -244,6 +245,263 @@
 0x82468D20 = { name = "rex_WorldMap_TravelToStop" }
 0x8294D1D8 = { name = "rex_TownDemand_Accept" }
 0x8294D3A0 = { name = "rex_TownDemand_Reject" }
+# The combat seams (Fable3/src/hooks/src/mod_combat_hooks.cpp): the hit receiver's OnHit (component 36, hit),
+# the health's OnHit (listener = health+0xC, hit, result word), its CalculateDamage and lethal test (health,
+# hit), the flinch's OnHit, the block action's hit listener, the strike's CommitSwing (ability, entity), an
+# action's End and its base OnAnimEvent (action, anim id, -, CCharString*), the roll's CanStart and Start
+# (ability, entity), the ability set's PerformRequest (entity, request), movement's interrupt test (action
+# handle) and the manager's handle resolver, the player's GameAction receiver (receiver, GameAction) and
+# the player targeting's SetTarget (component, target) and ClearTarget (component).
+0x824B4CE0 = { name = "rex_CECHitReceiver_OnHit" }
+0x826263E0 = { name = "rex_CECHealth_OnHit" }
+0x82629D28 = { name = "rex_CECHealth_CalculateDamage" }
+0x82626300 = { name = "rex_CECHealth_IsLethal" }
+0x82A88B68 = { name = "rex_CECHitResponsePlayAction_OnHit" }
+0x82BC8768 = { name = "rex_CActionBlock_OnHit" }
+0x829C4438 = { name = "rex_CAbilityActionMelee_CommitSwing" }
+0x82250930 = { name = "rex_CAction_End" }
+0x82C01F60 = { name = "rex_CAbilityActionStrafeRoll_CanStart" }
+0x82C024E8 = { name = "rex_CAbilityActionStrafeRoll_Start" }
+0x826A8B60 = { name = "rex_CECAbilities_PerformRequest" }
+0x828A67C8 = { name = "rex_CAction_OnAnimEvent" }
+0x827E1378 = { name = "rex_CAction_MovementInterruptible" }
+0x821C5C80 = { name = "rex_CActionManager_ResolveHandle" }
+0x82931B08 = { name = "rex_CPlayerActionReceiver_ProcessAction" }
+0x829F7ED8 = { name = "rex_CECTargetingPlayer_SetTarget" }
+0x829F7D78 = { name = "rex_CECTargetingPlayer_ClearTarget" }
+# The spell and control seams (mod_combat_hooks.cpp): the quick charge's CanStart (ability, entity,
+# request), the spell manager's ChargeLevelFromTime (mgr, f1 time, int* count, int* first), LaunchSlot (mgr,
+# targeted, slot) and OnSpellLaunched (mgr, slot, targeted), the hero's look-at record writer (record,
+# down).
+0x82C0D208 = { name = "rex_CAbilityActionMagicCharge_CanStart" }
+0x82632AC8 = { name = "rex_CECSpellManager_ChargeLevelFromTime" }
+0x826336F8 = { name = "rex_CECSpellManager_LaunchSlot" }
+0x82638B88 = { name = "rex_CECSpellManager_OnSpellLaunched" }
+0x823A9038 = { name = "rex_CPlayer_SetLookAtButtonDown" }
+# The parity calls' C++ (Fable3/src/hooks/src/mod_lua_hooks.cpp): the sprint component's own setter (sprint,
+# on — CECSprint_vf18 calls it with 0 when stamina runs out), an entity's component removal (entity, id), the
+# world's entity by its 64-bit UID (world, &key; lhScriptEntityRef_Resolve's lookup at world+216) and the
+# entity's use of an inventory item (entity, item, &CCharString override).
+0x82A5D7C8 = { name = "rex_CECSprint_SetSprinting" }
+0x82414C80 = { name = "rex_lhEntity_RemoveComponent" }
+0x82241F28 = { name = "rex_World_EntityByUid" }
+0x8242F060 = { name = "rex_lhEntity_UseInventoryItem" }
+# Mod events, the world batch (Fable3/src/hooks/src/mod_events_hooks.cpp): experience's Modify (component 189,
+# pool, f1) and its spend loop (component, vector of six costs); the save manager's WriteSave (mgr, CCharString*
+# file), the package writers (mgr, CCharString* name, ...) and player two's bracket; the inventory's
+# AddOneOfRecord (out, inventory, record, notify, ...); the expression start (performer, {word, record}, ...);
+# the stats' morality and Primal (stats, f1); the time manager's Update (mgr, f1); the load-level mode's Start
+# (mode); the crime record's Add (crime, criminal, victim, type, ...); the pause mode's apply and remove (mode).
+0x823FA338 = { name = "rex_CECExperience_Modify" }
+0x823FAC68 = { name = "rex_CECExperience_SpendAmounts" }
+0x822F9A58 = { name = "rex_lhSaveManager_WriteSave" }
+0x822F9318 = { name = "rex_lhSaveManager_WritePackage" }
+0x822F9608 = { name = "rex_lhSaveManager_WriteHeroPackage" }
+0x822F9108 = { name = "rex_lhSaveManager_WritePlayerTwo" }
+0x8241AA88 = { name = "rex_CECInventory_AddOneOfRecord" }
+0x8264A910 = { name = "rex_CECExpressionPerformer_Start" }
+0x823D8C00 = { name = "rex_CECStats_ModifyMorality" }
+0x823DA778 = { name = "rex_CECStats_ModifyPrimal" }
+0x821AB918 = { name = "rex_lhGameTimeManager_Update" }
+0x82756020 = { name = "rex_CGameModeLoadLevel_Start" }
+0x82898B68 = { name = "rex_CECCrime_Add" }
+0x824CE9B0 = { name = "rex_CGameModePause_Apply" }
+0x824CECC8 = { name = "rex_CGameModePause_Remove" }
+# Mod events, the second batch (mod_events_hooks.cpp, mod_combat_hooks.cpp): the spell registry's Create (registry,
+# params) -> spell; the firearm's Fire (firearm 163, target, aimed); an entity's AddComponent (entity, key, replace)
+# -> component; the opinion component's OnDeed (opinion 55, message) and ModifyAxisValue (opinion, hero, axis, f1);
+# the theme manager's BlendToTheme (mgr, CCharString* theme, layer, .., f1 weight, f2 seconds); the bed's
+# interaction menu (bed 207, user, ..); slow time's SetWorldScale (caster, f1, f2); a one-time collectable's
+# status (component 84, status, hero); the player's gift (player 37, item); follow's start (follow 115, leader,
+# f1, f2) and stop (follow); the status installers Electrify (source, victim, serial, level, f1), Chaos (source,
+# victim, serial, f1, installs, replica) and Ignite (victim, source, serial, level, f3, f4).
+0x8268B618 = { name = "rex_CSpellRegistry_Create" }
+0x8270E4A8 = { name = "rex_CECFirearm_Fire" }
+0x82414F38 = { name = "rex_lhEntity_AddComponent" }
+0x828FD130 = { name = "rex_CECOpinionReaction_OnDeed" }
+0x82905740 = { name = "rex_CECOpinionReaction_ModifyAxisValue" }
+0x824A54E8 = { name = "rex_EnvironmentThemeManager_BlendToTheme" }
+0x82561D48 = { name = "rex_CECBed_DisplayInteractionMenu" }
+0x82684580 = { name = "rex_SpellSlowTime_SetWorldScale" }
+0x829A1140 = { name = "rex_CECOneTimeCollectable_SetStatus" }
+0x824421F0 = { name = "rex_CECPlayer_GiveGiftFromInventoryItem" }
+0x82A0A3D0 = { name = "rex_CECFollow_Start" }
+0x82A0A728 = { name = "rex_CECFollow_Stop" }
+0x82B44190 = { name = "rex_SpellLightning_Electrify" }
+0x82B3C340 = { name = "rex_SpellChaos_ApplyToVictim" }
+0x82B39500 = { name = "rex_SpellFireball_Ignite" }
+# Mod events, the third batch: the carrying component's slot attach (carrying 28, CCharString* slot, item, send)
+# and release (carrying, slot, send) -> entity; the inventory's record refresh after a removal (inventory 16,
+# record); the player's gift removal (player 37, L); raise dead's summoner bind (summoner, summon, -, serial, f1)
+# and the Damocles sword's Create (sword, set, caster, target); the vortex component's Init (C, source, target,
+# serial, keys, byte, v1), Shutdown (C), Capture and Release (C, victim); the fireball's Impact (spell, struck,
+# f1, .., v1 point, v2 normal).
+0x82404928 = { name = "rex_CECCarrying_AttachItemToSlot" }
+0x82406278 = { name = "rex_CECCarrying_ReleaseSlot" }
+0x8241E7D0 = { name = "rex_CECInventory_RefreshRecordRefs" }
+0x82442988 = { name = "rex_CECPlayer_RemoveGiftPermanently" }
+0x826744B8 = { name = "rex_SpellRaiseDead_BindSummoner" }
+0x82690D58 = { name = "rex_SpellDamoclesSword_Create" }
+0x82A70278 = { name = "rex_VortexComponent_Init" }
+0x82A709D0 = { name = "rex_VortexComponent_Shutdown" }
+0x82A759C8 = { name = "rex_VortexComponent_Capture" }
+0x82A75FE8 = { name = "rex_VortexComponent_Release" }
+0x82B36688 = { name = "rex_SpellFireball_Impact" }
+# Mod events, the family batch (mod_events_hooks.cpp): PlayerFamily's Marry (family 82, spouse), Divorce (family,
+# spouse), member removal (family, &uid, died), AdoptWithSpouse (family, spouse, child), IsMarriedTo (family, spouse)
+# and the member lookup (family, &uid) -> record; OpinionReaction.SetEngagedToHero (opinion 55, hero, byte); the
+# player properties' SetRentedOut (properties 81, &uid, rented, quiet).
+0x827E80A8 = { name = "rex_PlayerFamily_Marry" }
+0x827EA968 = { name = "rex_PlayerFamily_Divorce" }
+0x827E7778 = { name = "rex_PlayerFamily_RemoveMember" }
+0x827E9308 = { name = "rex_PlayerFamily_AdoptWithSpouse" }
+0x82904328 = { name = "rex_OpinionReaction_SetEngagedToHero" }
+0x824FBA18 = { name = "rex_CECPlayerProperties_SetRentedOut" }
+# The spell ends (mod_combat_hooks.cpp): the quick and full casts' Start (slot 3: ability, entity, request), which
+# end the charge action through CAction_End; the registry update's per-spell update and stop points (midasm below).
+0x82C0E708 = { name = "rex_CAbilityActionMagicCastQuick_Start" }
+0x82C0EFC8 = { name = "rex_CAbilityActionMagicCastFull_Start" }
+# Achievements and tracked stats (mod_events_hooks.cpp): the stats' achievement unlock (stats 15, FNV-1a name
+# hash), the achievement's record by that hash, a record's s32 field by field hash, and ModifyTrackedStat (stats,
+# stat hash, amount, ..).
+0x823DC4F0 = { name = "rex_CECStats_UnlockAchievement" }
+0x823EABC0 = { name = "rex_CECStats_AchievementRecord" }
+0x82349F08 = { name = "rex_GDB_RecordS32" }
+0x823E9CE0 = { name = "rex_CECStats_ModifyTrackedStat" }
+# Mod events, the property batch (mod_events_hooks.cpp): the player properties' two purchase routines (properties 81,
+# building | &uid), Sell (properties, &uid, byte, .., f1), PayIncome (properties); the building's ModifyCondition
+# (building 79, f1) and SetCondition (building, f1, byte); the furniture's level setter (furniture 80, level, force);
+# the decoration mode's constructor (mode, manager) and destructor (mode, delete); the real-estate mode's budget
+# (mode, gold); Building.GetBuildingOwner and GetBuyPrice (building 79).
+0x824F89B8 = { name = "rex_CECPlayerProperties_BuyBuilding" }
+0x824F8EC8 = { name = "rex_CECPlayerProperties_BuyByUid" }
+0x824F9200 = { name = "rex_CECPlayerProperties_Sell" }
+0x824F7BE8 = { name = "rex_CECPlayerProperties_PayIncome" }
+0x828E9FD8 = { name = "rex_CECBuilding_ModifyCondition" }
+0x828EA280 = { name = "rex_CECBuilding_SetCondition" }
+0x827D21C8 = { name = "rex_CECUpgradeableFurniture_SetLevel" }
+0x82B61D70 = { name = "rex_CInteractionModeMenuDecoration_Ctor" }
+0x82B62278 = { name = "rex_CInteractionModeMenuDecoration_Dtor" }
+0x82B5C950 = { name = "rex_CInteractionModeRealEstate_SetBudget" }
+0x828EA750 = { name = "rex_Building_GetBuildingOwner" }
+0x828E8988 = { name = "rex_Building_GetBuyPrice" }
+# Mod events, the last batch (mod_events_hooks.cpp, mod_combat_hooks.cpp): the hero's weapon-replace instruction's
+# Execute (instruction, hero); the faction's RelationTo (faction 157, other) -> 1/2/4; the talk component's PlayLine
+# (talk, text key, subtitle, listener, ..); the paint map's region at a grid point (map, int[2]) -> theme id; the spell
+# manager's SetSpellSlot (manager 14, slot, first, second, send); the main game's start builder (game).
+0x82812F10 = { name = "rex_CPlayerInstructionReplaceWeapon_Execute" }
+0x82207880 = { name = "rex_CECFaction_RelationTo" }
+0x825B5178 = { name = "rex_CECTalk_PlayLine" }
+0x82296358 = { name = "rex_lhPaintMap_DaySetAt" }
+0x82636270 = { name = "rex_CECSpellManager_SetSpellSlot" }
+0x8234CD40 = { name = "rex_Game_BuildStart" }
+# Sweeps of existing events (mod_events_hooks.cpp): the achievement unlock's network-replay entry (stats, hash),
+# the gnome capture and the collectable pickup (component of the collectable, hero) — they set a hero's one-time
+# collectable status themselves — and Dog.PerformCommand (dog component, {hash, record}, force).
+0x823DC758 = { name = "rex_CECStats_UnlockAchievementReplayed" }
+0x82B12A50 = { name = "rex_GnomeCapture" }
+0x828E56B0 = { name = "rex_CollectablePickup" }
+0x82803920 = { name = "rex_CECDog_PerformCommand" }
+# The shared events (mod_events_hooks.cpp; Fable 2 raises them too): the chest's Open (chest 47) and the open
+# action's slot 24 (action), the chest's silver keys and guild seals needed (chest[, hero]); the shopkeeper's Buy
+# (shopkeeper, item, out, buyer), the closed shop's steal (basket, thief, item), Sell (shopkeeper, item, seller, all, count), BuyPrice and SellPrice
+# (shopkeeper, customer, item); the digging spot's OnDug (spot 116, digger); the demon door's SpawnFace,
+# DespawnFace, Open and Open's effect tail (door 73); PlayerDrunkenness.Drink (component, f1).
+0x82A20130 = { name = "rex_CECChest_Open" }
+0x82BBC038 = { name = "rex_CAction_OpenChest_Use" }
+0x82A20F28 = { name = "rex_CECChest_KeysNeeded" }
+0x82A20F98 = { name = "rex_CECChest_SealsNeeded" }
+0x82A45218 = { name = "rex_CECShopkeeper_Buy" }
+0x82A455E8 = { name = "rex_CECShopkeeper_Sell" }
+0x82A44FA8 = { name = "rex_CECShopkeeper_BuyPrice" }
+0x82A450E0 = { name = "rex_CECShopkeeper_SellPrice" }
+0x828F78D0 = { name = "rex_CECDiggingSpot_OnDug" }
+0x82ADC308 = { name = "rex_CECDemonDoor_SpawnFace" }
+0x82ADC5C0 = { name = "rex_CECDemonDoor_DespawnFace" }
+0x82ADC720 = { name = "rex_CECDemonDoor_Open" }
+0x82ADC958 = { name = "rex_CECDemonDoor_OpenEffects" }
+0x827E1BD0 = { name = "rex_CECPlayerDrunkenness_Drink" }
+0x82B049A0 = { name = "rex_CShopBasket_Steal" }
+0x82249458 = { name = "rex_LocomotionData_GetValue" }
+0x82412818 = { name = "rex_LocomotionName_Hash" }
+0x82D6E200 = { name = "rex_LocomotionMap_Find" }
+0x822F5388 = { name = "rex_SaveGame_EnumerateNames" }
+0x8229F068 = { name = "rex_CECMorph_GetWeight" }
+0x824D9788 = { name = "rex_CECMultiplayerMarriage_Marry" }
+0x824D9CC8 = { name = "rex_CECMultiplayerMarriage_FormBusiness" }
+0x824D7F98 = { name = "rex_CECMultiplayerMarriage_Divorce" }
+0x824D8F18 = { name = "rex_CECMultiplayerMarriage_EndBusiness" }
+0x82B34ED8 = { name = "rex_SpellSource_Ctor" }
+0x825CA268 = { name = "rex_SpellSource_Dtor" }
+0x82318D30 = { name = "rex_FrontEnd_PickSave" }
+0x8262A560 = { name = "rex_CECHealth_CheckDeath" }
+0x8250F0E8 = { name = "rex_CECQuestTracker_SetObjectiveTag" }
+0x8250F158 = { name = "rex_CECQuestTracker_SetObjectiveTagFinal" }
+0x82A70B20 = { name = "rex_VortexComponent_Update" }
+0x82A77F50 = { name = "rex_VortexComponent_Classify" }
+0x825614D8 = { name = "rex_CECBed_ApplyAnswer" }
+0x82209428 = { name = "rex_Network_IsClient" }
+# Wave 3 mod events (Sanctuary, weapons, social, dog, jobs, guild, titles, scars, age, clothing, pub games,
+# village wealth, gargoyles): the seams' comments in mod_events_hooks.cpp / mod_events.cpp state each.
+0x8239D5A8 = { name = "rex_GameComponentSwitchManager_SwitchToNextComponent" }
+0x8239E198 = { name = "rex_GameComponentSwitchManager_OnArrived" }
+0x826CEE40 = { name = "rex_CECCustomisableWeapon_SetLevel" }
+0x826CDC58 = { name = "rex_CECCustomisableWeapon_TriggerSpecialLevelUp" }
+0x826D1998 = { name = "rex_CECCustomisableWeapon_AddAugment" }
+0x826CE920 = { name = "rex_CECCustomisableWeapon_CheckConditionalAugments" }
+0x826C27C0 = { name = "rex_CECHandHolding_Start" }
+0x826C3140 = { name = "rex_CECHandHolding_SetHandHolding" }
+0x8261BC98 = { name = "rex_CECCharacterInteraction_Perform" }
+0x822092F0 = { name = "rex_Entity_IsLocallyManaged" }
+0x82715438 = { name = "rex_RelationshipGame_Finish" }
+0x825EFB00 = { name = "rex_InteractionMode_OpenRealEstate" }
+0x825EFFD8 = { name = "rex_InteractionMode_OpenShop" }
+0x825F02C0 = { name = "rex_InteractionMode_OpenPawnShop" }
+0x825F05D0 = { name = "rex_InteractionMode_OpenOrb" }
+0x82B7E4D8 = { name = "rex_OpinionRecord_SetStage" }
+0x82B80640 = { name = "rex_OpinionRecord_Hero" }
+0x82B7EFE0 = { name = "rex_OpinionRecord_Progress" }
+0x82B801F8 = { name = "rex_OpinionRecord_FinishQuest" }
+0x8290E668 = { name = "rex_OpinionReaction_ResetCurrentRelationshipStage" }
+0x829140B8 = { name = "rex_CECOpinionReaction_ApplyStageSync" }
+0x82808F98 = { name = "rex_CECDog_SetEntityBeingDug" }
+0x828069A0 = { name = "rex_CECDog_SetLeadingHero" }
+0x82803E98 = { name = "rex_CECDog_UnlockTrick" }
+0x82653B40 = { name = "rex_CECDogStats_TrainingLevelChanged" }
+0x82A14388 = { name = "rex_CECDiveSpot_Use" }
+0x827E1C10 = { name = "rex_CECPlayerDrunkenness_Vomit" }
+0x82B1A520 = { name = "rex_CECJobSign_Start" }
+0x823EBB40 = { name = "rex_CECStats_SetJobLevel" }
+0x823EBAC0 = { name = "rex_CECStats_GetJobLevel" }
+0x823EBD50 = { name = "rex_CECStats_SetJobEarned" }
+0x823EBCD0 = { name = "rex_CECStats_GetJobEarned" }
+0x823EBE60 = { name = "rex_CECStats_SetJobWorked" }
+0x8254CAF0 = { name = "rex_GUI_SetJobMultiplierLevel" }
+0x8254CB50 = { name = "rex_GUI_TurnJobMultiplierOff" }
+0x82297D80 = { name = "rex_GuildMessageManager_PlayNext" }
+0x823DB7A0 = { name = "rex_CECStats_SetTitleRecord" }
+0x823DB8B0 = { name = "rex_CECStats_AddUnlockedTitle" }
+0x823E8B18 = { name = "rex_CECStats_SetChapterProgress" }
+0x82667D18 = { name = "rex_CECMorph_AddScar" }
+0x82668388 = { name = "rex_CECMorph_RemoveRandomScar" }
+0x826566F8 = { name = "rex_CECAge_SetAge" }
+0x8242F810 = { name = "rex_CPlayer_SetHeroStage" }
+0x826591B0 = { name = "rex_CECAppearanceModifierManager_AddItem" }
+0x82659680 = { name = "rex_CECAppearanceModifierManager_RemoveWornItem" }
+0x82659898 = { name = "rex_CECAppearanceModifierManager_RemoveAllItemsOfCategory" }
+0x8265B010 = { name = "rex_CECAppearanceModifierManager_SetDyeColour" }
+0x8277B540 = { name = "rex_CECVillage_AdjustWealthIndex" }
+0x82270128 = { name = "rex_PlayerFamily_IsMarriedTo" }
+0x827EE410 = { name = "rex_PlayerFamily_FindMember" }
+# A mod's notice in the game's own TopBox (Fable3/src/hooks/src/mod_lua_hooks.cpp, as the game's own
+# wide-text post sub_824D0FE8 builds one): the message ctor (msg, id, CCharString* tag, f1 lifetime ms,
+# -, -) and dtor (frees +8 and +12); an LHString from a wide string (s, wchar*), its copy (s, src) and
+# destructor. A main text of kind 4 (CHUDTopBoxMainWideText) is posted without the book check.
+0x824CF630 = { name = "rex_TopBoxMsg_Ctor" }
+0x822FEEA8 = { name = "rex_TopBoxMsg_Dtor" }
+0x82299940 = { name = "rex_LHString_FromWide" }
+0x8228DA30 = { name = "rex_LHString_Copy" }
+0x8225D198 = { name = "rex_LHString_Dtor" }
 # The world (Fable3/src/hooks/src/world_hooks.cpp): the level manager's post-load pass (mgr, run
 # by the loader sub_82348AD0 on its success at 0x82350674) and its unload (mgr, flag); the
 # particle command wrappers — create (int* handle, name hash), start (handle), scene (handle,
@@ -1616,3 +1874,23 @@ registers = ["r3"]
 name = "RefiiF3TopBoxAnswered"
 address = 0x824D1BA0
 registers = ["r3"]
+
+# The spell registry update (CSpellRegistry_Update): the spell in r29 just before its update (slot 1) and
+# just before its stop (slot 2) — mod_combat_hooks.cpp spell_ended.
+
+[[midasm_hook]]
+name = "RefiiF3SpellUpdating"
+address = 0x8225D938
+registers = ["r29"]
+
+[[midasm_hook]]
+name = "RefiiF3SpellEnding"
+address = 0x8225D968
+registers = ["r29"]
+
+# Kore's load-time _R1 pass mis-binds after a CLOSURE that is a jump target; runtime compiles take the
+# plain forms (Fable3/src/hooks/src/mod_lua_hooks.cpp RefiiF3KoreSkipR1Pass).
+[[midasm_hook]]
+name = "RefiiF3KoreSkipR1Pass"
+address = 0x821FA100
+jump_address = 0x821FA230

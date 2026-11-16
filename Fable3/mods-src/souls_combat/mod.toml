@@ -1,0 +1,4 @@
+name = "Souls Combat"
+version = "0.1.0"
+author = "Refii"
+description = "Stamina for swings, rolls and blocks; mana for spells; poise; committed strikes; cast recovery; R3 (G on the keyboard) toggles the lock-on, with a reticle on the target."

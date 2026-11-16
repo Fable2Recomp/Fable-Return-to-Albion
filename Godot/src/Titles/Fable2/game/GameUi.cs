@@ -2001,7 +2001,7 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				if (Engine_UiModAbilities.TryGet(flipRow.Name, out Engine_UiModAbilities.Ability modAbility))
 				{
-					Engine_UiModAbilities.AskRefund(modAbility);
+					Fable2ModAbilityRefund.AskRefund(modAbility);
 				}
 
 				return true;
@@ -3868,23 +3868,8 @@ public partial class GameUi : Node, IGameTitleUi
 	/// A marker's icon by what the call named: a PNG of an enabled mod (<c>art/x.png</c>, through
 	/// the mount or the package itself), else a game texture path through the presentation's loader.
 	/// </summary>
-	private Texture2D? LoadMarkerIcon(string name)
-	{
-		string path = name.Replace('\\', '/').TrimStart('/');
-		if (path.EndsWith(".png", System.StringComparison.OrdinalIgnoreCase))
-		{
-			byte[]? bytes = Refii.Textures.Engine_BnkTextureLoader.ReadBytes(path) ?? Refii.Mods.ModEntries.ReadEnabledBytes(path);
-			if (bytes is null)
-			{
-				return null;
-			}
-
-			var image = new Image();
-			return image.LoadPngFromBuffer(bytes) == Error.Ok ? ImageTexture.CreateFromImage(image) : null;
-		}
-
-		return _presentation?.LoadTexture(path);
-	}
+	private Texture2D? LoadMarkerIcon(string name) =>
+		Engine_HudModMarkers.LoadIconWith(name, path => _presentation?.LoadTexture(path));
 
 	/// <summary>The other player's prompt text per thing, and each half's titles by pool slot.</summary>
 	private readonly System.Collections.Generic.Dictionary<uint, (int Player, string Title)> _promptTitles = new();

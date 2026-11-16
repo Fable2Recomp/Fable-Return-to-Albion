@@ -162,7 +162,52 @@ enum refii_mod_event_kind : int32_t {
   REFII_EVENT_GUILD_SEALS = 116,
   REFII_EVENT_TREASURY = 117,
   REFII_EVENT_KINGDOM_DECISION = 118,
-  REFII_EVENT_COUNT = 119,
+  REFII_EVENT_CHEST_OPENED = 119,
+  REFII_EVENT_ITEM_BOUGHT = 120,
+  REFII_EVENT_ITEM_SOLD = 121,
+  REFII_EVENT_SHOP_PRICE = 122,
+  REFII_EVENT_DIG_SPOT_DUG = 123,
+  REFII_EVENT_DEMON_DOOR = 124,
+  REFII_EVENT_DRINK = 125,
+  REFII_EVENT_SANCTUARY = 126,
+  REFII_EVENT_SANCTUARY_REQUEST = 127,
+  REFII_EVENT_WEAPON_LEVEL_UP = 128,
+  REFII_EVENT_WEAPON_AUGMENT_UNLOCKED = 129,
+  REFII_EVENT_WEAPON_UPGRADE_READY = 130,
+  REFII_EVENT_HAND_HOLDING = 131,
+  REFII_EVENT_HAND_HOLDING_REQUEST = 132,
+  REFII_EVENT_INTERACTION_STARTED = 133,
+  REFII_EVENT_INTERACTION_RESULT = 134,
+  REFII_EVENT_INTERACTION_MODE = 135,
+  REFII_EVENT_RELATIONSHIP_STAGE = 136,
+  REFII_EVENT_DOG_DIG = 137,
+  REFII_EVENT_DOG_LEADING = 138,
+  REFII_EVENT_DOG_TRICK_LEARNED = 139,
+  REFII_EVENT_DOG_LEARNED = 140,
+  REFII_EVENT_DIVE_SPOT_USED = 141,
+  REFII_EVENT_VOMIT = 142,
+  REFII_EVENT_JOB_STARTED = 143,
+  REFII_EVENT_JOB_LEVEL = 144,
+  REFII_EVENT_JOB_EARNINGS = 145,
+  REFII_EVENT_JOB_WORKED = 146,
+  REFII_EVENT_JOB_MULTIPLIER = 147,
+  REFII_EVENT_JOB_SUMMARY = 148,
+  REFII_EVENT_GUILD_MESSAGE = 149,
+  REFII_EVENT_TITLE_CHANGED = 150,
+  REFII_EVENT_TITLE_UNLOCKED = 151,
+  REFII_EVENT_CHAPTER_PROGRESS = 152,
+  REFII_EVENT_SCAR_ADDED = 153,
+  REFII_EVENT_SCAR_REMOVED = 154,
+  REFII_EVENT_AGE_CHANGED = 155,
+  REFII_EVENT_HERO_STAGE = 156,
+  REFII_EVENT_CLOTHING_WORN = 157,
+  REFII_EVENT_CLOTHING_REMOVED = 158,
+  REFII_EVENT_CLOTHING_DYED = 159,
+  REFII_EVENT_PUB_GAME_STARTED = 160,
+  REFII_EVENT_PUB_GAME_FINISHED = 161,
+  REFII_EVENT_VILLAGE_WEALTH = 162,
+  REFII_EVENT_GARGOYLE_DESTROYED = 163,
+  REFII_EVENT_COUNT = 164,
 };
 
 /// What took a hero's camera and controls away from free play (CutsceneEvent's `kind`, and the
@@ -2032,6 +2077,457 @@ struct KingdomDecisionEvent : Event {
   uint32_t province;
   uint32_t level;
   bool accepted;
+};
+
+/// A chest opened (both titles): the chest, who opened it (0 for a script), the keys it needs; on
+/// Fable 3 its guild-seal cost and whether it was the first time. Read-only.
+struct ChestOpenedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CHEST_OPENED;
+  uint32_t chest;
+  uint32_t opener;
+  int32_t player;
+  int32_t keys;
+  int32_t seals;
+  bool first;
+};
+
+/// A hero bought an item from a shop. Fable 2 reports it; Fable 3 decides it.
+struct ItemBoughtEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ITEM_BOUGHT;
+  uint32_t shopkeeper;
+  uint32_t buyer;
+  int32_t player;
+  uint32_t definition;
+  int32_t price;
+  bool stolen;
+};
+
+/// A hero sold an item to a shop. Fable 2 reports it; Fable 3 decides it.
+struct ItemSoldEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_ITEM_SOLD;
+  uint32_t shopkeeper;
+  uint32_t seller;
+  int32_t player;
+  uint32_t definition;
+  int32_t price;
+  int32_t count;
+};
+
+/// A shop priced an item for a customer; `price` is writable.
+struct ShopPriceEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SHOP_PRICE;
+  uint32_t shopkeeper;
+  uint32_t customer;
+  int32_t player;
+  uint32_t definition;
+  const char* kind;  // "buy" or "sell"
+  int32_t price;
+};
+
+/// A digging spot was dug out. Read-only.
+struct DigSpotDugEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DIG_SPOT_DUG;
+  uint32_t spot;
+  uint32_t digger;
+  int32_t player;
+  bool by_dog;
+  bool criminal;
+};
+
+/// A Demon Door changed: "face_out", "face_in" (Fable 3) or "opened". Read-only.
+struct DemonDoorEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DEMON_DOOR;
+  uint32_t door;
+  const char* state;
+  int32_t player;
+};
+
+/// A hero drank: `amount` is writable, cancel stops the drink counting.
+struct DrinkEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DRINK;
+  uint32_t hero;
+  int32_t player;
+  float amount;
+  int32_t drinks;
+};
+
+/// Fable 3: the hero arrived in the Sanctuary or back in the world. After the fact. Seam:
+/// Fable3/src/hooks/src/mod_events_hooks.cpp (the switch manager's arrival). Fable 2 has no Sanctuary.
+struct SanctuaryEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SANCTUARY;
+  uint32_t hero;
+  int32_t player;
+  bool entered;
+  int32_t reason;
+};
+
+/// Fable 3: a switch into (or out of) the Sanctuary is asked for; `cancel` refuses an entry. Seam:
+/// Fable3/src/hooks/src/mod_events_hooks.cpp (GameComponentSwitchManager.SwitchToNextComponent).
+struct SanctuaryRequestEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SANCTUARY_REQUEST;
+  uint32_t hero;
+  int32_t player;
+  int32_t reason;
+  bool to_sanctuary;
+};
+
+/// Fable 3: a weapon changes level (its morph, or a new weapon brought to its hero's level); `level` is
+/// writable, `cancel` keeps the level. Seam: Fable3/src/hooks/src/mod_events_hooks.cpp (SetLevel).
+struct WeaponLevelUpEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_WEAPON_LEVEL_UP;
+  uint32_t weapon;
+  uint32_t owner;
+  int32_t player;
+  int32_t level_from;
+  int32_t level;
+  const char* cause;  // "level_up" or "sync"
+};
+
+/// Fable 3: a weapon gains an augment by play (a level's, or a met condition's); `cancel` refuses it.
+/// Seam: Fable3/src/hooks/src/mod_events_hooks.cpp (AddAugment).
+struct WeaponAugmentUnlockedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_WEAPON_AUGMENT_UNLOCKED;
+  uint32_t weapon;
+  uint32_t owner;
+  int32_t player;
+  uint32_t augment;
+  const char* source;  // "level" or "condition"
+  int32_t level;
+};
+
+/// Fable 3: a weapon's augment condition was met; it now waits to level up. After the fact. Seam:
+/// Fable3/src/hooks/src/mod_events_hooks.cpp (the conditional-augment check).
+struct WeaponUpgradeReadyEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_WEAPON_UPGRADE_READY;
+  uint32_t weapon;
+  uint32_t owner;
+  int32_t player;
+  int32_t added;
+  int32_t pending;
+  int32_t level;
+};
+
+/// Fable 3: a villager's hand was taken or let go. After the fact. Seam: Fable3/src/hooks/src/
+/// mod_events_hooks.cpp (CECHandHolding's state setter). Fable 2 has no hand holding.
+struct HandHoldingEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_HAND_HOLDING;
+  uint32_t villager;
+  uint32_t leader;
+  int32_t player;
+  bool holding;
+  bool dragged;
+  bool forced;
+};
+
+/// Fable 3: something asks to take a villager's hand; `cancel` refuses it. Seam: Fable3/src/hooks/src/
+/// mod_events_hooks.cpp (CECHandHolding's start). Fable 2 has no hand holding.
+struct HandHoldingRequestEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_HAND_HOLDING_REQUEST;
+  uint32_t villager;
+  uint32_t leader;
+  int32_t player;
+  bool forced;
+};
+
+/// Fable 3: a hero performs a social interaction (the ring's choice, a script's, a relayed one); a
+/// cancel stops it. Seam: Fable3/src/hooks/src/mod_events_hooks.cpp (CECCharacterInteraction::Perform).
+struct InteractionStartedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_INTERACTION_STARTED;
+  uint32_t hero;
+  int32_t player;
+  uint32_t target;
+  uint32_t interaction;
+  bool scripted;
+};
+
+/// Fable 3: the interaction circle mini-game ended; `success` is writable. Seam: mod_events_hooks.cpp.
+struct InteractionResultEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_INTERACTION_RESULT;
+  uint32_t hero;
+  int32_t player;
+  uint32_t target;
+  int32_t kind;
+  bool success;
+};
+
+/// Fable 3: the GUI's interaction mode opened or closed. Seam: Fable3/src/hooks/src/interaction_hooks.cpp.
+struct InteractionModeEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_INTERACTION_MODE;
+  uint32_t hero;
+  int32_t player;
+  uint32_t target;
+  int32_t mode;
+  int32_t previous;
+  bool open;
+};
+
+/// Fable 3: a villager's relationship with a hero changed stage (0 fear .. 4 love). After the fact.
+/// Seam: Fable3/src/hooks/src/mod_events_hooks.cpp (the opinion record's SetStage and its four callers).
+struct RelationshipStageEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_RELATIONSHIP_STAGE;
+  uint32_t villager;
+  uint32_t hero;
+  int32_t player;
+  int32_t stage;
+  int32_t previous;
+  const char* cause;
+};
+
+/// The dog starts digging at `spot` (the dog brain's Dog.SetEntityBeingDug); `first` the spot was not
+/// yet marked dug by a dog. Read-only.
+struct DogDigEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DOG_DIG;
+  uint32_t dog;
+  uint32_t spot;
+  int32_t player;
+  bool first;
+};
+
+/// The dog starts leading its hero to a find: `target` (a dig spot, a chest; 0 for a quest objective
+/// or none), `quest` a quest objective. Read-only.
+struct DogLeadingEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DOG_LEADING;
+  uint32_t dog;
+  int32_t player;
+  uint32_t target;
+  bool quest;
+};
+
+/// The dog learned a trick: `trick` the command record's hash (dog_trick's), `shown` the game
+/// announced it, `tricks` how many it knows now. Read-only.
+struct DogTrickLearnedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DOG_TRICK_LEARNED;
+  uint32_t dog;
+  int32_t player;
+  uint32_t trick;
+  bool shown;
+  int32_t tricks;
+};
+
+/// The dog's training level on `track` changed (0 explore / sniffing, 1 combat, 2 charisma on Fable 3):
+/// `level` the new one, `up` it rose, `xp` Fable 3's training XP on that track (0 on Fable 2). Read-only.
+struct DogLearnedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DOG_LEARNED;
+  uint32_t dog;
+  int32_t player;
+  int32_t track;
+  int32_t level;
+  bool up;
+  int32_t xp;
+};
+
+/// A hero finished a dive at a dive spot (counted, the spot's script runs). Read-only.
+struct DiveSpotUsedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_DIVE_SPOT_USED;
+  uint32_t spot;
+  uint32_t diver;
+  int32_t player;
+};
+
+/// A drunk hero threw up: `vomits` the count now. Read-only.
+struct VomitEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_VOMIT;
+  uint32_t hero;
+  int32_t player;
+  int32_t vomits;
+};
+
+/// Fable 3: a hero started a job session at a job sign (`job` its JobName). Read-only.
+struct JobStartedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_JOB_STARTED;
+  uint32_t sign;
+  uint32_t hero;
+  int32_t player;
+  const char* job;
+};
+
+/// Fable 3: a hero's job level is set; `level` writable, cancel keeps the record.
+struct JobLevelEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_JOB_LEVEL;
+  uint32_t hero;
+  int32_t player;
+  const char* job;
+  int32_t level;
+  int32_t previous;
+};
+
+/// Fable 3: a hero's total money earned at a job is set. Read-only.
+struct JobEarningsEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_JOB_EARNINGS;
+  uint32_t hero;
+  int32_t player;
+  const char* job;
+  int32_t total;
+  int32_t earned;
+};
+
+/// Fable 3: a hero's sessions worked at the job's current level is set. Read-only.
+struct JobWorkedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_JOB_WORKED;
+  uint32_t hero;
+  int32_t player;
+  const char* job;
+  int32_t times;
+  int32_t level;
+};
+
+/// A job script stated its combo multiplier to the HUD (`on` false: turned off). Read-only.
+struct JobMultiplierEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_JOB_MULTIPLIER;
+  int32_t level;
+  bool on;
+  int32_t player;
+};
+
+/// Fable 2: a job shift's summary screen: "title" (text, subtitle) or one "line" (text, amount).
+struct JobSummaryEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_JOB_SUMMARY;
+  const char* part;
+  const char* text;
+  const char* subtitle;
+  int32_t amount;
+};
+
+/// The guild voice starts its next message: Fable 2 the text tag, Fable 3 the text key ("0x…").
+struct GuildMessageEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_GUILD_MESSAGE;
+  const char* message;
+  const char* narrator;
+  int32_t player;
+};
+
+/// A hero's title changed (the stats' title record moved). Read-only.
+struct TitleChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TITLE_CHANGED;
+  uint32_t hero;
+  int32_t player;
+  const char* title;
+};
+
+/// A title was added to a hero's unlocked titles. Read-only.
+struct TitleUnlockedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_TITLE_UNLOCKED;
+  uint32_t hero;
+  int32_t player;
+  const char* title;
+  int32_t titles;
+};
+
+/// The story's chapter progress rose. Read-only.
+struct ChapterProgressEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CHAPTER_PROGRESS;
+  uint32_t hero;
+  int32_t player;
+  float progress;
+  float previous;
+};
+
+/// A scar is about to be added to a body area; cancel refuses it.
+struct ScarAddedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SCAR_ADDED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t area;
+  int32_t scars;
+};
+
+/// A random scar was healed. Read-only.
+struct ScarRemovedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_SCAR_REMOVED;
+  uint32_t entity;
+  int32_t player;
+  int32_t scars;
+};
+
+/// An entity's age is about to be set; `age` is writable, cancel keeps the old age.
+struct AgeChangedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_AGE_CHANGED;
+  uint32_t entity;
+  int32_t player;
+  float age;
+  float previous;
+  float limit;
+};
+
+/// The hero's story stage changed. Read-only.
+struct HeroStageEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_HERO_STAGE;
+  uint32_t hero;
+  int32_t player;
+  int32_t stage;
+  int32_t previous;
+};
+
+/// An item of clothing is about to be worn; cancel leaves it unworn.
+struct ClothingWornEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CLOTHING_WORN;
+  uint32_t entity;
+  int32_t player;
+  uint32_t definition;
+  int32_t category;
+};
+
+/// Worn clothing was taken off (one item, or every item of a category). Read-only.
+struct ClothingRemovedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CLOTHING_REMOVED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t definition;
+  int32_t category;
+  int32_t count;
+};
+
+/// A worn item is dyed. A script's dye is decided (colour writable, cancel); the inventory's is
+/// reported after.
+struct ClothingDyedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_CLOTHING_DYED;
+  uint32_t entity;
+  int32_t player;
+  uint32_t definition;
+  uint32_t dye;
+  int32_t red;
+  int32_t green;
+  int32_t blue;
+  float brightness;
+  bool secondary;
+};
+
+/// A pub game is about to start; cancel refuses it (StartPubGame answers false).
+struct PubGameStartedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PUB_GAME_STARTED;
+  const char* game;
+  const char* variation;
+  uint32_t hero;
+  int32_t player;
+};
+
+/// A pub game ended and is about to be settled. Read-only.
+struct PubGameFinishedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_PUB_GAME_FINISHED;
+  const char* game;
+  const char* variation;
+  uint32_t hero;
+  int32_t player;
+  int32_t gold;
+  int32_t result;
+};
+
+/// A town's wealth is about to change; `delta` is writable, cancel keeps it.
+struct VillageWealthEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_VILLAGE_WEALTH;
+  uint32_t village;
+  float delta;
+  bool scaled;
+  float wealth;
+  float min;
+  float max;
+};
+
+/// A gargoyle was destroyed and counted for the current region. Read-only.
+struct GargoyleDestroyedEvent : Event {
+  static constexpr int32_t kKind = REFII_EVENT_GARGOYLE_DESTROYED;
+  const char* level;
+  int32_t player;
 };
 
 /// Subscribes a typed handler: `void fn(E&)`. Returns the subscription index.

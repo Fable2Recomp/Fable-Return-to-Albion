@@ -53,6 +53,7 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "mod_lua.h"
 #include "box_answers.h"
 #include "core/payload_bridge.h"
 #include "gui_statements.h"
@@ -202,14 +203,18 @@ REX_EXTERN(rex_GameModeStack_Run) {
 // (G, id, quiet): the screen id is the argument (0x825F9988).
 REX_EXTERN(rex_GuiManager_SetScreen) {
   const uint32_t id = ctx.r4.u32;
+  const int32_t before = refii::fable3::modlua::MenuScreen(base);
   __imp__rex_GuiManager_SetScreen(ctx, base);
   StateScreen(id);
+  refii::fable3::modlua::NoteMenuScreen(base, before);
 }
 
 // (G).
 REX_EXTERN(rex_GuiManager_ExitScreen) {
+  const int32_t before = refii::fable3::modlua::MenuScreen(base);
   __imp__rex_GuiManager_ExitScreen(ctx, base);
   refii::fable3::StateGuiScreen(base);
+  refii::fable3::modlua::NoteMenuScreen(base, before);
 }
 
 // (G, text LHString, download): puts the previous screen id back as it returns. When G+36 was 1

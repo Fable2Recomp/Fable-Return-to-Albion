@@ -691,7 +691,8 @@ extern "C" {
 /// 240 restates RefiiHostGetClothPieceVertices: a pose by index (0 the newest of up to four) with
 ///     the guest frame, fractional, of the instant it was posed for (a double), in place of the
 ///     current/previous game tick; RefiiHostGetEntityClothPieces' [6] is the poses kept.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 240; }
+/// 241 adds RefiiHostPlayerOwned: who this machine plays (3 both, 1 online host, 2 online joiner).
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 241; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -765,6 +766,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostPlayerStateDescribe(char* out, uint32_t 
     out[length] = 0;
     return static_cast<uint32_t>(length);
 }
+
+/// Who this machine plays (core/player_state): 3 both (alone, couch co-op), 1 player one (online host),
+/// 2 player two (online joiner), as the title states it each tick (Fable 2 DrivePlayerState, Fable 3
+/// StateCoop).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostPlayerOwned(void) { return refii_bridge_player_owned(); }
 
 /// The mouse's account as of the last camera update (core/mouse_look_state.h), into
 /// `out_values` (up to `count`): [0] the game tick of the last take; [1] yaw posted, [2] yaw taken
