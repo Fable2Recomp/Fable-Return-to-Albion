@@ -866,6 +866,19 @@ public sealed class Chain
         return true;
     }
 
+    public bool ReadHash(RecordRef record, uint fieldHash, out uint value)
+    {
+        value = 0u;
+        if (!FindField(record, fieldHash, 0xFF, out GdbField field) ||
+            field.Raw == 0u || field.Raw == EnvHash.Null)
+        {
+            return false;
+        }
+
+        value = field.Raw;
+        return true;
+    }
+
     private bool ReadColour(RecordRef record, uint red, uint green, uint blue, float[] outColour)
     {
         if (!ReadFloat(record, red, out float r) ||

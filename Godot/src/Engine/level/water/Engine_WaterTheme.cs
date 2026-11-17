@@ -52,6 +52,10 @@ public sealed class WaterTheme
 
     public bool HasAny { get; set; }
 
+    public bool HasNormalMap { get; set; }
+
+    public uint NormalMapHash { get; set; }
+
     public float SourceTimeOfDay { get; set; } = -1.0f;
 
     public float this[int index] => Values[index];
@@ -93,6 +97,14 @@ public static class Engine_WaterTheme
     private const uint DeepWaterColourRedHash = 0x1750476D;
     private const uint DeepWaterColourGreenHash = 0x61671F01;
     private const uint DeepWaterColourBlueHash = 0x632A3D74;
+
+    private static readonly uint[] NormalMapFieldHashes =
+    {
+        0xFA7F9D8Au, // NormalMap
+        0x1B3CDEBBu, // NormalMapTexture
+        0xE278DAD3u, // WaterNormalMap
+        0x3F437E51u, // NormalTexture
+    };
 
     private static readonly (int Index, uint Hash)[] FloatFields =
     {
@@ -174,6 +186,17 @@ public static class Engine_WaterTheme
             }
         }
 
+        foreach (uint fieldHash in NormalMapFieldHashes)
+        {
+            if (chain.ReadHash(water, fieldHash, out uint normalHash))
+            {
+                theme.NormalMapHash = normalHash;
+                theme.HasNormalMap = true;
+                theme.HasAny = true;
+                break;
+            }
+        }
+
         return theme.HasAny;
     }
 
@@ -221,7 +244,8 @@ public static class Engine_WaterTheme
         if (!float.IsFinite(min) || !float.IsFinite(max) || !float.IsFinite(bias) ||
             max - min <= 1e-4f)
         {
-            if (ShouldLogDegenerateEdgeBlend(min, max, bias))
+            if (ShouldLogDegenerateEdgeBlend(min, max, bias) &&
+                !AppDomain.CurrentDomain.FriendlyName.Contains("testhost", StringComparison.OrdinalIgnoreCase))
             {
                 GD.Print(
                     $"[water] theme edge blend is degenerate (min={min}, max={max}, bias={bias}) — " +

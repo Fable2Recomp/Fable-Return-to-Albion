@@ -99,6 +99,7 @@ public sealed class DesktopGraphicsPresetsTests
 			AssertThat(read["fsr_quality"]).IsEqual("ultra_quality");
 			AssertThat(read["sdfgi_enabled"]).IsEqual("false");
 			AssertThat(read["placed_shadow_limit"]).IsEqual("2");
+			AssertThat(read["water_quality"]).IsEqual("balanced");
 			AssertThat(read.ContainsKey("omni_shadow_mode")).IsFalse();
 		}
 		finally
@@ -112,12 +113,16 @@ public sealed class DesktopGraphicsPresetsTests
 	{
 		GraphicsPresets.Offered = false;
 
-		AssertThat(DesktopGraphicsPresets.Revision).IsEqual(3);
+		AssertThat(DesktopGraphicsPresets.Revision).IsEqual(4);
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["placed_light_shadows"]).IsEqual("true");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["placed_shadow_limit"]).IsEqual("1");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["placed_shadow_limit"]).IsEqual("2");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!["placed_shadow_limit"]).IsEqual("4");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!["placed_shadow_limit"]).IsEqual("8");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["water_quality"]).IsEqual("low");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["water_quality"]).IsEqual("balanced");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!["water_quality"]).IsEqual("high");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!["water_quality"]).IsEqual("ultra");
 
 		foreach (string preset in DesktopGraphicsPresets.Order)
 		{
@@ -125,7 +130,7 @@ public sealed class DesktopGraphicsPresetsTests
 		}
 
 		// Revision-1 Balanced install (carrying legacy omni_shadow_mode, missing placed_shadow_limit)
-		// upgrades cleanly to Revision 3 Balanced with placed_shadow_limit = 2.
+		// upgrades cleanly to Revision 4 Balanced with placed_shadow_limit = 2 and water_quality = balanced.
 		var rev1Balanced = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!, StringComparer.Ordinal)
 		{
 			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Balanced,
@@ -133,15 +138,17 @@ public sealed class DesktopGraphicsPresetsTests
 			["omni_shadow_mode"] = "dual_paraboloid",
 		};
 		rev1Balanced.Remove("placed_shadow_limit");
+		rev1Balanced.Remove("water_quality");
 
 		AssertThat(DesktopGraphicsPresets.Upgrade(rev1Balanced)).IsTrue();
 		AssertThat(rev1Balanced[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Balanced);
-		AssertThat(rev1Balanced[DesktopGraphicsPresets.RevisionKey]).IsEqual("3");
+		AssertThat(rev1Balanced[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
 		AssertThat(rev1Balanced["placed_shadow_limit"]).IsEqual("2");
+		AssertThat(rev1Balanced["water_quality"]).IsEqual("balanced");
 		AssertThat(rev1Balanced.ContainsKey("omni_shadow_mode")).IsFalse();
 
 		// Revision-2 Low install (previously placed_light_shadows = false) upgrades cleanly to
-		// Revision 3 Low with cube shadows enabled (placed_shadow_limit = 1).
+		// Revision 4 Low with cube shadows enabled (placed_shadow_limit = 1) and water_quality = low.
 		var rev2Low = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!, StringComparer.Ordinal)
 		{
 			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Low,
@@ -150,9 +157,22 @@ public sealed class DesktopGraphicsPresetsTests
 		};
 		AssertThat(DesktopGraphicsPresets.Upgrade(rev2Low)).IsTrue();
 		AssertThat(rev2Low[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Low);
-		AssertThat(rev2Low[DesktopGraphicsPresets.RevisionKey]).IsEqual("3");
+		AssertThat(rev2Low[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
 		AssertThat(rev2Low["placed_light_shadows"]).IsEqual("true");
 		AssertThat(rev2Low["placed_shadow_limit"]).IsEqual("1");
+		AssertThat(rev2Low["water_quality"]).IsEqual("low");
+
+		// Revision-3 High install (missing water_quality) upgrades cleanly to Revision 4 High.
+		var rev3High = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!, StringComparer.Ordinal)
+		{
+			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.High,
+			[DesktopGraphicsPresets.RevisionKey] = "3",
+		};
+		rev3High.Remove("water_quality");
+		AssertThat(DesktopGraphicsPresets.Upgrade(rev3High)).IsTrue();
+		AssertThat(rev3High[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.High);
+		AssertThat(rev3High[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
+		AssertThat(rev3High["water_quality"]).IsEqual("high");
 
 		// Custom configurations keep custom settings intact and strip legacy omni_shadow_mode on upgrade.
 		var rev1Custom = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -161,11 +181,13 @@ public sealed class DesktopGraphicsPresetsTests
 			[DesktopGraphicsPresets.RevisionKey] = "1",
 			["omni_shadow_mode"] = "dual_paraboloid",
 			["placed_shadow_limit"] = "6",
+			["water_quality"] = "ultra",
 		};
 		AssertThat(DesktopGraphicsPresets.Upgrade(rev1Custom)).IsTrue();
 		AssertThat(rev1Custom[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Custom);
-		AssertThat(rev1Custom[DesktopGraphicsPresets.RevisionKey]).IsEqual("3");
+		AssertThat(rev1Custom[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
 		AssertThat(rev1Custom["placed_shadow_limit"]).IsEqual("6");
+		AssertThat(rev1Custom["water_quality"]).IsEqual("ultra");
 		AssertThat(rev1Custom.ContainsKey("omni_shadow_mode")).IsFalse();
 	}
 

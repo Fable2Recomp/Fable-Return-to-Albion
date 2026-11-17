@@ -362,6 +362,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private LightingTheme? _lightingStepEnd;
     private WaterTheme? _waterStepStart;
     private WaterTheme? _waterStepEnd;
+    private readonly WaterTheme _waterBlended = new();
     private CloudTheme? _cloudStepStart;
     private CloudTheme? _cloudStepEnd;
     private ToneMapTheme? _toneMapStepStart;
@@ -647,7 +648,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         {
             WaterTheme waterTheme = _waterStepStart is { } waterStart
                 ? (_waterStepEnd is { } waterEnd && w > 0f
-                    ? Engine_ThemeTimeline.BlendWater(waterStart, waterEnd, w)
+                    ? Engine_ThemeTimeline.BlendWaterInto(waterStart, waterEnd, w, _waterBlended)
                     : waterStart)
                 : WaterTheme.Default;
 

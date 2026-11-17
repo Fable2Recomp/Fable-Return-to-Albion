@@ -22,7 +22,7 @@ public static class DesktopGraphicsPresets
     public const string RevisionKey = "performance_preset_revision";
 
     /// <summary>Current revision of the desktop preset definitions.</summary>
-    public const int Revision = 3;
+    public const int Revision = 4;
 
     /// <summary>Preset tuned for entry-level integrated GPUs and battery play.</summary>
     public const string Low = "low";
@@ -61,6 +61,7 @@ public static class DesktopGraphicsPresets
             ["sdfgi_enabled"] = "false",
             ["gi_half_resolution"] = "true",
             ["volumetric_fog"] = "true",
+            ["water_quality"] = "balanced",
             ["sun_shadows"] = "true",
             ["sun_shadow_map"] = "2048",
             ["sun_shadow_splits"] = "2",
@@ -87,6 +88,7 @@ public static class DesktopGraphicsPresets
         {
             ["fsr_quality"] = "quality",
             ["volumetric_fog"] = "false",
+            ["water_quality"] = "low",
             ["sun_shadow_distance"] = "100",
             ["placed_light_limit"] = "16",
             ["placed_light_shadows"] = "true",
@@ -112,6 +114,7 @@ public static class DesktopGraphicsPresets
             ["sdfgi_enabled"] = "true",
             ["gi_half_resolution"] = "true",
             ["volumetric_fog"] = "true",
+            ["water_quality"] = "high",
             ["sun_shadow_map"] = "4096",
             ["sun_shadow_splits"] = "2",
             ["sun_shadow_distance"] = "200",
@@ -136,6 +139,7 @@ public static class DesktopGraphicsPresets
         WithOverrides(HighValues, new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["gi_half_resolution"] = "false",
+            ["water_quality"] = "ultra",
             ["sun_shadow_map"] = "8192",
             ["sun_shadow_splits"] = "4",
             ["sun_shadow_distance"] = "250",

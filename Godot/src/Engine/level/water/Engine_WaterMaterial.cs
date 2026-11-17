@@ -1,13 +1,25 @@
+using System;
+using System.Collections.Generic;
 using Godot;
+using Refii.Core;
 using Refii.Textures;
 
 namespace Refii.Level;
 
 public static class Engine_WaterMaterial
 {
+    private static readonly StringName BetaMieName = "beta_mie";
+    private static readonly StringName BetaRayleighName = "beta_rayleigh";
+    private static readonly StringName CoastalSurfName = "coastal_surf";
     private static readonly StringName GuestWaterName = "guest_water";
+    private static readonly StringName HasDomeName = "has_dome";
+    private static readonly StringName HasNormalMapBName = "has_normal_map_b";
     private static readonly StringName HasWaterMaskName = "has_water_mask";
+    private static readonly StringName HorizonDistanceName = "horizon_distance";
+    private static readonly StringName NormalMapBName = "normal_map_b";
+    private static readonly StringName NormalMapBlendName = "normal_map_blend";
     private static readonly StringName NormalMapName = "normal_map";
+    private static readonly StringName WaterQualityTierName = "water_quality_tier";
     private static readonly StringName WBiasName = "w_bias";
     private static readonly StringName WDeepName = "w_deep";
     private static readonly StringName WEdgeName = "w_edge";
@@ -22,17 +34,122 @@ public static class Engine_WaterMaterial
 
     public const string ShaderPath = "res://src/Engine/level/water/water.gdshader";
 
+    private static readonly object StateGate = new();
+    private static readonly Dictionary<uint, Texture2D?> ThemeNormals = new();
+    private static readonly List<WeakReference<ShaderMaterial>> TrackedMaterials = new();
+    private static bool _initialized;
+    private static int _checkedGeneration = int.MinValue;
+    private static WaterQualityTier _currentQuality = WaterQualityTier.Balanced;
+
+    public static WaterQualityTier CurrentQuality
+    {
+        get
+        {
+            EnsureInitialized();
+            return _currentQuality;
+        }
+    }
+
     public static bool GuestMode =>
-        OS.GetEnvironment("REFII_WATER").Equals("guest", System.StringComparison.OrdinalIgnoreCase);
+        OS.GetEnvironment("REFII_WATER").Equals("guest", StringComparison.OrdinalIgnoreCase);
 
     public delegate byte[]? ReadAsset(string virtualPath);
 
     public delegate string? FindByName(string fileName);
 
+    private static void EnsureInitialized()
+    {
+        lock (StateGate)
+        {
+            if (_initialized)
+            {
+                return;
+            }
+
+            _initialized = true;
+            _currentQuality = Engine_WaterQuality.ResolveFromValues(
+                Engine_RefiiConfig.Read(out _),
+                Refii.Launcher.Core.GraphicsPresets.Offered);
+            _checkedGeneration = Engine_Switches.Generation;
+
+            Engine_RefiiConfig.OnConfigChanged += static (name, _) =>
+            {
+                if (string.Equals(name, Engine_WaterQuality.CVarName, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(name, Refii.Launcher.Core.DesktopGraphicsPresets.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    lock (StateGate)
+                    {
+                        _checkedGeneration = int.MinValue;
+                    }
+
+                    if (Engine_ServerSyncs.OnMainThread)
+                    {
+                        SyncConfigIfNeeded();
+                    }
+                }
+            };
+        }
+    }
+
+    /// <summary>
+    /// Refreshes <see cref="CurrentQuality"/> when <c>refii.toml</c> or a live CVar changes, pushing
+    /// the updated <c>water_quality_tier</c> to tracked materials and notifying <see cref="Engine_WaterReflection"/>.
+    /// </summary>
+    public static void SyncConfigIfNeeded()
+    {
+        EnsureInitialized();
+        int gen = Engine_Switches.Generation;
+        if (gen == System.Threading.Volatile.Read(ref _checkedGeneration))
+        {
+            return;
+        }
+
+        WaterQualityTier next = Engine_WaterQuality.ResolveFromValues(
+            Engine_RefiiConfig.Read(out _),
+            Refii.Launcher.Core.GraphicsPresets.Offered);
+
+        bool changed;
+        lock (StateGate)
+        {
+            _checkedGeneration = gen;
+            changed = next != _currentQuality;
+            _currentQuality = next;
+        }
+
+        if (!changed)
+        {
+            return;
+        }
+
+        int tierValue = (int)next;
+        lock (StateGate)
+        {
+            for (int i = TrackedMaterials.Count - 1; i >= 0; i--)
+            {
+                if (!TrackedMaterials[i].TryGetTarget(out ShaderMaterial? mat) ||
+                    !GodotObject.IsInstanceValid(mat))
+                {
+                    TrackedMaterials.RemoveAt(i);
+                    continue;
+                }
+
+                Phase phase = Phases.GetOrCreateValue(mat);
+                if (phase.QualityTier != tierValue)
+                {
+                    phase.QualityTier = tierValue;
+                    mat.SetShaderParameter(WaterQualityTierName, tierValue);
+                }
+            }
+        }
+
+        Engine_WaterReflection.SyncAllQuality();
+    }
+
     public static ShaderMaterial? Build(
-        WaterBody body, ReadAsset read, FindByName? findByName, out string error)
+        WaterBody body, ReadAsset read, FindByName? findByName, out string error, bool coastalSurf = false)
     {
         error = string.Empty;
+        EnsureInitialized();
 
         var shader = GD.Load<Shader>(ShaderPath);
         if (shader is null)
@@ -69,6 +186,15 @@ public static class Engine_WaterMaterial
                     : "[water] no normal map bound; the body states no NormalMapPath at all");
         }
 
+        Phase phase = Phases.GetOrCreateValue(material);
+        phase.FallbackNormal = normalMap;
+        phase.ReadFallback = read;
+
+        int tierValue = (int)CurrentQuality;
+        phase.QualityTier = tierValue;
+        material.SetShaderParameter(WaterQualityTierName, tierValue);
+        material.SetShaderParameter(CoastalSurfName, coastalSurf);
+
         Apply(material, WaterTheme.Default);
 
         // THE SHORELINE. Built once here rather than per frame: the coverage is authored geometry
@@ -77,12 +203,17 @@ public static class Engine_WaterMaterial
         // A body with no usable tiles keeps `has_water_mask` false and stays opaque, which is the
         // guest's own empty-mask behaviour — water everywhere — rather than a fade invented from
         // whatever geometry happens to be nearby.
-        Engine_WaterMask.Mask? mask = Engine_WaterMask.TryBuild(body);
+        Engine_WaterMask.Mask? mask = Engine_WaterMask.TryBuild(body, perTile: true);
         if (mask is { } built)
         {
             material.SetShaderParameter(WaterMaskName, built.Texture);
             material.SetShaderParameter(WMaskBoundsName, built.Bounds);
             material.SetShaderParameter(HasWaterMaskName, true);
+        }
+
+        lock (StateGate)
+        {
+            TrackedMaterials.Add(new WeakReference<ShaderMaterial>(material));
         }
 
         // NO SUN HERE. It used to be a hardcoded (0.3, 0.7, 0.5) with a colour ramped off its own
@@ -106,20 +237,37 @@ public static class Engine_WaterMaterial
         public Vector4 Reflp;
         public Vector4 Glit;
         public Vector4 Edge;
+        public Texture2D? FallbackNormal;
+        public ReadAsset? ReadFallback;
+        public uint ThemeNormalHash;
+        public uint BoundHash0 = uint.MaxValue;
+        public uint BoundHash1 = uint.MaxValue;
+        public float BoundBlend = -1f;
+        public bool BoundHasB;
+        public Vector3 BetaRayleigh = new(float.NaN, 0f, 0f);
+        public Vector3 BetaMie = new(float.NaN, 0f, 0f);
+        public float HorizonDistance = float.NaN;
+        public bool HasDome;
+        public int QualityTier = -1;
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, Phase> Phases = new();
 
     /// <summary>
-    /// Advances every water surface's normal-map scroll by its current speed, as the title does
-    /// (`sub_822B9D70`: phase += speed x dt, rows 2 and 3). Main thread, once a frame.
+    /// Advances every water surface's normal-map scroll by its current speed, syncs live theme
+    /// normal maps, and checks live quality switches. Main thread, once a frame.
     /// </summary>
     public static void AdvancePhases(Node3D? water, float delta)
     {
+        SyncConfigIfNeeded();
         if (water is null)
         {
             return;
         }
+
+        int tierValue = (int)CurrentQuality;
+        bool advance = delta > 0f;
+
         // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
         for (int i = 0, count = water.GetChildCount(); i < count; i++)
         {
@@ -127,17 +275,81 @@ public static class Engine_WaterMaterial
             if (child is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material &&
                 Phases.TryGetValue(material, out Phase? phase))
             {
-                Vector4 v = phase.Value + (phase.Speed * delta);
-                phase.Value = new Vector4(v.X - Mathf.Floor(v.X), v.Y - Mathf.Floor(v.Y), v.Z - Mathf.Floor(v.Z), v.W - Mathf.Floor(v.W));
-                material.SetShaderParameter(WPhaseName, phase.Value);
+                if (phase.QualityTier != tierValue)
+                {
+                    phase.QualityTier = tierValue;
+                    material.SetShaderParameter(WaterQualityTierName, tierValue);
+                }
+
+                FollowThemeNormal(material, phase);
+
+                if (advance && phase.Speed != Vector4.Zero)
+                {
+                    Vector4 v = phase.Value + (phase.Speed * delta);
+                    phase.Value = new Vector4(
+                        v.X - Mathf.Floor(v.X),
+                        v.Y - Mathf.Floor(v.Y),
+                        v.Z - Mathf.Floor(v.Z),
+                        v.W - Mathf.Floor(v.W));
+                    material.SetShaderParameter(WPhaseName, phase.Value);
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// Updates atmosphere scattering uniforms on <paramref name="material"/> only when values changed.
+    /// </summary>
+    public static void ApplyAtmosphere(ShaderMaterial material, AtmosphereState state)
+    {
+        Phase phase = Phases.GetOrCreateValue(material);
+
+        if (!phase.HasDome)
+        {
+            phase.HasDome = true;
+            material.SetShaderParameter(HasDomeName, true);
+        }
+
+        var rayleigh = new Vector3(state.BetaRayleigh[0], state.BetaRayleigh[1], state.BetaRayleigh[2]);
+        if (phase.BetaRayleigh != rayleigh)
+        {
+            phase.BetaRayleigh = rayleigh;
+            material.SetShaderParameter(BetaRayleighName, rayleigh);
+        }
+
+        var mie = new Vector3(state.BetaMie[0], state.BetaMie[1], state.BetaMie[2]);
+        if (phase.BetaMie != mie)
+        {
+            phase.BetaMie = mie;
+            material.SetShaderParameter(BetaMieName, mie);
+        }
+
+        float horizon = Engine_SkyAtmosphere.HorizonDistance;
+        if (phase.HorizonDistance != horizon)
+        {
+            phase.HorizonDistance = horizon;
+            material.SetShaderParameter(HorizonDistanceName, horizon);
         }
     }
 
     public static void Apply(ShaderMaterial material, WaterTheme theme)
     {
+        EnsureInitialized();
         Phase phase = Phases.GetOrCreateValue(material);
         bool first = !phase.HasTheme;
+
+        phase.ThemeNormalHash = theme.HasNormalMap ? theme.NormalMapHash : 0u;
+        int tierValue = (int)CurrentQuality;
+        if (phase.QualityTier != tierValue)
+        {
+            phase.QualityTier = tierValue;
+            material.SetShaderParameter(WaterQualityTierName, tierValue);
+        }
+
+        if (Engine_ServerSyncs.OnMainThread)
+        {
+            FollowThemeNormal(material, phase);
+        }
 
         var bias = new Vector4(
             theme[WaterThemeParam.FresnelBias],
@@ -221,6 +433,104 @@ public static class Engine_WaterMaterial
         }
 
         phase.HasTheme = true;
+    }
+
+    private static void FollowThemeNormal(ShaderMaterial material, Phase phase)
+    {
+        uint hash0 = 0u;
+        uint hash1 = 0u;
+        float blend = 0f;
+
+        if (Refii.Models.Engine_ClassicTheme.TexturesLive)
+        {
+            Span<(float Weight, uint Hash)> pair = stackalloc (float, uint)[2];
+            Refii.Models.Engine_ClassicTheme.Pick(Refii.Models.Engine_ClassicTheme.SlotWaterNormal, pair);
+            hash0 = pair[0].Hash;
+            hash1 = pair[1].Hash;
+            blend = pair[1].Weight;
+        }
+        else if (phase.ThemeNormalHash != 0u)
+        {
+            hash0 = phase.ThemeNormalHash;
+        }
+
+        if (hash0 != phase.BoundHash0)
+        {
+            phase.BoundHash0 = hash0;
+            Texture2D? tex0 = LoadThemeNormal(hash0, phase.ReadFallback) ?? phase.FallbackNormal;
+            if (tex0 is not null)
+            {
+                material.SetShaderParameter(NormalMapName, tex0);
+            }
+        }
+
+        bool wantB = hash1 != 0u && hash1 != hash0 && blend > 0.005f;
+        Texture2D? tex1 = wantB ? LoadThemeNormal(hash1, phase.ReadFallback) : null;
+        bool hasB = tex1 is not null;
+
+        if (hasB && hash1 != phase.BoundHash1)
+        {
+            phase.BoundHash1 = hash1;
+            material.SetShaderParameter(NormalMapBName, tex1!);
+        }
+        else if (!hasB && phase.BoundHash1 != 0u)
+        {
+            phase.BoundHash1 = 0u;
+        }
+
+        if (hasB != phase.BoundHasB)
+        {
+            phase.BoundHasB = hasB;
+            material.SetShaderParameter(HasNormalMapBName, hasB);
+        }
+
+        if (hasB && MathF.Abs(blend - phase.BoundBlend) > 0.002f)
+        {
+            phase.BoundBlend = blend;
+            material.SetShaderParameter(NormalMapBlendName, blend);
+        }
+    }
+
+    private static Texture2D? LoadThemeNormal(uint hash, ReadAsset? fallbackRead)
+    {
+        if (hash == 0u)
+        {
+            return null;
+        }
+
+        lock (StateGate)
+        {
+            if (ThemeNormals.TryGetValue(hash, out Texture2D? cached))
+            {
+                return cached;
+            }
+        }
+
+        Texture2D? loaded = null;
+        try
+        {
+            loaded = Engine_EnvironmentTextures.Load(hash, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out string path);
+            if (loaded is null && fallbackRead is not null)
+            {
+                loaded = Engine_EnvironmentTextures.Load(hash, p => fallbackRead(p), out path);
+            }
+
+            if (loaded is null && path.Length != 0)
+            {
+                GD.Print($"[water] theme normal 0x{hash:X8} ('{path}') did not decode");
+            }
+        }
+        catch (Exception exception)
+        {
+            GD.Print($"[water] theme normal 0x{hash:X8} failed: {exception.Message}");
+        }
+
+        lock (StateGate)
+        {
+            ThemeNormals[hash] = loaded;
+        }
+
+        return loaded;
     }
 
     public static Texture2D? LoadTexture(string path, ReadAsset read, FindByName? findByName)

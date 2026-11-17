@@ -2038,12 +2038,14 @@ public static class Engine_LevelScene
                     Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
                 };
 
+                bool coastalSurf = AllowsVistaOcean(level);
                 string materialError = string.Empty;
                 ShaderMaterial? material = classic ?? Engine_WaterMaterial.Build(
                     body,
                     p => source(p),
                     findByName is null ? null : n => findByName(n),
-                    out materialError);
+                    out materialError,
+                    coastalSurf);
 
                 if (material is null)
                 {

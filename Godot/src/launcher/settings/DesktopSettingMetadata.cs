@@ -453,6 +453,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "3D Volumetric Fog & Light Rays",
                 "Atmospheric light shafts through mist, trees, and cave openings.",
                 Order: 30),
+            ["water_quality"] = new(
+                SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "Water Quality",
+                "Controls lake and ocean reflections, refraction absorption, wave octaves, and shoreline detail (applies immediately).",
+                Order: 35),
             ["sun_shadows"] = new(
                 SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "Directional Sun & Moon Shadows",
                 "Real-time cascading shadows from the sun and moon.",

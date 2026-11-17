@@ -57,12 +57,19 @@ public sealed partial class Engine_WaterReflection : Node
         public readonly MirrorRig?[] Mirrors = new MirrorRig?[2];
 
         public float Height;
+        public bool IsClassicOrGuest;
+        public bool IsOcean;
     }
 
+    private static readonly StringName PlanarReflectionName = "planar_reflection";
+    private static readonly StringName ReflectionTexName = "reflection_tex";
     private static readonly StringName SecondTextureName = "reflection_tex_second";
     private static readonly StringName SecondEnabledName = "second_reflection";
     private static readonly StringName FirstEyeName = "first_eye";
     private static readonly StringName SecondEyeName = "second_eye";
+
+    private static readonly object InstancesGate = new();
+    private static readonly List<Engine_WaterReflection> ActiveInstances = new();
 
     private readonly List<Body> _bodies = new();
 
@@ -90,15 +97,48 @@ public sealed partial class Engine_WaterReflection : Node
     /// horizon sky stood in for it. Classic casts through its own cascade world, so the full
     /// range carries none of Godot's sun-shadow cost the 50 m cut was made for.
     /// </summary>
-    private static float MirrorFar(float viewFar) =>
-        Refii.Models.Engine_ClassicMaterial.Active ? viewFar : Mathf.Min(viewFar, ReflectionFar);
+    private static WaterMirrorSpec SpecFor(bool isClassicOrGuest)
+    {
+        if (isClassicOrGuest)
+        {
+            return new WaterMirrorSpec(
+                true,
+                TileSize,
+                4,
+                Refii.Models.Engine_ClassicMaterial.Active ? float.PositiveInfinity : ReflectionFar,
+                ReflectionLodPixels);
+        }
+
+        return Engine_WaterQuality.MirrorFor(Engine_WaterMaterial.CurrentQuality);
+    }
+
+    private static float MirrorFar(float viewFar, WaterMirrorSpec spec) =>
+        float.IsPositiveInfinity(spec.FarPlane) ? viewFar : Mathf.Min(viewFar, spec.FarPlane);
 
     private readonly int[] _turn = new int[2];
-    private int _frame;
+    private int _frame = -1;
 
     /// <summary>Live levers: off, or one mirror every <see cref="Cadence"/> frames.</summary>
     public static bool Enabled = true;
     public static int Cadence = 4;
+
+    /// <summary>Notifies every mounted <see cref="Engine_WaterReflection"/> that <c>water_quality</c> changed.</summary>
+    public static void SyncAllQuality()
+    {
+        Engine_WaterReflection[] snapshot;
+        lock (InstancesGate)
+        {
+            snapshot = ActiveInstances.ToArray();
+        }
+
+        foreach (Engine_WaterReflection instance in snapshot)
+        {
+            if (GodotObject.IsInstanceValid(instance) && instance.IsInsideTree())
+            {
+                instance.SyncQuality();
+            }
+        }
+    }
 
     /// <summary>
     /// A mirror holds its image while the eye stands still: the reflected world is the static
@@ -120,6 +160,12 @@ public sealed partial class Engine_WaterReflection : Node
     public void Mount(Node3D water, Camera3D view)
     {
         _view = view;
+        Engine_WaterMaterial.SyncConfigIfNeeded();
+
+        if (!Refii.Models.Engine_ClassicMaterial.Active && !Engine_WaterMaterial.GuestMode)
+        {
+            Cadence = Engine_WaterQuality.MirrorFor(Engine_WaterMaterial.CurrentQuality).Cadence;
+        }
 
         foreach (Node child in water.GetChildren())
         {
@@ -139,18 +185,16 @@ public sealed partial class Engine_WaterReflection : Node
 
             surface.Layers = WaterLayer;
 
-            // ONLY A SURFACE THAT SAMPLES A MIRROR GETS ONE: the classic water and the guest-mode
-            // branch of water.gdshader. The modern branch reflects the dome and the screen and never
-            // reads `reflection_tex`, so a mirror for it re-rendered the world for nothing.
-            if (!material.HasMeta(Engine_ClassicWater.Meta) && !material.GetShaderParameter("guest_water").AsBool())
-            {
-                continue;
-            }
+            bool classicOrGuest = material.HasMeta(Engine_ClassicWater.Meta) ||
+                material.GetShaderParameter("guest_water").AsBool();
+            WaterMirrorSpec spec = SpecFor(classicOrGuest);
 
             // ONE MIRROR PER PLANE. A planar reflection depends only on the plane, so a surface
             // within SharePlaneMetres of a mirror already made reads that one — the vista ocean
             // sits 0.1 below the body it extends, and a level's bodies often share a level.
-            Body? same = _bodies.Find(b => System.MathF.Abs(b.Height - height) <= SharePlaneMetres);
+            Body? same = _bodies.Find(b =>
+                b.IsClassicOrGuest == classicOrGuest &&
+                System.MathF.Abs(b.Height - height) <= SharePlaneMetres);
 
             // THE VISTA OCEAN NEVER DRIVES A MIRROR. It spans the horizon, so it is always "in
             // view" even where the ground hides all of it — a mirror of its own, or a vote to
@@ -159,46 +203,67 @@ public sealed partial class Engine_WaterReflection : Node
             bool ocean = surface.Name == Refii.Level.Engine_LevelScene.VistaOceanNodeName;
             if (ocean && same is null)
             {
-                material.SetShaderParameter("planar_reflection", false);
+                material.SetShaderParameter(PlanarReflectionName, false);
                 continue;
             }
 
             if (same is not null)
             {
-                Texture2D shared = same.Mirrors[0]!.Viewport.GetTexture();
-                material.SetShaderParameter("reflection_tex", shared);
-                BindMirror(material, shared);
-                material.SetShaderParameter("planar_reflection", true);
                 same.Readers.Add(material);
                 if (!ocean)
                 {
                     same.Sharers.Add(surface);
                 }
 
+                if (same.Mirrors[0] is { } existing)
+                {
+                    Texture2D shared = existing.Viewport.GetTexture();
+                    material.SetShaderParameter(ReflectionTexName, shared);
+                    BindMirror(material, shared);
+                    material.SetShaderParameter(PlanarReflectionName, true);
+                }
+                else
+                {
+                    material.SetShaderParameter(PlanarReflectionName, false);
+                }
+
                 ++_shared;
                 continue;
             }
-
-            MirrorRig mirror = NewMirror(view);
-            material.SetShaderParameter("reflection_tex", mirror.Viewport.GetTexture());
-
-            BindMirror(material, mirror.Viewport.GetTexture());
-            material.SetShaderParameter("planar_reflection", true);
 
             var body = new Body
             {
                 Surface = surface,
                 Height = height,
+                IsClassicOrGuest = classicOrGuest,
+                IsOcean = ocean,
             };
-            body.Mirrors[0] = mirror;
+
+            if (spec.Enabled)
+            {
+                MirrorRig mirror = NewMirror(view, spec);
+                Texture2D mirrorTex = mirror.Viewport.GetTexture();
+                material.SetShaderParameter(ReflectionTexName, mirrorTex);
+                BindMirror(material, mirrorTex);
+                material.SetShaderParameter(PlanarReflectionName, true);
+                body.Mirrors[0] = mirror;
+            }
+            else
+            {
+                material.SetShaderParameter(PlanarReflectionName, false);
+            }
+
             body.Readers.Add(material);
             _bodies.Add(body);
         }
 
         if (_bodies.Count != 0)
         {
-            GD.Print($"[water] {_bodies.Count} planar reflection(s) at {TileSize}x{TileSize}, " +
-                $"{_shared} surface(s) sharing one");
+            WaterMirrorSpec activeSpec = SpecFor(Refii.Models.Engine_ClassicMaterial.Active || Engine_WaterMaterial.GuestMode);
+            string desc = activeSpec.Enabled
+                ? $"{activeSpec.TileHeight}p (cadence {activeSpec.Cadence}, far {activeSpec.FarPlane:0}m)"
+                : "disabled (Low tier)";
+            GD.Print($"[water] {_bodies.Count} planar reflection body(s), {desc}, {_shared} surface(s) sharing one");
         }
 
         SyncViews();
@@ -206,11 +271,22 @@ public sealed partial class Engine_WaterReflection : Node
 
     public override void _EnterTree()
     {
+        lock (InstancesGate)
+        {
+            if (!ActiveInstances.Contains(this))
+            {
+                ActiveInstances.Add(this);
+            }
+        }
         Refii.Core.Engine_Views.ViewsChanged += SyncViews;
     }
 
     public override void _ExitTree()
     {
+        lock (InstancesGate)
+        {
+            ActiveInstances.Remove(this);
+        }
         Refii.Core.Engine_Views.ViewsChanged -= SyncViews;
         foreach (Body body in _bodies)
         {
@@ -244,11 +320,11 @@ public sealed partial class Engine_WaterReflection : Node
     }
 
     /// <summary>One mirror's viewport and camera, parented here; <paramref name="view"/> seeds its range.</summary>
-    private MirrorRig NewMirror(Camera3D view)
+    private MirrorRig NewMirror(Camera3D view, WaterMirrorSpec spec)
     {
         var viewport = new SubViewport
         {
-            Size = new Vector2I(TileSize, TileSize),
+            Size = new Vector2I(spec.TileHeight, spec.TileHeight),
 
             // SHARED WORLD, which is the opposite of what the front end's viewport wants. The
             // UI sets OwnWorld3D so its cameras cannot see the world; a reflection is nothing
@@ -272,9 +348,8 @@ public sealed partial class Engine_WaterReflection : Node
             // the classic water's `oC0 *= c20.w` took it to white.
             UseHdr2D = true,
 
-            // A 256-pixel mirror: the coarser LOD of anything whose detail is under four
-            // of its pixels.
-            MeshLodThreshold = ReflectionLodPixels,
+            // Coarser LOD of anything whose detail is under spec.LodPixels in the mirror.
+            MeshLodThreshold = spec.LodPixels,
         };
 
         var camera = new Camera3D
@@ -285,14 +360,7 @@ public sealed partial class Engine_WaterReflection : Node
             // renders no sun cascades. The A/B lever restores "everything except the water".
             CullMask = Engine_ReflectionLayer.MirrorCullMask,
             Near = view.Near,
-
-            // A 256-PIXEL MIRROR DOES NOT NEED THE HORIZON. Inheriting the main camera's
-            // far plane made every reflection a full-range scene traversal: measured in the
-            // market, one 256x256 mirror drew 8.6M visible primitives and 26M shadow
-            // primitives, because the sun's cascades cover whatever the view frustum covers.
-            // Everything a player can actually make out in a rippling 256-pixel reflection
-            // is within a few dozen metres of the water.
-            Far = MirrorFar(view.Far),
+            Far = MirrorFar(view.Far, spec),
             KeepAspect = Camera3D.KeepAspectEnum.Height,
             Current = true,
 
@@ -306,6 +374,68 @@ public sealed partial class Engine_WaterReflection : Node
         return new MirrorRig { Viewport = viewport, Camera = camera };
     }
 
+    /// <summary>Updates Modern water bodies when <c>water_quality</c> changes live at runtime.</summary>
+    public void SyncQuality()
+    {
+        if (_view is null || !GodotObject.IsInstanceValid(_view))
+        {
+            return;
+        }
+
+        WaterMirrorSpec modernSpec = Engine_WaterQuality.MirrorFor(Engine_WaterMaterial.CurrentQuality);
+        if (!Refii.Models.Engine_ClassicMaterial.Active && !Engine_WaterMaterial.GuestMode)
+        {
+            Cadence = modernSpec.Cadence;
+            _frame = -1;
+        }
+
+        foreach (Body body in _bodies)
+        {
+            if (body.IsClassicOrGuest)
+            {
+                continue;
+            }
+
+            if (!modernSpec.Enabled)
+            {
+                foreach (MirrorRig? rig in body.Mirrors)
+                {
+                    if (rig is not null && GodotObject.IsInstanceValid(rig.Viewport))
+                    {
+                        rig.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+                    }
+                }
+
+                foreach (ShaderMaterial reader in body.Readers)
+                {
+                    if (GodotObject.IsInstanceValid(reader))
+                    {
+                        reader.SetShaderParameter(PlanarReflectionName, false);
+                        reader.SetShaderParameter(SecondEnabledName, false);
+                    }
+                }
+                continue;
+            }
+
+            MirrorRig primary = body.Mirrors[0] ??= NewMirror(_view, modernSpec);
+            primary.Viewport.MeshLodThreshold = modernSpec.LodPixels;
+            primary.Camera.Far = MirrorFar(_view.Far, modernSpec);
+            primary.RenderedFrame = int.MinValue;
+            Texture2D tex = primary.Viewport.GetTexture();
+
+            foreach (ShaderMaterial reader in body.Readers)
+            {
+                if (GodotObject.IsInstanceValid(reader))
+                {
+                    reader.SetShaderParameter(ReflectionTexName, tex);
+                    reader.SetShaderParameter(PlanarReflectionName, true);
+                }
+            }
+        }
+
+        SyncViews();
+    }
+
     /// <summary>
     /// Builds player two's mirror on every body when the screen splits and frees it when the
     /// screen rejoins. A water.gdshader material takes it as its second mirror and picks by eye;
@@ -317,13 +447,18 @@ public sealed partial class Engine_WaterReflection : Node
         bool split = Refii.Core.Engine_Views.Split && _view is not null && GodotObject.IsInstanceValid(_view);
         foreach (Body body in _bodies)
         {
+            WaterMirrorSpec spec = SpecFor(body.IsClassicOrGuest);
             MirrorRig? second = body.Mirrors[1];
-            if (split && second is null)
+            if (split && spec.Enabled && second is null)
             {
-                second = NewMirror(_view!);
+                second = NewMirror(_view!, spec);
                 body.Mirrors[1] = second;
                 foreach (ShaderMaterial reader in body.Readers)
                 {
+                    if (!GodotObject.IsInstanceValid(reader))
+                    {
+                        continue;
+                    }
                     if (!reader.HasMeta(Engine_ClassicWater.Meta))
                     {
                         reader.SetShaderParameter(SecondTextureName, second.Viewport.GetTexture());
@@ -335,10 +470,14 @@ public sealed partial class Engine_WaterReflection : Node
                     }
                 }
             }
-            else if (!split && second is not null)
+            else if ((!split || !spec.Enabled) && second is not null)
             {
                 foreach (ShaderMaterial reader in body.Readers)
                 {
+                    if (!GodotObject.IsInstanceValid(reader))
+                    {
+                        continue;
+                    }
                     if (!reader.HasMeta(Engine_ClassicWater.Meta))
                     {
                         reader.SetShaderParameter(SecondEnabledName, false);
@@ -401,6 +540,7 @@ public sealed partial class Engine_WaterReflection : Node
             DisableAll();
             return;
         }
+        Engine_WaterMaterial.SyncConfigIfNeeded();
         if (_view is null || _bodies.Count == 0)
         {
             return;
@@ -504,7 +644,8 @@ public sealed partial class Engine_WaterReflection : Node
         for (int i = 0; i < _bodies.Count; ++i)
         {
             Body body = _bodies[(_turn[view] + i) % _bodies.Count];
-            if (body.Mirrors[view] is not { } mirror)
+            WaterMirrorSpec bodySpec = SpecFor(body.IsClassicOrGuest);
+            if (!bodySpec.Enabled || body.Mirrors[view] is not { } mirror)
             {
                 continue;
             }
@@ -545,6 +686,8 @@ public sealed partial class Engine_WaterReflection : Node
             return;
         }
 
+        WaterMirrorSpec spec = SpecFor(chosenBody.IsClassicOrGuest);
+
         // THE VIEW'S OWN PROJECTION: its angle, the axis that angle is measured on, and its range.
         chosen.Camera.Fov = fov;
         if (chosen.Camera.KeepAspect != source.KeepAspect)
@@ -552,22 +695,38 @@ public sealed partial class Engine_WaterReflection : Node
             chosen.Camera.KeepAspect = source.KeepAspect;
         }
 
-        if (chosen.Camera.Near != source.Near)
+        // Hardware near-plane clip of submerged geometry near the mirrored camera when above water.
+        float near = source.Near;
+        if (!chosenBody.IsClassicOrGuest)
         {
-            chosen.Camera.Near = source.Near;
+            float hAbove = eye.Origin.Y - chosenBody.Height;
+            if (hAbove > 0.35f && fov <= 105f)
+            {
+                near = Mathf.Max(near, Mathf.Min(hAbove * 0.35f, 4.0f));
+            }
+        }
+        if (chosen.Camera.Near != near)
+        {
+            chosen.Camera.Near = near;
         }
 
-        float far = MirrorFar(source.Far);
+        float far = MirrorFar(source.Far, spec);
         if (chosen.Camera.Far != far)
         {
             chosen.Camera.Far = far;
         }
 
+        if (chosen.Viewport.MeshLodThreshold != spec.LodPixels)
+        {
+            chosen.Viewport.MeshLodThreshold = spec.LodPixels;
+        }
+
         // THE SCREEN'S ASPECT. Both water shaders address the mirror by the screen position, so
         // it has to cover what the screen covers: square, it held only the middle of a 16:9 view
-        // stretched across the whole width. The height stays the title's 256.
+        // stretched across the whole width.
+        int tileH = spec.TileHeight;
         var size = new Vector2I(
-            Mathf.Clamp(Mathf.RoundToInt(TileSize * screen.X / Mathf.Max(screen.Y, 1f)), 1, 4 * TileSize), TileSize);
+            Mathf.Clamp(Mathf.RoundToInt(tileH * screen.X / Mathf.Max(screen.Y, 1f)), 1, 4 * tileH), tileH);
         if (chosen.Viewport.Size != size)
         {
             chosen.Viewport.Size = size;

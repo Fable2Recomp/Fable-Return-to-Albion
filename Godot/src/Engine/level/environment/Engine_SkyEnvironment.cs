@@ -10,11 +10,8 @@ public static class Engine_SkyEnvironment
 {
     private static readonly StringName BetaMieName = "beta_mie";
     private static readonly StringName BetaRayleighName = "beta_rayleigh";
-    private static readonly StringName HasDomeName = "has_dome";
     private static readonly StringName HorizonDistanceName = "horizon_distance";
     private static readonly StringName SunEngineName = "sun_engine";
-    private static readonly StringName WLightName = "w_light";
-    private static readonly StringName WSunName = "w_sun";
 
     public const string ShaderPath = "res://src/Engine/level/environment/sky.gdshader";
 
@@ -435,19 +432,9 @@ public static class Engine_SkyEnvironment
     public static void ApplyWaterFrame(
         ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
     {
-        ApplyDomeUniforms(material, frame, state, lut);
-        material.SetShaderParameter(HasDomeName, true);
-
-        Vector3 sun = Engine_SkyFrame.ToGodot(frame.SunDirection);
-        if (sun.LengthSquared() > 1e-8f)
-        {
-            sun = sun.Normalized();
-        }
-
-        float sunUp = Math.Clamp(sun.Y * 3f, 0f, 1f);
-        material.SetShaderParameter(WLightName, new Vector4(sun.X, sun.Y, sun.Z, 0f));
-        material.SetShaderParameter(WSunName, new Vector4(
-            1f, 0.55f + (0.42f * sunUp), 0.30f + (0.60f * sunUp), sun.Y));
+        _ = frame;
+        _ = lut;
+        Engine_WaterMaterial.ApplyAtmosphere(material, state);
     }
 
     public static List<byte[]> BuildGdbChain(LevelEntry level, Func<string, byte[]?> read) =>
