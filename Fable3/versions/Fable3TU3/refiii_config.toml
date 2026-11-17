@@ -232,6 +232,7 @@
 0x8262AB60 = { name = "rex_CECHealth_OnHeroDeath" }
 0x826279F0 = { name = "rex_CECHealth_Modify" }
 0x8227DB58 = { name = "rex_CECHealth_GetMax" }
+0x82BD1010 = { name = "rex_CAbilityProperties_GetBool" }
 0x823D2698 = { name = "rex_CECMoney_Modify" }
 0x823D9C78 = { name = "rex_CECStats_ApplyRenown" }
 0x823DA258 = { name = "rex_CECStats_GrantGuildSeals" }

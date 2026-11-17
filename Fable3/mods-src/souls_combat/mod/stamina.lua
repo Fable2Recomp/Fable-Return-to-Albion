@@ -8,7 +8,9 @@
 --     level bought on the Road to Rule reach it at once.
 --   ability_request — REQUEST_MELEE_PRESSED refused on an empty pool; the runtime refuses that
 --     press's release with it.
---   melee_swing — once per strike, after its animation started: the cost. A pool holding anything
+--   melee_swing — once per strike, after its animation started: the cost, swing_cost, or
+--     flourish_cost for the charged flourish (the event's `flourish`: the ability's own GDB
+--     Flourish property). A pool holding anything
 --     pays in full, into debt down to stamina_floor, so the emptying swing lands.
 
 local C = require("common")
@@ -32,6 +34,7 @@ end)
 
 Refii.on("melee_swing", function(e)
 	if IsPlayer(e.player) then
-		Refii.pool_spend(e.player, C.StaminaKey, Setting("swing_cost", 18))
+		local cost = e.flourish and Setting("flourish_cost", 32) or Setting("swing_cost", 18)
+		Refii.pool_spend(e.player, C.StaminaKey, cost)
 	end
 end)

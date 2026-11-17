@@ -17,8 +17,10 @@ local kStaminaKey, kStaminaMaxKey = C.StaminaKey, C.StaminaMaxKey
 --   ability_request — every ability request any creature makes; REQUEST_MELEE_PRESSED refused
 --     on an empty pool. The bus refuses that press's release itself. Holding X is also the block,
 --     so an empty pool cannot raise a guard either.
---   melee_swing — once per strike, after the swing's animation has started: the cost. A pool
---     holding anything pays in full, into debt down to stamina_floor, so the emptying swing lands.
+--   melee_swing — once per strike, after the swing's animation has started: the cost, swing_cost,
+--     or flourish_cost for the hero's charged flourish (the event's `flourish`: the ability's own
+--     GDB Flourish property). A pool holding anything pays in full, into debt down to
+--     stamina_floor, so the emptying swing lands.
 ----------------------------------------------------------------------------------------------------
 
 for p = 1, 2 do
@@ -39,6 +41,7 @@ end)
 
 Refii.on("melee_swing", function(e)
 	if IsPlayer(e.player) then
-		Refii.pool_spend(e.player, kStaminaKey, Setting("swing_cost", 18))
+		local cost = e.flourish and Setting("flourish_cost", 32) or Setting("swing_cost", 18)
+		Refii.pool_spend(e.player, kStaminaKey, cost)
 	end
 end)

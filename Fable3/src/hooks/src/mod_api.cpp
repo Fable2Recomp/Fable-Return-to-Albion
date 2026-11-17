@@ -2004,7 +2004,8 @@ int32_t RunKind(int32_t kind, const std::vector<TypedSubscription>& subs, const 
     case REFII_EVENT_MELEE_SWING:
       return Run<MeleeSwingEvent>(subs, fields, length, out, capacity, {
           F(MeleeSwingEvent, entity, kHandle), F(MeleeSwingEvent, player, kI32), F(MeleeSwingEvent, action, kHandle),
-          F(MeleeSwingEvent, action_type, kI32), F(MeleeSwingEvent, action_name, kStr)});
+          F(MeleeSwingEvent, action_type, kI32), F(MeleeSwingEvent, action_name, kStr), F(MeleeSwingEvent, strike, kI32),
+          F(MeleeSwingEvent, flourish, kBool)});
     case REFII_EVENT_ROLL_CAN_START:
       return Run<RollEvent>(subs, fields, length, out, capacity, {
           F(RollEvent, entity, kHandle), F(RollEvent, player, kI32)});
@@ -2418,7 +2419,8 @@ int32_t RunKind(int32_t kind, const std::vector<TypedSubscription>& subs, const 
     case REFII_EVENT_MELEE_SWING_ENDED:
       return Run<MeleeSwingEndedEvent>(subs, fields, length, out, capacity, {
           F(MeleeSwingEndedEvent, entity, kHandle), F(MeleeSwingEndedEvent, player, kI32), F(MeleeSwingEndedEvent,
-          action, kHandle), F(MeleeSwingEndedEvent, action_type, kI32), F(MeleeSwingEndedEvent, hits, kI32)});
+          action, kHandle), F(MeleeSwingEndedEvent, action_type, kI32), F(MeleeSwingEndedEvent, hits, kI32),
+          F(MeleeSwingEndedEvent, strike, kI32), F(MeleeSwingEndedEvent, flourish, kBool)});
     case REFII_EVENT_ACTION_MOVE_INTERRUPT:
       return Run<ActionMoveInterruptEvent>(subs, fields, length, out, capacity, {
           F(ActionMoveInterruptEvent, entity, kHandle), F(ActionMoveInterruptEvent, player, kI32),

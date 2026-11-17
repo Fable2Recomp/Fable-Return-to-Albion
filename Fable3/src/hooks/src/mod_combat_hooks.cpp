@@ -49,6 +49,7 @@ REX_EXTERN(__imp__rex_CECTargetingPlayer_ClearTarget);
 REX_EXTERN(rex_CECHealth_CalculateDamage);
 REX_EXTERN(rex_CECHealth_IsLethal);
 REX_EXTERN(rex_CECHealth_GetMax);
+REX_EXTERN(rex_CAbilityProperties_GetBool);
 REX_EXTERN(rex_CActionManager_ResolveHandle);
 
 namespace {
@@ -159,19 +160,21 @@ struct SwingRecord {
   uint32_t action = 0;
   uint32_t entity = 0;
   int32_t hits = 0;
+  int32_t strike = -1;
+  bool flourish = false;
 };
 /// More than both heroes' strikes and every creature mid-swing near them.
 std::array<SwingRecord, 32> g_swings{};
 size_t g_swing_next = 0;
 int32_t g_swings_live = 0;
 
-void RecordSwing(uint32_t action, uint32_t entity) {
+void RecordSwing(uint32_t action, uint32_t entity, int32_t strike, bool flourish) {
   if (action == 0u || entity == 0u) {
     return;
   }
   for (SwingRecord& r : g_swings) {
     if (r.action == action) {
-      r = SwingRecord{action, entity, 0};
+      r = SwingRecord{action, entity, 0, strike, flourish};
       return;
     }
   }
@@ -180,7 +183,7 @@ void RecordSwing(uint32_t action, uint32_t entity) {
   if (slot.action == 0u) {
     ++g_swings_live;
   }
-  slot = SwingRecord{action, entity, 0};
+  slot = SwingRecord{action, entity, 0, strike, flourish};
 }
 
 SwingRecord* SwingOf(uint32_t action) {
@@ -482,10 +485,49 @@ REX_EXTERN(rex_CActionBlock_OnHit) {
   __imp__rex_CActionBlock_OnHit(ctx, base);
 }
 
+namespace {
+
+/// The ability's EAbilityActionType, which CommitSwing copies to the live action (TU3 `lwz
+/// r10,0x10(r31)` / `stw r10,0x98(r11)` 0x829C468C..90, disc 0x8297BC44..48).
+constexpr uint32_t kAbilityActionType = 0x10u;
+/// The ability's GDB property table, which the release strike's CanStart hands the bool lookup
+/// (TU3 `lwz r3,4(r27)` 0x829C63C4, disc 0x8297D954).
+constexpr uint32_t kAbilityProperties = 0x04u;
+/// Fnv1HashWithBasis("Flourish", 0x811C9DC5), stored by its static initialiser (TU3 0x83213C30,
+/// disc 0x831DF3D8) and read by the release strike's CanStart. TU3 dword_8359D598 / disc
+/// dword_8355C78C.
+constexpr uint32_t kFlourishHash = 0x8359D598u;
+
+/// The ability's own "Flourish" property, as the release strike's CanStart reads it (TU3
+/// 0x829C63C4..D0 / disc 0x8297D954..60): rex_CAbilityProperties_GetBool (r3 the table, r4 the
+/// hash, r5 the bool out; 1 when the property is a bool).
+bool AbilityIsFlourish(const PPCContext& ctx, uint8_t* base, uint32_t ability) {
+  const uint32_t properties = Word(base, ability + kAbilityProperties);
+  const uint32_t hash = Word(base, refii::guest::Address(kFlourishHash));
+  if (properties == 0u || hash == 0u) {
+    return false;
+  }
+  PPCContext work = Frame(ctx);
+  const uint32_t out = (work.r1.u32 + 0x80u) & ~0xFu;
+  base[out] = 0u;
+  work.r3.u64 = properties;
+  work.r4.u64 = hash;
+  work.r5.u64 = out;
+  rex_CAbilityProperties_GetBool(work, base);
+  return work.r3.u32 != 0u && base[out] != 0u;
+}
+
+}  // namespace
+
 // melee_swing. CAbilityActionMelee::CommitSwing (r3 the ability, r4 the entity; returns 1): called
 // by every strike's Perform after it pushed the strike action, so the action manager's live action
-// is that strike after it — recorded for its end (melee_swing_ended).
+// is that strike after it — recorded for its end (melee_swing_ended). `strike` is the ability's
+// EAbilityActionType (1 strike, 2 flourish class, 24 release strike, 36..38 confined, 39 advanced,
+// 40 wall smash, 41 wall leap, 46 / 47 lunge close / far, 48 sprint attack); `flourish` its own GDB
+// Flourish property — the charged flourish, a release strike whose type the Perform overwrites with
+// 2 only after this returns.
 REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
+  const uint32_t ability = ctx.r3.u32;
   const uint32_t entity = ctx.r4.u32;
   __imp__rex_CAbilityActionMelee_CommitSwing(ctx, base);
   const bool swing = modlua::Wants(kMeleeSwing);
@@ -494,12 +536,15 @@ REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
     return;
   }
   const uint32_t action = CurrentActionOf(base, entity);
+  const int32_t strike = ability != 0u ? static_cast<int32_t>(Word(base, ability + kAbilityActionType)) : -1;
+  const bool flourish = ability != 0u && AbilityIsFlourish(ctx, base, ability);
   if (ended) {
-    RecordSwing(action, entity);
+    RecordSwing(action, entity, strike, flourish);
   }
   if (swing) {
-    modlua::QueueEvent(kMeleeSwing, Fields("entity=%u,player=%d,action=%u,action_type=%d,action_name='%s'", Handle(base, entity),
-                                           modlua::PlayerOf(base, entity), ObjectHandle(action), -1, ""));
+    modlua::QueueEvent(kMeleeSwing, Fields("entity=%u,player=%d,action=%u,action_type=%d,action_name='%s',strike=%d,flourish=%s",
+                                           Handle(base, entity), modlua::PlayerOf(base, entity), ObjectHandle(action), -1, "",
+                                           strike, Bool(flourish)));
   }
 }
 
@@ -524,8 +569,9 @@ REX_EXTERN(rex_CAction_End) {
   --g_swings_live;
   __imp__rex_CAction_End(ctx, base);
   if (live && modlua::Wants(kMeleeSwingEnded)) {
-    modlua::QueueEvent(kMeleeSwingEnded, Fields("entity=%u,player=%d,action=%u,action_type=%d,hits=%d", Handle(base, ended.entity),
-                                                modlua::PlayerOf(base, ended.entity), ObjectHandle(action), -1, ended.hits));
+    modlua::QueueEvent(kMeleeSwingEnded, Fields("entity=%u,player=%d,action=%u,action_type=%d,hits=%d,strike=%d,flourish=%s",
+                                                Handle(base, ended.entity), modlua::PlayerOf(base, ended.entity), ObjectHandle(action),
+                                                -1, ended.hits, ended.strike, Bool(ended.flourish)));
   }
 }
 

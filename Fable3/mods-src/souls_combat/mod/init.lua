@@ -16,6 +16,7 @@ require("movement")       -- each hero's turning and friction, turn-in-place tak
 require("ai")             -- the enemies: tokens, tiers, punishes, blocks, the riposte, circling, enrage
 require("stamina")        -- the pool, its refill, the refused swing
 require("roll")           -- the roll's cost
+require("damage")         -- enemies hit harder, elites take longer
 require("guard")          -- the guard's cost and break
 require("mana")           -- the mana pool and the charge cap
 require("recovery")       -- potions restore the pools, being downed fills them

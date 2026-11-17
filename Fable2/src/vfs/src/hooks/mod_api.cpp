@@ -2979,7 +2979,11 @@ constexpr uint32_t kSpellOffered = 196;  // manager + 196 + 5 * type + tier: the
 constexpr uint32_t kGuiObject = 0x83496B08u;           // disc 0x834968A4
 constexpr uint32_t kGdbManager = 0x83496DA0u;          // disc 0x83496BD0
 constexpr uint32_t kRecordStringGetter = 0x82323540u;  // disc 0x82345978: (entry, "Name") -> char*
-constexpr uint32_t kRecordTypedGetter = 0x82A006C8u;   // disc 0x829FB978: GDBEntry_GetPropTyped(entry, hash, type) -> value*
+// GDBEntry_FindPropWalkParents(entry, hash, int* type) -> value*: the property, inherited, and the
+// type the database stores it as. GDBEntry_GetPropTyped (TU1 0x82A006C8) makes this walk and then
+// its conversion (sub_8229CE90), which hands back the same value word whatever type is asked for
+// (`*a4 = a3` before any test; the result is dropped), so the stored type is what decodes the word.
+constexpr uint32_t kRecordPropertyWalk = 0x821E5A08u;  // disc 0x821E55C8
 constexpr uint32_t kGdbTypeInt = 1;                     // GDB property types, as the database states them
 constexpr uint32_t kGdbTypeEnum = 5;
 constexpr uint32_t kGdbTypeBool = 0;                    // word != 0: lwz, cntlzw, extrwi 1,26, xori 1 (0x825A1F20)
@@ -3610,46 +3614,6 @@ extern "C" int32_t refii_mod_record_string(PPCContext* ctx, uint8_t* base, uint3
   return 1;
 }
 
-extern "C" int32_t refii_mod_record_int(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
-                                        int32_t* out) {
-  if (out != nullptr) {
-    *out = 0;
-  }
-  if (ctx == nullptr || definition == 0 || field == nullptr || field[0] == 0 || out == nullptr) {
-    return 0;
-  }
-  const uint32_t gdb = refii::vfs::LoadGuestU32(base, refii::guest::Address(kGdbManager));
-  if (!Plausible(gdb)) {
-    return 0;
-  }
-  PPCContext lookup = refii::mods::Frame(*ctx);
-  lookup.r3.u32 = gdb;
-  lookup.r4.u32 = definition;
-  rex_GDBManager_FindEntryByHash(lookup, base);
-  const uint32_t entry = lookup.r3.u32;
-  if (!Plausible(entry)) {
-    return 0;
-  }
-  // The string getter hashes the name itself (sub_82323540 -> sub_821D4D90 -> GetPropTyped with
-  // type 4); an integer takes the typed getter directly, as an int and then as an enum.
-  const uint32_t hash = refii_mod_fnv1(field);
-  for (uint32_t type : {kGdbTypeInt, kGdbTypeEnum}) {
-    PPCContext work = refii::mods::Frame(*ctx);
-    work.r3.u32 = entry;
-    work.r4.u32 = hash;
-    work.r5.u32 = type;
-    if (!refii::mods::CallGuest(work, base, refii::guest::Address(kRecordTypedGetter))) {
-      return 0;
-    }
-    const uint32_t value = work.r3.u32;
-    if (Plausible(value)) {
-      *out = static_cast<int32_t>(refii::mods::LoadU32(base, value));
-      return 1;
-    }
-  }
-  return 0;
-}
-
 namespace {
 
 /// The database entry a record hash names (GDBManager_FindEntryByHash), or 0.
@@ -3665,19 +3629,39 @@ uint32_t RecordEntry(PPCContext* ctx, uint8_t* base, uint32_t definition) {
   return Plausible(lookup.r3.u32) ? lookup.r3.u32 : 0u;
 }
 
-/// The value word of an entry's property of `type`, INHERITED (GDBEntry_GetPropTyped), or 0.
-uint32_t RecordValue(PPCContext* ctx, uint8_t* base, uint32_t entry, const char* field, uint32_t type) {
+/// The value word of an entry's property, INHERITED, and the type the database stores it as
+/// (GDBEntry_FindPropWalkParents), or 0.
+uint32_t RecordProperty(PPCContext* ctx, uint8_t* base, uint32_t entry, const char* field, int32_t* type) {
+  *type = -1;
   PPCContext work = refii::mods::Frame(*ctx);
+  const uint32_t out = (work.r1.u32 + 0x100u) & ~0xFu;
+  refii::mods::StoreU32(base, out, 0xFFFFFFFFu);
   work.r3.u32 = entry;
   work.r4.u32 = refii_mod_fnv1(field);
-  work.r5.u32 = type;
-  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kRecordTypedGetter))) {
+  work.r5.u32 = out;
+  if (!refii::mods::CallGuest(work, base, refii::guest::Address(kRecordPropertyWalk)) || !Plausible(work.r3.u32)) {
     return 0u;
   }
-  return Plausible(work.r3.u32) ? work.r3.u32 : 0u;
+  *type = static_cast<int32_t>(refii::mods::LoadU32(base, out));
+  return work.r3.u32;
 }
 
 }  // namespace
+
+extern "C" int32_t refii_mod_record_int(PPCContext* ctx, uint8_t* base, uint32_t definition, const char* field,
+                                        int32_t* out) {
+  if (out != nullptr) {
+    *out = 0;
+  }
+  const uint32_t entry = field != nullptr && field[0] != 0 && out != nullptr ? RecordEntry(ctx, base, definition) : 0u;
+  int32_t type = -1;
+  const uint32_t value = entry != 0u ? RecordProperty(ctx, base, entry, field, &type) : 0u;
+  if (value == 0u || (type != static_cast<int32_t>(kGdbTypeInt) && type != static_cast<int32_t>(kGdbTypeEnum))) {
+    return 0;
+  }
+  *out = static_cast<int32_t>(refii::mods::LoadU32(base, value));
+  return 1;
+}
 
 extern "C" int32_t refii_mod_record_exists(PPCContext* ctx, uint8_t* base, uint32_t definition) {
   return RecordEntry(ctx, base, definition) != 0u ? 1 : 0;
@@ -3692,15 +3676,18 @@ extern "C" int32_t refii_mod_record_number(PPCContext* ctx, uint8_t* base, uint3
   if (entry == 0u) {
     return 0;
   }
-  if (const uint32_t value = RecordValue(ctx, base, entry, field, kGdbTypeFloat); value != 0u) {
+  int32_t type = -1;
+  const uint32_t value = RecordProperty(ctx, base, entry, field, &type);
+  if (value == 0u) {
+    return 0;
+  }
+  if (type == static_cast<int32_t>(kGdbTypeFloat)) {
     *out = refii::mods::LoadF32(base, value);
     return 1;
   }
-  for (uint32_t type : {kGdbTypeInt, kGdbTypeEnum}) {
-    if (const uint32_t value = RecordValue(ctx, base, entry, field, type); value != 0u) {
-      *out = static_cast<float>(static_cast<int32_t>(refii::mods::LoadU32(base, value)));
-      return 1;
-    }
+  if (type == static_cast<int32_t>(kGdbTypeInt) || type == static_cast<int32_t>(kGdbTypeEnum)) {
+    *out = static_cast<float>(static_cast<int32_t>(refii::mods::LoadU32(base, value)));
+    return 1;
   }
   return 0;
 }
@@ -3711,8 +3698,9 @@ extern "C" int32_t refii_mod_record_bool(PPCContext* ctx, uint8_t* base, uint32_
     *out = 0;
   }
   const uint32_t entry = field != nullptr && field[0] != 0 && out != nullptr ? RecordEntry(ctx, base, definition) : 0u;
-  const uint32_t value = entry != 0u ? RecordValue(ctx, base, entry, field, kGdbTypeBool) : 0u;
-  if (value == 0u) {
+  int32_t type = -1;
+  const uint32_t value = entry != 0u ? RecordProperty(ctx, base, entry, field, &type) : 0u;
+  if (value == 0u || type != static_cast<int32_t>(kGdbTypeBool)) {
     return 0;
   }
   *out = refii::mods::LoadU32(base, value) != 0u ? 1 : 0;
@@ -3724,12 +3712,14 @@ extern "C" int32_t refii_mod_record_ref(PPCContext* ctx, uint8_t* base, uint32_t
   /// The database's reference type: its value word is the named record's hash (`lwz r4,0(r11)`
   /// before GDBManager_FindEntryByHash, 0x821b0994..98).
   constexpr uint32_t kGdbTypeRef = 6;
+  static_assert(kGdbTypeRef != kGdbTypeBool);
   if (out != nullptr) {
     *out = 0u;
   }
   const uint32_t entry = field != nullptr && field[0] != 0 && out != nullptr ? RecordEntry(ctx, base, definition) : 0u;
-  const uint32_t value = entry != 0u ? RecordValue(ctx, base, entry, field, kGdbTypeRef) : 0u;
-  if (value == 0u) {
+  int32_t type = -1;
+  const uint32_t value = entry != 0u ? RecordProperty(ctx, base, entry, field, &type) : 0u;
+  if (value == 0u || type != static_cast<int32_t>(kGdbTypeRef)) {
     return 0;
   }
   *out = refii::mods::LoadU32(base, value);

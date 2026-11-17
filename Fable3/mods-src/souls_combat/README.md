@@ -34,10 +34,17 @@ Every number below is a setting in `settings.json`, read live.
 **Stamina** starts at 100 and grows with the Road to Rule's Melee and Ranged levels, the way health
 grows from an ability in the game's own data (AbilityHealthBase, 150 to 750). The 750 is spread over
 the ten levels, so each level adds 30: 100 at none, 190 at Melee 3, 250 at Melee 5, 400 at both 5.
-`stamina_scale` scales the whole curve. A swing costs `swing_cost` (18), a roll `roll_cost` (22), a
-block `block_cost_per_damage` (1.2) per point of damage stopped. Stamina refills at
+`stamina_scale` scales the whole curve. A swing costs `swing_cost` (18), the charged flourish `flourish_cost` (32: melee_swing's
+`flourish`, the strike ability's own GDB Flourish property), a roll `roll_cost` (22), a block
+`block_cost_per_damage` (0.75) per point of damage stopped. Stamina refills at
 `stamina_regen_fraction` (55%) of its maximum a second, `stamina_regen_delay` (0.7 s) after a spend.
 The swing that empties it still lands, down to `stamina_floor` (-25).
+
+**Damage** (`mod/damage.lua`): enemies hit a hero `damage_taken_scale` (1.6) times as hard, and a
+hero's hits on a creature its definition states elite or a lieutenant land divided by
+`elite_toughness` (1.5), scaled on `hit` before delivery (the game's damage is linear in it).
+**Poise** takes `poise_fraction` (30%) of a victim's maximum health within the window to stagger,
+`poise_fraction_elite` (50%) for an elite or lieutenant, `poise_fraction_hero` (25%) for a hero.
 
 **Mana** starts at 100 and grows with the Magic level: the same 750 over its five levels, so each
 level adds 60, up to 400. Every spell that launches costs `mana_per_level` (12) per power level, so a fully

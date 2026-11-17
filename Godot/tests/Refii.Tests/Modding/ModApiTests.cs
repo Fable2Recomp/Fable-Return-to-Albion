@@ -1187,7 +1187,7 @@ public class ModApiTests
         int[] gatedKinds = gated.Select(n => kinds[n]).OrderBy(k => k).ToArray();
         int[] catalogKinds = ModApi.WritableFields.Select(w => w.Kind).Distinct().OrderBy(k => k).ToArray();
         AssertThat(gatedKinds).IsEqual(catalogKinds);
-        AssertThat(bus.Contains("\"entity=%u,player=%d,action=%u,action_type=%d,action_name='%s'\"", StringComparison.Ordinal)).IsTrue();
+        AssertThat(bus.Contains("\"entity=%u,player=%d,action=%u,action_type=%d,action_name='%s',strike=%d,flourish=%s\"", StringComparison.Ordinal)).IsTrue();
         AssertThat(bus.Contains("name='%s',action=%u,action_type=%d,action_name='%s'\"", StringComparison.Ordinal)).IsTrue();
         string mouse = File.ReadAllText(Path.Combine(root, "Fable2", "src", "vfs", "src", "hooks", "mouse_look.cpp"));
         AssertThat(mouse.Contains("constexpr uint32_t kWheelStatementTicks = 2u;", StringComparison.Ordinal)).IsTrue();
@@ -1792,7 +1792,7 @@ public class ModApiTests
         AssertThat(ModApi.Find("action_move_interrupt")!.Kind).IsEqual(111);
         AssertThat(string.Join(",", ModApi.Find("spell_ended")!.Fields.Select(f => f.Name))).IsEqual("serial,type,caster,caster_player,tag,reason,level");
         AssertThat(string.Join(",", ModApi.Find("spell_charge_ended")!.Fields.Select(f => f.Name))).IsEqual("player,caster,released");
-        AssertThat(string.Join(",", ModApi.Find("melee_swing_ended")!.Fields.Select(f => f.Name))).IsEqual("entity,player,action,action_type,hits");
+        AssertThat(string.Join(",", ModApi.Find("melee_swing_ended")!.Fields.Select(f => f.Name))).IsEqual("entity,player,action,action_type,hits,strike,flourish");
         AssertThat(string.Join(",", ModApi.Find("action_move_interrupt")!.Fields.Select(f => f.Name))).IsEqual("entity,player,action,action_type");
         foreach (string name in new[] { "spell_ended", "spell_charge_ended", "melee_swing_ended" })
         {

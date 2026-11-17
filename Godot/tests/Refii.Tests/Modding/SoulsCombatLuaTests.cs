@@ -99,8 +99,8 @@ public class SoulsCombatLuaTests
             AssertThat(modules.Contains(name)).OverrideFailureMessage("require(\"" + name + "\") names no mod/" + name + ".lua").IsTrue();
         }
 
-        // The nine rules, the bars and what they share, each its own file, and init.lua only requires.
-        AssertThat(modules).ContainsExactlyInAnyOrder("ai", "bars", "cast_recovery", "commitment", "common", "guard", "lockon", "mana", "movement", "poise", "roll", "stamina");
+        // The twelve rules, the bars and what they share, each its own file, and init.lua only requires.
+        AssertThat(modules).ContainsExactlyInAnyOrder("ai", "bars", "cast_recovery", "commitment", "common", "damage", "guard", "healing", "lockon", "mana", "movement", "poise", "roll", "sprint", "stamina");
         string init = File.ReadAllText(Path.Combine(ModFolder(root), "mod", "init.lua"));
         AssertThat(Regex.IsMatch(init, @"Refii\.on\(")).IsFalse();
 
@@ -177,12 +177,17 @@ public class SoulsCombatLuaTests
                      "set_speed_multiplier", "clear_speed_multiplier", "Refii.allow_action_interrupt(",
                      "Refii.wheel_switches_target(hero)", "HeroLocomotionDataIndoorsDefault", "HeroCombatBalanceParams.",
                      "player_set(", "player_add(", "kRestCap", "PressRefused", "kPoiseSlots", "GetNumHitsOfTypeInTime",
-                     "string.find(name, \"Elite\"", "Timing.GetWorldFrame", "Timing.HaveSecondsElapsedSince", "item_used",
+                     "string.find(name, \"Elite\"", "Timing.GetWorldFrame", "Timing.HaveSecondsElapsedSince",
                      "arrival_slack", "whiff_from", "without + e.seconds",
                  })
         {
             AssertThat(allCode.Contains(gone, StringComparison.Ordinal)).OverrideFailureMessage("the port still has " + gone).IsFalse();
         }
+
+        // The heal punish reads the game's own health change, never an item use; item_used is the
+        // healing rule's alone.
+        string ai = Comment.Replace(File.ReadAllText(Path.Combine(ModFolder(root), "mod", "ai.lua")), string.Empty);
+        AssertThat(ai.Contains("item_used", StringComparison.Ordinal)).OverrideFailureMessage("the heal punish reads item_used again").IsFalse();
     }
 
     [TestCase]

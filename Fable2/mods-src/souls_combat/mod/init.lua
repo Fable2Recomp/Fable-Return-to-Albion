@@ -16,6 +16,9 @@ require("movement")       -- each hero's turning and parry window, turn-in-place
 require("ai")             -- the enemies: tokens, tiers, punishes, blocks, the riposte, circling, enrage
 require("stamina")        -- the pool, its refill, the refused swing
 require("roll")           -- the roll's cost
+require("sprint")         -- the sprint drains stamina
+require("damage")         -- enemies hit harder, elites take longer
+require("healing")        -- a healing item's cooldown in a fight
 require("guard")          -- the guard's cost and break
 require("mana")           -- the mana pool and the charge cap
 require("poise")          -- flinch only past a damage threshold

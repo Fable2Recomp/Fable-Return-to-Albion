@@ -195,8 +195,10 @@ public static class ModApi
 				F("player", "int32_t", "1 or 2 for a hero, else 0"),
 				F("ability", "uint32_t", "the strike ability (native; 0 in a relayed copy)"),
 				F("action", "uint32_t", "the live strike action the action manager (component 49) now runs, or 0 (Lua and Godot: a handle, what current_action answers; 0 in a relayed copy)"),
-				F("action_type", "int32_t", "the action's EScriptableAction (action_type), -1 unknown"),
-				F("action_name", "const char* / string", "its enum name (action_name), \"\" unknown"),
+				F("action_type", "int32_t", "the action's EScriptableAction (action_type): -1, since a strike is cloned by the action manager and never made by the definition factory"),
+				F("action_name", "const char* / string", "its enum name (action_name), \"\" for a strike"),
+				F("strike", "int32_t", "the strike's kind, the ability's EAbilityActionType (ability +0x10, copied to the action's +0x7C): 1 strike, 2 flourish class, 24 release strike, 35 release strike confined, 36 advanced strike, 37 wall smash, 38 wall leap, 43 / 44 lunge close / far, 45 sprint attack (Fable III renumbers above 25: 36..38 confined, 39 advanced, 40 wall smash, 41 wall leap, 46 / 47 lunge, 48 sprint attack)"),
+				F("flourish", "bool", "the ability's own GDB Flourish property: the hero's charged flourish (a release strike only the charge lets start)"),
 			},
 			RelayedFromPlayer),
 		new ModApiEvent("Roll", "roll_can_start", 8, "rex_CAbilityActionStrafeRoll_CanStart (r4 entity)",
@@ -1250,6 +1252,8 @@ public static class ModApi
 				F("action", "uint32_t", "the strike action melee_swing named (Lua and Godot: a handle; 0 in a relayed copy)"),
 				F("action_type", "int32_t", "the action's EScriptableAction (action_type), -1 unknown"),
 				F("hits", "int32_t", "how many hits the strike landed"),
+				F("strike", "int32_t", "melee_swing's strike for this strike"),
+				F("flourish", "bool", "melee_swing's flourish for this strike"),
 			},
 			RelayedFromPlayer),
 		new ModApiEvent("ActionMoveInterrupt", "action_move_interrupt", 111, "rex_CAction_MovementInterruptible (r3 the action handle), after it, when it answered yes",
@@ -2136,7 +2140,8 @@ public static class ModApi
 		"what an action IS: its definition is a Lua table of the game's scripts (Action.SetCurrentAction(entity, def)), not a GDB record and not kept on the object; every action is " +
 		"made from it by the one factory (sub_8218A8E0, hooked as rex_CActionFactory_CreateFromDefinition), which reads the table's Type — EScriptableAction of the game's own " +
 		"scriptableactionenum.lua: 0 PLAY_ANIMATION, 1 MELEE_STRIKE, 2 STRAFE (the roll), 16 BATCH, 48 LOOP, ... 88 DIG. action_type answers that id (-1 for an action the factory " +
-		"never saw), action_name its enum name (\"\" / nil unknown); melee_swing and anim_event carry both. Named for the last 64 actions made; an address reused later takes the later type";
+		"never saw), action_name its enum name (\"\" / nil unknown); melee_swing and anim_event carry both. Named for the last 64 actions made; an address reused later takes the later type. " +
+		"A strike is never factory-made (the manager clones it), so it answers -1; melee_swing's strike and flourish state what it is";
 
 	public const string FrontEndMeaning =
 		"the front end's own state, on the title and its screens (no game, no hero, no save loaded): the signed-in pad's user index (-1 / nil none: dword_83496AF8 against the " +

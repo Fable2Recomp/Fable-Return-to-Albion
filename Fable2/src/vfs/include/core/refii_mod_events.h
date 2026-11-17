@@ -352,6 +352,15 @@ struct MeleeSwingEvent : Event {
   /// (refii_mod_action_type / refii_mod_action_name; "" unknown).
   int32_t action_type;
   const char* action_name;
+  /// The strike's kind as the game states it: the ability's EAbilityActionType (ability +0x10,
+  /// which CommitSwing copies to the action's +0x7C): 1 strike, 2 flourish class, 24 release
+  /// strike, 35 release strike confined, 36 advanced strike, 37 wall smash, 38 wall leap, 43 / 44
+  /// lunge close / far, 45 sprint attack. Every strike action is cloned by the action manager, so
+  /// action_type is -1 here; this is the type to read.
+  int32_t strike;
+  /// The ability's own GDB "Flourish" property: true for the hero's charged flourish (a release
+  /// strike the charge let start), read through the game's own property lookup.
+  bool flourish;
 };
 
 /// The roll asks whether it may start (RollCanStart: `cancel` refuses, asked once per matching
@@ -1923,6 +1932,9 @@ struct MeleeSwingEndedEvent : Event {
   /// The action's EScriptableAction, -1 unknown.
   int32_t action_type;
   int32_t hits;
+  /// melee_swing's strike and flourish for this strike.
+  int32_t strike;
+  bool flourish;
 };
 
 /// MOVEMENT MAY INTERRUPT an entity's current action: the game's own test answered yes —

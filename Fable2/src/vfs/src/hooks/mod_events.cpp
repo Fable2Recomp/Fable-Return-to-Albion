@@ -471,8 +471,9 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_MELEE_SWING: {
       const auto& e = *static_cast<const MeleeSwingEvent*>(event);
-      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d,action_name='%s'", H(e.entity), e.player,
-                    H(e.action), e.action_type, e.action_name != nullptr ? e.action_name : "");
+      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d,action_name='%s',strike=%d,flourish=%s",
+                    H(e.entity), e.player, H(e.action), e.action_type, e.action_name != nullptr ? e.action_name : "",
+                    e.strike, e.flourish ? "true" : "false");
       return;
     }
     case REFII_EVENT_ROLL_CAN_START:
@@ -1084,8 +1085,8 @@ void LuaFields(int32_t kind, const void* event, char* out, size_t size) {
     }
     case REFII_EVENT_MELEE_SWING_ENDED: {
       const auto& e = *static_cast<const MeleeSwingEndedEvent*>(event);
-      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d,hits=%d", H(e.entity), e.player, H(e.action),
-                    e.action_type, e.hits);
+      std::snprintf(out, size, "entity=%u,player=%d,action=%u,action_type=%d,hits=%d,strike=%d,flourish=%s", H(e.entity),
+                    e.player, H(e.action), e.action_type, e.hits, e.strike, e.flourish ? "true" : "false");
       return;
     }
     case REFII_EVENT_ACTION_MOVE_INTERRUPT: {
@@ -2692,19 +2693,21 @@ struct SwingRecord {
   uint32_t entity = 0;
   int32_t type = -1;
   int32_t hits = 0;
+  int32_t strike = -1;
+  bool flourish = false;
 };
 /// More than both heroes' strikes and every creature mid-swing near them.
 std::array<SwingRecord, 32> g_swings{};
 size_t g_swing_next = 0;
 int32_t g_swings_live = 0;
 
-void RecordSwing(uint32_t action, uint32_t entity, int32_t type) {
+void RecordSwing(uint32_t action, uint32_t entity, int32_t type, int32_t strike, bool flourish) {
   if (action == 0 || entity == 0) {
     return;
   }
   for (SwingRecord& r : g_swings) {
     if (r.action == action) {
-      r = SwingRecord{action, entity, type, 0};
+      r = SwingRecord{action, entity, type, 0, strike, flourish};
       return;
     }
   }
@@ -2713,7 +2716,7 @@ void RecordSwing(uint32_t action, uint32_t entity, int32_t type) {
   if (slot.action == 0) {
     ++g_swings_live;
   }
-  slot = SwingRecord{action, entity, type, 0};
+  slot = SwingRecord{action, entity, type, 0, strike, flourish};
 }
 
 SwingRecord* SwingOf(uint32_t action) {
@@ -2747,23 +2750,65 @@ void NoteSwingHit(uint8_t* base, uint32_t attacker) {
 
 }  // namespace
 
+namespace {
+
+/// The ability's EAbilityActionType, which CommitSwing copies to the live action (`lwz r10,0x10(r30)`
+/// / `stw r10,0x7C(r11)` 0x8297c030..34).
+constexpr uint32_t kAbilityActionType = 0x10u;
+/// The ability's GDB property table, which the release strike's CanStart hands the bool lookup
+/// (`lwz r3,4(r28)` 0x8297e070).
+constexpr uint32_t kAbilityProperties = 0x04u;
+/// The game's bool property lookup: r3 the table, r4 the name hash, r5 the bool out; returns 1
+/// when the property is a bool (a leaf binary search). TU1 sub_829C5F18 / disc sub_829CB3D0.
+constexpr uint32_t kAbilityPropertyBool = 0x829C5F18u;
+/// Fnv1HashWithBasis("Flourish", 0x811C9DC5), stored by its static initialiser (0x8326e81c) and
+/// read by the release strike's CanStart (0x8297e078). TU1 dword_8349CC10 / disc dword_8349DFD4.
+constexpr uint32_t kFlourishHash = 0x8349CC10u;
+
+/// The ability's own "Flourish" property, as the release strike's CanStart reads it
+/// (TU1 sub_8297E008 / disc sub_829B0E38): only the Flourish ability may start on a charge.
+bool AbilityIsFlourish(const PPCContext& ctx, uint8_t* base, uint32_t ability) {
+  const uint32_t properties = Load32(base, ability + kAbilityProperties);
+  const uint32_t hash = Load32(base, refii::guest::Address(kFlourishHash));
+  if (properties == 0 || hash == 0) {
+    return false;
+  }
+  PPCContext work = refii::mods::Frame(ctx, 0x100u);
+  const uint32_t out = (work.r1.u32 + 0x80u) & ~0xFu;
+  base[out] = 0;
+  work.r3.u64 = properties;
+  work.r4.u64 = hash;
+  work.r5.u64 = out;
+  return CallGuest(work, base, refii::guest::Address(kAbilityPropertyBool)) && work.r3.u32 != 0 && base[out] != 0;
+}
+
+}  // namespace
+
 // Called once by every strike's Perform after the swing's animation has started: r3 = the
 // ability, r4 = the entity. The entity's action manager (component 49) then holds the live
 // clone at +0x10, recorded for its end (MeleeSwingEnded). TU1 0x8297BD68 / disc 0x829AEB98.
+// The clone is made by the action's own copy (the manager's slot 16), never by the definition
+// factory, so it has no EScriptableAction: it is stated as -1, which also clears the type of any
+// earlier action that had the same address.
 REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
   REX_FUNC_PROLOGUE();
   const uint32_t ability = ctx.r3.u32;
   const uint32_t entity = ctx.r4.u32;
   __imp__rex_CAbilityActionMelee_CommitSwing(ctx, base);
+  const uint32_t manager = entity != 0 ? refii_mod_component(base, entity, kActionManagerComponent) : 0u;
+  const uint32_t action = manager != 0 ? Load32(base, manager + 0x10u) : 0u;
+  if (action != 0) {
+    RecordAction(action, -1);
+  }
   const bool swing = AnySubscriber(REFII_EVENT_MELEE_SWING);
   const bool ended = AnySubscriber(REFII_EVENT_MELEE_SWING_ENDED);
   if (!swing && !ended) {
     return;
   }
-  const uint32_t manager = entity != 0 ? refii_mod_component(base, entity, kActionManagerComponent) : 0u;
-  const uint32_t action = manager != 0 ? Load32(base, manager + 0x10u) : 0u;
+  const int32_t strike = ability != 0 ? static_cast<int32_t>(Load32(base, ability + kAbilityActionType)) : -1;
+  const bool flourish = ability != 0 && AbilityIsFlourish(ctx, base, ability);
   if (ended) {
-    RecordSwing(action, entity, ActionTypeOf(action));
+    RecordSwing(action, entity, ActionTypeOf(action), strike, flourish);
   }
   if (swing) {
     MeleeSwingEvent e{};
@@ -2776,6 +2821,8 @@ REX_EXTERN(rex_CAbilityActionMelee_CommitSwing) {
     e.action = action;
     e.action_type = ActionTypeOf(e.action);
     e.action_name = refii_mod_scriptable_action_name(e.action_type);
+    e.strike = strike;
+    e.flourish = flourish;
     Dispatch(e);
   }
 }
@@ -3988,6 +4035,8 @@ REX_EXTERN(rex_CAction_End) {
     e.action = ended.action;
     e.action_type = ended.type;
     e.hits = ended.hits;
+    e.strike = ended.strike;
+    e.flourish = ended.flourish;
     Dispatch(e);
   }
 }
@@ -8506,10 +8555,30 @@ bool RelayRead<HitLandedEvent>(PPCContext& ctx, uint8_t* base, RelayReader& in, 
 }
 
 template <>
+void RelayWrite<MeleeSwingEvent>(uint8_t* base, const MeleeSwingEvent& e, std::string& out) {
+  PutEntity(out, base, e.entity);
+  PutNumber(out, e.strike);
+  PutNumber(out, e.flourish ? 1 : 0);
+}
+
+template <>
+bool RelayRead<MeleeSwingEvent>(PPCContext& ctx, uint8_t* base, RelayReader& in, MeleeSwingEvent& e) {
+  e.entity = in.Entity(ctx, base);
+  e.player = PlayerOf(base, e.entity);
+  e.action_type = -1;
+  e.action_name = "";
+  e.strike = ClampInt(in.Number());
+  e.flourish = in.Number() != 0.0;
+  return e.entity != 0u;
+}
+
+template <>
 void RelayWrite<MeleeSwingEndedEvent>(uint8_t* base, const MeleeSwingEndedEvent& e, std::string& out) {
   PutEntity(out, base, e.entity);
   PutNumber(out, e.action_type);
   PutNumber(out, e.hits);
+  PutNumber(out, e.strike);
+  PutNumber(out, e.flourish ? 1 : 0);
 }
 
 template <>
@@ -8519,6 +8588,8 @@ bool RelayRead<MeleeSwingEndedEvent>(PPCContext& ctx, uint8_t* base, RelayReader
   e.action = 0u;
   e.action_type = ClampInt(in.Number());
   e.hits = ClampInt(in.Number());
+  e.strike = ClampInt(in.Number());
+  e.flourish = in.Number() != 0.0;
   return e.entity != 0u;
 }
 
