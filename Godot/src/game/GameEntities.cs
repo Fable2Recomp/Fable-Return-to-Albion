@@ -841,6 +841,27 @@ public partial class GameEntities : Node3D
                 PlayerTwoPosition = ToGodot(entity.Position, entity.Rotation).Origin;
             }
 
+            // A RECYCLED ADDRESS IS A NEW ENTITY. The guest frees a level's entities and makes the
+            // next level's at the same addresses; an entity is its address AND its unique id
+            // (entity+0x14). The node, its twin marriage, its rig and every record keyed by the
+            // address belong to the entity that held it, so they go before this row decides
+            // anything, and the row builds the new entity from nothing. A unique id that moved is
+            // always a stated change (HostStatedWords compares it), so only those rows ask.
+            if (entity.Changed && _nodeUid.TryGetValue(entity.Address, out ulong drawnId) &&
+                drawnId != entity.UniqueId)
+            {
+                if (_recycledReports < 20)
+                {
+                    ++_recycledReports;
+                    GD.Print($"[game-entities] 0x{entity.Address:X8} recycled: unique id " +
+                        $"{drawnId:X16} -> {entity.UniqueId:X16} (record {entity.RecordHash:X8}) — " +
+                        "its node is retired and the new entity built");
+                }
+
+                ++RecycledAddresses;
+                RetireAddress(entity.Address);
+            }
+
             // ANSWERED BY THE LAST WALK'S VERDICT. Unchanged, off its reconcile cadence and no
             // principal is everything the three skip paths below ask of the statement (the empty
             // path's longer cadence divides by this one); what else they read is the verdict's to
@@ -1264,6 +1285,7 @@ public partial class GameEntities : Node3D
                 };
                 node.SetMeta(MetaEntityAddress, entity.Address);
                 node.SetMeta(MetaEntityUniqueId, entity.UniqueId);
+                _nodeUid[entity.Address] = entity.UniqueId;
                 node.SetMeta(MetaEntityRecord, entity.RecordHash);
                 node.SetMeta(MetaEntityModel, entity.ModelHash);
 
@@ -3788,74 +3810,97 @@ public partial class GameEntities : Node3D
 
         foreach (uint address in _gone)
         {
-            if (_nodes.TryGetValue(address, out MeshInstance3D? node) &&
-                GodotObject.IsInstanceValid(node))
-            {
-                Refii.Entities.Engine_EntityAppearance.Forget(node);
-                node.QueueFree();
-            }
-
-            _nodes.Remove(address);
-            _guestPlacements.Remove(address);
-            _lastLook.Remove(address);
-            _batches?.Demote(address);
-            _still.Remove(address);
-            if (_adoptions.TryGetValue(address, out var married))
-            {
-                // Destroyed by the guest (a key taken, a door broken): the copy goes with it.
-                // Merely unreported (streamed out, walk truncated): it stays where it stood.
-                bool destroyed = false;
-                foreach (ulong dead in HostBridge.GetDeadEntities())
-                {
-                    if (dead == married.Uid)
-                    {
-                        destroyed = true;
-                        break;
-                    }
-                }
-                Twins?.Release(married.Twin, destroyed);
-                _adoptions.Remove(address);
-            }
-
-            // The rig goes with the node it hung under; leaving the entry behind would keep
-            // a freed skeleton reachable and pose it every frame.
-            _skeletons.Remove(address);
-            _rigSeenMs.Remove(address);
-            _viewSpheres.Remove(address);
-            _boneWriteAskedMs.Remove(address);
-            _lastLit.Remove(address);
-            _eyes.Remove(address);
-            _bodyAndEyes.Remove(address);
-            _clipAnimators.Remove(address);
-            _bodies.Remove(address);
-            _movers.Remove(address);
-            _written.Remove(address);
-            _compositeParts.Remove(address);
-            _partMorphs.Remove(address);
-            _textureLayers.Remove(address);
-            _meshParts.Remove(address);
-            _multiMeshSplit.Remove(address);
-            _interiorMeshesPending.Remove(address);
-            _interiorNodes.Remove(address);
-            _nodeMesh.Remove(address);
-            _relit.Remove(address);
-            _attachments.Forget(address);
-            _followers.Remove(address);
-            _attachedStated.Remove(address);
-            _childFacts.Remove(address);
-            _justDetached.Remove(address);
-
-            // And the retry, which would otherwise keep asking the guest about an entity it
-            // no longer has — an address the guest has reused answers for something else.
-            _unrigged.Remove(address);
-            _awaitingRig.Remove(address);
-            _extentHeldStreak.Remove(address);
-            _drawRanges.Remove(address);
-            _entityLightZone.Remove(address);
-            _entityLayers.Remove(address);
-            _offscreenDeferred.Remove(address);
+            RetireAddress(address);
         }
     }
+
+    /// <summary>
+    /// Frees the node at <paramref name="address"/> and forgets everything kept for the entity
+    /// that held it: it left the walk, or the guest made another entity there.
+    /// </summary>
+    private void RetireAddress(uint address)
+    {
+        if (_nodes.TryGetValue(address, out MeshInstance3D? node) &&
+            GodotObject.IsInstanceValid(node))
+        {
+            Refii.Entities.Engine_EntityAppearance.Forget(node);
+            node.QueueFree();
+        }
+
+        _nodes.Remove(address);
+        _nodeUid.Remove(address);
+        _seen.Remove(address);
+        if (SkipIndexEnabled)
+        {
+            _skipIndex.Unpark(address);
+        }
+        _guestPlacements.Remove(address);
+        _lastLook.Remove(address);
+        _batches?.Demote(address);
+        _still.Remove(address);
+        if (_adoptions.TryGetValue(address, out var married))
+        {
+            // Destroyed by the guest (a key taken, a door broken): the copy goes with it.
+            // Merely unreported (streamed out, walk truncated): it stays where it stood.
+            bool destroyed = false;
+            foreach (ulong dead in HostBridge.GetDeadEntities())
+            {
+                if (dead == married.Uid)
+                {
+                    destroyed = true;
+                    break;
+                }
+            }
+            Twins?.Release(married.Twin, destroyed);
+            _adoptions.Remove(address);
+        }
+
+        // The rig goes with the node it hung under; leaving the entry behind would keep
+        // a freed skeleton reachable and pose it every frame.
+        _skeletons.Remove(address);
+        _rigSeenMs.Remove(address);
+        _viewSpheres.Remove(address);
+        _boneWriteAskedMs.Remove(address);
+        _lastLit.Remove(address);
+        _eyes.Remove(address);
+        _bodyAndEyes.Remove(address);
+        _clipAnimators.Remove(address);
+        _bodies.Remove(address);
+        _movers.Remove(address);
+        _written.Remove(address);
+        _compositeParts.Remove(address);
+        _partMorphs.Remove(address);
+        _textureLayers.Remove(address);
+        _meshParts.Remove(address);
+        _multiMeshSplit.Remove(address);
+        _interiorMeshesPending.Remove(address);
+        _interiorNodes.Remove(address);
+        _nodeMesh.Remove(address);
+        _relit.Remove(address);
+        _attachments.Forget(address);
+        _followers.Remove(address);
+        _attachedStated.Remove(address);
+        _childFacts.Remove(address);
+        _justDetached.Remove(address);
+
+        // And the retry, which would otherwise keep asking the guest about an entity it
+        // no longer has — an address the guest has reused answers for something else.
+        _unrigged.Remove(address);
+        _awaitingRig.Remove(address);
+        _extentHeldStreak.Remove(address);
+        _drawRanges.Remove(address);
+        _entityLightZone.Remove(address);
+        _entityLayers.Remove(address);
+        _offscreenDeferred.Remove(address);
+    }
+
+    /// <summary>The unique id of the entity each node was built for (entity+0x14).</summary>
+    private readonly Dictionary<uint, ulong> _nodeUid = new();
+
+    /// <summary>Addresses the guest recycled under a drawn node, run total.</summary>
+    public static long RecycledAddresses;
+
+    private int _recycledReports;
 
     private const string InteriorChildName = "Interior";
 

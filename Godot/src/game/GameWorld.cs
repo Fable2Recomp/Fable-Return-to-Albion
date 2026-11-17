@@ -1584,7 +1584,7 @@ public partial class GameWorld : Node3D
 		}
 
 		System.Collections.Generic.List<HostBridge.GuestEntity> entities =
-			HostBridge.GetEntities(out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
+			HostBridge.PeekEntities(out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
 		if (entities.Count == 0 && unknown == 0)
 		{
 			return;

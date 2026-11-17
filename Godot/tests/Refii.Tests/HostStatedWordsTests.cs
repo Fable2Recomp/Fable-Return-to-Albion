@@ -54,10 +54,10 @@ public sealed class HostStatedWordsTests
 
 		private static uint[] Compared(uint[] words, int at)
 		{
-			var kept = new uint[18];
+			var kept = new uint[20];
 			Array.Copy(words, at, kept, 0, 8);
-			kept[8] = words[at + 11];
-			Array.Copy(words, at + 20, kept, 9, 9);
+			Array.Copy(words, at + 9, kept, 8, 3);
+			Array.Copy(words, at + 20, kept, 11, 9);
 			return kept;
 		}
 	}
@@ -105,7 +105,7 @@ public sealed class HostStatedWordsTests
 					case 0: row.Words[random.Next(8)] = (uint)random.Next(); break;      // placement or model
 					case 1: row.Words[20 + random.Next(9)] = (uint)random.Next(); break; // highlight or look
 					case 2: row.Words[11] = (uint)random.Next(); break;                  // record
-					case 3: row.Words[9 + random.Next(2)] = (uint)random.Next(); break;  // unique id: not compared
+					case 3: row.Words[9 + random.Next(2)] = (uint)random.Next(); break;  // unique id: a recycled address
 					case 4: row.Words[12 + random.Next(8)] = (uint)random.Next(); break; // the pair: not compared
 				}
 			}
@@ -200,6 +200,34 @@ public sealed class HostStatedWordsTests
 		AssertThat(Walk()).IsFalse();
 		AssertThat(Walk()).IsFalse();
 		row[25] = 9u;
+		AssertThat(Walk()).IsTrue();
+		AssertThat(Walk()).IsFalse();
+	}
+
+	/// <summary>
+	/// A new entity at an address another one held is a change even with the same placement,
+	/// model, record and look: the guest recycles addresses across a level change.
+	/// </summary>
+	[TestCase]
+	public void ARecycledAddressIsAChange()
+	{
+		var slots = new HostStatedWords(16);
+		var row = new uint[HostStatedWords.Stride];
+		row[8] = 0x42C10DD0u;
+		row[10] = 0x453D501Eu;
+
+		bool Walk()
+		{
+			row.CopyTo(slots.Words, 0);
+			slots.BeginWalk(1);
+			bool changed = slots.Changed(0);
+			slots.EndWalk(1);
+			return changed;
+		}
+
+		AssertThat(Walk()).IsTrue();
+		AssertThat(Walk()).IsFalse();
+		row[10] = 0xA4897C14u;
 		AssertThat(Walk()).IsTrue();
 		AssertThat(Walk()).IsFalse();
 	}

@@ -2001,6 +2001,25 @@ public static partial class HostBridge
 	/// <summary>The walk into a caller-owned list, cleared first: a per-frame walk keeps its list.</summary>
 	public static System.Collections.Generic.List<GuestEntity> GetEntities(
 		System.Collections.Generic.List<GuestEntity> entities,
+		out uint unknown, out UnknownPlacement[] unknownVtables) =>
+		Walk(entities, statesChanges: true, out unknown, out unknownVtables);
+
+	/// <summary>
+	/// The same walk for a reader that is not the entity feed (a report, a probe): every row reads
+	/// as changed, and what each address last stated is left as the feed's last walk left it.
+	/// </summary>
+	/// <remarks>
+	/// <see cref="GuestEntity.Changed"/> is an edge: the walk that sees a new statement reports it
+	/// once. A second reader that walked through the same table took that edge from the feed, whose
+	/// next walk then read the entity as unchanged and never moved its node — after a level change,
+	/// an address the guest recycled kept the old region's entity standing where it stood.
+	/// </remarks>
+	public static System.Collections.Generic.List<GuestEntity> PeekEntities(
+		out uint unknown, out UnknownPlacement[] unknownVtables) =>
+		Walk(new System.Collections.Generic.List<GuestEntity>(), statesChanges: false, out unknown, out unknownVtables);
+
+	private static System.Collections.Generic.List<GuestEntity> Walk(
+		System.Collections.Generic.List<GuestEntity> entities, bool statesChanges,
 		out uint unknown, out UnknownPlacement[] unknownVtables)
 	{
 		unknown = 0;
@@ -2042,12 +2061,16 @@ public static partial class HostBridge
 		// placement of an entity whose statement did not move; the walk is where the comparison
 		// costs nothing the main thread pays.
 		int walkChanged = 0;
-		_statedWords.BeginWalk((int)count);
+		if (statesChanges)
+		{
+			_statedWords.BeginWalk((int)count);
+		}
+
 		for (uint i = 0; i < count; ++i)
 		{
 			int at = (int)(i * EntityStride);
 			uint address = _entityWords[at + 8];
-			bool changed = _statedWords.Changed((int)i);
+			bool changed = !statesChanges || _statedWords.Changed((int)i);
 			if (changed)
 			{
 				++walkChanged;
@@ -2091,9 +2114,12 @@ public static partial class HostBridge
 					_entityWords[at + 28])));
 		}
 
-		LastWalkChanged = walkChanged;
-		LastWalkCount = (int)count;
-		_statedWords.EndWalk((int)count);
+		if (statesChanges)
+		{
+			LastWalkChanged = walkChanged;
+			LastWalkCount = (int)count;
+			_statedWords.EndWalk((int)count);
+		}
 		}
 
 		return entities;

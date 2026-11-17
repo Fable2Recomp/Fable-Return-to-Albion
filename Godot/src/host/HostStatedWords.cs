@@ -20,8 +20,13 @@ public sealed class HostStatedWords
 	public const int Stride = 29;
 
 	private const int AddressWord = 8;
-	private const int RecordWord = 11;
-	private const int PlacementWords = 8;
+
+	/// <summary>
+	/// Placement and model (0..7), address (8), unique id (9, 10) and record (11): one span. The
+	/// unique id is what tells a recycled address from the entity that held it before, so a new
+	/// entity at an old address is a change even where its placement and model happen to match.
+	/// </summary>
+	private const int IdentityWords = 12;
 	private const int LookFirst = 20;
 	private const int LookWords = 9;
 
@@ -30,7 +35,7 @@ public sealed class HostStatedWords
 
 	private const int PruneWalks = 600;
 
-	private readonly Dictionary<uint, (uint X, uint Y, uint Z, uint Qx, uint Qy, uint Qz, uint Qw, uint Model, uint Record)> _stated = new();
+	private readonly Dictionary<uint, (uint X, uint Y, uint Z, uint Qx, uint Qy, uint Qz, uint Qw, uint Model, uint IdHigh, uint IdLow, uint Record)> _stated = new();
 	private readonly Dictionary<uint, (uint Highlight, uint A0, uint A1, uint A2, uint A3, uint A4, uint A5, uint A6, uint A7)> _look = new();
 
 	private uint[] _filling;
@@ -84,8 +89,7 @@ public sealed class HostStatedWords
 			int was = match * Stride;
 			ReadOnlySpan<uint> now = words;
 			ReadOnlySpan<uint> before = _previous;
-			if (words[at + RecordWord] == _previous[was + RecordWord] &&
-				now.Slice(at, PlacementWords).SequenceEqual(before.Slice(was, PlacementWords)) &&
+			if (now.Slice(at, IdentityWords).SequenceEqual(before.Slice(was, IdentityWords)) &&
 				now.Slice(at + LookFirst, LookWords).SequenceEqual(before.Slice(was + LookFirst, LookWords)))
 			{
 				return false;
@@ -94,7 +98,7 @@ public sealed class HostStatedWords
 
 		var stated = (words[at], words[at + 1], words[at + 2],
 			words[at + 3], words[at + 4], words[at + 5], words[at + 6],
-			words[at + 7], words[at + RecordWord]);
+			words[at + 7], words[at + 9], words[at + 10], words[at + 11]);
 
 		// The look words too, highlight and appearance, so a walk that skips an unchanged entity
 		// outright (GameEntities' still-adopted fast path) cannot miss a targeting outline or a fade
