@@ -27,7 +27,7 @@
 
 #include "res://src/Engine/fx/fx_guest_particle_pixel.gdshaderinc"
 
-uniform sampler2D xr_vertex_stream : filter_nearest, repeat_disable;
+uniform sampler2D xr_vertex_stream : hint_default_black, filter_nearest, repeat_disable;
 uniform vec4 vs_g_MatWorld[3];
 uniform vec4 vs_g_KeyFrameColors[20];
 // (self-illumination, texture time, the double trail's scale) per key.

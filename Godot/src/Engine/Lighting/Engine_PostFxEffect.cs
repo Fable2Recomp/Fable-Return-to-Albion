@@ -47,6 +47,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
     public const string GlobalExposureValidName = "fable_exposure_valid";
     public const float DisabledMaterialExposure = 1.0f;
     public const float ElementDepthBias = 0.000001f;
+    public const int RequiredSettleFrames = 5;
 
     public const int HistogramBins = Engine_PostFxModel.Bins + 1;
     public const int HistogramBytes = HistogramBins * sizeof(uint);
@@ -76,8 +77,23 @@ public partial class Engine_PostFxEffect : CompositorEffect
     public const float SigmaPerQuarterHeight = 0.0055556f;
 
     private static bool _globalsRegistered;
-    private static Texture2Drd? _placeholderTexture;
+    private static ImageTexture? _placeholderTexture;
     private static readonly Engine_PostFxEffect?[] _publishers = new Engine_PostFxEffect?[2];
+
+    // D3D12 / Intel Arc DXIL warning: never bind an uninitialized `new Texture2Drd()` (`TextureRdRid == default`)
+    // to a global shader parameter. Shaders sample `fable_exposure_tex` before PostFX runs its first pass;
+    // a null RID creates an unbound SRV descriptor on D3D12.
+    private static ImageTexture GetOrCreateFallbackExposureTexture()
+    {
+        if (_placeholderTexture is null || !GodotObject.IsInstanceValid(_placeholderTexture))
+        {
+            Godot.Image image = Godot.Image.CreateEmpty(1, 1, false, Godot.Image.Format.Rgba8);
+            image.Fill(Colors.White);
+            _placeholderTexture = ImageTexture.CreateFromImage(image);
+        }
+
+        return _placeholderTexture;
+    }
 
     /// <summary>The exposure global this chain's view reads.</summary>
     private string ExposureGlobal => View == 0 ? GlobalExposureName : GlobalExposureSecondName;
@@ -323,9 +339,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         _globalsRegistered = true;
-        _placeholderTexture ??= new Texture2Drd();
-        RenderingServer.GlobalShaderParameterSet(GlobalExposureName, _placeholderTexture);
-        RenderingServer.GlobalShaderParameterSet(GlobalExposureSecondName, _placeholderTexture);
+        ImageTexture fallback = GetOrCreateFallbackExposureTexture();
+        RenderingServer.GlobalShaderParameterSet(GlobalExposureName, fallback);
+        RenderingServer.GlobalShaderParameterSet(GlobalExposureSecondName, fallback);
         RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 0.0f);
     }
 
@@ -525,7 +541,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         Rid exposureRid = _exposureRd;
         Callable.From(() =>
         {
-            if (_disposed || !_ready || _exposureRd != exposureRid)
+            if (_disposed || !_ready || _exposureRd != exposureRid || !exposureRid.IsValid)
             {
                 return;
             }
@@ -619,9 +635,17 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private bool _occlZeroCleared;
     private bool _bloomZeroCleared;
 
+    /// <summary>
+    /// Multi-pass compute command list batching across UAV-to-SRV transitions is enabled on Vulkan
+    /// and disabled on Direct3D 12, where RenderingDeviceDriverD3D12 resolves UAV/SRV resource state
+    /// transitions at ComputeListBegin/ComputeListEnd boundaries.
+    /// </summary>
+    public static bool ShouldBatchComputeLists(bool isD3D12Driver) => !isD3D12Driver;
+
     private void BeginBatch()
     {
-        if (_batchList >= 0 || ClassicPost || Refii.Core.Engine_RdHealth.IsDeviceLost)
+        if (_batchList >= 0 || ClassicPost || Refii.Core.Engine_RdHealth.IsDeviceLost ||
+            !ShouldBatchComputeLists(Refii.Textures.Engine_TextureUpload.IsD3D12Driver))
         {
             return;
         }
@@ -677,6 +701,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
     private void EnsureTargets(Vector2I size)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || _rd is null)
+        {
+            return;
+        }
+
         if (_quarter.IsValid && size == _fullSize)
         {
             return;
@@ -696,8 +725,22 @@ public partial class Engine_PostFxEffect : CompositorEffect
             _rays[i] = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
             _bloom[i] = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
             _dof[i] = CreateTexture(_quarterSize.X, _quarterSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
-            _shaftHalf[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
-            _shaftDepthHalf[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16Sfloat);
+        }
+
+        bool targetsValid =
+            Refii.Core.Engine_RdHealth.CheckRdValid(_quarter, "Engine_PostFxEffect.EnsureTargets.quarter") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_occl, "Engine_PostFxEffect.EnsureTargets.occl") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_rays[0], "Engine_PostFxEffect.EnsureTargets.rays0") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_rays[1], "Engine_PostFxEffect.EnsureTargets.rays1") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_bloom[0], "Engine_PostFxEffect.EnsureTargets.bloom0") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_bloom[1], "Engine_PostFxEffect.EnsureTargets.bloom1") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_dof[0], "Engine_PostFxEffect.EnsureTargets.dof0") &&
+            Refii.Core.Engine_RdHealth.CheckRdValid(_dof[1], "Engine_PostFxEffect.EnsureTargets.dof1");
+        if (!targetsValid || Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            FreeTargets();
+            _fullSize = default;
+            return;
         }
 
         _shaftHistoryValid = false;
@@ -753,6 +796,40 @@ public partial class Engine_PostFxEffect : CompositorEffect
         _gaussBloomVSet = GaussSet(_bloom[1], _bloom[0]);
         _gaussDofHSet = GaussSet(_dof[1], _dof[0]);
         _gaussDofVSet = GaussSet(_dof[0], _dof[1]);
+    }
+
+    private bool EnsureShaftTargets()
+    {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || _rd is null)
+        {
+            return false;
+        }
+
+        if (_shaftHalf[0].IsValid && _shaftHalf[1].IsValid &&
+            _shaftDepthHalf[0].IsValid && _shaftDepthHalf[1].IsValid)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < 2; i++)
+        {
+            _volShaftsSets[i].Release(_rd);
+            _volUpsampleSets[i].Release(_rd);
+            FreeTexture(ref _shaftHalf[i]);
+            FreeTexture(ref _shaftDepthHalf[i]);
+            _shaftHalf[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat);
+            _shaftDepthHalf[i] = CreateTexture(_halfSize.X, _halfSize.Y, RenderingDevice.DataFormat.R16Sfloat);
+            if (!Refii.Core.Engine_RdHealth.CheckRdValid(_shaftHalf[i], "Engine_PostFxEffect.EnsureShaftTargets.half") ||
+                !Refii.Core.Engine_RdHealth.CheckRdValid(_shaftDepthHalf[i], "Engine_PostFxEffect.EnsureShaftTargets.depth"))
+            {
+                _shaftHistoryValid = false;
+                return false;
+            }
+        }
+
+        _shaftHistoryValid = false;
+        return _shaftHalf[0].IsValid && _shaftHalf[1].IsValid &&
+            _shaftDepthHalf[0].IsValid && _shaftDepthHalf[1].IsValid;
     }
 
     private Rid GaussSet(Rid src, Rid dst) => _rd!.UniformSet(new RDUniform[]
@@ -860,6 +937,21 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
+        // Fallback if caller did not invoke ReleaseNow() before SceneTree shutdown; note that at
+        // Quit() time NotificationPredelete can fire after the render thread stops draining CallOnRenderThread.
+        ReleaseNow(releaseStaticFallbacks: false);
+    }
+
+    /// <summary>
+    /// Detaches published globals and frees RD resources deterministically while the render thread is alive.
+    /// </summary>
+    public void ReleaseNow(bool releaseStaticFallbacks = false)
+    {
+        if (_disposed && !releaseStaticFallbacks)
+        {
+            return;
+        }
+
         _disposed = true;
         _ready = false;
         Engine_PostFxRoute.Withdraw(this);
@@ -872,7 +964,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 0.0f);
             }
 
-            if (_placeholderTexture is not null)
+            if (!releaseStaticFallbacks && _placeholderTexture is not null && GodotObject.IsInstanceValid(_placeholderTexture))
             {
                 RenderingServer.GlobalShaderParameterSet(ExposureGlobal, _placeholderTexture);
             }
@@ -882,19 +974,32 @@ public partial class Engine_PostFxEffect : CompositorEffect
             }
         }
 
+        if (releaseStaticFallbacks)
+        {
+            if (View == 0)
+            {
+                RenderingServer.GlobalShaderParameterSet(GlobalExposureValidName, 0.0f);
+                RenderingServer.GlobalShaderParameterSet(GlobalExposureName, default(Variant));
+                RenderingServer.GlobalShaderParameterSet(GlobalExposureSecondName, default(Variant));
+            }
+            if (_placeholderTexture is not null && GodotObject.IsInstanceValid(_placeholderTexture))
+            {
+                _placeholderTexture.Dispose();
+            }
+            _placeholderTexture = null;
+            _globalsRegistered = false;
+        }
+
         WithdrawClassicSky();
 
         if (_exposureTexture is not null)
         {
-            _exposureTexture.TextureRdRid = default;
+            Refii.Core.Engine_RdHealth.ClearTextureRdRidSafely(_exposureTexture);
             _exposureTexture = null;
         }
 
-        if (_rd is null)
-        {
-            return;
-        }
-
+        // Schedule ReleaseDeviceObjects() on the render thread even if _rd still looks null on the
+        // main thread (Initialise() may still be queued ahead of us in CommandQueueMT).
         if (RenderingServer.IsOnRenderThread())
         {
             ReleaseDeviceObjects();
@@ -903,7 +1008,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
 
         Engine_PostFxEffect self = this;
         RenderingServer.CallOnRenderThread(Callable.From(() => self.ReleaseDeviceObjects()));
-        RenderingServer.ForceSync();
+        if (!releaseStaticFallbacks)
+        {
+            RenderingServer.ForceSync();
+        }
     }
 
     private void ReleaseDeviceObjects()
@@ -990,7 +1098,13 @@ public partial class Engine_PostFxEffect : CompositorEffect
             return;
         }
 
-        if (!Engine_PostFxParams.Enabled || !Refii.Game.GameWorld.HasActiveWorld)
+        if (!Engine_PostFxParams.Enabled ||
+            !Refii.Game.GameWorld.ShouldRunRenderEffects(
+                Refii.Game.GameWorld.HasActiveWorld,
+                Refii.Game.GameWorld.CoverHeld,
+                Refii.Game.GameWorld.ReadyForWarmupAndSettle,
+                Refii.Game.GameWorld.SettleFrames,
+                requiredSettleFrames: RequiredSettleFrames))
         {
             WriteDisabledMaterialExposure();
             return;
@@ -1034,7 +1148,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
         // `Render_LitMaterialSubmit` takes the SaturationMask variant only when the theme states a
         // masked pair (|SaturationMasked| or |BrightnessMasked| over 0.01, 0x821e5e60).
         _maskWanted = _satMask is not null && Refii.Entities.Engine_EntityAppearance.MaskedCount > 0 &&
-            (MathF.Abs(_derived.SaturationMasked) > 0.01f || MathF.Abs(_derived.BrightnessMasked) > 0.01f);
+            Engine_PostFxParams.RequiresSaturationMask(_derived.SaturationMasked, _derived.BrightnessMasked);
         UpdateParams(dt, sun.SunDirection, camBasis, camProjection, bloomOn, raysOn, dofOn);
         _frameProjection = camProjection;
         _frameDof = dofOn;
@@ -1045,6 +1159,11 @@ public partial class Engine_PostFxEffect : CompositorEffect
         if (staged && !_staging.IsValid)
         {
             _staging = CreateTexture(size.X, size.Y, RenderingDevice.DataFormat.R16G16B16A16Sfloat, readable: true);
+            if (!_staging.IsValid)
+            {
+                WriteDisabledMaterialExposure();
+                return;
+            }
         }
 
         for (uint view = 0; view < views; view++)
@@ -1053,14 +1172,14 @@ public partial class Engine_PostFxEffect : CompositorEffect
             Rid colour = sceneColour;
             if (staged)
             {
-                // At PostTransparent the MSAA colour is already resolved into the scene layer,
-                // but that layer cannot be copied FROM; resolving the MSAA source again gives
-                // the staging texture the same pixels.
-                _rd.TextureResolveMultisample(buffers.GetColorLayer(view, true), _staging);
+                Rid msaaColour = buffers.GetColorLayer(view, true);
+                if (!msaaColour.IsValid) continue;
+                _rd.TextureResolveMultisample(msaaColour, _staging);
                 colour = _staging;
             }
 
             Rid depth = buffers.GetDepthLayer(view);
+            if (!colour.IsValid || !depth.IsValid) continue;
             Projection projection = sceneData is not null ? sceneData.GetViewProjection(view) : camProjection;
             bool sunOnScreen = TrySunScreenUv(
                 sun.SunDirection, camBasis, projection, out Vector2 sunUv);
@@ -1458,7 +1577,6 @@ public partial class Engine_PostFxEffect : CompositorEffect
     {
         if (Engine_PostFxParams.VolumetricShaftScale <= 1e-4f ||
             !_volShaftsPipeline.IsValid || !_volUpsamplePipeline.IsValid ||
-            !_shaftHalf[0].IsValid || !_shaftHalf[1].IsValid ||
             !Engine_VolumetricLightShafts.TrySnapshot(
                 _shaftLightScratch,
                 out int lightCount,
@@ -1469,7 +1587,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 out Vector3 medScattering,
                 out float medExtinction,
                 out float medAnisotropy,
-                out float fogStart))
+                out float fogStart) ||
+            !EnsureShaftTargets())
         {
             _shaftHistoryValid = false;
             return;

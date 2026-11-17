@@ -555,7 +555,9 @@ public static class Engine_LevelShadowPrebuild
 
 		System.Threading.Tasks.Task.Run(() =>
 		{
-			bool IsCancelled() => Volatile.Read(ref _asyncBakeGeneration) != generation;
+			bool IsCancelled() =>
+				Volatile.Read(ref _asyncBakeGeneration) != generation ||
+				Refii.Core.Engine_RdHealth.IsDeviceLost;
 			while (Refii.Core.Engine_ServerSyncs.LoadCoverActive && !IsCancelled())
 			{
 				Thread.Sleep(25);

@@ -102,26 +102,30 @@ void vertex() {
 }
 
 void fragment() {
-	float alpha;
-	vec3 col;
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+	bool should_discard = (v_meta.y <= 0.004);
 
-	if (v_meta.x < 0.5) {
-		float ax = 1.0 - abs((UV.x * 2.0) - 1.0);
-		float ay = 1.0 - abs((UV.y * 2.0) - 1.0);
-		alpha = pow(clamp(ax, 0.0, 1.0), 2.2) * clamp(ay, 0.0, 1.0) *
-		        rain_p.w * v_meta.y;
-		col = vec3(0.62, 0.68, 0.78);
-	} else {
-		vec2 d = (UV * 2.0) - 1.0;
-		float r = length(d);
-		alpha = smoothstep(1.0, 0.25, r) * 0.9 * v_meta.y;
-		col = vec3(0.92, 0.94, 0.98);
+	if (!should_discard) {
+		float alpha;
+		vec3 col;
+
+		if (v_meta.x < 0.5) {
+			float ax = 1.0 - abs((UV.x * 2.0) - 1.0);
+			float ay = 1.0 - abs((UV.y * 2.0) - 1.0);
+			alpha = pow(clamp(ax, 0.0, 1.0), 2.2) * clamp(ay, 0.0, 1.0) *
+			        rain_p.w * v_meta.y;
+			col = vec3(0.62, 0.68, 0.78);
+		} else {
+			vec2 d = (UV * 2.0) - 1.0;
+			float r = length(d);
+			alpha = smoothstep(1.0, 0.25, r) * 0.9 * v_meta.y;
+			col = vec3(0.92, 0.94, 0.98);
+		}
+
+		if (alpha >= 0.004) {
+			ALBEDO = col;
+			ALPHA = alpha;
+		}
 	}
-
-	if (alpha < 0.004) {
-		discard;
-	}
-
-	ALBEDO = col;
-	ALPHA = alpha;
 }

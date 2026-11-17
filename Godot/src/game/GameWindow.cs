@@ -708,8 +708,16 @@ public partial class GameWindow : Node
 		Engine.MaxFps = settings.MaxFps;
 		Refii.Core.Engine_TickClock.Pin = settings.DrawLatencyTicks;
 		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
-		ApplyRoot3DQuality(view, settings, actualWindowSize, GameWorld.HasActiveWorld);
-		_appliedActiveWorld = GameWorld.HasActiveWorld;
+		int positionalAtlasSize = GameWindowSettings.ResolvePositionalShadowAtlasSize(
+			settings.PlacedLightShadows, Refii.Lighting.Engine_LightShadowBudget.Budget);
+		if (view.PositionalShadowAtlasSize != positionalAtlasSize)
+		{
+			view.PositionalShadowAtlasSize = positionalAtlasSize;
+		}
+		bool activeWorld = GameWorld.ShouldEnableWorldQualityAndEffects(
+			GameWorld.HasActiveWorld, GameWorld.CoverHeld, GameWorld.ReadyForWarmupAndSettle);
+		ApplyRoot3DQuality(view, settings, actualWindowSize, activeWorld);
+		_appliedActiveWorld = activeWorld;
 
 		view.FsrSharpness = settings.FsrSharpness;
 		view.TextureMipmapBias = settings.MipmapBias;
@@ -743,7 +751,8 @@ public partial class GameWindow : Node
 
 	private void SyncRoot3DQualityWithWorldState()
 	{
-		bool activeWorld = GameWorld.HasActiveWorld;
+		bool activeWorld = GameWorld.ShouldEnableWorldQualityAndEffects(
+			GameWorld.HasActiveWorld, GameWorld.CoverHeld, GameWorld.ReadyForWarmupAndSettle);
 		if (activeWorld == _appliedActiveWorld || !IsInsideTree() ||
 			GetTree()?.Root is not { } root || !IsInstanceValid(root))
 		{

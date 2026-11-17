@@ -82,12 +82,300 @@ public partial class GameWorld : Node3D
 	/// <summary>True when a 3D world region is mounted and active for rendering.</summary>
 	public static bool HasActiveWorld { get; private set; }
 
+	/// <summary>True once world streaming and queued worker GPU uploads have finished and settle/warmup frames may render.</summary>
+	public static bool ReadyForWarmupAndSettle { get; private set; }
+
+	private static int _activeWorldFrames;
+	private static int _settleFrames;
+
+	/// <summary>Frames elapsed since the active 3D world region mounted, read safely from the render thread.</summary>
+	public static int ActiveWorldFrames => System.Threading.Volatile.Read(ref _activeWorldFrames);
+
+	/// <summary>Frames elapsed since <see cref="ReadyForWarmupAndSettle"/> became true, read safely from the render thread.</summary>
+	public static int SettleFrames => System.Threading.Volatile.Read(ref _settleFrames);
+
+	/// <summary>True when the root 3D viewport should render the 3D world (including behind the loading cover so scene PSOs warm incrementally during streaming).</summary>
+	public static bool ShouldEnableSceneRendering(bool hasActiveWorld, bool coverHeld, bool readyForWarmupAndSettle) =>
+		hasActiveWorld;
+
+	/// <summary>True when root 3D quality upscaling/AA (FSR2, FXAA, MSAA) should be active for the world.</summary>
+	public static bool ShouldEnableWorldQualityAndEffects(bool hasActiveWorld, bool coverHeld, bool readyForWarmupAndSettle) =>
+		hasActiveWorld && (!coverHeld || readyForWarmupAndSettle);
+
+	/// <summary>
+	/// Bitmask for <c>dx12_skip_3d</c> / <c>REFII_DX12_SKIP_3D</c> isolation bisection
+	/// (comma-separated: <c>terrain</c>, <c>props</c>, <c>entities</c>, <c>hero</c>, <c>fx</c>, <c>environment</c>,
+	/// <c>water</c>, <c>reflections</c>, <c>ssao</c>, <c>sunshadows</c>, <c>lights</c>,
+	/// <c>depthprepass</c>, <c>hud3d</c>, <c>skydome</c>, <c>clouds</c>, <c>all</c>).
+	/// </summary>
+	[System.Flags]
+	public enum Dx12Skip3dMask
+	{
+		None = 0,
+		Terrain = 1 << 0,
+		Props = 1 << 1,
+		Entities = 1 << 2,
+		Fx = 1 << 3,
+		Environment = 1 << 4,
+		Water = 1 << 5,
+		Reflections = 1 << 6,
+		Ssao = 1 << 7,
+		SunShadows = 1 << 8,
+		Lights = 1 << 9,
+		DepthPrepass = 1 << 10,
+		Hud3d = 1 << 11,
+		SkyDome = 1 << 12,
+		Clouds = 1 << 13,
+		Hero = 1 << 14,
+		All = Terrain | Props | Entities | Fx | Environment | Water | Reflections |
+		      Ssao | SunShadows | Lights | DepthPrepass | Hud3d | SkyDome | Clouds | Hero,
+	}
+
+	private static Dx12Skip3dMask _appliedSkip3dMask;
+
+	/// <summary>Active <c>dx12_skip_3d</c> mask applied on the most recent mount.</summary>
+	public static Dx12Skip3dMask ActiveDx12Skip3dMask => _appliedSkip3dMask;
+
+	/// <summary>Parses a comma/whitespace-separated <c>dx12_skip_3d</c> subsystem specification.</summary>
+	public static Dx12Skip3dMask ParseDx12Skip3d(string? raw)
+	{
+		if (string.IsNullOrWhiteSpace(raw))
+		{
+			return Dx12Skip3dMask.None;
+		}
+
+		Dx12Skip3dMask mask = Dx12Skip3dMask.None;
+		string[] tokens = raw.Split(new[] { ',', ';', '|', ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
+		foreach (string token in tokens)
+		{
+			switch (token.Trim().ToLowerInvariant())
+			{
+				case "terrain":
+					mask |= Dx12Skip3dMask.Terrain;
+					break;
+				case "props":
+					mask |= Dx12Skip3dMask.Props;
+					break;
+				case "entities":
+					mask |= Dx12Skip3dMask.Entities;
+					break;
+				case "hero":
+					mask |= Dx12Skip3dMask.Hero;
+					break;
+				case "fx":
+					mask |= Dx12Skip3dMask.Fx;
+					break;
+				case "environment":
+				case "env":
+				case "sky":
+					mask |= Dx12Skip3dMask.Environment;
+					break;
+				case "skydome":
+					mask |= Dx12Skip3dMask.SkyDome;
+					break;
+				case "clouds":
+					mask |= Dx12Skip3dMask.Clouds;
+					break;
+				case "water":
+					mask |= Dx12Skip3dMask.Water;
+					break;
+				case "reflections":
+				case "reflection":
+					mask |= Dx12Skip3dMask.Reflections;
+					break;
+				case "ssao":
+					mask |= Dx12Skip3dMask.Ssao;
+					break;
+				case "sunshadows":
+				case "sun_shadows":
+				case "sunshadow":
+					mask |= Dx12Skip3dMask.SunShadows;
+					break;
+				case "lights":
+				case "placedlights":
+				case "placed_lights":
+					mask |= Dx12Skip3dMask.Lights;
+					break;
+				case "depthprepass":
+				case "depth_prepass":
+				case "prepass":
+					mask |= Dx12Skip3dMask.DepthPrepass;
+					break;
+				case "hud3d":
+				case "hud":
+					mask |= Dx12Skip3dMask.Hud3d;
+					break;
+				case "all":
+					mask |= Dx12Skip3dMask.All;
+					break;
+			}
+		}
+
+		return mask;
+	}
+
+	private static Dx12Skip3dMask ResolveDx12Skip3d()
+	{
+		string? env = System.Environment.GetEnvironmentVariable("REFII_DX12_SKIP_3D");
+		if (!string.IsNullOrWhiteSpace(env))
+		{
+			return ParseDx12Skip3d(env);
+		}
+
+		System.Collections.Generic.IReadOnlyDictionary<string, string> cfg = Refii.Core.Engine_RefiiConfig.Read(out _);
+		string configured = Refii.Core.Engine_RefiiConfig.String(cfg, "dx12_skip_3d", string.Empty);
+		return ParseDx12Skip3d(configured);
+	}
+
+	private void ApplyDx12Skip3d(Node3D region, Dx12Skip3dMask mask)
+	{
+		Dx12Skip3dMask previous = _appliedSkip3dMask;
+		_appliedSkip3dMask = mask;
+
+		if ((mask & Dx12Skip3dMask.Ssao) != 0)
+		{
+			Refii.Lighting.Engine_LevelLighting.SsaoOverride = false;
+		}
+		else if ((previous & Dx12Skip3dMask.Ssao) != 0)
+		{
+			Refii.Lighting.Engine_LevelLighting.SsaoOverride = null;
+		}
+
+		if ((mask & Dx12Skip3dMask.SunShadows) != 0)
+		{
+			Refii.Lighting.Engine_LevelLighting.SunShadowOverride = false;
+		}
+		else if ((previous & Dx12Skip3dMask.SunShadows) != 0)
+		{
+			Refii.Lighting.Engine_LevelLighting.SunShadowOverride = null;
+		}
+
+		if ((mask & Dx12Skip3dMask.Lights) != 0)
+		{
+			Refii.Lighting.Engine_LightShadowBudget.LightsEnabled = false;
+		}
+		else if ((previous & Dx12Skip3dMask.Lights) != 0)
+		{
+			Refii.Lighting.Engine_LightShadowBudget.LightsEnabled = true;
+		}
+
+		if ((mask & Dx12Skip3dMask.DepthPrepass) != 0)
+		{
+			Refii.Lighting.Engine_DepthPrepassMarker.Enabled = false;
+		}
+		else if ((previous & Dx12Skip3dMask.DepthPrepass) != 0)
+		{
+			Refii.Lighting.Engine_DepthPrepassMarker.Enabled = true;
+		}
+
+		if ((mask & Dx12Skip3dMask.Hud3d) != 0)
+		{
+			Refii.Ui.Engine_HudView.Enabled = false;
+			Refii.Ui.Engine_HudWorldSprites.Suppressed = true;
+		}
+		else if ((previous & Dx12Skip3dMask.Hud3d) != 0)
+		{
+			Refii.Ui.Engine_HudView.Enabled = true;
+			Refii.Ui.Engine_HudWorldSprites.Suppressed = false;
+		}
+
+		if ((mask & Dx12Skip3dMask.Reflections) != 0 && _reflections is not null)
+		{
+			_reflections.DisableAll();
+		}
+
+		GameEntities.SkipHeroRendering = (mask & Dx12Skip3dMask.Hero) != 0;
+		if ((mask & Dx12Skip3dMask.Fx) != 0)
+		{
+			Refii.Fx.Engine_FxDisplacement.Current?.SetEnabled(false);
+		}
+		else if ((previous & Dx12Skip3dMask.Fx) != 0)
+		{
+			Refii.Fx.Engine_FxDisplacement.Current?.SetEnabled(true);
+		}
+		if (_entities is not null)
+		{
+			_entities.Visible = (mask & Dx12Skip3dMask.Entities) == 0;
+		}
+		if (_fx is not null)
+		{
+			_fx.Visible = (mask & Dx12Skip3dMask.Fx) == 0;
+		}
+
+		if (mask == Dx12Skip3dMask.None)
+		{
+			return;
+		}
+
+		ApplySkipToSubtree(region, mask);
+		GD.Print($"[game-world] dx12_skip_3d active: {mask}");
+	}
+
+	private static void ApplySkipToSubtree(Node root, Dx12Skip3dMask mask)
+	{
+		foreach (Node child in root.GetChildren())
+		{
+			string name = child.Name.ToString();
+			bool skipSky = (mask & (Dx12Skip3dMask.Environment | Dx12Skip3dMask.SkyDome)) != 0;
+			bool skipClouds = (mask & (Dx12Skip3dMask.Environment | Dx12Skip3dMask.Clouds)) != 0;
+			bool hide =
+				((mask & Dx12Skip3dMask.Terrain) != 0 &&
+					(name == Refii.Level.Engine_LevelScene.TerrainNodeName ||
+					 name.StartsWith(Refii.Level.Engine_LevelScene.TerrainNodeName + "_", System.StringComparison.Ordinal) ||
+					 name.StartsWith(Refii.Level.Engine_LevelScene.AdjacentNodeName, System.StringComparison.Ordinal))) ||
+				((mask & Dx12Skip3dMask.Props) != 0 && name == Refii.Level.Engine_LevelProps.NodeName) ||
+				((mask & Dx12Skip3dMask.Entities) != 0 && name == Refii.Entities.Engine_LevelEntities.NodeName) ||
+				((mask & Dx12Skip3dMask.Water) != 0 && name == Refii.Level.Engine_LevelScene.WaterNodeName) ||
+				((mask & Dx12Skip3dMask.Fx) != 0 && name == "Mist") ||
+				((mask & Dx12Skip3dMask.SunShadows) != 0 && child is DirectionalLight3D) ||
+				((mask & Dx12Skip3dMask.Lights) != 0 && child is OmniLight3D or SpotLight3D) ||
+				(skipSky &&
+					(name == Refii.Level.Engine_SkyEnvironment.NodeName ||
+					 name == Refii.Level.Engine_CelestialElements.NodeName)) ||
+				(skipClouds && name == "Clouds") ||
+				((mask & Dx12Skip3dMask.Environment) != 0 &&
+					(child is WorldEnvironment ||
+					 child is DirectionalLight3D ||
+					 name == Refii.Level.Engine_DynamicPrecipitation.NodeName ||
+					 name == Refii.Level.Engine_DynamicCloudShadows.NodeName ||
+					 name == "Weather"));
+
+			if (hide && child is DirectionalLight3D dirLight && (mask & Dx12Skip3dMask.Environment) == 0)
+			{
+				dirLight.ShadowEnabled = false;
+			}
+			else if (hide && child is Node3D n3d)
+			{
+				n3d.Visible = false;
+			}
+			else if (hide && child is WorldEnvironment envNode)
+			{
+				envNode.Environment = null;
+			}
+
+			if (child.GetChildCount() > 0 &&
+			    (mask & (Dx12Skip3dMask.Lights | Dx12Skip3dMask.SunShadows | Dx12Skip3dMask.SkyDome | Dx12Skip3dMask.Clouds)) != 0)
+			{
+				ApplySkipToSubtree(child, mask);
+			}
+		}
+	}
+
+	/// <summary>True when render-thread compositor effects (DepthCapture / PostFX) should execute this frame.</summary>
+	public static bool ShouldRunRenderEffects(
+		bool hasActiveWorld, bool coverHeld, bool readyForWarmupAndSettle, int settleFrames, int requiredSettleFrames) =>
+		hasActiveWorld && (!coverHeld || (readyForWarmupAndSettle && settleFrames >= requiredSettleFrames));
+
 	private Camera3D _camera = null!;
 	private GameSplitView _split = null!;
+	private System.Func<string>? _preDrawDetailProvider;
 	private bool _reported;
 	public override void _Ready()
 	{
 		HasActiveWorld = false;
+		ReadyForWarmupAndSettle = false;
+		System.Threading.Interlocked.Exchange(ref _activeWorldFrames, 0);
+		System.Threading.Interlocked.Exchange(ref _settleFrames, 0);
 		_camera = new Camera3D
 		{
 			Name = "GuestCamera",
@@ -114,10 +402,58 @@ public partial class GameWorld : Node3D
 		// Local co-op on split screen: a view per player over this world (GameSplitView).
 		_split = new GameSplitView { Name = "SplitView" };
 		AddChild(_split);
+
+		_preDrawDetailProvider = DescribePreDrawState;
+		Refii.Core.Engine_FramePhases.PreDrawDetailProvider = _preDrawDetailProvider;
+		Refii.Core.Engine_RdHealth.RegisterDeviceLostHandler(OnDeviceLost);
+	}
+
+	private void OnDeviceLost()
+	{
+		if (_reflections is not null && GodotObject.IsInstanceValid(_reflections))
+		{
+			_reflections.DisableAll();
+		}
+	}
+
+	private string DescribePreDrawState()
+	{
+		Viewport? vp = GetViewport();
+		WorldEnvironment? worldEnv = _region?.FindChild("*", recursive: true, owned: false) as WorldEnvironment;
+		bool ssao = worldEnv?.Environment?.SsaoEnabled ?? false;
+		bool sdfgi = worldEnv?.Environment?.SdfgiEnabled ?? false;
+		bool sunShadow = false;
+		if (_region is not null)
+		{
+			foreach (Node child in _region.GetChildren())
+			{
+				if (child is DirectionalLight3D dir)
+				{
+					sunShadow = dir.ShadowEnabled;
+					break;
+				}
+			}
+		}
+		int posAtlas = vp is not null && GodotObject.IsInstanceValid(vp) ? vp.PositionalShadowAtlasSize : -1;
+		int reflBodies = _reflections is not null && GodotObject.IsInstanceValid(_reflections) ? _reflections.BodyCount : 0;
+		Vector3 cam = _camera is not null && GodotObject.IsInstanceValid(_camera) ? _camera.GlobalPosition : Vector3.Zero;
+		return $"driver={RenderingServer.GetCurrentRenderingDriverName()} coverHeld={CoverHeld} worldReady={ReadyForWarmupAndSettle} " +
+			$"skip3d={_appliedSkip3dMask} sunShadow={sunShadow} ssao={ssao} sdfgi={sdfgi} posAtlas={posAtlas} " +
+			$"depthMarker={Refii.Lighting.Engine_DepthPrepassMarker.EffectiveVisible} refl={reflBodies} " +
+			$"placedLights={(Refii.Lighting.Engine_LightShadowBudget.LightsEnabled ? "on" : "off")} " +
+			$"cam=({cam.X:0.0},{cam.Y:0.0},{cam.Z:0.0})";
 	}
 
 	public override void _ExitTree()
 	{
+		if (_preDrawDetailProvider is not null &&
+		    ReferenceEquals(Refii.Core.Engine_FramePhases.PreDrawDetailProvider, _preDrawDetailProvider))
+		{
+			Refii.Core.Engine_FramePhases.PreDrawDetailProvider = null;
+		}
+		_preDrawDetailProvider = null;
+		Refii.Core.Engine_RdHealth.RegisterDeviceLostHandler(null);
+		Refii.Lighting.Engine_LevelLighting.ReleaseCompositor(_camera, releaseStaticFallbacks: true);
 		if (GetViewport() is { } rootViewport)
 		{
 			rootViewport.Disable3D = false;
@@ -142,18 +478,23 @@ public partial class GameWorld : Node3D
 		if (!PumpRegionRetirement()) return;
 
 		FollowGuestIntoTheWorld();
+		if (HasActiveWorld)
+		{
+			System.Threading.Interlocked.Increment(ref _activeWorldFrames);
+		}
+		ReleaseWhenPropsHaveStreamed();
 		if (GetViewport() is { } rootViewport)
 		{
-			bool disable3D = !HasActiveWorld;
+			bool disable3D = !ShouldEnableSceneRendering(HasActiveWorld, CoverHeld, ReadyForWarmupAndSettle);
 			if (rootViewport.Disable3D != disable3D)
 			{
 				rootViewport.Disable3D = disable3D;
 			}
 		}
-		ReleaseWhenPropsHaveStreamed();
 		UpdateGuestLoadFreeze();
 		Refii.Core.Engine_ServerSyncs.LoadCoverActive = CoverHeld;
 		PumpDeferredCompaction();
+		PumpLohHighWatermark();
 		TraceEntities();
 		if (Engine_TitleGame.Active.ApplyCamera(_camera)) return;
 
@@ -317,6 +658,7 @@ public partial class GameWorld : Node3D
 			GD.Print($"[game-world] driving Godot's camera from the guest: " +
 				$"pos={drawn.Origin} fov={_camera.Fov:F1}deg " +
 				$"pair={(pair is null ? "no" : "yes")}");
+			Refii.Core.Engine_FramePhases.ArmDrawTrace("camera-drive", 5);
 		}
 	}
 
@@ -490,6 +832,21 @@ public partial class GameWorld : Node3D
 		// the level holds drawn beside the camera under each light count play can give it.
 		bool uploadsPending = Refii.Core.Engine_ServerSyncs.PendingUploadCount > 0;
 		bool worldReady = !propsPending && !entitiesPending && !uploadsPending && classicWait.Length == 0;
+		if (worldReady)
+		{
+			if (!ReadyForWarmupAndSettle)
+			{
+				GD.Print($"[dx12-trace] worldReady reached for {_standing} after {_propHoldFrames} frames (props={done}/{total}, uploads=0)");
+				Refii.Core.Engine_FramePhases.ArmDrawTrace("warmup-ready", 2);
+			}
+			ReadyForWarmupAndSettle = true;
+			System.Threading.Interlocked.Increment(ref _settleFrames);
+		}
+		else
+		{
+			ReadyForWarmupAndSettle = false;
+			System.Threading.Interlocked.Exchange(ref _settleFrames, 0);
+		}
 		string pipelineWait = Refii.Models.Engine_PipelineWarmup.Pump(this, worldReady);
 		bool pending = !worldReady || pipelineWait.Length != 0;
 		Refii.Lighting.Engine_GiRefresh.HoldForWorldLoad = pending;
@@ -554,6 +911,7 @@ public partial class GameWorld : Node3D
 		Refii.Models.Engine_ClassicLoad.End();
 		Refii.Models.Engine_PipelineWarmup.End();
 		_entities?.ReportLoadBuilds();
+		Refii.Core.Engine_FramePhases.ArmDrawTrace("cover-release", 3);
 		// The title clears its tone-map history for as long as a level streams
 		// (`sub_82181B68`), so the first frame after the load snaps the statistics; a cave
 		// theme with EXPOSURE_SPEED 0 then holds that snap.
@@ -773,10 +1131,78 @@ public partial class GameWorld : Node3D
 		System.GC.WaitForPendingFinalizers();
 
 		System.GCMemoryInfo info = System.GC.GetGCMemoryInfo();
+		long lohAfter = ReadLohLiveBytes(info);
+		if (lohAfter >= 0)
+		{
+			_lohBaselineBytes = lohAfter;
+		}
 		GD.Print($"[game-world] compacted the large-object heap: " +
 			$"{before / 1048576.0:0} MB -> {System.GC.GetTotalMemory(false) / 1048576.0:0} MB live, " +
 			$"{info.TotalCommittedBytes / 1048576.0:0} MB committed, " +
 			$"{System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:0} ms");
+	}
+
+	private const int LohCheckIntervalFrames = 300;
+	private const long LohGrowthThresholdBytes = 1024L * 1024L * 1024L;
+	private static long _lohBaselineBytes = -1L;
+	private static int _lohCheckFrameCounter;
+
+	private static long ReadLohLiveBytes(System.GCMemoryInfo info)
+	{
+		// GenerationInfo[3] is LOH in .NET (0=Gen0, 1=Gen1, 2=Gen2, 3=LOH, 4=POH).
+		return info.GenerationInfo.Length > 3
+			? info.GenerationInfo[3].SizeAfterBytes
+			: -1L;
+	}
+
+	/// <summary>
+	/// Pure policy helper deciding whether .NET ServerGC LOH growth over the post-compaction baseline
+	/// requires a proactive full compacting GC pass to bound uncollected LOH bloat.
+	/// </summary>
+	public static bool ShouldTriggerLohHighWatermark(
+		long currentLohBytes,
+		long baselineLohBytes,
+		bool worldBuildHeld,
+		bool deviceLost,
+		long growthThresholdBytes = LohGrowthThresholdBytes) =>
+		!worldBuildHeld &&
+		!deviceLost &&
+		baselineLohBytes >= 0 &&
+		currentLohBytes - baselineLohBytes >= growthThresholdBytes;
+
+	private static void PumpLohHighWatermark()
+	{
+		if (WorldBuildHeld || Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			return;
+		}
+
+		if (++_lohCheckFrameCounter < LohCheckIntervalFrames)
+		{
+			return;
+		}
+
+		_lohCheckFrameCounter = 0;
+		System.GCMemoryInfo info = System.GC.GetGCMemoryInfo();
+		long currentLoh = ReadLohLiveBytes(info);
+		if (currentLoh < 0)
+		{
+			return;
+		}
+
+		if (_lohBaselineBytes < 0)
+		{
+			_lohBaselineBytes = currentLoh;
+			return;
+		}
+
+		if (!ShouldTriggerLohHighWatermark(currentLoh, _lohBaselineBytes, WorldBuildHeld, Refii.Core.Engine_RdHealth.IsDeviceLost))
+		{
+			return;
+		}
+
+		GD.Print($"[game-world] LOH high-watermark reached (+{(currentLoh - _lohBaselineBytes) / 1048576.0:0} MB over {_lohBaselineBytes / 1048576.0:0} MB baseline); compacting");
+		Compact(System.GC.GetTotalMemory(false));
 	}
 
 	/// <summary>The last two cameras the guest stated; the playhead is shared.</summary>
@@ -1350,6 +1776,9 @@ public partial class GameWorld : Node3D
 		}
 
 		_loaded = true;
+		ReadyForWarmupAndSettle = false;
+		System.Threading.Interlocked.Exchange(ref _activeWorldFrames, 0);
+		System.Threading.Interlocked.Exchange(ref _settleFrames, 0);
 		HasActiveWorld = true;
 		_standing = $"{start.World}/{start.Level}";
 		_standingKey = here.Key;
@@ -1359,14 +1788,20 @@ public partial class GameWorld : Node3D
 		_readyFrames = 0;
 		long mountFrom = System.Diagnostics.Stopwatch.GetTimestamp();
 		System.TimeSpan mountPause = System.GC.GetTotalPauseDuration();
+		Dx12Skip3dMask skip3d = ResolveDx12Skip3d();
+		ApplyDx12Skip3d(region, skip3d);
 		AddChild(region);
+		Refii.Core.Engine_FramePhases.ArmDrawTrace("mount", 2);
 		double mountTreeMs = System.Diagnostics.Stopwatch.GetElapsedTime(mountFrom).TotalMilliseconds;
 		Refii.Models.Engine_ClassicLoad.Begin(region);
 		Refii.Models.Engine_PipelineWarmup.Begin();
 
 		SetStreamBudget(region, HeldStreamMsPerFrame);
 
-		MountWaterReflections(region);
+		if ((skip3d & (Dx12Skip3dMask.Water | Dx12Skip3dMask.Reflections)) == 0)
+		{
+			MountWaterReflections(region);
+		}
 
 		// The sun's far cascades exist for the landscape; this stops every crate in 300 metres
 		// riding along in them. Godot's sun casts nothing under classic (the guest's cascades
@@ -1412,19 +1847,25 @@ public partial class GameWorld : Node3D
 
 		// Alongside the region, not inside it: the live entities carry the whole guest-to-Godot
 		// map themselves, exactly as the camera does.
-		_entities = new GameEntities
+		if ((skip3d & Dx12Skip3dMask.Entities) == 0)
 		{
-			Name = "GameEntities",
-			Twins = twins,
-		};
-		AddChild(_entities);
+			_entities = new GameEntities
+			{
+				Name = "GameEntities",
+				Twins = twins,
+			};
+			AddChild(_entities);
+		}
 
 		// The effects the guest plays for itself, beside the entities and for the same reason:
 		// the region's own FX are the ones the level STATES, and every effect that starts because
 		// something happened — a spell, an impact, a fire catching — exists only in the guest.
 		// It censuses by default and draws only under REFII_FX_LIVE=1; see GameFx.
-		_fx = new GameFx { Name = "GameFx" };
-		AddChild(_fx);
+		if ((skip3d & Dx12Skip3dMask.Fx) == 0)
+		{
+			_fx = new GameFx { Name = "GameFx" };
+			AddChild(_fx);
+		}
 
 		// Zero-energy lights paired with every mesh, so Mobile's per-draw pipeline stops
 		// changing with the lamps in reach (`stable_light_counts`, off unless configured).
@@ -1503,6 +1944,9 @@ public partial class GameWorld : Node3D
 
 		_loaded = false;
 		HasActiveWorld = false;
+		ReadyForWarmupAndSettle = false;
+		System.Threading.Interlocked.Exchange(ref _activeWorldFrames, 0);
+		System.Threading.Interlocked.Exchange(ref _settleFrames, 0);
 		_standing = string.Empty;
 		_standingKey = 0u;
 		_waitingForGuest = false;

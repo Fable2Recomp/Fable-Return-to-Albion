@@ -622,7 +622,7 @@ public partial class FableFx : Node3D
 		Vector3? sharedCameraPos = null,
 		Transform3D? sharedCameraTransform = null)
 	{
-		if (!Playing)
+		if (!Playing || Refii.Core.Engine_RdHealth.IsDeviceLost)
 		{
 			return;
 		}
@@ -1687,6 +1687,11 @@ public partial class FableFx : Node3D
 
 	private VisualBatchMaterial? LookupMaterial(string key)
 	{
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			return null;
+		}
+
 		if (_materials.TryGetValue(key, out VisualBatchMaterial? cached))
 		{
 			return cached;

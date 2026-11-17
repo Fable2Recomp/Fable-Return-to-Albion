@@ -5,7 +5,7 @@
 shader_type canvas_item;
 render_mode blend_disabled, unshaded;
 
-uniform sampler2D src_tex : filter_nearest;
+uniform sampler2D src_tex : hint_default_black, filter_nearest;
 
 /// (1, 0) or (0, 1).
 uniform vec2 dir = vec2(1.0, 0.0);

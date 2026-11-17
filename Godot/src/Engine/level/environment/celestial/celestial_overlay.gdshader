@@ -2,7 +2,7 @@ shader_type spatial;
 render_mode blend_add, cull_disabled, depth_draw_never,
 	unshaded, shadows_disabled, fog_disabled;
 
-uniform sampler2D element_tex : filter_linear, repeat_disable;
+uniform sampler2D element_tex : hint_default_black, filter_linear, repeat_disable;
 uniform vec3 element_dir = vec3(0.0, 1.0, 0.0);
 uniform float element_distance = 1900.0;
 uniform vec2 element_half = vec2(1.0, 1.0);

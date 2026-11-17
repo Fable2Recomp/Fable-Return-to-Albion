@@ -90,6 +90,8 @@ public static class Engine_EntityAppearance
     /// <summary>How many entity nodes carry the saturation mask right now.</summary>
     public static int MaskedCount { get; private set; }
 
+    private static bool _lastSaturationMaskActive;
+
     /// <summary>Opacity at or above which the guest draws without blending (`flt_83320A70`).</summary>
     private const float OpaqueFrom = 0.999f;
 
@@ -113,6 +115,66 @@ public static class Engine_EntityAppearance
         StatedThisWalk = 0;
         FadedThisWalk = 0;
         HiddenThisWalk = 0;
+        SyncSaturationMaskState();
+    }
+
+    /// <summary>
+    /// Attaches or removes <c>OverlayMask</c> on tracked <see cref="Masked"/> entity nodes whenever
+    /// <see cref="Refii.Lighting.Engine_PostFxParams.IsSaturationMaskActive"/> changes (e.g. entering
+    /// or leaving a theme that states <c>SaturationMasked</c> / <c>BrightnessMasked</c>, or dropping the load cover).
+    /// </summary>
+    public static void SyncSaturationMaskState()
+    {
+        bool active = Refii.Lighting.Engine_PostFxParams.IsSaturationMaskActive;
+        if (active == _lastSaturationMaskActive)
+        {
+            return;
+        }
+
+        _lastSaturationMaskActive = active;
+        if (Masked.Count == 0)
+        {
+            return;
+        }
+
+        List<MeshInstance3D>? stale = null;
+        foreach (MeshInstance3D node in Masked)
+        {
+            if (!GodotObject.IsInstanceValid(node))
+            {
+                stale ??= new List<MeshInstance3D>();
+                stale.Add(node);
+                continue;
+            }
+
+            Overlays.TryGetValue(node, out int current);
+            int updated = active ? (current | OverlayMask) : (current & ~OverlayMask);
+            if (updated == current)
+            {
+                continue;
+            }
+
+            node.MaterialOverlay = OverlayMaterial(updated);
+            if (updated == 0)
+            {
+                Overlays.Remove(node);
+            }
+            else
+            {
+                Overlays[node] = updated;
+            }
+        }
+
+        if (stale is not null)
+        {
+            foreach (MeshInstance3D dead in stale)
+            {
+                Masked.Remove(dead);
+                Overlays.Remove(dead);
+            }
+
+            MaskedCount = Masked.Count;
+        }
     }
 
     /// <summary>Whether a look needs the node itself: a batch or a married twin cannot carry it.</summary>
@@ -343,8 +405,10 @@ public static class Engine_EntityAppearance
         // shows; with no layer showing it would only stamp the whole body's depth, unculled and
         // untested, where the title alpha-tests its cutouts and culls every standard draw CCW
         // (`sub_8221BD40`) — from a camera inside the head, over every transparent draw behind it.
+        SyncSaturationMaskState();
         bool blended = node.Transparency > 0f && opacity >= InvisibleBelow;
-        int overlay = (masked ? OverlayMask : 0) | (blended ? OverlayDepth : 0);
+        bool maskOverlay = masked && _lastSaturationMaskActive;
+        int overlay = (maskOverlay ? OverlayMask : 0) | (blended ? OverlayDepth : 0);
         Overlays.TryGetValue(node, out int carried);
         if (overlay != carried)
         {
@@ -422,5 +486,6 @@ public static class Engine_EntityAppearance
         Masked.Clear();
         Overlays.Clear();
         MaskedCount = 0;
+        _lastSaturationMaskActive = false;
     }
 }

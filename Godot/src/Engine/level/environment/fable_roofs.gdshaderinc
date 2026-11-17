@@ -5,6 +5,10 @@
 global uniform sampler2D fable_roofs : filter_nearest;
 global uniform int fable_roof_count;
 
+bool fable_roof_outside_edge(vec2 p, vec2 s, vec2 n) {
+	return (n.y - s.y) * (p.x - s.x) - (n.x - s.x) * (p.y - s.y) > 0.0;
+}
+
 bool fable_under_roof(vec3 world) {
 	// Godot (x, y, z) is the guest's (-x, z, y).
 	vec2 p = vec2(-world.x, world.z);
@@ -15,19 +19,13 @@ bool fable_under_roof(vec3 world) {
 		if (world.y >= top) {
 			continue;
 		}
-		vec2 c[4] = vec2[4](a.xy, a.zw, b.xy, b.zw);
-		bool inside = true;
-		for (int k = 0; k < 4; k++) {
-			vec2 s = c[k];
-			vec2 n = c[(k + 1) & 3];
-			if ((n.y - s.y) * (p.x - s.x) - (n.x - s.x) * (p.y - s.y) > 0.0) {
-				inside = false;
-				break;
-			}
+		if (fable_roof_outside_edge(p, a.xy, a.zw) ||
+			fable_roof_outside_edge(p, a.zw, b.xy) ||
+			fable_roof_outside_edge(p, b.xy, b.zw) ||
+			fable_roof_outside_edge(p, b.zw, a.xy)) {
+			continue;
 		}
-		if (inside) {
-			return true;
-		}
+		return true;
 	}
 	return false;
 }

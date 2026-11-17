@@ -149,8 +149,8 @@ public sealed class ShaderMediumpTests
         AssertThat(on).Contains("mediump vec3 floor_fill = ");
         AssertThat(on).Contains("mediump vec3 spec_colour = vec3(0.0);");
         AssertThat(on).Contains("mediump vec3 ambient_half = bake * fable_lightmap_rgb() * darken * bake_ao;");
-        AssertThat(on).Contains("mediump vec3 env = texture(envmap_tex, reflected).rgb;");
-        AssertThat(on).Contains("mediump vec3 selfIllum = texture(emission_tex, uv).rgb;");
+        AssertThat(on).Contains("mediump vec3 env = textureLod(envmap_tex, reflected, 0.0).rgb;");
+        AssertThat(on).Contains("mediump vec3 selfIllum = textureGrad(emission_tex, uv, base_uv_dx, base_uv_dy).rgb;");
 
         string terrain = Collapse(Build(Engine_ShaderVariant.TerrainFullPath, new[] { "FABLE_LITE", Engine_ShaderVariant.Mediump }));
         AssertThat(terrain).Contains("mediump float gate = LIGHT_IS_DIRECTIONAL");

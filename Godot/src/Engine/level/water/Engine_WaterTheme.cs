@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Godot;
 using Refii.Lighting;
@@ -188,6 +189,29 @@ public static class Engine_WaterTheme
         theme.HasAny = true;
     }
 
+    private static readonly object DegenerateLogGate = new();
+    private static readonly HashSet<(int MinBits, int MaxBits, int BiasBits)> LoggedDegenerateEdgeBlends = new();
+
+    internal static void ResetLoggedDegenerateEdgeBlendsForTests()
+    {
+        lock (DegenerateLogGate)
+        {
+            LoggedDegenerateEdgeBlends.Clear();
+        }
+    }
+
+    public static bool ShouldLogDegenerateEdgeBlend(float min, float max, float bias)
+    {
+        var key = (
+            BitConverter.SingleToInt32Bits(min),
+            BitConverter.SingleToInt32Bits(max),
+            BitConverter.SingleToInt32Bits(bias));
+        lock (DegenerateLogGate)
+        {
+            return LoggedDegenerateEdgeBlends.Add(key);
+        }
+    }
+
     public static Vector4 EdgeBlend(WaterTheme theme)
     {
         float max = theme[WaterThemeParam.EdgeBlendMax];
@@ -197,9 +221,12 @@ public static class Engine_WaterTheme
         if (!float.IsFinite(min) || !float.IsFinite(max) || !float.IsFinite(bias) ||
             max - min <= 1e-4f)
         {
-            GD.Print(
-                $"[water] theme edge blend is degenerate (min={min}, max={max}, bias={bias}) — " +
-                "using the neutral ramp");
+            if (ShouldLogDegenerateEdgeBlend(min, max, bias))
+            {
+                GD.Print(
+                    $"[water] theme edge blend is degenerate (min={min}, max={max}, bias={bias}) — " +
+                    "using the neutral ramp");
+            }
             return new Vector4(0f, 1f, 0f, 0f);
         }
 

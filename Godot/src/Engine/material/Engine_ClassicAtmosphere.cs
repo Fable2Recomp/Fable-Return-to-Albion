@@ -29,7 +29,6 @@ public static class Engine_ClassicAtmosphere
     private static readonly byte[] _inScattering = new byte[InScatteringWidth * 8];
     private static readonly float[] _inputs = new float[32];
     private static readonly float[] _lastInputs = new float[32];
-    private static Image? _extinctionImage, _inScatteringImage;
     private static ImageTexture? _extinctionTexture, _inScatteringTexture;
     private static readonly object CreateGate = new();
     private static bool _ever;
@@ -92,10 +91,10 @@ public static class Engine_ClassicAtmosphere
         EnsureCreated();
         FillExtinction(frame);
         FillInScattering(frame);
-        _extinctionImage!.SetData(ExtinctionWidth, 1, false, Image.Format.Rgba8, _extinction);
-        _extinctionTexture!.Update(_extinctionImage);
-        _inScatteringImage!.SetData(InScatteringWidth, 1, false, Image.Format.Rgbah, _inScattering);
-        _inScatteringTexture!.Update(_inScatteringImage);
+        Refii.Textures.Engine_TextureUpload.UpdateFromData(
+            _extinctionTexture, ExtinctionWidth, 1, false, Image.Format.Rgba8, _extinction);
+        Refii.Textures.Engine_TextureUpload.UpdateFromData(
+            _inScatteringTexture, InScatteringWidth, 1, false, Image.Format.Rgbah, _inScattering);
     }
 
     /// <summary>Any thread (the material builds run on workers): one pair, published whole.</summary>
@@ -111,10 +110,11 @@ public static class Engine_ClassicAtmosphere
             {
                 return;
             }
-            _extinctionImage = Image.CreateEmpty(ExtinctionWidth, 1, false, Image.Format.Rgba8);
-            _extinctionTexture = ImageTexture.CreateFromImage(_extinctionImage);
-            _inScatteringImage = Image.CreateEmpty(InScatteringWidth, 1, false, Image.Format.Rgbah);
-            System.Threading.Volatile.Write(ref _inScatteringTexture, ImageTexture.CreateFromImage(_inScatteringImage));
+            var extinctionImage = Image.CreateEmpty(ExtinctionWidth, 1, false, Image.Format.Rgba8);
+            _extinctionTexture = Refii.Textures.Engine_TextureUpload.CreateTexture(extinctionImage);
+            var inScatteringImage = Image.CreateEmpty(InScatteringWidth, 1, false, Image.Format.Rgbah);
+            System.Threading.Volatile.Write(ref _inScatteringTexture,
+                Refii.Textures.Engine_TextureUpload.CreateTexture(inScatteringImage));
         }
     }
 

@@ -98,6 +98,12 @@ public sealed partial class Engine_FxDriver : Node
     /// <summary>Steps the frame and publishes summed effect segments, including zero-work frames.</summary>
     public override void _Process(double delta)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            Stepped = 0;
+            return;
+        }
+
         using var fxFrame = FableFx.FrameWork.BeginFrame();
         using var _framePhase = Refii.Core.Engine_FramePhases.Measure("fablefx");
 

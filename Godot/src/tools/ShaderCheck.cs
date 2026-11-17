@@ -18,6 +18,9 @@ public partial class ShaderCheck : Node
 		Refii.Models.Engine_ShaderFamily.StandardCulledPath,
 		Refii.Models.Engine_ShaderFamily.StandardTranslucentPath,
 		Refii.Models.Engine_ShaderFamily.StandardWindPath,
+		Refii.Models.Engine_ShaderFamily.StandardTreePath,
+		"res://src/Engine/material/fur_shell.gdshader",
+		"res://src/Engine/material/fur_shell_depth.gdshader",
 
 		// The draw-path families. Each is a DIFFERENT LIGHTING MODEL rather than a variant, so
 		// each can break on its own — and a family with no caller yet (the canopy, until the
@@ -33,6 +36,9 @@ public partial class ShaderCheck : Node
 		"res://src/Engine/entities/entity_saturation_mask.gdshader",
 		"res://src/Engine/entities/entity_fade_depth.gdshader",
 		"res://src/Engine/entities/entity_fade_depth_mask.gdshader",
+		"res://src/Engine/entities/shadow_caster.gdshader",
+		"res://src/Engine/entities/shadow_caster_solid.gdshader",
+		"res://src/Engine/entities/shadow_caster_cutout.gdshader",
 	};
 
 	public override void _Ready()
@@ -58,10 +64,14 @@ public partial class ShaderCheck : Node
 			// tested. What does change is the uniform list: compilation is what registers it, so a
 			// shader that failed reports zero. Every shader here declares uniforms, so zero is
 			// unambiguous rather than merely suspicious.
-			// A shader that declares no uniform (the saturation-mask overlay) has nothing to count;
-			// its parse errors still print as SHADER ERROR.
+			// A shader that declares no material uniform (e.g. `instance uniform`-only or empty
+			// overlays) has nothing for GetShaderUniformList() to count; parse errors still print.
 			int uniforms = shader.GetShaderUniformList().Count;
-			if (uniforms == 0 && shader.Code.Contains("uniform", System.StringComparison.Ordinal))
+			bool hasMaterialUniform = System.Text.RegularExpressions.Regex.IsMatch(
+				shader.Code,
+				@"(?m)^\s*uniform\b",
+				System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+			if (uniforms == 0 && hasMaterialUniform)
 			{
 				GD.Print($"[shader] COMPILE FAILED {path} — see the SHADER ERROR above");
 				++bad;

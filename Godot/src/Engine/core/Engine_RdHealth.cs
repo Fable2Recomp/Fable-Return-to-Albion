@@ -23,6 +23,8 @@ public static class Engine_RdHealth
 	private static readonly object ThrottleGate = new();
 	private static readonly Dictionary<string, (long LastTickMs, int Suppressed)> Throttled =
 		new(StringComparer.Ordinal);
+	private static readonly object HandlerGate = new();
+	private static Action? _onDeviceLost;
 
 	/// <summary>True once a fatal RenderingDevice / GPU failure has latched in this process.</summary>
 	public static bool IsDeviceLost => Volatile.Read(ref _deviceLost) != 0;
@@ -39,6 +41,21 @@ public static class Engine_RdHealth
 	/// <summary>Number of subsequent operations suppressed after the initial trip.</summary>
 	public static int SuppressedCount => Volatile.Read(ref _suppressedCount);
 
+	/// <summary>Records one skipped submission after <see cref="IsDeviceLost"/> has already latched.</summary>
+	public static void NoteSuppressed() => Interlocked.Increment(ref _suppressedCount);
+
+	/// <summary>
+	/// Registers a host callback invoked on the main thread when the circuit breaker first trips
+	/// (e.g., to disable secondary viewport updates cleanly).
+	/// </summary>
+	public static void RegisterDeviceLostHandler(Action? handler)
+	{
+		lock (HandlerGate)
+		{
+			_onDeviceLost = handler;
+		}
+	}
+
 	/// <summary>Resets latched health state and throttled log windows (for tests or re-init).</summary>
 	public static void Reset()
 	{
@@ -50,6 +67,42 @@ public static class Engine_RdHealth
 		{
 			Throttled.Clear();
 		}
+		lock (HandlerGate)
+		{
+			_onDeviceLost = null;
+		}
+	}
+
+	/// <summary>True when fatal device loss should also halt Godot's render loop.</summary>
+	public static bool ShouldHaltRenderLoopOnDeviceLost(bool isTestHost) => !isTestHost;
+
+	/// <summary>Pure bounds check for recorded <c>ArrayMesh</c> surface indices.</summary>
+	public static bool ShouldAcceptSurfaceIndex(int surface, int surfaceCount) =>
+		surface >= 0 && surface < surfaceCount;
+
+	/// <summary>
+	/// Verifies that an <see cref="ArrayMesh"/> surface creation actually succeeded
+	/// (<c>GetSurfaceCount() &gt; countBefore</c>); trips the circuit breaker when the RD backend
+	/// rejected vertex/index buffer creation (e.g., <c>0x887a0005</c>).
+	/// </summary>
+	public static bool CheckArrayMeshSurfaceAdded(ArrayMesh? mesh, int countBefore, string context)
+	{
+		if (IsDeviceLost)
+		{
+			Interlocked.Increment(ref _suppressedCount);
+			return false;
+		}
+
+		if (mesh is not null &&
+		    GodotObject.IsInstanceValid(mesh) &&
+		    mesh.GetRid().IsValid &&
+		    mesh.GetSurfaceCount() > countBefore)
+		{
+			return true;
+		}
+
+		_ = TripDeviceLost(context, "ArrayMesh surface creation failed");
+		return false;
 	}
 
 	/// <summary>
@@ -69,13 +122,65 @@ public static class Engine_RdHealth
 		Volatile.Write(ref _deviceLostReason, reason);
 		Volatile.Write(ref _deviceLostTimestampMs, System.Environment.TickCount64);
 
-		if (!RunningInTestHost)
+		if (ShouldHaltRenderLoopOnDeviceLost(RunningInTestHost))
 		{
-			// Single error line for the entire session after device loss.
+			// Single error line for the entire session after device loss, then halt RenderingServer
+			// submissions so C++ CreateResource errors cannot flood godot.log.
 			GD.PushError($"[rd-health] GPU device lost / RD resource creation failed ({reason}); latching circuit breaker.");
+			TryHaltRenderLoop();
 		}
 
+		InvokeDeviceLostHandler();
 		return true;
+	}
+
+	private static void InvokeDeviceLostHandler()
+	{
+		Action? handler;
+		lock (HandlerGate)
+		{
+			handler = _onDeviceLost;
+		}
+
+		if (handler is null)
+		{
+			return;
+		}
+
+		try
+		{
+			if (RunningInTestHost || Engine_ServerSyncs.OnMainThread)
+			{
+				handler();
+			}
+			else
+			{
+				Callable.From(handler).CallDeferred();
+			}
+		}
+		catch
+		{
+			// Best-effort quiesce only during device loss or teardown.
+		}
+	}
+
+	private static void TryHaltRenderLoop()
+	{
+		try
+		{
+			if (Engine_ServerSyncs.OnMainThread)
+			{
+				RenderingServer.RenderLoopEnabled = false;
+			}
+			else
+			{
+				Callable.From(static () => RenderingServer.RenderLoopEnabled = false).CallDeferred();
+			}
+		}
+		catch
+		{
+			// Ignore during shutdown or headless test hosts without a RenderingServer singleton.
+		}
 	}
 
 	/// <summary>
@@ -173,5 +278,69 @@ public static class Engine_RdHealth
 			Throttled[key] = (nowTickMs, 0);
 			return true;
 		}
+	}
+
+	/// <summary>
+	/// Clears a <see cref="Texture2Drd"/>'s RD RID on the main thread (or via <c>CallDeferred</c>
+	/// when tearing down from another thread) without throwing during shutdown.
+	/// </summary>
+	public static void ClearTextureRdRidSafely(Texture2Drd? texture) =>
+		ClearTextureRdRidSafely(texture, static t => t.TextureRdRid = default);
+
+	/// <summary>
+	/// Clears a <see cref="TextureLayeredRD"/>'s RD RID on the main thread (or via <c>CallDeferred</c>
+	/// when tearing down from another thread) without throwing during shutdown.
+	/// </summary>
+	public static void ClearTextureRdRidSafely(TextureLayeredRD? texture) =>
+		ClearTextureRdRidSafely(texture, static t => t.TextureRdRid = default);
+
+	private static void ClearTextureRdRidSafely<T>(T? texture, Action<T> clearAction)
+		where T : GodotObject
+	{
+		if (texture is null || !GodotObject.IsInstanceValid(texture))
+		{
+			return;
+		}
+
+		if (Engine_ServerSyncs.OnMainThread || !RenderingServer.IsOnRenderThread())
+		{
+			clearAction(texture);
+			return;
+		}
+
+		Callable.From(() =>
+		{
+			if (GodotObject.IsInstanceValid(texture))
+			{
+				clearAction(texture);
+			}
+		}).CallDeferred();
+	}
+
+	/// <summary>
+	/// Resolves a canvas/viewport texture's backing <c>RenderingDevice</c> RID on the render thread,
+	/// caching the result per <paramref name="texRid"/> and <paramref name="size"/> so main-thread
+	/// callers never stall on <c>RenderingServer.TextureGetRdTexture</c> (<c>push_and_ret</c>).
+	/// </summary>
+	public static Rid ResolveRdOnRenderThread(
+		Rid texRid, Vector2I size, ref Rid cachedTexRid, ref Vector2I cachedSize, ref Rid cachedRd)
+	{
+		if (!texRid.IsValid || IsDeviceLost)
+		{
+			cachedTexRid = default;
+			cachedSize = default;
+			cachedRd = default;
+			return default;
+		}
+
+		if (cachedTexRid == texRid && cachedSize == size && cachedRd.IsValid)
+		{
+			return cachedRd;
+		}
+
+		cachedRd = RenderingServer.TextureGetRdTexture(texRid);
+		cachedTexRid = texRid;
+		cachedSize = size;
+		return cachedRd;
 	}
 }

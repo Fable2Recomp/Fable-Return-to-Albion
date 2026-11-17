@@ -281,6 +281,13 @@ public static class Engine_PropShadow
 			return;
 		}
 
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			Refii.Core.Engine_RdHealth.NoteSuppressed();
+			Deferred.Clear();
+			return;
+		}
+
 		foreach ((MultiMesh batch, int instance) in Deferred)
 		{
 			if (Twins.TryGetValue(batch, out MultiMesh? shadow) && instance < shadow.InstanceCount &&

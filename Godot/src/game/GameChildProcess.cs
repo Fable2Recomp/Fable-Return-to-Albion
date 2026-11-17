@@ -64,9 +64,11 @@ public static class GameChildProcess
 		// logs/Fable3): two titles' runs never share one file. Engine flags go ahead of the rest.
 		try { System.IO.Directory.CreateDirectory(title.LogsDirectory); }
 		catch (System.Exception) { }
+		IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.ReadFor(title, out _);
+		int maxLogFiles = System.Math.Max(1, Refii.Core.Engine_RefiiConfig.Int(config, "log_max_files", 20));
+		RotateExistingLogFile(title.GodotLogPath, maxLogFiles);
 		arguments.Add("--log-file");
 		arguments.Add(title.GodotLogPath);
-		IReadOnlyDictionary<string, string> config = Refii.Core.Engine_RefiiConfig.ReadFor(title, out _);
 
 		// The graphics API is fixed when the rendering device is created, so it rides the command
 		// line too. Direct3D 12 is Windows-only; everywhere else the driver is Vulkan whatever
@@ -84,9 +86,6 @@ public static class GameChildProcess
 
 		// `render_thread` is a Godot start-up option, not a runtime setting: the renderer's
 		// thread model is fixed before the game's own code runs, so it rides the command line.
-		// Direct3D 12 keeps Godot's default thread-safe ("safe") render model because Godot 4.7's
-		// experimental "--render-thread separate" races main-thread RenderingServer/RenderingDevice
-		// updates against D3D12 command-list recording and descriptor-heap rotation.
 		if (ShouldUseSeparateRenderThread(config, driver))
 		{
 			arguments.Add("--render-thread");
@@ -214,26 +213,51 @@ public static class GameChildProcess
 	/// default, because its picture depends on the setting itself, not only on the pre-pass.
 	/// Staging buffer size is capped at 128 MB so permanently mapped D3D12 UPLOAD blocks do not
 	/// starve MultiUmaBuffer persistent dynamic storage buffer allocations on unified-memory GPUs.
+	/// Optional environment overrides (<c>REFII_D3D12_SOFT_SHADOW_QUALITY</c>,
+	/// <c>REFII_D3D12_MAX_RESOURCE_DESCRIPTORS</c>, <c>REFII_D3D12_MAX_RESOURCE_DESCRIPTORS_PER_FRAME</c>)
+	/// permit single-run D3D12 isolation without editing <c>project.godot</c>.
 	/// </summary>
 	public static string BuildRendererSettingsContent(
 		IReadOnlyDictionary<string, string> config,
-		string forcedLightingModel = "")
+		string forcedLightingModel = "",
+		IReadOnlyDictionary<string, string?>? envOverrides = null)
 	{
+		string? GetEnv(string key) => envOverrides is not null
+			? (envOverrides.TryGetValue(key, out string? v) ? v : null)
+			: System.Environment.GetEnvironmentVariable(key);
+
+		int ReadPositiveIntOverride(string key, int fallback, int min, int max) =>
+			int.TryParse(GetEnv(key), out int parsed) && parsed >= min
+				? System.Math.Clamp(parsed, min, max)
+				: fallback;
+
 		bool classic = Refii.Lighting.Engine_LightingFrame.IsClassic(
 			forcedLightingModel.Length != 0
 				? forcedLightingModel
 				: Refii.Core.Engine_RefiiConfig.String(config, "lighting_model", "modern"));
-		string common =
-			"[rendering]\n\n" +
-			$"rendering_device/staging_buffer/max_size_mb={DefaultStagingBufferMaxSizeMb}\n" +
-			$"rendering_device/d3d12/max_resource_descriptors={DefaultD3D12MaxResourceDescriptors}\n" +
-			$"rendering_device/d3d12/max_sampler_descriptors={DefaultD3D12MaxSamplerDescriptors}\n" +
-			$"rendering_device/d3d12/max_resource_descriptors_per_frame={DefaultD3D12MaxResourceDescriptorsPerFrame}\n" +
-			$"rendering_device/d3d12/max_sampler_descriptors_per_frame={DefaultD3D12MaxSamplerDescriptorsPerFrame}\n" +
-			$"rendering_device/d3d12/max_misc_descriptors_per_frame={DefaultD3D12MaxMiscDescriptorsPerFrame}\n";
-		return classic
-			? common + "driver/depth_prepass/enable=false\n"
-			: common;
+		int maxResDesc = ReadPositiveIntOverride(
+			"REFII_D3D12_MAX_RESOURCE_DESCRIPTORS", DefaultD3D12MaxResourceDescriptors, 16384, 1048576);
+		int maxResDescPerFrame = ReadPositiveIntOverride(
+			"REFII_D3D12_MAX_RESOURCE_DESCRIPTORS_PER_FRAME", DefaultD3D12MaxResourceDescriptorsPerFrame, 8192, maxResDesc);
+
+		var sb = new System.Text.StringBuilder();
+		sb.Append("[rendering]\n\n");
+		sb.Append($"rendering_device/staging_buffer/max_size_mb={DefaultStagingBufferMaxSizeMb}\n");
+		sb.Append($"rendering_device/d3d12/max_resource_descriptors={maxResDesc}\n");
+		sb.Append($"rendering_device/d3d12/max_sampler_descriptors={DefaultD3D12MaxSamplerDescriptors}\n");
+		sb.Append($"rendering_device/d3d12/max_resource_descriptors_per_frame={maxResDescPerFrame}\n");
+		sb.Append($"rendering_device/d3d12/max_sampler_descriptors_per_frame={DefaultD3D12MaxSamplerDescriptorsPerFrame}\n");
+		sb.Append($"rendering_device/d3d12/max_misc_descriptors_per_frame={DefaultD3D12MaxMiscDescriptorsPerFrame}\n");
+		if (int.TryParse(GetEnv("REFII_D3D12_SOFT_SHADOW_QUALITY"), out int softShadowQuality) &&
+		    softShadowQuality is >= 0 and <= 5)
+		{
+			sb.Append($"lights_and_shadows/directional_shadow/soft_shadow_filter_quality={softShadowQuality}\n");
+		}
+		if (classic)
+		{
+			sb.Append("driver/depth_prepass/enable=false\n");
+		}
+		return sb.ToString();
 	}
 
 	private static void WriteRendererSettings(IReadOnlyDictionary<string, string> config)
@@ -275,10 +299,56 @@ public static class GameChildProcess
 	}
 
 	/// <summary>
-	/// Whether to pass <c>--render-thread separate</c> to the spawned game process.
-	/// Disabled on Direct3D 12, where Godot 4.7's experimental separate render thread is unstable
-	/// under concurrent main-thread texture/RD mutations and GPU timestamp queries.
+	/// Renames an existing <c>godot.log</c> to a timestamped archive (<c>prev_godot_YYYY-MM-DDTHH-mm-ss.log</c>)
+	/// before spawning a new child process so prior runs (e.g. a DX12 freeze before switching to Vulkan)
+	/// are preserved without being matched by Godot's <c>RotatedFileLogger::clear_old_backups()</c>,
+	/// while pruning archives beyond <paramref name="maxFiles"/>.
+	/// </summary>
+	public static void RotateExistingLogFile(string logPath, int maxFiles = 20)
+	{
+		if (string.IsNullOrWhiteSpace(logPath) || !System.IO.File.Exists(logPath))
+		{
+			return;
+		}
+
+		try
+		{
+			string? dir = System.IO.Path.GetDirectoryName(logPath);
+			if (string.IsNullOrEmpty(dir))
+			{
+				return;
+			}
+
+			string stem = System.IO.Path.GetFileNameWithoutExtension(logPath);
+			string ext = System.IO.Path.GetExtension(logPath);
+			System.DateTime stamp = System.IO.File.GetLastWriteTime(logPath);
+			string baseName = $"prev_{stem}_{stamp:yyyy-MM-ddTHH-mm-ss}";
+			string dest = System.IO.Path.Combine(dir, baseName + ext);
+			for (int suffix = 1; System.IO.File.Exists(dest); suffix++)
+			{
+				dest = System.IO.Path.Combine(dir, $"{baseName}_{suffix}{ext}");
+			}
+
+			System.IO.File.Move(logPath, dest);
+
+			int keepArchives = System.Math.Max(0, maxFiles - 1);
+			var archives = System.IO.Directory.GetFiles(dir, $"prev_{stem}_*{ext}")
+				.Select(static p => new System.IO.FileInfo(p))
+				.OrderByDescending(static f => f.LastWriteTimeUtc)
+				.Skip(keepArchives);
+			foreach (System.IO.FileInfo old in archives)
+			{
+				try { old.Delete(); }
+				catch (System.Exception) { }
+			}
+		}
+		catch (System.Exception) { }
+	}
+
+	/// <summary>
+	/// Whether to pass <c>--render-thread separate</c> to the spawned game process,
+	/// honoring the <c>render_thread</c> CVar regardless of rendering driver.
 	/// </summary>
 	public static bool ShouldUseSeparateRenderThread(IReadOnlyDictionary<string, string> config, string resolvedDriver) =>
-		resolvedDriver != "d3d12" && Refii.Core.Engine_RefiiConfig.Bool(config, "render_thread", true);
+		Refii.Core.Engine_RefiiConfig.Bool(config, "render_thread", true);
 }

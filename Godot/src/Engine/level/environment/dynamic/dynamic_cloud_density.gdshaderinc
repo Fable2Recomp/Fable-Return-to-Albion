@@ -53,12 +53,12 @@ float volume_density(vec3 position) {
 	}
 	vec3 uv = advected / 3400.0;
 	vec3 warp = vec3(weather.y - 0.5, weather.x - 0.5, weather.x - weather.y) * 0.27;
-	float billow = texture(cloud_volume_shape, uv + warp).r;
+	float billow = textureLod(cloud_volume_shape, uv + warp, 0.0).r;
 	vec3 rotated = vec3(uv.z * 0.8 + uv.x * 0.6, uv.y, uv.z * 0.6 - uv.x * 0.8);
-	billow = billow * 0.72 + texture(cloud_volume_shape, rotated * 1.73 + vec3(0.31, 0.73, 0.17)).r * 0.28;
+	billow = billow * 0.72 + textureLod(cloud_volume_shape, rotated * 1.73 + vec3(0.31, 0.73, 0.17), 0.0).r * 0.28;
 	float body = clamp((billow - (1.0 - local_cover) * 0.35 - 0.36) / 0.36, 0.0, 1.0);
 	body *= profile;
-	float erosion = 1.0 - texture(cloud_volume_detail, uv * 5.31 + warp * 2.0).r;
+	float erosion = 1.0 - textureLod(cloud_volume_detail, uv * 5.31 + warp * 2.0, 0.0).r;
 	body = max(body - erosion * 0.36 * pow(1.0 - body, 2.0), 0.0);
 	float density = clamp(cloud_density + overcast * 0.3 + storm * 0.3, 0.0, 1.0);
 	return body * local_cover * density;

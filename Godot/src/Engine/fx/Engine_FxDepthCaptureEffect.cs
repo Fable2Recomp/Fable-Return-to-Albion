@@ -12,6 +12,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     public const string ShaderPath = "res://src/Engine/fx/fx_depth_capture.glsl";
     public const string GlobalTextureName = "fx_scene_depth";
     public const string GlobalValidName = "fx_scene_depth_valid";
+    public const int RequiredSettleFrames = 3;
 
     /// <summary>
     /// Player two's view's depth on split screen. A global is one value for every view, so each
@@ -22,6 +23,22 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
 
     private static bool _globalsRegistered;
     private static readonly Texture2Drd?[] _textures = new Texture2Drd?[2];
+    private static ImageTexture? _fallbackDepthTexture;
+
+    // D3D12 / Intel Arc DXIL warning: never bind an uninitialized `new Texture2Drd()` (`TextureRdRid == default`)
+    // to a global shader parameter. Shaders sample `fx_scene_depth` even while DepthCapture is disabled;
+    // an unbound/null RD RID creates an invalid SRV descriptor that can hang or reset D3D12 devices.
+    private static ImageTexture GetOrCreateFallbackDepthTexture()
+    {
+        if (_fallbackDepthTexture is null || !GodotObject.IsInstanceValid(_fallbackDepthTexture))
+        {
+            Image image = Image.CreateEmpty(1, 1, false, Image.Format.Rgba8);
+            image.Fill(Colors.Black);
+            _fallbackDepthTexture = ImageTexture.CreateFromImage(image);
+        }
+
+        return _fallbackDepthTexture;
+    }
 
     /// <summary>Which view this capture runs in: 0 the window's (player one's on split screen), 1 player two's.</summary>
     public int View { get; set; }
@@ -62,10 +79,10 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
         if (_globalsRegistered) return;
         _globalsRegistered = true;
 
+        ImageTexture fallback = GetOrCreateFallbackDepthTexture();
         for (int view = 0; view < _textures.Length; ++view)
         {
-            _textures[view] ??= new Texture2Drd();
-            RenderingServer.GlobalShaderParameterSet(TextureGlobal(view), _textures[view]!);
+            RenderingServer.GlobalShaderParameterSet(TextureGlobal(view), fallback);
         }
 
         RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
@@ -95,6 +112,11 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
 
     private void EnsureTarget(Vector2I size)
     {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || _rd is null)
+        {
+            return;
+        }
+
         if (_target.IsValid && size == _targetSize) return;
         // The FX materials sample the old depth until the deferred re-point below lands.
         Refii.Core.Engine_RdRetire.Retire(_target);
@@ -109,16 +131,24 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
                 RenderingDevice.TextureUsageBits.CanUpdateBit |
                 RenderingDevice.TextureUsageBits.CanCopyToBit,
         };
-        _target = _rd!.Texture(format, new RDTextureView());
-        if (_target.IsValid)
+        _target = _rd.Texture(format, new RDTextureView());
+        if (!Refii.Core.Engine_RdHealth.CheckRdValid(_target, "Engine_FxDepthCaptureEffect.EnsureTarget"))
         {
-            _rd!.TextureClear(_target, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
+            _targetSize = default;
+            return;
         }
+
+        _rd.TextureClear(_target, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
         _targetSize = size;
         Rid rid = _target;
         int view = View;
         Callable.From(() =>
         {
+            if (!rid.IsValid)
+            {
+                return;
+            }
+
             Texture2Drd texture = _textures[view] ??= new Texture2Drd();
             texture.TextureRdRid = rid;
             RenderingServer.GlobalShaderParameterSet(TextureGlobal(view), texture);
@@ -145,12 +175,28 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     /// and never enters the tree. The global parameter is cleared FIRST: dropping the texture
     /// while the server still points at it is the same bug one step later.
     /// </remarks>
+    private bool _released;
+
     public override void _Notification(int what)
     {
         if (what != NotificationPredelete)
         {
             return;
         }
+
+        ReleaseNow(releaseStaticFallbacks: false);
+    }
+
+    /// <summary>
+    /// Restores or clears depth globals and schedules RD resource release while the render thread is alive.
+    /// </summary>
+    public void ReleaseNow(bool releaseStaticFallbacks = false)
+    {
+        if (_released && !releaseStaticFallbacks)
+        {
+            return;
+        }
+        _released = true;
 
         if (_globalsRegistered)
         {
@@ -159,7 +205,27 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
                 RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
             }
 
-            RenderingServer.GlobalShaderParameterSet(TextureGlobal(View), default(Variant));
+            RenderingServer.GlobalShaderParameterSet(
+                TextureGlobal(View),
+                !releaseStaticFallbacks && _fallbackDepthTexture is not null && GodotObject.IsInstanceValid(_fallbackDepthTexture)
+                    ? _fallbackDepthTexture
+                    : default(Variant));
+        }
+
+        if (releaseStaticFallbacks)
+        {
+            if (View == 0)
+            {
+                RenderingServer.GlobalShaderParameterSet(GlobalValidName, 0.0f);
+                RenderingServer.GlobalShaderParameterSet(GlobalTextureName, default(Variant));
+                RenderingServer.GlobalShaderParameterSet(GlobalTextureSecondName, default(Variant));
+            }
+            if (_fallbackDepthTexture is not null && GodotObject.IsInstanceValid(_fallbackDepthTexture))
+            {
+                _fallbackDepthTexture.Dispose();
+            }
+            _fallbackDepthTexture = null;
+            _globalsRegistered = false;
         }
 
         if (View is >= 0 and < 2 && _textures[View] is { } texture)
@@ -209,13 +275,23 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
     public override void _RenderCallback(int effectCallbackType, RenderData renderData)
     {
         if (_rd is not null) Refii.Core.Engine_RdRetire.Pump(_rd);
-        if (!_ready || _rd is null || !Refii.Game.GameWorld.HasActiveWorld) return;
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_ready || _rd is null ||
+            !Refii.Game.GameWorld.ShouldRunRenderEffects(
+                Refii.Game.GameWorld.HasActiveWorld,
+                Refii.Game.GameWorld.CoverHeld,
+                Refii.Game.GameWorld.ReadyForWarmupAndSettle,
+                Refii.Game.GameWorld.SettleFrames,
+                requiredSettleFrames: RequiredSettleFrames))
+        {
+            return;
+        }
         if (renderData.GetRenderSceneBuffers() is not RenderSceneBuffersRD buffers) return;
         Vector2I size = buffers.GetInternalSize();
         if (size.X <= 0 || size.Y <= 0) return;
         if (!HasActiveDepthConsumer(View)) return;
         EnsureTarget(size);
         Rid depth = buffers.GetDepthLayer(0);
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || !_target.IsValid || !depth.IsValid) return;
         // The set is held by the resources it binds: the RDUniforms and their Array were three
         // finalizable wrappers per frame for a set the cache already had.
         Rid set = _set.For(_rd, stackalloc Rid[] { _sampler, depth, _target });
@@ -228,6 +304,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
             outUniform.AddId(_target);
             set = _set.Hold(Engine_RdCalls.CachedUniformSet(_shader, 0, depthUniform, outUniform));
         }
+        if (!set.IsValid || !_pipeline.IsValid) return;
         BitConverter.TryWriteBytes(_push.AsSpan(0), size.X);
         BitConverter.TryWriteBytes(_push.AsSpan(4), size.Y);
         long list = _rd.ComputeListBegin();

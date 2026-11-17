@@ -1802,18 +1802,11 @@ public partial class GameDebugServer : Node
 					RenderingServer.GlobalShaderParameterSet("fable_light_debug", _lightDebug);
 				}
 
-				// Two costs read as a difference: the GI as a whole, and six cube faces against two
-				// paraboloids for the fixtures' shadow maps.
+				// GI toggle for A/B cost comparison.
 				if (root.TryGetProperty("gi", out JsonElement giLever) &&
 					(giLever.ValueKind == JsonValueKind.True || giLever.ValueKind == JsonValueKind.False))
 				{
 					Refii.Lighting.Engine_GiRefresh.ForcedOff = giLever.ValueKind == JsonValueKind.False;
-				}
-
-				if (root.TryGetProperty("shadowParaboloid", out JsonElement paraboloidLever) &&
-					(paraboloidLever.ValueKind == JsonValueKind.True || paraboloidLever.ValueKind == JsonValueKind.False))
-				{
-					Refii.Lighting.Engine_LightShadowBudget.Paraboloid = paraboloidLever.ValueKind == JsonValueKind.True;
 				}
 
 				if (root.TryGetProperty("entityBatches", out JsonElement entityBatchLever) &&
@@ -2255,9 +2248,9 @@ public partial class GameDebugServer : Node
 					["shadowSuppressed"] = Refii.Lighting.Engine_ShadowReach.Suppressed,
 					["shadowConsidered"] = Refii.Lighting.Engine_ShadowReach.Considered,
 					["shadowBudget"] = Refii.Lighting.Engine_LightShadowBudget.Budget,
+					["shadowLimit"] = Refii.Lighting.Engine_LightShadowBudget.MaxDynamicEntityShadowLights,
 					["shadowCasting"] = Refii.Lighting.Engine_LightShadowBudget.Casting,
 					["shadowEligible"] = Refii.Lighting.Engine_LightShadowBudget.Eligible,
-					["shadowParaboloid"] = Refii.Lighting.Engine_LightShadowBudget.Paraboloid,
 					["gi"] = !Refii.Lighting.Engine_GiRefresh.ForcedOff,
 					["sdfgiConfigured"] = Refii.Lighting.Engine_LevelLighting.SdfgiEnabled,
 					["sdfgiLive"] = GetViewport().World3D?.Environment?.SdfgiEnabled ?? false,

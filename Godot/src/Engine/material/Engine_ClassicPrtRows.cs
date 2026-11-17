@@ -32,7 +32,6 @@ public static class Engine_ClassicPrtRows
     /// <summary>Released blocks by their length.</summary>
     private static readonly Dictionary<int, Stack<int>> _free = new();
     private static bool _dirty;
-    private static Image? _image;
     private static ImageTexture? _texture;
     private static bool _registered;
 
@@ -107,14 +106,14 @@ public static class Engine_ClassicPrtRows
             _bytes = new byte[_values.Length * 4];
         }
         Buffer.BlockCopy(_values, 0, _bytes, 0, _bytes.Length);
-        if (_image is not null && _texture is not null && _image.GetHeight() == _rows)
+        if (_texture is not null && _texture.GetHeight() == _rows)
         {
-            _image.SetData(Registers, _rows, false, Image.Format.Rgbaf, _bytes);
-            _texture.Update(_image);
+            Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                _texture, Registers, _rows, false, Image.Format.Rgbaf, _bytes);
             return;
         }
-        _image = Image.CreateFromData(Registers, _rows, false, Image.Format.Rgbaf, _bytes);
-        _texture = ImageTexture.CreateFromImage(_image);
+        var image = Image.CreateFromData(Registers, _rows, false, Image.Format.Rgbaf, _bytes);
+        _texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
         if (!_registered)
         {
             _registered = true;

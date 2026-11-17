@@ -281,7 +281,9 @@ vec3 fable_bake_amb3(vec2 lightmap_uv) {
 	// `Engine_LevelLighting` and 0 in the fable model. It decides model, not roof.
 	float tethered = FABLE_SKY_TETHER > 0.0 ? 1.0 : fable_authored_bake_weight();
 	vec2 at = lightmap_rect.xy + lightmap_uv * lightmap_rect.zw;
-	return tethered * pow(max(texture(fable_prop_lightmaps, at).rgb, vec3(0.0)),
+	// D3D12 / Intel Arc DXIL warning: light() and post-discard callers can run with inactive
+	// helper lanes; always use explicit textureLod(..., 0.0) here so no implicit derivatives occur.
+	return tethered * pow(max(textureLod(fable_prop_lightmaps, at, 0.0).rgb, vec3(0.0)),
 		vec3(FABLE_BAKE_GAMMA));
 }
 
@@ -718,9 +720,12 @@ float fable_attenuation_weighted(float godot_attenuation, bool directional, floa
 #ifdef FABLE_LITE_NO_STATIC_SHADOW
 		return atten;
 #else
-		vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
-		float static_shadow = fable_sample_static_shadow_tiered(world - record.xyz, d, atten, row1.yzw, row2.x);
-		return atten * static_shadow;
+		if (row1.w > 0.0) {
+			vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
+			float static_shadow = fable_sample_static_shadow_tiered(world - record.xyz, d, atten, row1.yzw, row2.x);
+			return atten * static_shadow;
+		}
+		return atten;
 #endif
 	}
 
@@ -742,10 +747,16 @@ float fable_attenuation(float godot_attenuation, bool directional, float specula
 /// double-sided, so whichever copy wins the depth test decides. Measured live with the facing
 /// view: everything back-facing lit correctly and everything front-facing — the hero's coat,
 /// waistcoat and trousers, the brazier — lit inside out. Geometry cannot disagree with itself.
-float fable_normal_side(vec3 normal, vec3 view_position, vec3 view) {
-	vec3 face = cross(dFdx(view_position), dFdy(view_position));
-	face = dot(face, view) < 0.0 ? -face : face;
+// D3D12 / Intel Arc DXIL warning: dFdx()/dFdy() requires uniform 2x2 quad control flow.
+// Precompute `cross(dFdx(VERTEX), dFdy(VERTEX))` BEFORE any per-pixel `discard;` or divergent branch
+// and call `fable_normal_side_precomputed(...)` instead of calling `fable_normal_side(...)` afterwards.
+float fable_normal_side_precomputed(vec3 normal, vec3 geom_cross, vec3 view) {
+	vec3 face = dot(geom_cross, view) < 0.0 ? -geom_cross : geom_cross;
 	return dot(normal, face) < 0.0 ? -1.0 : 1.0;
+}
+
+float fable_normal_side(vec3 normal, vec3 view_position, vec3 view) {
+	return fable_normal_side_precomputed(normal, cross(dFdx(view_position), dFdy(view_position)), view);
 }
 
 /// NO ALBEDO HERE — GODOT APPLIES IT, to whatever `light()` returns.
@@ -809,7 +820,13 @@ vec3 fable_specular(
 		vec3 specular_colour,
 		float specular_power) {
 	float cosine = clamp(dot(view, reflect(-light, normal)), 0.0, 1.0);
-	float lobe = pow(max(cosine, 1e-6), max(specular_power, 1.0));
+	if (cosine <= 0.0) {
+		return vec3(0.0);
+	}
+	float c2 = cosine * cosine;
+	float lobe = abs(specular_power - 4.0) < 1e-3
+		? (c2 * c2)
+		: pow(cosine, max(specular_power, 1.0));
 	float gate = clamp(FABLE_SPEC_ANGLE_GATE * dot(normal, light), 0.0, 1.0);
 	return lobe * gate * attenuation * (light_colour / PI) * specular_colour;
 }

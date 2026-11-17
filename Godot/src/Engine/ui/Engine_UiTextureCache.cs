@@ -151,7 +151,7 @@ public sealed class Engine_UiTextureCache
 			!Engine_RdHealth.CheckTextureValid(
 				texture.GetRid(),
 				$"Engine_UiTextureCache.Load({virtualPath})",
-				verifyRdBacking: Engine_TextureUpload.IsD3D12Driver))
+				verifyRdBacking: Refii.Textures.Engine_TextureUpload.VerifyRdBackingOnCallerThread))
 		{
 			// The bank HAS the bytes and the load still failed, so the fault is the loader
 			// route or the decode — not a missing asset.

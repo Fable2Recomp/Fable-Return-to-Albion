@@ -98,6 +98,14 @@ public static class Engine_WaterMaterial
     {
         public Vector4 Speed;
         public Vector4 Value;
+        public bool HasTheme;
+        public Vector4 Bias;
+        public Vector4 Scale;
+        public Vector4 Surface;
+        public Vector4 Deep;
+        public Vector4 Reflp;
+        public Vector4 Glit;
+        public Vector4 Edge;
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, Phase> Phases = new();
@@ -128,49 +136,91 @@ public static class Engine_WaterMaterial
 
     public static void Apply(ShaderMaterial material, WaterTheme theme)
     {
-        material.SetShaderParameter(WBiasName, new Vector4(
+        Phase phase = Phases.GetOrCreateValue(material);
+        bool first = !phase.HasTheme;
+
+        var bias = new Vector4(
             theme[WaterThemeParam.FresnelBias],
             theme[WaterThemeParam.ReflectionBias],
             theme[WaterThemeParam.NormalScale],
-            theme[WaterThemeParam.MaxRefractionDistance]));
+            theme[WaterThemeParam.MaxRefractionDistance]);
+        if (first || phase.Bias != bias)
+        {
+            phase.Bias = bias;
+            material.SetShaderParameter(WBiasName, bias);
+        }
 
         var speed = new Vector4(
             theme[WaterThemeParam.NormalMapSpeed0X],
             theme[WaterThemeParam.NormalMapSpeed0Y],
             theme[WaterThemeParam.NormalMapSpeed1X],
             theme[WaterThemeParam.NormalMapSpeed1Y]);
-        material.SetShaderParameter(WSpeedName, speed);
-        Phases.GetOrCreateValue(material).Speed = speed;
+        if (first || phase.Speed != speed)
+        {
+            phase.Speed = speed;
+            material.SetShaderParameter(WSpeedName, speed);
+        }
 
         float normalScale0 = theme[WaterThemeParam.NormalMapScale0];
         float normalScale1 = theme[WaterThemeParam.NormalMapScale1];
-        material.SetShaderParameter(WScaleName, new Vector4(
-            normalScale0, normalScale0, normalScale1, normalScale1));
+        var scale = new Vector4(normalScale0, normalScale0, normalScale1, normalScale1);
+        if (first || phase.Scale != scale)
+        {
+            phase.Scale = scale;
+            material.SetShaderParameter(WScaleName, scale);
+        }
 
-        material.SetShaderParameter(WSurfaceName, new Vector4(
+        var surface = new Vector4(
             theme[WaterThemeParam.ShallowR],
             theme[WaterThemeParam.ShallowG],
             theme[WaterThemeParam.ShallowB],
-            0f));
+            0f);
+        if (first || phase.Surface != surface)
+        {
+            phase.Surface = surface;
+            material.SetShaderParameter(WSurfaceName, surface);
+        }
 
-        material.SetShaderParameter(WDeepName, new Vector4(
+        var deep = new Vector4(
             theme[WaterThemeParam.DeepR],
             theme[WaterThemeParam.DeepG],
             theme[WaterThemeParam.DeepB],
-            theme[WaterThemeParam.ReflectionStrength]));
+            theme[WaterThemeParam.ReflectionStrength]);
+        if (first || phase.Deep != deep)
+        {
+            phase.Deep = deep;
+            material.SetShaderParameter(WDeepName, deep);
+        }
 
-        material.SetShaderParameter(WReflpName, new Vector4(
+        var reflp = new Vector4(
             theme[WaterThemeParam.ReflectionScale],
             theme[WaterThemeParam.RefractionScale],
             theme[WaterThemeParam.GlitterBend],
-            theme[WaterThemeParam.GlitterStrength]));
+            theme[WaterThemeParam.GlitterStrength]);
+        if (first || phase.Reflp != reflp)
+        {
+            phase.Reflp = reflp;
+            material.SetShaderParameter(WReflpName, reflp);
+        }
 
-        material.SetShaderParameter(WGlitName, new Vector4(
+        var glit = new Vector4(
             theme[WaterThemeParam.GlitterPower],
             theme[WaterThemeParam.ShadowScaleBias],
-            0f, 0f));
+            0f, 0f);
+        if (first || phase.Glit != glit)
+        {
+            phase.Glit = glit;
+            material.SetShaderParameter(WGlitName, glit);
+        }
 
-        material.SetShaderParameter(WEdgeName, Engine_WaterTheme.EdgeBlend(theme));
+        Vector4 edge = Engine_WaterTheme.EdgeBlend(theme);
+        if (first || phase.Edge != edge)
+        {
+            phase.Edge = edge;
+            material.SetShaderParameter(WEdgeName, edge);
+        }
+
+        phase.HasTheme = true;
     }
 
     public static Texture2D? LoadTexture(string path, ReadAsset read, FindByName? findByName)

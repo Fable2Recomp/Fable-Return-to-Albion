@@ -11,7 +11,7 @@ vec3 fable_sky_inscatter(
 	vec3 ray_n = normalize(ray_engine);
 
 	float sun_dot = clamp(dot(normalize(sun_engine), ray_n), 0.0, 1.0);
-	vec3 scatter = texture(in_scatter_lut, vec2(sun_dot, 0.5)).rgb;
+	vec3 scatter = textureLod(in_scatter_lut, vec2(sun_dot, 0.5), 0.0).rgb;
 
 	float up = max(abs(ray_n.z), 0.0001);
 	float h = exp2(log2(up) * 0.2);

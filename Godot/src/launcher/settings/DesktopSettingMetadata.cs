@@ -249,6 +249,12 @@ public static class DesktopSettingMetadata
             return RuntimeConfig.NormalizeBoolValue(enabled) == "true";
         }
 
+        if (meta.ContextualParentKey == "placed_light_shadows")
+        {
+            string enabled = values.TryGetValue("placed_light_shadows", out string? p) ? p : "true";
+            return RuntimeConfig.NormalizeBoolValue(enabled) == "true";
+        }
+
         return true;
     }
 
@@ -455,6 +461,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "Dynamic Torch & Lamp Shadows",
                 "Characters and creatures cast live shadows from nearby torches and street lamps.",
                 Order: 50),
+            ["placed_shadow_limit"] = new(
+                SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "Dynamic Shadowing Lamps",
+                "Maximum nearby torches and lamps casting live cubemap shadows at once (Low: 1, Balanced: 2, High: 4, Ultra: 8).",
+                new NumericRange(1, 8, 1, " lamps"), Order: 52, ContextualParentKey: "placed_light_shadows"),
             ["hdr_output"] = new(
                 SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "HDR Display Output",
                 "Outputs unclamped high-dynamic-range highlights on supported HDR monitors.",

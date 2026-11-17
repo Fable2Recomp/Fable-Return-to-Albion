@@ -18,7 +18,6 @@ public static class Engine_SnowPushes
     private static readonly float[] _weather = new float[HostBridge.ClassicWeatherHeader + 64 * 8];
     private static readonly float[] _held = new float[Texels * 4];
     private static readonly byte[] _bytes = new byte[Texels * 16];
-    private static Image? _image;
     private static ImageTexture? _texture;
     private static bool _on;
 
@@ -45,16 +44,16 @@ public static class Engine_SnowPushes
         if (changed)
         {
             System.Buffer.BlockCopy(_held, 0, _bytes, 0, _bytes.Length);
-            if (_image is null)
+            if (_texture is null)
             {
-                _image = Image.CreateFromData(Texels, 1, false, Image.Format.Rgbaf, _bytes);
-                _texture = ImageTexture.CreateFromImage(_image);
+                var image = Image.CreateFromData(Texels, 1, false, Image.Format.Rgbaf, _bytes);
+                _texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
                 RenderingServer.GlobalShaderParameterSet(PushesName, _texture);
             }
             else
             {
-                _image.SetData(Texels, 1, false, Image.Format.Rgbaf, _bytes);
-                _texture!.Update(_image);
+                Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                    _texture, Texels, 1, false, Image.Format.Rgbaf, _bytes);
             }
         }
         _on = true;

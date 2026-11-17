@@ -531,7 +531,7 @@ public static class Engine_TexLibrary
 				continue;
 			}
 
-			Engine_TextureUpload.SetImage(texture, image, world: true);
+			Engine_TextureUpload.SetImage(texture, image, world: true, allowD3D12Replace: false);
 			lock (Gate)
 			{
 				entry.HasAlpha = hasAlpha;

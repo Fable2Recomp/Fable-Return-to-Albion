@@ -199,7 +199,7 @@ public partial class Engine_ClassicSpotShadows : Node
         _layerOf.Clear();
         Rid rid = _arrayRid;
         _arrayRid = default;
-        _array.TextureRdRid = default;
+        Refii.Core.Engine_RdHealth.ClearTextureRdRidSafely(_array);
         if (rid.IsValid)
         {
             RenderingServer.CallOnRenderThread(Callable.From(() =>

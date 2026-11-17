@@ -160,8 +160,10 @@ bool fable_atmosphere_terms_for(
 	// REPEATS, so at u = 0 linear filtering would blend in the sun-facing end texel. The guest's
 	// tfetch1D addresses this LUT with clamp.
 	float half_texel = 0.5 / float(textureSize(atmos_inscatter, 0).x);
-	vec3 sky = texture(atmos_inscatter,
-		vec2(clamp(sun_dot, half_texel, 1.0 - half_texel), 0.5)).rgb;
+	// D3D12 / Intel Arc DXIL warning: callers (e.g. post-discard material shaders) may invoke
+	// atmosphere evaluation under non-uniform quad control flow, so use explicit textureLod(..., 0.0).
+	vec3 sky = textureLod(atmos_inscatter,
+		vec2(clamp(sun_dot, half_texel, 1.0 - half_texel), 0.5), 0.0).rgb;
 	vec3 close_fog = atmos_close_fog;
 
 	// CLAMPED IN DISTANCE, NOT IN THE RATIO. The guest's LUT spans a fixed 2000 units and its

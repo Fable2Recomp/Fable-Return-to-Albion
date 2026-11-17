@@ -105,44 +105,51 @@ void fragment() {
 	vec2 detail_dy = dFdy(detail_uv);
 
 	vec4 primary = vec4(1.0);
-	if (has_keycap && ui_keyboard_mode) {
-		primary = textureGrad(keycap_tex, UV, raw_uv_dx, raw_uv_dy);
-	} else if (has_diffuse) {
-		primary = textureGrad(diffuse_tex, uv, uv_dx, uv_dy);
+	vec3 rgb = vec3(0.0);
+	float alpha = 1.0;
+	bool should_discard = clipped;
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+
+	if (!should_discard) {
+		if (has_keycap && ui_keyboard_mode) {
+			primary = textureGrad(keycap_tex, UV, raw_uv_dx, raw_uv_dy);
+		} else if (has_diffuse) {
+			primary = textureGrad(diffuse_tex, uv, uv_dx, uv_dy);
+		}
+
+		rgb = primary.rgb;
+		alpha = primary.a;
+
+		if (detail_mapped) {
+			vec4 detail = textureGrad(detail_tex, detail_uv, detail_dx, detail_dy);
+
+			// REPLACE, not blend — the stored factor is 1.0.
+			rgb = detail.rgb;
+			alpha *= detail.a;
+		}
+
+		float final_alpha = alpha * opacity;
+		should_discard = (final_alpha <= 0.001);
+
+		if (!should_discard) {
+			if (hue_shift != 0.0) {
+				// RGB -> HSV, rotate, back (the branchless form).
+				vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+				vec4 p = mix(vec4(rgb.bg, k.wz), vec4(rgb.gb, k.xy), step(rgb.b, rgb.g));
+				vec4 q = mix(vec4(p.xyw, rgb.r), vec4(rgb.r, p.yzx), step(p.x, rgb.r));
+				float d = q.x - min(q.w, q.y);
+				vec3 hsv = vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+				hsv.x = fract(hsv.x + hue_shift);
+				vec3 c = clamp(abs(fract(hsv.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+				rgb = hsv.z * mix(vec3(1.0), c, hsv.y);
+			}
+
+			// SUBTRACTIVE and weighted; weight 0 leaves the colour alone.
+			rgb -= (vec3(1.0) - tint_rgb) * tint_amount;
+
+			ALBEDO = rgb;
+			ALPHA = final_alpha;
+		}
 	}
-
-	vec3 rgb = primary.rgb;
-	float alpha = primary.a;
-
-	if (detail_mapped) {
-		vec4 detail = textureGrad(detail_tex, detail_uv, detail_dx, detail_dy);
-
-		// REPLACE, not blend — the stored factor is 1.0.
-		rgb = detail.rgb;
-		alpha *= detail.a;
-	}
-
-	// Discard after all texture samples so DXIL/D3D12 control flow and quad state stay clean.
-	float final_alpha = alpha * opacity;
-	if (clipped || final_alpha <= 0.001) {
-		discard;
-	}
-
-	if (hue_shift != 0.0) {
-		// RGB -> HSV, rotate, back (the branchless form).
-		vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
-		vec4 p = mix(vec4(rgb.bg, k.wz), vec4(rgb.gb, k.xy), step(rgb.b, rgb.g));
-		vec4 q = mix(vec4(p.xyw, rgb.r), vec4(rgb.r, p.yzx), step(p.x, rgb.r));
-		float d = q.x - min(q.w, q.y);
-		vec3 hsv = vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
-		hsv.x = fract(hsv.x + hue_shift);
-		vec3 c = clamp(abs(fract(hsv.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
-		rgb = hsv.z * mix(vec3(1.0), c, hsv.y);
-	}
-
-	// SUBTRACTIVE and weighted; weight 0 leaves the colour alone.
-	rgb -= (vec3(1.0) - tint_rgb) * tint_amount;
-
-	ALBEDO = rgb;
-	ALPHA = final_alpha;
 }

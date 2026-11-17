@@ -3,7 +3,7 @@ render_mode use_quarter_res_pass, use_half_res_pass, disable_fog;
 
 #include "res://src/Engine/level/environment/sky_dome.gdshaderinc"
 
-uniform sampler2D in_scatter_lut : filter_linear, repeat_disable;
+uniform sampler2D in_scatter_lut : hint_default_black, filter_linear, repeat_disable;
 uniform vec3 beta_rayleigh = vec3(0.001, 0.0015, 0.004);
 uniform vec3 beta_mie = vec3(0.0056, 0.0064, 0.0105);
 uniform vec3 sun_engine = vec3(1.0, 0.0, 0.0);
@@ -34,12 +34,12 @@ uniform vec3 moon_colour : source_color = vec3(0.86, 0.90, 1.0);
 uniform float moon_brightness = 1.0;
 uniform float moon_size = 0.035;
 uniform bool moon_use_texture = false;
-uniform sampler2D moon_texture : source_color, filter_linear_mipmap, repeat_enable;
+uniform sampler2D moon_texture : hint_default_black, source_color, filter_linear_mipmap, repeat_enable;
 
 uniform float star_brightness = 1.0;
 uniform float star_density = 0.28;
 uniform bool star_use_texture = false;
-uniform sampler2D star_texture : filter_linear_mipmap, repeat_enable;
+uniform sampler2D star_texture : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform float star_rotation = 0.0;
 uniform float star_glow = 1.0;
 uniform float aurora_strength = 0.0;
@@ -48,8 +48,8 @@ uniform float nebula_strength = 0.18;
 uniform bool volumetric_clouds = false;
 uniform sampler3D cloud_volume_shape : filter_linear, repeat_enable;
 uniform sampler3D cloud_volume_detail : filter_linear, repeat_enable;
-uniform sampler2D cloud_shape : filter_linear_mipmap, repeat_enable;
-uniform sampler2D cloud_detail : filter_linear_mipmap, repeat_enable;
+uniform sampler2D cloud_shape : hint_default_black, filter_linear_mipmap, repeat_enable;
+uniform sampler2D cloud_detail : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform float cloud_coverage = 0.45;
 uniform float cloud_density = 0.70;
 uniform float cloud_softness = 0.35;
@@ -211,7 +211,7 @@ vec3 moon_terms(vec3 dir, vec3 moon, vec3 sun, float day) {
 			vec3 albedo = vec3(1.0);
 			if (moon_use_texture) {
 				vec2 uv = vec2(atan(local.x, z) / TAU + 0.5, acos(clamp(local.y, -1.0, 1.0)) / PI);
-				albedo = texture(moon_texture, uv).rgb * 1.6;
+				albedo = textureLod(moon_texture, uv, 0.0).rgb * 1.6;
 			}
 			float face = (lambert + earthshine) * moon_brightness * 0.9;
 			col = mix(col, moon_colour * albedo * face, inside);
@@ -232,12 +232,12 @@ vec3 nebula_terms(vec3 dir, vec3 moon, vec3 sun, float day) {
 	vec3 up = cross(right, centre);
 	vec2 p = vec2(dot(dir, right), dot(dir, up)) / facing;
 	p = mat2(vec2(0.8, -0.6), vec2(0.6, 0.8)) * p;
-	vec2 warp = vec2(texture(cloud_shape, p * 0.18 + vec2(0.37, 0.11)).r,
-		texture(cloud_shape, p * 0.18 + vec2(0.71, 0.53)).r) - 0.5;
+	vec2 warp = vec2(textureLod(cloud_shape, p * 0.18 + vec2(0.37, 0.11), 0.0).r,
+		textureLod(cloud_shape, p * 0.18 + vec2(0.71, 0.53), 0.0).r) - 0.5;
 	vec2 q = p + warp * 0.65;
-	float shape = texture(cloud_shape, q * vec2(0.30, 0.75) + vec2(0.10, 0.40)).r;
-	float filaments = texture(cloud_shape, q * 1.7 + vec2(0.57, 0.21)).r;
-	float detail = texture(cloud_detail, q * 2.8 + vec2(0.31, 0.71)).r;
+	float shape = textureLod(cloud_shape, q * vec2(0.30, 0.75) + vec2(0.10, 0.40), 0.0).r;
+	float filaments = textureLod(cloud_shape, q * 1.7 + vec2(0.57, 0.21), 0.0).r;
+	float detail = textureLod(cloud_detail, q * 2.8 + vec2(0.31, 0.71), 0.0).r;
 	vec2 spread = q * vec2(0.65, 1.8);
 	float envelope = exp(-dot(spread, spread) * 2.0);
 	float dust = smoothstep(0.25, 0.75, filaments);
@@ -264,7 +264,7 @@ vec3 star_terms(vec3 dir, float day, float cloud_cover) {
 		float s = sin(star_rotation);
 		vec3 d = vec3(dir.x * c - dir.z * s, dir.y, dir.x * s + dir.z * c);
 		vec2 uv = vec2(atan(d.x, -d.z) / TAU + 0.5, acos(clamp(d.y, -1.0, 1.0)) / PI);
-		vec3 stars = texture(star_texture, uv).rgb;
+		vec3 stars = textureLod(star_texture, uv, 0.0).rgb;
 		vec2 texel = 1.0 / vec2(textureSize(star_texture, 0));
 		vec3 halo = vec3(0.0);
 		for (int i = 0; i < 12; i++) {
@@ -316,7 +316,7 @@ vec4 cloud_layers(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 	vec2 sun_flat = sun.xz;
 	float sun_len = length(sun_flat);
 	vec2 to_sun = sun_len > 1e-3 ? sun_flat / sun_len : vec2(0.0);
-	float n_sun = texture(cloud_shape, uv + to_sun * 0.012 * cloud_scale * (1.0 - abs(sun.y))).r;
+	float n_sun = textureLod(cloud_shape, uv + to_sun * 0.012 * cloud_scale * (1.0 - abs(sun.y)), 0.0).r;
 	float lit = clamp((n - n_sun) * 3.0 + 0.55, 0.0, 1.0);
 	lit = mix(lit, 0.5, overcast * 0.7);
 
@@ -348,7 +348,7 @@ vec4 cloud_layers(vec3 origin, vec3 dir, vec3 sun, vec3 moon, float day) {
 	vec3 cirrus_position = origin + dir * ((CLOUD_LAYER_ALTITUDE * 1.8 - origin.y) / dir.y);
     vec2 p2 = cirrus_position.xz / CLOUD_LAYER_ALTITUDE * cloud_height * 0.55 * cloud_scale;
 	vec2 uv2 = p2 * vec2(0.55, 1.7) + drift * 1.8 + vec2(0.31, 0.77);
-	float wisp = texture(cloud_shape, uv2).r;
+	float wisp = textureLod(cloud_shape, uv2, 0.0).r;
 	float cirrus = smoothstep(0.58, 0.86, wisp) * cirrus_amount * 0.45 * horizon_fade;
 	cirrus *= 1.0 - overcast;
 	vec3 cirrus_col = mix(cloud_colour, light_tint, 0.6) * mix(0.12, 1.0, day);

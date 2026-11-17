@@ -173,14 +173,14 @@ public partial class LevelViewer : Node3D
 		if (dataRoot.Length == 0)
 		{
 			GD.PrintErr("[level-viewer] no game data found; set REFII_GAME_DATA.");
-			GetTree().Quit(1);
+			QuitViewer(1);
 			return;
 		}
 
 		if (Engine_GameAssets.Instance is not { } assets)
 		{
 			GD.PrintErr("[level-viewer] Engine_GameAssets autoload is not present.");
-			GetTree().Quit(1);
+			QuitViewer(1);
 			return;
 		}
 
@@ -189,7 +189,7 @@ public partial class LevelViewer : Node3D
 		assets.MountFailed += reason =>
 		{
 			GD.PrintErr($"[level-viewer] could not mount {dataRoot}: {reason}");
-			GetTree().Quit(1);
+			QuitViewer(1);
 		};
 
 		if (assets.IsMounted)
@@ -200,6 +200,17 @@ public partial class LevelViewer : Node3D
 		{
 			assets.Mount(dataRoot);
 		}
+	}
+
+	private void QuitViewer(int exitCode)
+	{
+		Refii.Lighting.Engine_LevelLighting.ReleaseCompositor(_camera, releaseStaticFallbacks: true);
+		GetTree().Quit(exitCode);
+	}
+
+	public override void _ExitTree()
+	{
+		Refii.Lighting.Engine_LevelLighting.ReleaseCompositor(_camera, releaseStaticFallbacks: true);
 	}
 
 	public override void _Process(double delta)
@@ -1286,7 +1297,7 @@ public partial class LevelViewer : Node3D
 		if (assets.BuildLevelNode(string.Empty, LevelName, out string error) is not { } region)
 		{
 			GD.PrintErr($"[level-viewer] could not build {LevelName}: {error}");
-			GetTree().Quit(1);
+			QuitViewer(1);
 			return;
 		}
 		string scenePath = LevelName;
@@ -1762,7 +1773,7 @@ public partial class LevelViewer : Node3D
 		}
 		if (++_tourStop >= _tourSpots.Count)
 		{
-			GetTree().Quit(0);
+			QuitViewer(0);
 			return true;
 		}
 		(_target, _yaw, _distance, _pitch) = _tourSpots[_tourStop];
@@ -1909,7 +1920,7 @@ public partial class LevelViewer : Node3D
 			LabWaterDump(_shotPath);
 		}
 
-		GetTree().Quit(saved == Error.Ok ? 0 : 1);
+		QuitViewer(saved == Error.Ok ? 0 : 1);
 	}
 
 	/// <summary>

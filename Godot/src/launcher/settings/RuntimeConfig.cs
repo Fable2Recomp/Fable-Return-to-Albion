@@ -634,6 +634,7 @@ public static class RuntimeConfig
         "lua_use_mod_overrides",
         "lua_use_native_handlers",
         "mnk_user_index",
+        "omni_shadow_mode",
         "perf_log_csv",
         "renderer_backend",
         "renderer_d3d12_debug_layer",

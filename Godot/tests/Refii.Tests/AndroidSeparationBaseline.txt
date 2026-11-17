@@ -18,7 +18,7 @@
 56	Godot/src/Engine/level/terrain/terrain_splat_body.gdshaderinc
 23	Godot/src/Engine/material/fable_lighting.gdshaderinc
 1	Godot/src/Engine/material/fable_tree_sway.gdshaderinc
-50	Godot/src/Engine/material/standard_material_body.gdshaderinc
+51	Godot/src/Engine/material/standard_material_body.gdshaderinc
 1	Godot/src/Engine/tex/Engine_TexSettings.cs
 1	Godot/src/Engine/tex/Engine_TextureUpload.cs
 1	Godot/src/Engine/ui/Engine_UiTheme.cs

@@ -462,6 +462,37 @@ public static class Engine_FramePhases
 	/// <summary>The last process callback of the frame (highest priority node).</summary>
 	private static long _processEnd;
 	private static long _drawEnd;
+	private static readonly bool TraceAllDraws =
+		string.Equals(System.Environment.GetEnvironmentVariable("REFII_DX12_TRACE"), "1", System.StringComparison.Ordinal);
+	private static int _traceFramesRemaining;
+	private static string _traceStage = string.Empty;
+	private static bool _activeDrawTraced;
+	private static string _activeDrawStage = string.Empty;
+	private static FrameCounters _preDrawCounters;
+
+	/// <summary>Optional game-layer provider supplying D3D12 pre-draw isolation state for transition diagnostics.</summary>
+	public static System.Func<string>? PreDrawDetailProvider;
+
+	/// <summary>
+	/// Arms pre-draw and post-draw isolation logging for the next <paramref name="frames"/> frames
+	/// at key milestones (world mount, first guest camera drive, warmup ready, loading cover release).
+	/// </summary>
+	public static void ArmDrawTrace(string stage, int frames = 1)
+	{
+		if (Engine_AppRoot.IsTestHost || frames <= 0)
+		{
+			return;
+		}
+
+		using (Gate.Hold())
+		{
+			_traceStage = stage;
+			if (frames > _traceFramesRemaining)
+			{
+				_traceFramesRemaining = frames;
+			}
+		}
+	}
 
 	public static void MarkFrameEnd()
 	{
@@ -470,6 +501,42 @@ public static class Engine_FramePhases
 		if (_frameStart != 0)
 		{
 			Record("process_total", (_processEnd - _frameStart) * 1000.0 / Stopwatch.Frequency);
+		}
+
+		bool shouldTrace;
+		string stage;
+		using (Gate.Hold())
+		{
+			shouldTrace = !Engine_AppRoot.IsTestHost && (_traceFramesRemaining > 0 || TraceAllDraws);
+			if (_traceFramesRemaining > 0)
+			{
+				_traceFramesRemaining--;
+			}
+			stage = string.IsNullOrEmpty(_traceStage) ? "frame" : _traceStage;
+			_activeDrawTraced = shouldTrace;
+			_activeDrawStage = stage;
+		}
+
+		if (shouldTrace)
+		{
+			FrameCounters pre = FrameCounters.Sample();
+			using (Gate.Hold())
+			{
+				_preDrawCounters = pre;
+			}
+			string detail = string.Empty;
+			try
+			{
+				detail = PreDrawDetailProvider?.Invoke() ?? string.Empty;
+			}
+			catch
+			{
+				// Never let diagnostics disturb frame submission.
+			}
+
+			GD.Print($"[dx12-trace] pre-draw frame={_frameIndex} stage={stage} obj={pre.ObjectsDrawn:0} prims={pre.Primitives / 1e6:0.00}M " +
+				$"vram={pre.VideoMemMB:0}MB(tex={pre.TextureMemMB:0},buf={pre.BufferMemMB:0}) " +
+				$"pendingUploads={Engine_ServerSyncs.PendingUploadCount} uploadKB={Engine_ServerSyncs.FrameUploadBytes / 1024L} {detail}");
 		}
 
 		FrameAlive?.Invoke(_frameIndex);
@@ -515,13 +582,35 @@ public static class Engine_FramePhases
 	public static void MarkDrawEnd()
 	{
 		_drawEnd = Stopwatch.GetTimestamp();
+		double drawMs = 0.0;
 		if (_processEnd != 0)
 		{
-			Record("draw", (_drawEnd - _processEnd) * 1000.0 / Stopwatch.Frequency);
+			drawMs = (_drawEnd - _processEnd) * 1000.0 / Stopwatch.Frequency;
+			Record("draw", drawMs);
 			if (_deferredEnd >= _processEnd && _preDraw >= _deferredEnd)
 			{
 				Record("draw.post", (_drawEnd - _preDraw) * 1000.0 / Stopwatch.Frequency);
 			}
+		}
+
+		bool wasTraced;
+		string stage;
+		FrameCounters pre;
+		using (Gate.Hold())
+		{
+			wasTraced = _activeDrawTraced;
+			stage = _activeDrawStage;
+			pre = _preDrawCounters;
+			_activeDrawTraced = false;
+		}
+
+		if (!Engine_AppRoot.IsTestHost && (wasTraced || drawMs >= 1000.0))
+		{
+			FrameCounters after = FrameCounters.Sample();
+			GD.Print($"[dx12-trace] post-draw frame={_frameIndex} stage={stage} draw={drawMs:0.0}ms obj={after.ObjectsDrawn:0} prims={after.Primitives / 1e6:0.00}M " +
+				$"vram={after.VideoMemMB:0}MB({after.VideoMemMB - pre.VideoMemMB:+0;-0},tex={after.TextureMemMB - pre.TextureMemMB:+0;-0},buf={after.BufferMemMB - pre.BufferMemMB:+0;-0}) " +
+				$"pipelines=+{after.PipelinesSurface - pre.PipelinesSurface:0}s/+{after.PipelinesSpecialization - pre.PipelinesSpecialization:0}sp/+{after.PipelinesDraw - pre.PipelinesDraw:0}d " +
+				$"deviceLost={Engine_RdHealth.IsDeviceLost}");
 		}
 	}
 
@@ -736,7 +825,7 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 		{
 			Refii.Physics.Engine_ClothBody.LandAll();
 		}
-		using (Engine_FramePhases.Measure("gpu_upload_pump"))
+		using (Engine_FramePhases.Measure("gpu_upload_pump_end"))
 		{
 			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 8.0 : 6.0);
 		}

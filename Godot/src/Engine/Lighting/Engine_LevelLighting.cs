@@ -92,6 +92,9 @@ public static class Engine_LevelLighting
 	/// <summary>A live lever: null follows the day set, true/false forces the sun's shadow.</summary>
 	public static bool? SunShadowOverride;
 
+	/// <summary>A live lever: null follows <c>baked_ao_enabled</c>, true/false forces screen-space AO.</summary>
+	public static bool? SsaoOverride;
+
 	/// <summary>Live lever: 1 (one orthogonal map), 2 or 4 cascades regardless of the sun's energy; null follows it.</summary>
 	public static int? SunSplitsOverride;
 
@@ -478,6 +481,56 @@ public static class Engine_LevelLighting
 	}
 
 	/// <summary>
+	/// Detaches <paramref name="camera"/>'s compositor and deterministically frees its RD resources
+	/// while the render thread is still active, avoiding shutdown RID leaks from late Resource finalization.
+	/// </summary>
+	public static void ReleaseCompositor(Camera3D? camera, bool releaseStaticFallbacks = false)
+	{
+		if (camera is null || !GodotObject.IsInstanceValid(camera))
+		{
+			return;
+		}
+
+		Compositor? compositor = camera.Compositor;
+		camera.Compositor = null;
+		if (compositor is null || !GodotObject.IsInstanceValid(compositor))
+		{
+			return;
+		}
+
+		if (compositor.CompositorEffects is { Count: > 0 } effects)
+		{
+			for (int i = 0; i < effects.Count; i++)
+			{
+				switch (effects[i])
+				{
+					case Engine_PostFxEffect postFx:
+						postFx.ReleaseNow(releaseStaticFallbacks);
+						break;
+					case Refii.Fx.Engine_FxDepthCaptureEffect depthCapture:
+						depthCapture.ReleaseNow(releaseStaticFallbacks);
+						break;
+					case Refii.Models.Engine_ClassicScreenShadow classicShadow:
+						classicShadow.ReleaseNow(releaseStaticFallbacks);
+						break;
+				}
+			}
+
+			effects.Clear();
+		}
+
+		if (!Refii.Core.Engine_RdHealth.IsTestHost && RenderingServer.GetRenderingDevice() is not null)
+		{
+			Refii.Core.Engine_RdRetire.OnRenderThread(() =>
+				Refii.Core.Engine_RdRetire.FlushAll(RenderingServer.GetRenderingDevice()));
+			if (!RenderingServer.IsOnRenderThread())
+			{
+				RenderingServer.ForceSync();
+			}
+		}
+	}
+
+	/// <summary>
 	/// Godot's dynamic GI, on for the modern model. Static geometry is voxelised as it streams in —
 	/// every mesh and MultiMesh at the default static GI mode (renderer_scene_cull.cpp takes any
 	/// geometry flagged USES_BAKED_LIGHT) — and guest-driven entities receive it as dynamic objects.
@@ -593,10 +646,10 @@ public static class Engine_LevelLighting
 
 	private static void ConfigureScreenSpaceAo(Godot.Environment environment, bool unified)
 	{
-		bool enableSsao = unified &&
+		bool enableSsao = SsaoOverride ?? (unified &&
 			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
 			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f &&
-			!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake;
+			!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake);
 		if (environment.SsaoEnabled != enableSsao) environment.SsaoEnabled = enableSsao;
 		if (!enableSsao)
 		{

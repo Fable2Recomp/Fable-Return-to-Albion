@@ -9,8 +9,8 @@ render_mode unshaded, blend_premul_alpha, depth_test_disabled, depth_draw_never,
 	shadows_disabled, ambient_light_disabled, specular_disabled;
 
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
-uniform sampler2D layer_tex : filter_nearest;
-uniform sampler2D glow_tex : filter_linear;
+uniform sampler2D layer_tex : hint_default_black, filter_nearest;
+uniform sampler2D glow_tex : hint_default_black, filter_linear;
 
 /// Objects with a rect on screen this frame.
 uniform int count = 0;
@@ -28,6 +28,8 @@ void vertex() {
 }
 
 void fragment() {
+	// Zero-discard `depth_draw_never` blend path: guard depth unproject and glow math inside
+	// `if (!should_discard)` using `textureLod` and output `ALPHA = 0.0` otherwise.
 	vec2 uv = SCREEN_UV;
 	bool covered = false;
 	for (int k = 0; k < count; ++k) {
@@ -35,29 +37,30 @@ void fragment() {
 		covered = covered || (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w);
 	}
 
-	if (!covered || texture(layer_tex, uv).g > 0.5) {
-		discard;
-	}
+	bool should_discard = !covered || textureLod(layer_tex, uv, 0.0).g > 0.5;
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
 
-	float z = texture(depth_tex, uv).r;
-	vec4 view = INV_PROJECTION_MATRIX * vec4(uv * 2.0 - 1.0, z, 1.0);
-	float scene = -view.z / view.w;
-	int n = 0;
-	for (int k = 0; k < count; ++k) {
-		vec4 r = rects[k];
-		if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w && tests[k] <= scene) {
-			++n;
+	if (!should_discard) {
+		float z = textureLod(depth_tex, uv, 0.0).r;
+		vec4 view = INV_PROJECTION_MATRIX * vec4(uv * 2.0 - 1.0, z, 1.0);
+		float safe_w = abs(view.w) > 1e-6 ? view.w : 1e-6;
+		float scene = -view.z / safe_w;
+		int n = 0;
+		for (int k = 0; k < count; ++k) {
+			vec4 r = rects[k];
+			if (uv.x >= r.x && uv.x <= r.z && uv.y >= r.y && uv.y <= r.w && tests[k] <= scene) {
+				++n;
+			}
+		}
+
+		if (n > 0) {
+			// n blends of the same glow: rgb * (1 + (1 - a) + ...) over the scene * (1 - a)^n.
+			vec4 glow = clamp(textureLod(glow_tex, uv, 0.0), vec4(0.0), vec4(1.0));
+			float keep = pow(1.0 - glow.a, float(n));
+			float sum = glow.a > 1e-4 ? (1.0 - keep) / glow.a : float(n);
+			ALBEDO = glow.rgb * sum;
+			ALPHA = 1.0 - keep;
 		}
 	}
-
-	if (n == 0) {
-		discard;
-	}
-
-	// n blends of the same glow: rgb * (1 + (1 - a) + ...) over the scene * (1 - a)^n.
-	vec4 glow = clamp(texture(glow_tex, uv), vec4(0.0), vec4(1.0));
-	float keep = pow(1.0 - glow.a, float(n));
-	float sum = glow.a > 1e-4 ? (1.0 - keep) / glow.a : float(n);
-	ALBEDO = glow.rgb * sum;
-	ALPHA = 1.0 - keep;
 }

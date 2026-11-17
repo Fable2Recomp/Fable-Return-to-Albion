@@ -4,6 +4,9 @@ shader_type spatial;
 // SPECULAR_LIGHT. 57.5% of the shipped material records (5,347 of 9,293, surveyed across all
 // 5,446 models) name a specular texture, so this was over half the asset set losing a term.
 render_mode blend_mix, depth_draw_opaque, cull_disabled;
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+render_mode depth_prepass_alpha;
+#endif
 
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
@@ -20,7 +23,7 @@ global uniform int fable_light_debug;
 
 uniform sampler2D albedo_tex : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic;
-uniform sampler2D emission_tex : filter_linear_mipmap_anisotropic;
+uniform sampler2D emission_tex : hint_default_black, filter_linear_mipmap_anisotropic;
 
 // BLACK, not white. An unbound specular map has to contribute nothing — the guest's own fallback
 // for this slot is a 16x16 transparent black texture (`sub_82A7AD50`), which is also how its
@@ -75,10 +78,31 @@ void vertex() {
 }
 
 void fragment() {
-    vec4 alb = texture(albedo_tex, UV);
-    if (alpha_scissor_on && alb.a < alpha_scissor_threshold) {
-        discard;
+    // D3D12 / Intel Arc DXIL safety: NEVER wrap `dFdx`/`dFdy` in `IN_SHADOW_PASS` (runtime UBO bit)
+    // and NEVER emit `discard;` in Forward+ PASS_MODE_COLOR (`depth_prepass_alpha` tests alpha in
+    // MODE_RENDER_DEPTH, while PASS_MODE_COLOR outputs `ALPHA = 0.0`).
+    vec2 base_uv_dx = dFdx(UV);
+    vec2 base_uv_dy = dFdy(UV);
+    vec3 geom_cross = cross(dFdx(VERTEX), dFdy(VERTEX));
+
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+    float fable_instance_fade = ALPHA;
+    ALPHA = 0.0;
+#endif
+    ALBEDO = vec3(0.5);
+    EMISSION = vec3(0.0);
+    NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+    SPECULAR = 0.0;
+    v_specular = vec3(0.0);
+    v_specular_power = 1.0;
+
+    vec4 alb = textureGrad(albedo_tex, UV, base_uv_dx, base_uv_dy);
+    bool should_discard = (alpha_scissor_on && alb.a < alpha_scissor_threshold);
+    if (should_discard) {
+        ALBEDO = vec3(0.0);
     }
+
+    if (!should_discard) {
 
     // Gamma 2.0 by squaring, exactly as the guest's pixel shader does it. Alpha stays raw —
     // it was tested above as the artist authored it.
@@ -100,7 +124,7 @@ void fragment() {
     // Godot's indirect specular is off, as in standard_material: the direct lobe is `light()`'s.
     SPECULAR = 0.0;
 
-    float side = fable_normal_side(NORMAL, VERTEX, VIEW);
+    float side = fable_normal_side_precomputed(NORMAL, geom_cross, VIEW);
     NORMAL *= side;
     BINORMAL *= side;
 
@@ -129,7 +153,7 @@ void fragment() {
     float ndotn = 1.0;
     vec3 mapped_view = NORMAL;
     if (has_normal) {
-        vec3 nm = texture(normal_tex, UV).rgb;
+        vec3 nm = textureGrad(normal_tex, UV, base_uv_dx, base_uv_dy).rgb;
         NORMAL_MAP = nm;
         vec2 nxy = (nm.xy * 2.0) - 1.0;
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
@@ -139,7 +163,7 @@ void fragment() {
     // SQUARED LIKE THE ALBEDO, and by the same line — the guest reads the specular map raw and
     // then `r8.x = r8.x * r8.x` component by component, exactly as it does for the diffuse. The
     // ALPHA is left alone here too, because it is the exponent selector rather than a colour.
-    vec4 spec = has_specular ? texture(specular_tex, UV) : vec4(0.0);
+    vec4 spec = has_specular ? textureGrad(specular_tex, UV, base_uv_dx, base_uv_dy) : vec4(0.0);
     v_specular = spec.rgb * spec.rgb;
     v_specular_power = mix(spec_power_min, spec_power_max, spec.a);
 
@@ -173,7 +197,7 @@ void fragment() {
         // material's own self-illumination scale — block offset 29, stored to material+72 by
         // `82b24954 stfs f0, 0x48(r30)`. Adding the texture unscaled made every self-illuminated
         // surface glow at whatever full strength its map happened to be authored at.
-        vec3 selfIllum = texture(emission_tex, UV).rgb;
+        vec3 selfIllum = textureGrad(emission_tex, UV, base_uv_dx, base_uv_dy).rgb;
         EMISSION += selfIllum * selfIllum * self_illum_scale;
     }
 
@@ -214,6 +238,16 @@ void fragment() {
 		EMISSION = tag;
 		ALBEDO = vec3(0.0);
 	}
+	}
+
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+	ALPHA = should_discard ? 0.0 : fable_instance_fade;
+#else
+	// Single tail discard for non-Forward+ renderers: ZERO ALU, branches, or texture taps may follow.
+	if (should_discard) {
+		discard;
+	}
+#endif
 }
 
 void light() {
@@ -222,7 +256,11 @@ void light() {
     // scalar because the guest multiplies both by the same `local * visibility` product.
     // Facing away, or out of reach, both terms are exactly zero: the light is skipped there.
     // `if`, not an early `return` (Godot refuses one in a processor function).
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+    if (ALPHA > 0.0 && dot(NORMAL, LIGHT) > 0.0) {
+#else
     if (dot(NORMAL, LIGHT) > 0.0) {
+#endif
         float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
         if (atten > 0.0) {
             // No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.

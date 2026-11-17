@@ -61,23 +61,45 @@ public static class Engine_RdRetire
         Pending.RemoveRange(kept, Pending.Count - kept);
     }
 
+    /// <summary>Frees every retired RID immediately during explicit teardown while the render thread is alive.</summary>
+    public static void FlushAll(RenderingDevice? rd)
+    {
+        if (rd is null || Pending.Count == 0)
+        {
+            Pending.Clear();
+            return;
+        }
+
+        for (int i = 0; i < Pending.Count; i++)
+        {
+            Rid rid = Pending[i].Rid;
+            if (rid.IsValid && rd.TextureIsValid(rid))
+            {
+                rd.FreeRid(rid);
+            }
+        }
+
+        Pending.Clear();
+    }
+
+    internal static int PendingCount => Pending.Count;
+
     /// <summary>
     /// Runs <paramref name="release"/> where the device's frees are legal: at once on the render
     /// thread, otherwise queued behind everything already sent to it.
     /// </summary>
     /// <remarks>
-    /// `RenderingDevice.free_rid` refuses every thread but the render thread
-    /// (`ERR_RENDER_THREAD_GUARD`). A CompositorEffect's predelete runs on whichever thread drops
-    /// its last reference, normally the main thread: with `thread_model = 2` its frees did
-    /// nothing but print an error, and the objects leaked (so did a predelete from the
-    /// finalizer thread under Safe). Queued, the release also runs after an `Initialise` still
-    /// waiting on the queue, so it frees what that made.
+    /// RD Lifecycle / Shutdown warning: `RenderingDevice.free_rid` refuses every thread but the render thread
+    /// (`ERR_RENDER_THREAD_GUARD`). A CompositorEffect is a Resource (not a Node, so no `_ExitTree()`);
+    /// waiting for `NotificationPredelete` at `SceneTree.Quit()` is often too late because the render thread
+    /// may already have stopped draining `CallOnRenderThread`, leaking Compute/Shader/Texture/Framebuffer RIDs
+    /// (and inflaming D3D12 VRAM). Always call `Engine_LevelLighting.ReleaseCompositor(...)` explicitly BEFORE
+    /// `GetTree().Quit()` / inside node `_ExitTree()`, and only use `NotificationPredelete` as a last-resort fallback.
     ///
     /// THE CALLABLE WRAPS A CLOSURE, NOT THE EFFECT'S METHOD: a Callable whose target is the
     /// GodotObject being deleted is dropped as a call on a freed instance. The release must touch
     /// only managed fields, never the dying object's Godot API, and must ask for the device
-    /// again (null once it is torn down). Nothing waits for it: a predelete at shutdown can come
-    /// after the render thread has exited, and a sync would never return.
+    /// again (null once it is torn down).
     /// </remarks>
     public static void OnRenderThread(System.Action release)
     {

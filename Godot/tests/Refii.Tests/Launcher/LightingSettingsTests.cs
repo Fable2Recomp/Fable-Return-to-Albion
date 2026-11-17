@@ -736,4 +736,21 @@ public class LightingSettingsTests
         AssertThat(rows[0].Length()).IsEqualApprox(1.0f, 1e-4f);
     }
 
+    [TestCase]
+    public void TestPlacedShadowLimitCvarAndBudgetClamping()
+    {
+        AssertThat(RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "omni_shadow_mode")).IsNull();
+
+        RuntimeCVarDefinition? limitDef = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "placed_shadow_limit");
+        AssertThat(limitDef).IsNotNull();
+        AssertThat(limitDef!.Type).IsEqual(RuntimeCVarType.Int);
+        AssertThat(limitDef.Category).IsEqual(RuntimeCVarsGodot.LightingCategory);
+        AssertThat(limitDef.DefaultValue).IsEqual("2");
+
+        AssertThat(Engine_LightShadowBudget.ParseShadowLimit(new Dictionary<string, string>())).IsEqual(2);
+        AssertThat(Engine_LightShadowBudget.ParseShadowLimit(new Dictionary<string, string> { ["placed_shadow_limit"] = "0" })).IsEqual(1);
+        AssertThat(Engine_LightShadowBudget.ParseShadowLimit(new Dictionary<string, string> { ["placed_shadow_limit"] = "4" })).IsEqual(4);
+        AssertThat(Engine_LightShadowBudget.ParseShadowLimit(new Dictionary<string, string> { ["placed_shadow_limit"] = "99" })).IsEqual(16);
+    }
+
 }

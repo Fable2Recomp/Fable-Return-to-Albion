@@ -39,9 +39,6 @@ public partial class VideoViewer : Node
 	private ImageTexture? _luma;
 	private ImageTexture? _chromaU;
 	private ImageTexture? _chromaV;
-	private Image? _lumaImage;
-	private Image? _chromaUImage;
-	private Image? _chromaVImage;
 	private byte[] _y = Array.Empty<byte>();
 	private byte[] _u = Array.Empty<byte>();
 	private byte[] _v = Array.Empty<byte>();
@@ -185,16 +182,11 @@ public partial class VideoViewer : Node
 			return;
 		}
 
-		_lumaImage!.SetData(_video.Width, _video.Height, false, Image.Format.R8, _y);
-		_chromaUImage!.SetData(cw, chh, false, Image.Format.R8, _u);
-		_chromaVImage!.SetData(cw, chh, false, Image.Format.R8, _v);
-
-		if (_luma is not null && _chromaU is not null && _chromaV is not null &&
-			!_lumaImage.IsEmpty() && !_chromaUImage.IsEmpty() && !_chromaVImage.IsEmpty())
+		if (_luma is not null && _chromaU is not null && _chromaV is not null)
 		{
-			_luma.Update(_lumaImage);
-			_chromaU.Update(_chromaUImage);
-			_chromaV.Update(_chromaVImage);
+			Refii.Textures.Engine_TextureUpload.UpdateFromData(_luma, _video.Width, _video.Height, false, Image.Format.R8, _y);
+			Refii.Textures.Engine_TextureUpload.UpdateFromData(_chromaU, cw, chh, false, Image.Format.R8, _u);
+			Refii.Textures.Engine_TextureUpload.UpdateFromData(_chromaV, cw, chh, false, Image.Format.R8, _v);
 		}
 
 		if (++_frame == 30 && _shot.Length != 0)
@@ -227,12 +219,12 @@ public partial class VideoViewer : Node
 		_u = new byte[cw * ch];
 		_v = new byte[cw * ch];
 
-		_lumaImage = Image.CreateEmpty(decoder.Width, decoder.Height, false, Image.Format.R8);
-		_chromaUImage = Image.CreateEmpty(cw, ch, false, Image.Format.R8);
-		_chromaVImage = Image.CreateEmpty(cw, ch, false, Image.Format.R8);
-		_luma = ImageTexture.CreateFromImage(_lumaImage);
-		_chromaU = ImageTexture.CreateFromImage(_chromaUImage);
-		_chromaV = ImageTexture.CreateFromImage(_chromaVImage);
+		var lumaImage = Image.CreateEmpty(decoder.Width, decoder.Height, false, Image.Format.R8);
+		var chromaUImage = Image.CreateEmpty(cw, ch, false, Image.Format.R8);
+		var chromaVImage = Image.CreateEmpty(cw, ch, false, Image.Format.R8);
+		_luma = Refii.Textures.Engine_TextureUpload.CreateTexture(lumaImage);
+		_chromaU = Refii.Textures.Engine_TextureUpload.CreateTexture(chromaUImage);
+		_chromaV = Refii.Textures.Engine_TextureUpload.CreateTexture(chromaVImage);
 
 		_view.Texture = _luma;
 		_material.SetShaderParameter("luma", _luma);

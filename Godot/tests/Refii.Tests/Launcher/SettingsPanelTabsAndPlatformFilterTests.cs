@@ -125,9 +125,21 @@ public sealed class SettingsPanelTabsAndPlatformFilterTests
 		AssertThat(model.GetWindowMode()).IsEqual("windowed");
 
 		// Search finds essential, advanced, lighting-modal, and keybinding entries across tabs
-		var shadowHits = model.SearchAll("paraboloid", includeDeveloper: false)
+		var shadowHits = model.SearchAll("shadowing", includeDeveloper: false)
 			.SelectMany(g => g.Rows).Select(d => d.Name).ToHashSet();
-		AssertThat(shadowHits).Contains("omni_shadow_mode");
+		AssertThat(shadowHits).Contains("placed_shadow_limit");
+		AssertThat(shadowHits).NotContains("omni_shadow_mode");
+
+		// placed_shadow_limit is contextually hidden in the Graphics tab when placed_light_shadows is off
+		model.Values["placed_light_shadows"] = "true";
+		var withShadowsNames = model.BuildTabSections(SettingsTab.Graphics).Essential
+			.SelectMany(s => s.Rows).Select(d => d.Name).ToHashSet();
+		AssertThat(withShadowsNames).Contains("placed_shadow_limit");
+
+		model.Values["placed_light_shadows"] = "false";
+		var withoutShadowsNames = model.BuildTabSections(SettingsTab.Graphics).Essential
+			.SelectMany(s => s.Rows).Select(d => d.Name).ToHashSet();
+		AssertThat(withoutShadowsNames).NotContains("placed_shadow_limit");
 
 		var sprintHits = model.SearchAll("sprint", includeDeveloper: false)
 			.SelectMany(g => g.Rows).Select(d => d.Name).ToHashSet();

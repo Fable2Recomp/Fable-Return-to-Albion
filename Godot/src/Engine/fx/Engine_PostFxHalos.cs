@@ -456,35 +456,22 @@ public partial class Engine_PostFxHalos : Node
 			return;
 		}
 
-		// The PREVIOUS array must outlive any in-flight frame that still binds its RD texture,
-		// and rebuilds are rare (one per distinct sprite, once) — retaining them all is cheaper
-		// than a handshake with the render thread.
+		// Resolve the RD backing texture on the render thread so `--render-thread separate`
+		// never stalls the main thread with a synchronous `push_and_ret` round-trip.
 		_retained.Add(array);
 		Rid texRid = array.GetRid();
-		Rid rd = RenderingServer.TextureGetRdTexture(texRid);
-		if (rd.IsValid)
+		RenderingServer.CallOnRenderThread(Callable.From(() =>
 		{
-			_arrayRd = rd;
-			using (Gate.Hold())
+			Rid resolved = RenderingServer.TextureGetRdTexture(texRid);
+			if (resolved.IsValid)
 			{
-				_publishedArray = rd;
-			}
-		}
-		else
-		{
-			RenderingServer.CallOnRenderThread(Callable.From(() =>
-			{
-				Rid resolved = RenderingServer.TextureGetRdTexture(texRid);
-				if (resolved.IsValid)
+				_arrayRd = resolved;
+				using (Gate.Hold())
 				{
-					_arrayRd = resolved;
-					using (Gate.Hold())
-					{
-						_publishedArray = resolved;
-					}
+					_publishedArray = resolved;
 				}
-			}));
-		}
+			}
+		}));
 	}
 
 	private string? ResolvePath(uint hash)

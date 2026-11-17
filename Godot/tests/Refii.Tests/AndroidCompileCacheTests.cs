@@ -42,7 +42,7 @@ public sealed class AndroidCompileCacheTests
     public async Task HardModsAndTheHooksTheyRenameCompileEveryTime()
     {
         using var build = new Build();
-        string hook = Path.Combine(build.Request.BundleDirectory, "src/hooks/fixture.cpp");
+        string hook = Path.Combine(build.Request.BundleDirectory, "src", "hooks", "fixture.cpp");
         build.Mods = (generated, _, _) =>
         {
             string mod = Path.Combine(generated, "mods", "souls", "native", "gate.cpp");

@@ -33,7 +33,6 @@ public static class Engine_RoofCut
     private static readonly byte[] _bytes = new byte[MaxSlots * 3 * 16];
     private static readonly System.Collections.Generic.List<Engine_ClassicRoofs.Roof> _first = new(Slots);
     private static Vector3 _lastSecondGodot = new(float.NaN, float.NaN, float.NaN);
-    private static Image? _image;
     private static ImageTexture? _texture;
     private static int _count = -1;
     private static Vector3 _lastEyeGodot = new(float.NaN, float.NaN, float.NaN);
@@ -77,16 +76,16 @@ public static class Engine_RoofCut
         }
         System.Array.Copy(_texels, _held, _texels.Length);
         System.Buffer.BlockCopy(_texels, 0, _bytes, 0, _bytes.Length);
-        if (_image is null)
+        if (_texture is null)
         {
-            _image = Image.CreateFromData(MaxSlots * 3, 1, false, Image.Format.Rgbaf, _bytes);
-            _texture = ImageTexture.CreateFromImage(_image);
+            var image = Image.CreateFromData(MaxSlots * 3, 1, false, Image.Format.Rgbaf, _bytes);
+            _texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
             RenderingServer.GlobalShaderParameterSet(RoofsName, _texture);
         }
         else
         {
-            _image.SetData(MaxSlots * 3, 1, false, Image.Format.Rgbaf, _bytes);
-            _texture!.Update(_image);
+            Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                _texture, MaxSlots * 3, 1, false, Image.Format.Rgbaf, _bytes);
         }
         if (count != _count)
         {

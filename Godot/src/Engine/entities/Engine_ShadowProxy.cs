@@ -125,11 +125,78 @@ public static class Engine_ShadowProxy
 	private static readonly ConditionalWeakTable<Mesh, Dictionary<(UInt128 Hidden, bool Always), ArrayMesh?>> Cache = new();
 
 	private const string CasterShaderPath = "res://src/Engine/entities/shadow_caster.gdshader";
+	private const string SolidCasterShaderPath = "res://src/Engine/entities/shadow_caster_solid.gdshader";
+	private const string CutoutCasterShaderPath = "res://src/Engine/entities/shadow_caster_cutout.gdshader";
 
 	private static readonly Lazy<ShaderMaterial> CasterMaterial = new(() => new ShaderMaterial
 	{
 		Shader = GD.Load<Shader>(CasterShaderPath),
 	});
+
+	private static readonly Lazy<ShaderMaterial> SolidCasterMaterial = new(() => new ShaderMaterial
+	{
+		Shader = GD.Load<Shader>(SolidCasterShaderPath),
+	});
+
+	private static readonly Lazy<Shader> CutoutCasterShader = new(() => GD.Load<Shader>(CutoutCasterShaderPath));
+
+	private static readonly ConditionalWeakTable<ShaderMaterial, ShaderMaterial> CutoutCasters = new();
+
+	private static readonly StringName AlbedoTexParam = "albedo_tex";
+	private static readonly StringName AlphaScissorThresholdParam = "alpha_scissor_threshold";
+
+	/// <summary>
+	/// Whether a proxy uses the zero-discard depth-only solid caster instead of the
+	/// dither-faded prop caster (true for characters, weapons, and indoor entity batches).
+	/// </summary>
+	public static bool UsesSolidProxyCaster(bool skinned, bool always) => skinned || always;
+
+	/// <summary>
+	/// Whether a kept alpha-scissor surface on a proxy can use the 1-tap derivative-free
+	/// <c>shadow_caster_cutout.gdshader</c> (non-swaying standard materials on characters/entities).
+	/// </summary>
+	public static bool CanUseDedicatedCutoutCaster(bool skinned, bool always, string? shaderResourcePath)
+	{
+		if ((!skinned && !always) || string.IsNullOrEmpty(shaderResourcePath))
+		{
+			return false;
+		}
+
+		return shaderResourcePath.EndsWith("/standard_material.gdshader", StringComparison.Ordinal) ||
+			shaderResourcePath.EndsWith("/standard_material_culled.gdshader", StringComparison.Ordinal) ||
+			shaderResourcePath.EndsWith("/standard_material_phong.gdshader", StringComparison.Ordinal);
+	}
+
+	private static ShaderMaterial GetOrCreateCutoutCaster(ShaderMaterial source)
+	{
+		lock (CutoutCasters)
+		{
+			if (CutoutCasters.TryGetValue(source, out ShaderMaterial? cached))
+			{
+				return cached;
+			}
+
+			var mat = new ShaderMaterial
+			{
+				Shader = CutoutCasterShader.Value,
+			};
+
+			Variant albedo = source.GetShaderParameter(AlbedoTexParam);
+			if (albedo.VariantType == Variant.Type.Object && albedo.AsGodotObject() is Texture2D tex)
+			{
+				mat.SetShaderParameter(AlbedoTexParam, tex);
+			}
+
+			Variant threshold = source.GetShaderParameter(AlphaScissorThresholdParam);
+			if (threshold.VariantType is Variant.Type.Float or Variant.Type.Int)
+			{
+				mat.SetShaderParameter(AlphaScissorThresholdParam, threshold.AsSingle());
+			}
+
+			CutoutCasters.AddOrUpdate(source, mat);
+			return mat;
+		}
+	}
 
 	/// <summary>
 	/// Eagerly initializes the caster material on the main thread to prevent worker thread GD.Load deadlocks.
@@ -137,6 +204,8 @@ public static class Engine_ShadowProxy
 	public static void WarmShader()
 	{
 		_ = CasterMaterial.Value;
+		_ = SolidCasterMaterial.Value;
+		_ = CutoutCasterShader.Value;
 	}
 
 	/// <summary>
@@ -675,7 +744,7 @@ public static class Engine_ShadowProxy
 
 			one[(int)Mesh.ArrayType.Index] = indices.ToArray();
 			mergedLods = MergedLods(levels);
-			casterMat = Caster;
+			casterMat = UsesSolidProxyCaster(skinned, always) ? SolidCasterMaterial.Value : Caster;
 			estBytes = System.Math.Max(4096L, positions.Count * 24L + indices.Count * 4L);
 		}
 
@@ -684,20 +753,61 @@ public static class Engine_ShadowProxy
 			estBytes += Refii.Core.Engine_ArrayMeshes.EstimateSurfaceBytes(kept[i].Arrays);
 		}
 
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			Refii.Core.Engine_RdHealth.NoteSuppressed();
+			return null;
+		}
+
+		bool aborted = false;
 		Refii.Core.Engine_ServerSyncs.RunGpuUpload(estBytes, () =>
 		{
+			if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+			{
+				Refii.Core.Engine_RdHealth.NoteSuppressed();
+				aborted = true;
+				return;
+			}
+
 			if (one is not null && casterMat is not null)
 			{
+				int countBefore = result.GetSurfaceCount();
 				Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(result, Mesh.PrimitiveType.Triangles, one, null, mergedLods);
-				result.SurfaceSetMaterial(0, casterMat);
+				if (result.GetSurfaceCount() <= countBefore)
+				{
+					aborted = true;
+					return;
+				}
+				result.SurfaceSetMaterial(countBefore, casterMat);
 			}
 
 			foreach ((Godot.Collections.Array arrays, Material material, Godot.Collections.Dictionary? lods) in kept)
 			{
+				if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+				{
+					aborted = true;
+					return;
+				}
+				int countBefore = result.GetSurfaceCount();
 				Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(result, Mesh.PrimitiveType.Triangles, arrays, null, lods);
-				result.SurfaceSetMaterial(result.GetSurfaceCount() - 1, material);
+				int countAfter = result.GetSurfaceCount();
+				if (countAfter <= countBefore)
+				{
+					aborted = true;
+					return;
+				}
+				Material surfaceMaterial = material is ShaderMaterial shadedMat &&
+					CanUseDedicatedCutoutCaster(skinned, always, shadedMat.Shader?.ResourcePath)
+					? GetOrCreateCutoutCaster(shadedMat)
+					: material;
+				result.SurfaceSetMaterial(countAfter - 1, surfaceMaterial);
 			}
 		});
+
+		if (aborted || Refii.Core.Engine_RdHealth.IsDeviceLost || result.GetSurfaceCount() == 0)
+		{
+			return null;
+		}
 
 		Built++;
 		SurfacesMerged += merged;

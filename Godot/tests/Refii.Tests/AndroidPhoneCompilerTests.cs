@@ -147,7 +147,7 @@ public sealed class AndroidPhoneCompilerTests
     public async Task HardModsCompileWithTheirOwnArguments()
     {
         using var fixture = new Fixture();
-        string hook = Path.Combine(fixture.Request.BundleDirectory, "src/hooks/fixture.cpp");
+        string hook = Path.Combine(fixture.Request.BundleDirectory, "src", "hooks", "fixture.cpp");
         var request = fixture.Request with
         {
             Mods = (generated, config, hooks) =>

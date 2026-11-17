@@ -291,6 +291,7 @@ public partial class GameSplitView : CanvasLayer
 		_frame = null;
 		for (int player = 0; player < 2; ++player)
 		{
+			Refii.Lighting.Engine_LevelLighting.ReleaseCompositor(_cameras[player], releaseStaticFallbacks: false);
 			_views[player] = null;
 			_cameras[player] = null;
 		}

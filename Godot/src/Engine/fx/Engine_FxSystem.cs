@@ -3126,7 +3126,10 @@ public sealed partial class Engine_FxSystem
         vOffsets.Dispose();
         vMotion.Dispose();
         Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, Mesh.PrimitiveType.Triangles, arrays, null, null, SurfaceCustomFormat);
-        mesh.SurfaceSetMaterial(mesh.GetSurfaceCount() - 1, material);
+        if (mesh.GetSurfaceCount() > 0)
+        {
+            mesh.SurfaceSetMaterial(mesh.GetSurfaceCount() - 1, material);
+        }
         Refii.Core.Engine_SpikeNotes.Since(Refii.Core.Engine_SpikeNotes.Kind.FxSurfaceBuild, builtFrom);
     }
 

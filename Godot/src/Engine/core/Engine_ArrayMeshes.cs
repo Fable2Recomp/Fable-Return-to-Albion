@@ -24,6 +24,20 @@ public static class Engine_ArrayMeshes
 	/// <summary>Shared empty defaults: Godot only reads them, and their refcount is atomic.</summary>
 	private static readonly Godot.Collections.Array<Godot.Collections.Array> NoBlendShapes = new();
 	private static readonly Godot.Collections.Dictionary NoLods = new();
+	private static bool? _stripSurfaceLods;
+
+	/// <summary>
+	/// Returns true when runtime <see cref="ArrayMesh"/> surface LOD index dictionaries must be
+	/// omitted to avoid upstream Godot 4.7 / Intel Arc D3D12 GPU TDR (<c>0x887a0005</c>,
+	/// <c>godotengine/godot#120857</c>) when rendering alpha-scissor surfaces with runtime LODs.
+	/// Base-level geometry (LOD 0) is preserved in full; override with <c>REFII_D3D12_KEEP_SURFACE_LODS=1</c>.
+	/// </summary>
+	public static bool ShouldStripSurfaceLodsForD3d12(bool isD3d12, string? keepLodsEnv = null) =>
+		isD3d12 && !string.Equals(keepLodsEnv?.Trim(), "1", StringComparison.Ordinal);
+
+	private static bool StripSurfaceLods => _stripSurfaceLods ??= ShouldStripSurfaceLodsForD3d12(
+		Refii.Textures.Engine_TextureUpload.IsD3D12Driver,
+		System.Environment.GetEnvironmentVariable("REFII_D3D12_KEEP_SURFACE_LODS"));
 
 	/// <summary>Adds a surface as <see cref="ArrayMesh.AddSurfaceFromArrays"/> does; see the class remarks.</summary>
 	public static void AddSurface(
@@ -33,19 +47,24 @@ public static class Engine_ArrayMeshes
 	{
 		if (Engine_RdHealth.IsDeviceLost)
 		{
+			Engine_RdHealth.NoteSuppressed();
 			return;
 		}
 
 		Godot.Collections.Array<Godot.Collections.Array> shapes = blendShapes ?? NoBlendShapes;
-		Godot.Collections.Dictionary levels = lods ?? NoLods;
+		Godot.Collections.Dictionary levels = StripSurfaceLods || lods is null || lods.Count == 0 ? NoLods : lods;
 		long estimatedBytes = EstimateSurfaceBytes(arrays);
 		Engine_ServerSyncs.RunGpuUpload(estimatedBytes, () =>
 		{
 			if (Engine_RdHealth.IsDeviceLost)
 			{
+				Engine_RdHealth.NoteSuppressed();
 				return;
 			}
+
+			int countBefore = mesh.GetSurfaceCount();
 			mesh.AddSurfaceFromArrays(primitive, arrays, shapes, levels, flags);
+			_ = Engine_RdHealth.CheckArrayMeshSurfaceAdded(mesh, countBefore, "Engine_ArrayMeshes.AddSurface");
 		});
 		GC.KeepAlive(mesh);
 		GC.KeepAlive(arrays);
@@ -64,12 +83,15 @@ public static class Engine_ArrayMeshes
 	{
 		if (Engine_RdHealth.IsDeviceLost)
 		{
+			Engine_RdHealth.NoteSuppressed();
 			return;
 		}
 
 		Godot.Collections.Array<Godot.Collections.Array> shapes = blendShapes ?? NoBlendShapes;
-		Godot.Collections.Dictionary levels = lods ?? NoLods;
+		Godot.Collections.Dictionary levels = StripSurfaceLods || lods is null || lods.Count == 0 ? NoLods : lods;
+		int countBefore = mesh.GetSurfaceCount();
 		mesh.AddSurfaceFromArrays(primitive, arrays, shapes, levels, flags);
+		_ = Engine_RdHealth.CheckArrayMeshSurfaceAdded(mesh, countBefore, "Engine_ArrayMeshes.AddSurfaceDirect");
 		GC.KeepAlive(mesh);
 		GC.KeepAlive(arrays);
 		GC.KeepAlive(shapes);

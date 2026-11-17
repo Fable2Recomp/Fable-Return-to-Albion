@@ -281,7 +281,7 @@ public static class AndroidLeanShading
         }
         else
         {
-            _image!.SetData(TableTexels, 1, false, Image.Format.Rgbaf, _bytes);
+            _image = Image.CreateFromData(TableTexels, 1, false, Image.Format.Rgbaf, _bytes);
             _texture.Update(_image);
         }
     }

@@ -359,7 +359,7 @@ public static class ModRemount
 					continue;
 				}
 
-				texture.SetImage(image);
+				Refii.Textures.Engine_TextureUpload.SetImage(texture, image, world: true, allowD3D12Replace: false);
 				done.Add(texture);
 				Engine_TexLibrary.TrackUi(spelling, texture, Engine_BnkTextureLoader.ReadBytes);
 			}

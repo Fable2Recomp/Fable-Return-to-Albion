@@ -76,10 +76,11 @@ void fragment() {
 				tint.a * COLOR.a);
 	}
 	float alpha = colour.a * smoothstep(0.1, 0.5, seen);
-	if (alpha < 0.01) {
-		discard;
+	// Zero-discard `depth_draw_never` blend path (`ALPHA = 0.0` is a blend no-op).
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+	if (alpha >= 0.01) {
+		ALBEDO = colour.rgb;
+		ALPHA = alpha;
 	}
-
-	ALBEDO = colour.rgb;
-	ALPHA = alpha;
 }

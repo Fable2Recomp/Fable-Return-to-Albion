@@ -98,12 +98,75 @@ public sealed class DesktopGraphicsPresetsTests
 			AssertThat(read["render_scaler"]).IsEqual("fsr");
 			AssertThat(read["fsr_quality"]).IsEqual("ultra_quality");
 			AssertThat(read["sdfgi_enabled"]).IsEqual("false");
-			AssertThat(read["omni_shadow_mode"]).IsEqual("dual_paraboloid");
+			AssertThat(read["placed_shadow_limit"]).IsEqual("2");
+			AssertThat(read.ContainsKey("omni_shadow_mode")).IsFalse();
 		}
 		finally
 		{
 			Directory.Delete(dir, true);
 		}
+	}
+
+	[TestCase]
+	public void PresetsScaleCubeShadowLimits_AndUpgradePriorRevisionsCleanly()
+	{
+		GraphicsPresets.Offered = false;
+
+		AssertThat(DesktopGraphicsPresets.Revision).IsEqual(3);
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["placed_light_shadows"]).IsEqual("true");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["placed_shadow_limit"]).IsEqual("1");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["placed_shadow_limit"]).IsEqual("2");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!["placed_shadow_limit"]).IsEqual("4");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!["placed_shadow_limit"]).IsEqual("8");
+
+		foreach (string preset in DesktopGraphicsPresets.Order)
+		{
+			AssertThat(DesktopGraphicsPresets.Values(preset)!.ContainsKey("omni_shadow_mode")).IsFalse();
+		}
+
+		// Revision-1 Balanced install (carrying legacy omni_shadow_mode, missing placed_shadow_limit)
+		// upgrades cleanly to Revision 3 Balanced with placed_shadow_limit = 2.
+		var rev1Balanced = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!, StringComparer.Ordinal)
+		{
+			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Balanced,
+			[DesktopGraphicsPresets.RevisionKey] = "1",
+			["omni_shadow_mode"] = "dual_paraboloid",
+		};
+		rev1Balanced.Remove("placed_shadow_limit");
+
+		AssertThat(DesktopGraphicsPresets.Upgrade(rev1Balanced)).IsTrue();
+		AssertThat(rev1Balanced[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Balanced);
+		AssertThat(rev1Balanced[DesktopGraphicsPresets.RevisionKey]).IsEqual("3");
+		AssertThat(rev1Balanced["placed_shadow_limit"]).IsEqual("2");
+		AssertThat(rev1Balanced.ContainsKey("omni_shadow_mode")).IsFalse();
+
+		// Revision-2 Low install (previously placed_light_shadows = false) upgrades cleanly to
+		// Revision 3 Low with cube shadows enabled (placed_shadow_limit = 1).
+		var rev2Low = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!, StringComparer.Ordinal)
+		{
+			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Low,
+			[DesktopGraphicsPresets.RevisionKey] = "2",
+			["placed_light_shadows"] = "false",
+		};
+		AssertThat(DesktopGraphicsPresets.Upgrade(rev2Low)).IsTrue();
+		AssertThat(rev2Low[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Low);
+		AssertThat(rev2Low[DesktopGraphicsPresets.RevisionKey]).IsEqual("3");
+		AssertThat(rev2Low["placed_light_shadows"]).IsEqual("true");
+		AssertThat(rev2Low["placed_shadow_limit"]).IsEqual("1");
+
+		// Custom configurations keep custom settings intact and strip legacy omni_shadow_mode on upgrade.
+		var rev1Custom = new Dictionary<string, string>(StringComparer.Ordinal)
+		{
+			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Custom,
+			[DesktopGraphicsPresets.RevisionKey] = "1",
+			["omni_shadow_mode"] = "dual_paraboloid",
+			["placed_shadow_limit"] = "6",
+		};
+		AssertThat(DesktopGraphicsPresets.Upgrade(rev1Custom)).IsTrue();
+		AssertThat(rev1Custom[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Custom);
+		AssertThat(rev1Custom[DesktopGraphicsPresets.RevisionKey]).IsEqual("3");
+		AssertThat(rev1Custom["placed_shadow_limit"]).IsEqual("6");
+		AssertThat(rev1Custom.ContainsKey("omni_shadow_mode")).IsFalse();
 	}
 
 	[TestCase]

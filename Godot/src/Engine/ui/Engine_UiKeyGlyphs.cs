@@ -564,12 +564,12 @@ public static partial class Engine_UiKeyGlyphs
 
 		foreach ((string button, ImageTexture keycap) in _keycaps)
 		{
-			Engine_TextureUpload.SetImage(keycap, Keycap(button));
+			Engine_TextureUpload.SetImage(keycap, Keycap(button), allowD3D12Replace: false);
 		}
 
 		foreach ((OrbCell cell, ImageTexture orb) in _orbs.Values)
 		{
-			Engine_TextureUpload.SetImage(orb, DrawOrb(cell));
+			Engine_TextureUpload.SetImage(orb, DrawOrb(cell), allowD3D12Replace: false);
 		}
 	}
 
@@ -856,7 +856,7 @@ public static partial class Engine_UiKeyGlyphs
 			proxy.Scale,
 			keys);
 		RegisterSourceImage(proxy.Texture, drawn);
-		Engine_TextureUpload.SetImage(proxy.Texture, drawn);
+		Engine_TextureUpload.SetImage(proxy.Texture, drawn, allowD3D12Replace: false);
 	}
 
 	/// <summary>The smallest side a drawn glyph is rasterised at.</summary>

@@ -4,6 +4,8 @@ using System.IO;
 using GdUnit4;
 using Refii.Assets;
 using Refii.Core;
+using Refii.Game;
+using Refii.Lighting;
 using Refii.Textures;
 using Refii.Ui;
 using static GdUnit4.Assertions;
@@ -37,24 +39,26 @@ public sealed class Dx12AndMemoryOptimizationTests
 	}
 
 	/// <summary>
-	/// Under D3D12 (SPIRV-Cross -> DXIL -> DXC), implicit-derivative calls (`texture(...)` and `fwidth(...)`)
-	/// must execute prior to any non-uniform `discard` in `ui_text.gdshader` and `ui_quad.gdshader`.
+	/// Verifies <c>ui_text.gdshader</c>, <c>ui_quad.gdshader</c>, and <c>ui_world_marker.gdshader</c>
+	/// sample textures cleanly and emit the hardware <c>ALPHA = 0.0</c> blend identity instead of
+	/// <c>discard;</c> in <c>depth_draw_never</c> UI passes.
 	/// </summary>
 	[TestCase]
 	public void UiShadersSampleAllImplicitDerivativesBeforeAnyDiscard()
 	{
 		string godotRoot = FindRepoRoot();
-		foreach (string shaderFile in new[] { "ui_text.gdshader", "ui_quad.gdshader" })
+		foreach (string shaderFile in new[] { "ui_text.gdshader", "ui_quad.gdshader", "ui_world_marker.gdshader" })
 		{
 			string fullPath = Path.Combine(godotRoot, "src", "Engine", "ui", shaderFile);
 			AssertThat(File.Exists(fullPath)).IsTrue();
 			string source = File.ReadAllText(fullPath);
 			int fragIdx = source.IndexOf("void fragment()", StringComparison.Ordinal);
 			AssertThat(fragIdx).IsGreaterEqual(0);
-			string fragBody = source[fragIdx..];
+			string fragBody = StripShaderComments(source[fragIdx..]);
 
-			int firstDiscard = fragBody.IndexOf("discard;", StringComparison.Ordinal);
-			AssertThat(firstDiscard).IsGreater(0);
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(fragBody, @"\bdiscard\s*;"))
+				.OverrideFailureMessage($"{shaderFile} should omit discard; under depth_draw_never")
+				.IsFalse();
 
 			int lastTextureSample = Math.Max(
 				fragBody.LastIndexOf("texture(", StringComparison.Ordinal),
@@ -62,13 +66,6 @@ public sealed class Dx12AndMemoryOptimizationTests
 					fragBody.LastIndexOf("textureLod(", StringComparison.Ordinal),
 					fragBody.LastIndexOf("textureGrad(", StringComparison.Ordinal)));
 			AssertThat(lastTextureSample).IsGreater(0);
-			AssertThat(lastTextureSample).IsLess(firstDiscard);
-
-			int lastFwidth = fragBody.LastIndexOf("fwidth(", StringComparison.Ordinal);
-			if (lastFwidth >= 0)
-			{
-				AssertThat(lastFwidth).IsLess(firstDiscard);
-			}
 		}
 	}
 
@@ -272,7 +269,10 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(quadBranchIdx).IsGreater(0);
 		AssertThat(uiQuad.IndexOf("dFdx(uv)", StringComparison.Ordinal)).IsLess(quadBranchIdx);
 		AssertThat(uiQuad.IndexOf("dFdy(detail_uv)", StringComparison.Ordinal)).IsLess(quadBranchIdx);
-		AssertThat(uiQuad.Contains("if (clipped || final_alpha <= 0.001)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiQuad.Contains("bool should_discard = clipped;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiQuad.Contains("should_discard = (final_alpha <= 0.001);", StringComparison.Ordinal)).IsTrue();
+		AssertThat(uiQuad.Contains("if (!should_discard)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(System.Text.RegularExpressions.Regex.IsMatch(StripShaderComments(uiQuad), @"\bdiscard\s*;")).IsFalse();
 
 		string uiOutlineInc = File.ReadAllText(Path.Combine(uiDir, "ui_text_outline.gdshaderinc"));
 		AssertThat(uiOutlineInc.Contains("float ui_text_outline_cover(sampler2D glyph_atlas,", StringComparison.Ordinal)).IsTrue();
@@ -503,5 +503,928 @@ public sealed class Dx12AndMemoryOptimizationTests
 
 		AssertThat(Refii.Game.GameWindow.ResolveVsyncMode(settings, isD3d12: true))
 			.IsEqual(Godot.DisplayServer.VSyncMode.Disabled);
+	}
+
+	/// <summary>
+	/// Verifies that 3D scene rendering runs incrementally behind the loading cover as soon as an
+	/// active world mounts (preventing a cold-start render stall at worldReady) while root 3D quality
+	/// upscaling/AA, DepthCapture, and PostFX stay gated during streaming, stagger across settle
+	/// frames, and remain active once the cover drops; and that multi-pass compute batching stays
+	/// disabled on D3D12.
+	/// </summary>
+	[TestCase]
+	public void LoadCoverSceneAndEffectsRemainGatedUntilStreamingFinishes()
+	{
+		AssertThat(Refii.Fx.Engine_FxDepthCaptureEffect.RequiredSettleFrames).IsEqual(3);
+		AssertThat(Refii.Lighting.Engine_PostFxEffect.RequiredSettleFrames).IsEqual(5);
+		AssertThat(Refii.Lighting.Engine_PostFxEffect.ShouldBatchComputeLists(isD3D12Driver: true)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_PostFxEffect.ShouldBatchComputeLists(isD3D12Driver: false)).IsTrue();
+
+		// No active world -> everything stays off.
+		AssertThat(Refii.Game.GameWorld.ShouldEnableSceneRendering(
+			hasActiveWorld: false, coverHeld: true, readyForWarmupAndSettle: true)).IsFalse();
+		AssertThat(Refii.Game.GameWorld.ShouldEnableWorldQualityAndEffects(
+			hasActiveWorld: false, coverHeld: true, readyForWarmupAndSettle: true)).IsFalse();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: false, coverHeld: true, readyForWarmupAndSettle: true, settleFrames: 10, requiredSettleFrames: 1)).IsFalse();
+
+		// Mounted region, cover held, streaming still in progress -> 3D renders incrementally behind cover,
+		// while quality upscalers and compositor effects stay off.
+		AssertThat(Refii.Game.GameWorld.ShouldEnableSceneRendering(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: false)).IsTrue();
+		AssertThat(Refii.Game.GameWorld.ShouldEnableWorldQualityAndEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: false)).IsFalse();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: false, settleFrames: 10, requiredSettleFrames: Refii.Fx.Engine_FxDepthCaptureEffect.RequiredSettleFrames)).IsFalse();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: false, settleFrames: 10, requiredSettleFrames: Refii.Lighting.Engine_PostFxEffect.RequiredSettleFrames)).IsFalse();
+
+		// Streaming & worker uploads finished -> quality turns on immediately at settle,
+		// DepthCapture at frame 3, PostFX at frame 5.
+		AssertThat(Refii.Game.GameWorld.ShouldEnableWorldQualityAndEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: true)).IsTrue();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: true, settleFrames: 2, requiredSettleFrames: Refii.Fx.Engine_FxDepthCaptureEffect.RequiredSettleFrames)).IsFalse();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: true, settleFrames: 3, requiredSettleFrames: Refii.Fx.Engine_FxDepthCaptureEffect.RequiredSettleFrames)).IsTrue();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: true, settleFrames: 4, requiredSettleFrames: Refii.Lighting.Engine_PostFxEffect.RequiredSettleFrames)).IsFalse();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: true, readyForWarmupAndSettle: true, settleFrames: 5, requiredSettleFrames: Refii.Lighting.Engine_PostFxEffect.RequiredSettleFrames)).IsTrue();
+
+		// Live gameplay (cover dropped) -> always active when world is mounted.
+		AssertThat(Refii.Game.GameWorld.ShouldEnableSceneRendering(
+			hasActiveWorld: true, coverHeld: false, readyForWarmupAndSettle: false)).IsTrue();
+		AssertThat(Refii.Game.GameWorld.ShouldEnableWorldQualityAndEffects(
+			hasActiveWorld: true, coverHeld: false, readyForWarmupAndSettle: false)).IsTrue();
+		AssertThat(Refii.Game.GameWorld.ShouldRunRenderEffects(
+			hasActiveWorld: true, coverHeld: false, readyForWarmupAndSettle: false, settleFrames: 0, requiredSettleFrames: Refii.Lighting.Engine_PostFxEffect.RequiredSettleFrames)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies `--render-thread separate` detection, D3D12 synchronous RD verification gating,
+	/// in-place storage layout parity checks, and tighter D3D12 per-frame staging upload caps.
+	/// </summary>
+	[TestCase]
+	public void D3D12SeparateRenderThreadAvoidsSynchronousRdChecksAndCapsStaging()
+	{
+		AssertThat(Engine_TextureUpload.HasSeparateRenderThreadArgs(new[] { "--rendering-driver", "d3d12", "--render-thread", "separate" })).IsTrue();
+		AssertThat(Engine_TextureUpload.HasSeparateRenderThreadArgs(new[] { "--rendering-driver", "d3d12" })).IsFalse();
+
+		// D3D12 verifies RD backing synchronously only on single-threaded mode or already on the render thread.
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingSynchronously(isD3D12: true, isSeparateRenderThread: false, isOnRenderThread: false)).IsTrue();
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingSynchronously(isD3D12: true, isSeparateRenderThread: true, isOnRenderThread: false)).IsFalse();
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingSynchronously(isD3D12: true, isSeparateRenderThread: true, isOnRenderThread: true)).IsTrue();
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingSynchronously(isD3D12: false, isSeparateRenderThread: false, isOnRenderThread: true)).IsFalse();
+
+		// Storage layout parity for RS::texture_2d_update vs RS::texture_replace.
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			64, 64, Godot.Image.Format.Rgba8, true,
+			64, 64, Godot.Image.Format.Rgba8, true)).IsTrue();
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			64, 64, Godot.Image.Format.Rgba8, true,
+			64, 64, Godot.Image.Format.Rgba8, false)).IsFalse();
+		AssertThat(Engine_TextureUpload.MatchesStorageLayout(
+			64, 64, Godot.Image.Format.Rgba8, true,
+			128, 64, Godot.Image.Format.Rgba8, true)).IsFalse();
+
+		// D3D12 enforces tighter staging caps than Vulkan during load cover and play.
+		AssertThat(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: true, isD3D12: true))
+			.IsLess(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: true, isD3D12: false));
+		AssertThat(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: false, isD3D12: true))
+			.IsLess(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: false, isD3D12: false));
+	}
+
+	/// <summary>
+	/// Verifies device-lost latching stays idempotent and requests render-loop termination outside test hosts.
+	/// </summary>
+	[TestCase]
+	public void RdHealthHaltsRenderLoopOutsideTestHostAndTracksDeviceLoss()
+	{
+		Engine_RdHealth.Reset();
+		try
+		{
+			AssertThat(Engine_RdHealth.ShouldHaltRenderLoopOnDeviceLost(isTestHost: true)).IsFalse();
+			AssertThat(Engine_RdHealth.ShouldHaltRenderLoopOnDeviceLost(isTestHost: false)).IsTrue();
+
+			AssertThat(Engine_RdHealth.TripDeviceLost("TestContext", "0x887a0005")).IsTrue();
+			AssertThat(Engine_RdHealth.IsDeviceLost).IsTrue();
+			AssertThat(Engine_RdHealth.TripDeviceLost("TestContext", "second")).IsFalse();
+			AssertThat(Engine_RdHealth.SuppressedCount).IsEqual(1);
+		}
+		finally
+		{
+			Engine_RdHealth.Reset();
+		}
+	}
+
+	private static string StripShaderComments(string source)
+	{
+		string withoutBlock = System.Text.RegularExpressions.Regex.Replace(
+			source, @"/\*.*?\*/", string.Empty, System.Text.RegularExpressions.RegexOptions.Singleline);
+		return string.Join("\n", System.Linq.Enumerable.Select(
+			withoutBlock.Split('\n'),
+			static line =>
+			{
+				int commentIdx = line.IndexOf("//", StringComparison.Ordinal);
+				return commentIdx >= 0 ? line[..commentIdx] : line;
+			}));
+	}
+
+	private static string ExtractFragmentBody(string strippedSource)
+	{
+		int fragIdx = strippedSource.IndexOf("void fragment()", StringComparison.Ordinal);
+		AssertThat(fragIdx).IsGreaterEqual(0);
+		int lightIdx = strippedSource.IndexOf("void light()", fragIdx, StringComparison.Ordinal);
+		return lightIdx > fragIdx ? strippedSource[fragIdx..lightIdx] : strippedSource[fragIdx..];
+	}
+
+	/// <summary>
+	/// Prevents regressions of D3D12 / Intel Arc DXIL GPU hangs caused by evaluating implicit
+	/// derivatives (<c>texture()</c>, <c>dFdx()</c>, <c>dFdy()</c>, <c>fwidth()</c>, or
+	/// <c>fable_normal_side()</c>) after a per-pixel <c>discard;</c> in prop/material shaders.
+	/// </summary>
+	[TestCase]
+	public void PropAndMaterialShadersPrecomputeDerivativesBeforeDiscard()
+	{
+		string godotRoot = FindRepoRoot();
+		string matDir = Path.Combine(godotRoot, "src", "Engine", "material");
+
+		foreach (string fileName in new[] { "standard_material_body.gdshaderinc", "standard_material_phong.gdshader" })
+		{
+			string code = StripShaderComments(File.ReadAllText(Path.Combine(matDir, fileName)));
+			string frag = ExtractFragmentBody(code);
+
+			int firstDiscard = frag.IndexOf("discard;", StringComparison.Ordinal);
+			AssertThat(firstDiscard).IsGreater(0);
+
+			int dxIdx = frag.IndexOf("dFdx(UV)", StringComparison.Ordinal);
+			int dyIdx = frag.IndexOf("dFdy(UV)", StringComparison.Ordinal);
+			int crossIdx = frag.IndexOf("cross(dFdx(VERTEX), dFdy(VERTEX))", StringComparison.Ordinal);
+			AssertThat(dxIdx).IsGreaterEqual(0);
+			AssertThat(dyIdx).IsGreaterEqual(0);
+			AssertThat(crossIdx).IsGreaterEqual(0);
+			AssertThat(dxIdx).IsLess(firstDiscard);
+			AssertThat(dyIdx).IsLess(firstDiscard);
+			AssertThat(crossIdx).IsLess(firstDiscard);
+
+			AssertThat(frag.Contains("fable_normal_side_precomputed(", StringComparison.Ordinal)).IsTrue();
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(frag, @"\bfable_normal_side\(")).IsFalse();
+			AssertThat(frag.Contains("textureGrad(albedo_tex,", StringComparison.Ordinal)).IsTrue();
+			AssertThat(frag.Contains("textureGrad(normal_tex,", StringComparison.Ordinal)).IsTrue();
+			AssertThat(frag.Contains("textureGrad(specular_tex,", StringComparison.Ordinal)).IsTrue();
+			AssertThat(frag.Contains("textureGrad(emission_tex,", StringComparison.Ordinal)).IsTrue();
+
+			string postDiscard = frag[firstDiscard..];
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(postDiscard, @"\btexture\(")).IsFalse();
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(postDiscard, @"\bdFd[xy](Fine)?\(")).IsFalse();
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(postDiscard, @"\bfwidth\(")).IsFalse();
+		}
+
+		string bodyCode = StripShaderComments(File.ReadAllText(Path.Combine(matDir, "standard_material_body.gdshaderinc")));
+		AssertThat(bodyCode.Contains("textureGrad(orm_tex,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(bodyCode.Contains("textureLod(envmap_tex,", StringComparison.Ordinal)).IsTrue();
+
+		string lightingCode = StripShaderComments(File.ReadAllText(Path.Combine(matDir, "fable_lighting.gdshaderinc")));
+		AssertThat(lightingCode.Contains("textureLod(fable_prop_lightmaps,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingCode.Contains("fable_normal_side_precomputed(", StringComparison.Ordinal)).IsTrue();
+		int bakeIdx = lightingCode.IndexOf("fable_bake_amb3(", StringComparison.Ordinal);
+		int bakeEnd = lightingCode.IndexOf('}', bakeIdx);
+		AssertThat(System.Text.RegularExpressions.Regex.IsMatch(lightingCode[bakeIdx..bakeEnd], @"\btexture\(")).IsFalse();
+	}
+
+	/// <summary>
+	/// Ensures terrain splatting never runs implicit-LOD <c>texture()</c> inside per-pixel divergent
+	/// material loops and uses explicit <c>textureGrad</c>/<c>textureLod</c> throughout.
+	/// </summary>
+	[TestCase]
+	public void TerrainSplatUsesExplicitDerivativesAcrossSplatLoop()
+	{
+		string godotRoot = FindRepoRoot();
+		string splatPath = Path.Combine(godotRoot, "src", "Engine", "level", "terrain", "terrain_splat_body.gdshaderinc");
+		string code = StripShaderComments(File.ReadAllText(splatPath));
+
+		int sampleIdx = code.IndexOf("void sample_layer(", StringComparison.Ordinal);
+		int fragIdx = code.IndexOf("void fragment()", StringComparison.Ordinal);
+		AssertThat(sampleIdx).IsGreater(0);
+		AssertThat(fragIdx).IsGreater(sampleIdx);
+
+		string sampleBody = code[sampleIdx..fragIdx];
+		string fragBody = code[fragIdx..];
+
+		AssertThat(System.Text.RegularExpressions.Regex.Matches(sampleBody, @"\btexture\(").Count).IsEqual(0);
+		AssertThat(System.Text.RegularExpressions.Regex.Matches(fragBody, @"\btexture\(").Count).IsEqual(0);
+		AssertThat(System.Text.RegularExpressions.Regex.Matches(sampleBody, @"\btextureGrad\(").Count).IsGreaterEqual(7);
+		AssertThat(fragBody.Contains("textureGrad(page_albedo,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(fragBody.Contains("textureLod(material_weight,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(fragBody.Contains("fable_normal_side_precomputed(", StringComparison.Ordinal)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies water, environment, FX, medallion, and mobile composite shaders never issue
+	/// implicit-derivative calls after <c>discard;</c> or inside divergent branches.
+	/// </summary>
+	[TestCase]
+	public void WaterEnvironmentAndFxShadersObeyD3D12ControlFlowRules()
+	{
+		string godotRoot = FindRepoRoot();
+
+		string[] zeroDiscardBlendedAndSolidFiles =
+		{
+			Path.Combine("src", "Engine", "entities", "shadow_caster_solid.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle_add.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle_addone.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle_darken.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle_disp.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle_mixalpha.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_particle_sub.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_mesh_disp.gdshader"),
+			Path.Combine("src", "Engine", "fx", "fx_displacement_apply.gdshader"),
+			Path.Combine("src", "Engine", "level", "environment", "clouds.gdshader"),
+			Path.Combine("src", "Engine", "level", "environment", "weather.gdshader"),
+			Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_surface_impact.gdshader"),
+			Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_snow_tracks.gdshader"),
+			Path.Combine("src", "Engine", "ui", "ui_quad.gdshader"),
+			Path.Combine("src", "Engine", "ui", "ui_text.gdshader"),
+			Path.Combine("src", "Engine", "ui", "ui_world_marker.gdshader"),
+			Path.Combine("src", "Engine", "material", "preparation_medallion.gdshader"),
+			Path.Combine("src", "android", "mobile_highlight_composite.gdshader"),
+		};
+
+		foreach (string relPath in zeroDiscardBlendedAndSolidFiles)
+		{
+			string code = StripShaderComments(File.ReadAllText(Path.Combine(godotRoot, relPath)));
+			string frag = ExtractFragmentBody(code);
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(frag, @"\bdiscard\s*;"))
+				.OverrideFailureMessage($"{relPath} should emit hardware blend identity instead of discard;")
+				.IsFalse();
+		}
+
+		string waterCode = StripShaderComments(File.ReadAllText(
+			Path.Combine(godotRoot, "src", "Engine", "level", "water", "water.gdshader")));
+		AssertThat(waterCode.Contains("local_xz_dx", StringComparison.Ordinal)).IsTrue();
+		AssertThat(waterCode.Contains("textureGrad(normal_map,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(waterCode.Contains("/ ((inv_proj[2].w * d) + inv_proj[3].w)", StringComparison.Ordinal)).IsFalse();
+		foreach (string sampler in new[] { "depth_tex", "reflection_tex", "reflection_tex_second", "screen_tex", "water_mask", "terrain_height_tex" })
+		{
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(waterCode, $@"\btexture\({sampler}\b")).IsFalse();
+		}
+
+		foreach (string relPath in new[]
+		         {
+			         Path.Combine("src", "Engine", "entities", "entity_highlight_silhouette.gdshader"),
+			         Path.Combine("src", "android", "mobile_highlight_composite.gdshader"),
+		         })
+		{
+			string code = StripShaderComments(File.ReadAllText(Path.Combine(godotRoot, relPath)));
+			AssertThat(code.Contains("/ view.w", StringComparison.Ordinal))
+				.OverrideFailureMessage($"{relPath} divides by unguarded view.w")
+				.IsFalse();
+			AssertThat(code.Contains("abs(view.w) > 1e-6", StringComparison.Ordinal)).IsTrue();
+		}
+
+		(string RelPath, string Sampler)[] lodOnlySamplers =
+		{
+			(Path.Combine("src", "Engine", "level", "environment", "sky_dome.gdshaderinc"), "in_scatter_lut"),
+			(Path.Combine("src", "Engine", "level", "environment", "fable_atmosphere.gdshaderinc"), "atmos_inscatter"),
+			(Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_surface_weather.gdshaderinc"), "dynamic_track_map"),
+			(Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_cloud_receiver.gdshaderinc"), "dynamic_cloud_mask"),
+			(Path.Combine("src", "Engine", "fx", "fx_soft.gdshaderinc"), "fx_depth_tex"),
+			(Path.Combine("src", "Engine", "core", "views.gdshaderinc"), "fx_scene_depth_second"),
+			(Path.Combine("src", "Engine", "core", "views.gdshaderinc"), "fx_scene_depth"),
+		};
+		foreach ((string relPath, string sampler) in lodOnlySamplers)
+		{
+			string code = StripShaderComments(File.ReadAllText(Path.Combine(godotRoot, relPath)));
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(code, $@"\btexture\({sampler}\b"))
+				.OverrideFailureMessage($"{relPath} calls implicit texture({sampler}) instead of textureLod.")
+				.IsFalse();
+			AssertThat(code.Contains($"textureLod({sampler},", StringComparison.Ordinal))
+				.OverrideFailureMessage($"{relPath} missing textureLod({sampler}, ...).")
+				.IsTrue();
+		}
+
+		foreach (string relPath in new[]
+		         {
+			         Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_sky.gdshader"),
+			         Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_cloud_layers.gdshaderinc"),
+			         Path.Combine("src", "Engine", "level", "environment", "dynamic", "dynamic_cloud_density.gdshaderinc"),
+		         })
+		{
+			string code = StripShaderComments(File.ReadAllText(Path.Combine(godotRoot, relPath)));
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(code, @"\btexture\("))
+				.OverrideFailureMessage($"{relPath} calls implicit texture() instead of textureLod.")
+				.IsFalse();
+		}
+
+		string guestFx = StripShaderComments(File.ReadAllText(
+			Path.Combine(godotRoot, "src", "Engine", "fx", "fx_guest_particle_pixel.gdshaderinc")));
+		AssertThat(guestFx.Contains("textureGrad(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(System.Text.RegularExpressions.Regex.IsMatch(guestFx, @"\btexture\(")).IsFalse();
+	}
+
+	/// <summary>
+	/// Ensures every local (non-global) <c>sampler2D</c> and <c>sampler2DArray</c> uniform across
+	/// <c>Godot/src</c> declares an explicit default or built-in hint so unbound D3D12 slots never bind null SRVs.
+	/// </summary>
+	[TestCase]
+	public void AllLocal2DSamplersDeclareExplicitDefaultOrBuiltinHints()
+	{
+		string srcRoot = Path.Combine(FindRepoRoot(), "src");
+		string[] files = Directory.GetFiles(srcRoot, "*.gdshader*", SearchOption.AllDirectories);
+		var offending = new List<string>();
+		var localSamplerRegex = new System.Text.RegularExpressions.Regex(
+			@"^\s*uniform\s+sampler2D(?:Array)?\b",
+			System.Text.RegularExpressions.RegexOptions.Compiled);
+		var validHintRegex = new System.Text.RegularExpressions.Regex(
+			@"hint_default_|hint_normal|hint_screen_texture|hint_depth_texture|hint_roughness",
+			System.Text.RegularExpressions.RegexOptions.Compiled);
+
+		foreach (string file in files)
+		{
+			if (!file.EndsWith(".gdshader", StringComparison.OrdinalIgnoreCase) &&
+			    !file.EndsWith(".gdshaderinc", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			string[] lines = File.ReadAllLines(file);
+			for (int i = 0; i < lines.Length; i++)
+			{
+				if (localSamplerRegex.IsMatch(lines[i]) && !validHintRegex.IsMatch(lines[i]))
+				{
+					offending.Add($"{Path.GetRelativePath(srcRoot, file)}:{i + 1}: {lines[i].Trim()}");
+				}
+			}
+		}
+
+		AssertThat(offending)
+			.OverrideFailureMessage(offending.Count > 0 ? string.Join("\n", offending) : "none")
+			.IsEmpty();
+	}
+
+	/// <summary>
+	/// Verifies global depth/exposure effects register valid 1x1 <c>ImageTexture</c> fallbacks
+	/// rather than uninitialized <c>Texture2Drd</c> instances, and guards deferred RID publication.
+	/// </summary>
+	[TestCase]
+	public void GlobalEffectResourcesUseValidImageTextureFallbacksUntilRdTargetIsReady()
+	{
+		static string ExtractMethodBody(string source, string signature)
+		{
+			int start = source.IndexOf(signature, StringComparison.Ordinal);
+			int open = source.IndexOf('{', start);
+			int depth = 0;
+			for (int i = open; i < source.Length; i++)
+			{
+				if (source[i] == '{') depth++;
+				else if (source[i] == '}' && --depth == 0) return source[open..(i + 1)];
+			}
+			return source[open..];
+		}
+
+		string godotRoot = FindRepoRoot();
+
+		string depthCapture = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "fx", "Engine_FxDepthCaptureEffect.cs"));
+		string depthRegBody = ExtractMethodBody(depthCapture, "public static void RegisterGlobals()");
+		AssertThat(depthRegBody.Contains("GetOrCreateFallbackDepthTexture()", StringComparison.Ordinal)).IsTrue();
+		AssertThat(depthRegBody.Contains("new Texture2Drd()", StringComparison.Ordinal)).IsFalse();
+		AssertThat(depthCapture.Contains("if (!rid.IsValid)", StringComparison.Ordinal)).IsTrue();
+
+		string postFx = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "Lighting", "Engine_PostFxEffect.cs"));
+		string postRegBody = ExtractMethodBody(postFx, "public static void RegisterGlobals()");
+		AssertThat(postRegBody.Contains("GetOrCreateFallbackExposureTexture()", StringComparison.Ordinal)).IsTrue();
+		AssertThat(postRegBody.Contains("new Texture2Drd()", StringComparison.Ordinal)).IsFalse();
+		AssertThat(postFx.Contains("!exposureRid.IsValid", StringComparison.Ordinal)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies <c>GameWorld.ParseDx12Skip3d</c> token parsing for subsystem bisection.
+	/// </summary>
+	[TestCase]
+	public void Dx12Skip3dParserHandlesIndividualCombinedAndAllTokens()
+	{
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d(null)).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.None);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("   ")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.None);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("unknown_flag")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.None);
+
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("terrain")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Terrain);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("PROPS")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Props);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("entities")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Entities);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("fx")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Fx);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("environment")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Environment);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("water")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Water);
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("reflections")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.Reflections);
+
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("terrain, water ; fx | sky reflection"))
+			.IsEqual(
+				Refii.Game.GameWorld.Dx12Skip3dMask.Terrain |
+				Refii.Game.GameWorld.Dx12Skip3dMask.Water |
+				Refii.Game.GameWorld.Dx12Skip3dMask.Fx |
+				Refii.Game.GameWorld.Dx12Skip3dMask.Environment |
+				Refii.Game.GameWorld.Dx12Skip3dMask.Reflections);
+
+		AssertThat(Refii.Game.GameWorld.ParseDx12Skip3d("all")).IsEqual(Refii.Game.GameWorld.Dx12Skip3dMask.All);
+	}
+
+	/// <summary>
+	/// Enforces D3D12/DXIL shader invariants: every fragment shader has at most one tail <c>discard;</c>
+	/// per compile-time branch with zero instructions, texture taps, or derivatives after <c>discard;</c>,
+	/// and terrain screen-space cliff derivatives execute unconditionally outside diagnostic branches.
+	/// </summary>
+	[TestCase]
+	public void ShadersEnforceSingleTailDiscardAndUniformDerivatives()
+	{
+		static string StripComments(string source)
+		{
+			string noBlock = System.Text.RegularExpressions.Regex.Replace(
+				source,
+				@"/\*.*?\*/",
+				" ",
+				System.Text.RegularExpressions.RegexOptions.Singleline);
+			return System.Text.RegularExpressions.Regex.Replace(noBlock, @"//[^\r\n]*", string.Empty);
+		}
+
+		string godotRoot = FindRepoRoot();
+		string srcRoot = Path.Combine(godotRoot, "src");
+
+		var files = new List<string>(Directory.GetFiles(srcRoot, "*.gdshader", SearchOption.AllDirectories));
+		files.AddRange(Directory.GetFiles(srcRoot, "*.gdshaderinc", SearchOption.AllDirectories));
+
+		foreach (string filePath in files)
+		{
+			string normalized = filePath.Replace('\\', '/');
+			string stripped = StripComments(File.ReadAllText(filePath));
+			var matches = System.Text.RegularExpressions.Regex.Matches(stripped, @"\bdiscard\s*;");
+			int allowedDiscards = 1;
+			AssertThat(matches.Count)
+				.OverrideFailureMessage($"Expected <= {allowedDiscards} discard; in {normalized}, found {matches.Count}")
+				.IsLessEqual(allowedDiscards);
+
+			if (matches.Count == 0)
+			{
+				continue;
+			}
+
+			int fragIdx = stripped.IndexOf("void fragment()", StringComparison.Ordinal);
+			string fragmentScope = fragIdx >= 0 ? stripped[fragIdx..] : stripped;
+			var nextStageMatch = System.Text.RegularExpressions.Regex.Match(
+				fragmentScope,
+				@"\bvoid\s+(?:light|vertex)\s*\(");
+			if (nextStageMatch.Success)
+			{
+				fragmentScope = fragmentScope[..nextStageMatch.Index];
+			}
+
+			AssertTailOnlyAfterDiscard(normalized, fragmentScope);
+		}
+
+		// Lit depth_draw_never blended spatial shaders must not emit mid-PSMain discard; instructions.
+		string guestPixel = StripComments(File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "fx", "fx_guest_particle_pixel.gdshaderinc")));
+		AssertThat(System.Text.RegularExpressions.Regex.Matches(guestPixel, @"\bdiscard\s*;").Count).IsEqual(0);
+		AssertThat(guestPixel.Contains("any(greaterThan(ALBEDO, vec3(0.0)))", StringComparison.Ordinal)).IsTrue();
+
+		string stdBodyFile = StripComments(File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "material", "standard_material_body.gdshaderinc")));
+		AssertThat(stdBodyFile.Contains("!defined(FABLE_SOLID) && !defined(FABLE_TRANSLUCENT)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(stdBodyFile.Contains("has_surface_response", StringComparison.Ordinal)).IsTrue();
+
+		string furShell = StripComments(File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "material", "fur_shell.gdshaderinc")));
+		AssertThat(System.Text.RegularExpressions.Regex.Matches(furShell, @"\bdiscard\s*;").Count).IsEqual(1);
+		AssertThat(furShell.Contains("any(greaterThan(ALBEDO, vec3(0.0)))", StringComparison.Ordinal)).IsTrue();
+
+		string weatherCode = StripComments(File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "level", "environment", "weather.gdshader")));
+		AssertThat(weatherCode.Contains("if (!should_discard)", StringComparison.Ordinal)).IsTrue();
+
+		string impactCode = StripComments(File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "level", "environment", "dynamic", "dynamic_surface_impact.gdshader")));
+		AssertThat(impactCode.Contains("if (!should_discard)", StringComparison.Ordinal)).IsTrue();
+
+		string classicParticles = File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "material", "Engine_ClassicParticles.cs"));
+		int dispStart = classicParticles.IndexOf("private const string DisplacementDefines =", StringComparison.Ordinal);
+		AssertThat(dispStart).IsGreaterEqual(0);
+		int dispEnd = classicParticles.IndexOf("}\";", dispStart, StringComparison.Ordinal);
+		AssertThat(dispEnd).IsGreater(dispStart);
+		string dispBlock = classicParticles[dispStart..dispEnd];
+		AssertThat(dispBlock.Contains("textureLod(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(System.Text.RegularExpressions.Regex.IsMatch(dispBlock, @"\btexture\(")).IsFalse();
+
+		string terrainSplat = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "level", "terrain", "terrain_splat_body.gdshaderinc")));
+		int diagIdx = terrainSplat.IndexOf("fable_shader_cost_diagnostic", StringComparison.Ordinal);
+		int dfdxFineIdx = terrainSplat.LastIndexOf("dFdxFine(", StringComparison.Ordinal);
+		int dfdyFineIdx = terrainSplat.LastIndexOf("dFdyFine(", StringComparison.Ordinal);
+		AssertThat(diagIdx).IsGreater(0);
+		AssertThat(dfdxFineIdx).IsGreater(0);
+		AssertThat(dfdyFineIdx).IsGreater(0);
+		AssertThat(dfdxFineIdx).IsLess(diagIdx);
+		AssertThat(dfdyFineIdx).IsLess(diagIdx);
+
+		// Guard against Intel Arc OpVectorExtractDynamic, indexed Bayer tables, local indexed roof arrays,
+		// and unguarded projective / w divides in fragment/precip shaders.
+		string dynamicPrecip = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "level", "environment", "dynamic", "dynamic_precip.gdshaderinc")));
+		AssertThat(dynamicPrecip.Contains(")[i % 4]", StringComparison.Ordinal)).IsFalse();
+		AssertThat(dynamicPrecip.Contains("/ scene.w", StringComparison.Ordinal)).IsFalse();
+
+		string fableRoofs = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "level", "environment", "fable_roofs.gdshaderinc")));
+		AssertThat(fableRoofs.Contains("vec2 c[4]", StringComparison.Ordinal)).IsFalse();
+
+		string stdBody = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "material", "standard_material_body.gdshaderinc")));
+		AssertThat(stdBody.Contains("bayer[", StringComparison.Ordinal)).IsFalse();
+
+		string shadowCaster = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "entities", "shadow_caster.gdshader")));
+		AssertThat(shadowCaster.Contains("bayer[", StringComparison.Ordinal)).IsFalse();
+
+		string fxSoft = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "fx", "fx_soft.gdshaderinc")));
+		AssertThat(fxSoft.Contains("/= scene_view.w", StringComparison.Ordinal)).IsFalse();
+
+		string fxAddOne = StripComments(File.ReadAllText(Path.Combine(srcRoot, "Engine", "fx", "fx_particle_addone.gdshader")));
+		AssertThat(fxAddOne.Contains("/= scene_view.w", StringComparison.Ordinal)).IsFalse();
+
+		static void AssertTailOnlyAfterDiscard(string label, string scope)
+		{
+			var match = System.Text.RegularExpressions.Regex.Match(scope, @"\bdiscard\s*;");
+			if (!match.Success)
+			{
+				return;
+			}
+
+			string tail = scope[(match.Index + match.Length)..];
+			// Strip preprocessor directives and closing braces/whitespace; nothing executable may remain.
+			string tailNoPreproc = System.Text.RegularExpressions.Regex.Replace(tail, @"^\s*#[^\r\n]*", string.Empty, System.Text.RegularExpressions.RegexOptions.Multiline);
+			string tailRemainder = tailNoPreproc.Replace("}", string.Empty, StringComparison.Ordinal).Trim();
+			AssertThat(tailRemainder)
+				.OverrideFailureMessage($"Executable code found after discard; in {label}: {tailRemainder}")
+				.IsEqual(string.Empty);
+		}
+	}
+
+	/// <summary>
+	/// Prevents reintroducing the <c>--render-thread separate</c> / D3D12 image-mutation race where
+	/// CPU <c>Image.SetData(...)</c> mutates an image while the render thread reads it for <c>ImageTexture.Update(...)</c>.
+	/// </summary>
+	[TestCase]
+	public void DynamicImageTexturesNeverMutateInPlaceWithSetDataBeforeUpdate()
+	{
+		string srcRoot = Path.Combine(FindRepoRoot(), "src");
+		foreach (string csPath in Directory.GetFiles(srcRoot, "*.cs", SearchOption.AllDirectories))
+		{
+			string raw = File.ReadAllText(csPath);
+			string noBlock = System.Text.RegularExpressions.Regex.Replace(
+				raw,
+				@"/\*.*?\*/",
+				" ",
+				System.Text.RegularExpressions.RegexOptions.Singleline);
+			string codeOnly = System.Text.RegularExpressions.Regex.Replace(noBlock, @"//[^\r\n]*", string.Empty);
+			bool hasSetData = codeOnly.Contains(".SetData(", StringComparison.Ordinal);
+			bool hasUpdate = codeOnly.Contains(".Update(", StringComparison.Ordinal);
+			AssertThat(hasSetData && hasUpdate)
+				.OverrideFailureMessage($"In-place Image.SetData + ImageTexture.Update race candidate in {csPath}")
+				.IsFalse();
+		}
+	}
+
+	/// <summary>
+	/// Verifies <c>Engine_RdRetire.FlushAll(null)</c> safely clears retired RIDs on test hosts without a device.
+	/// </summary>
+	[TestCase]
+	public void RdRetireFlushAllClearsPendingWithoutDevice()
+	{
+		Engine_RdRetire.FlushAll(null);
+		AssertThat(Engine_RdRetire.PendingCount).IsEqual(0);
+		Engine_RdRetire.Retire(default);
+		Engine_RdRetire.FlushAll(null);
+		AssertThat(Engine_RdRetire.PendingCount).IsEqual(0);
+	}
+
+	/// <summary>
+	/// Verifies <see cref="Refii.Models.Engine_ShaderWarmup.ShouldWarmShader"/> skips
+	/// dynamic sky/weather shaders whenever dynamic weather is disabled, while preserving core shaders.
+	/// </summary>
+	[TestCase]
+	public void ShaderWarmupSkipsDynamicWeatherShadersWhenDisabled()
+	{
+		string[] dynamicShaders =
+		[
+			"res://src/Engine/level/environment/dynamic/dynamic_sky.gdshader",
+			"res://src/Engine/level/environment/dynamic/dynamic_rain.gdshader",
+			"res://src/Engine/level/environment/dynamic/dynamic_snow.gdshader",
+			"res://src/Engine/level/environment/dynamic/dynamic_snow_tracks.gdshader",
+			"res://src/Engine/level/environment/dynamic/dynamic_cloud_shadow_density.gdshader",
+			"res://src/Engine/level/environment/dynamic/dynamic_surface_impact.gdshader",
+		];
+
+		foreach (string path in dynamicShaders)
+		{
+			AssertThat(Refii.Models.Engine_ShaderWarmup.IsDynamicWeatherShader(path)).IsTrue();
+			AssertThat(Refii.Models.Engine_ShaderWarmup.ShouldWarmShader(path, dynamicWeatherEnabled: false)).IsFalse();
+			AssertThat(Refii.Models.Engine_ShaderWarmup.ShouldWarmShader(path, dynamicWeatherEnabled: true)).IsTrue();
+		}
+
+		string standard = "res://src/Engine/material/standard_material.gdshader";
+		AssertThat(Refii.Models.Engine_ShaderWarmup.IsDynamicWeatherShader(standard)).IsFalse();
+		AssertThat(Refii.Models.Engine_ShaderWarmup.ShouldWarmShader(standard, dynamicWeatherEnabled: false)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies <see cref="GameWorld.ParseDx12Skip3d"/> recognizes granular D3D12 isolation tokens
+	/// (<c>ssao</c>, <c>sunshadows</c>, <c>lights</c>, <c>depthprepass</c>, <c>hud3d</c>, <c>sky</c>,
+	/// <c>clouds</c>, <c>reflections</c>, <c>all</c>).
+	/// </summary>
+	[TestCase]
+	public void ParseDx12Skip3dHandlesGranularPassIsolationTokens()
+	{
+		AssertThat(GameWorld.ParseDx12Skip3d(null)).IsEqual(GameWorld.Dx12Skip3dMask.None);
+		AssertThat(GameWorld.ParseDx12Skip3d("  ")).IsEqual(GameWorld.Dx12Skip3dMask.None);
+
+		GameWorld.Dx12Skip3dMask stepA = GameWorld.ParseDx12Skip3d("ssao,sunshadows,depthprepass,reflections,lights,hud3d");
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.Ssao) != 0).IsTrue();
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.SunShadows) != 0).IsTrue();
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.DepthPrepass) != 0).IsTrue();
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.Reflections) != 0).IsTrue();
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.Lights) != 0).IsTrue();
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.Hud3d) != 0).IsTrue();
+		AssertThat((stepA & GameWorld.Dx12Skip3dMask.Terrain) != 0).IsFalse();
+
+		GameWorld.Dx12Skip3dMask skyCloudMask = GameWorld.ParseDx12Skip3d("skydome,clouds");
+		AssertThat((skyCloudMask & GameWorld.Dx12Skip3dMask.SkyDome) != 0).IsTrue();
+		AssertThat((skyCloudMask & GameWorld.Dx12Skip3dMask.Clouds) != 0).IsTrue();
+		AssertThat((skyCloudMask & GameWorld.Dx12Skip3dMask.Environment) != 0).IsFalse();
+
+		AssertThat(GameWorld.ParseDx12Skip3d("all")).IsEqual(GameWorld.Dx12Skip3dMask.All);
+	}
+
+	/// <summary>
+	/// Verifies <see cref="Engine_RdHealth.ShouldAcceptSurfaceIndex"/> and
+	/// <see cref="Engine_RdHealth.CheckArrayMeshSurfaceAdded"/> guard negative/out-of-bounds surface indices
+	/// and latch device loss cleanly after RD surface creation failures.
+	/// </summary>
+	[TestCase]
+	public void RdHealthGuardsArrayMeshSurfaceBoundsAndTripsOnFailedSurfaceAdd()
+	{
+		Engine_RdHealth.Reset();
+		try
+		{
+			AssertThat(Engine_RdHealth.ShouldAcceptSurfaceIndex(-1, 0)).IsFalse();
+			AssertThat(Engine_RdHealth.ShouldAcceptSurfaceIndex(0, 0)).IsFalse();
+			AssertThat(Engine_RdHealth.ShouldAcceptSurfaceIndex(1, 1)).IsFalse();
+			AssertThat(Engine_RdHealth.ShouldAcceptSurfaceIndex(0, 1)).IsTrue();
+
+			bool handlerCalled = false;
+			Engine_RdHealth.RegisterDeviceLostHandler(() => handlerCalled = true);
+			AssertThat(Engine_RdHealth.CheckArrayMeshSurfaceAdded(null, 0, "Test.NullMesh")).IsFalse();
+			AssertThat(Engine_RdHealth.IsDeviceLost).IsTrue();
+			AssertThat(handlerCalled).IsTrue();
+			AssertThat(Engine_RdHealth.DeviceLostReason!.Contains("Test.NullMesh", StringComparison.Ordinal)).IsTrue();
+		}
+		finally
+		{
+			Engine_RdHealth.Reset();
+		}
+	}
+
+	/// <summary>
+	/// Verifies <see cref="GameWindowSettings.ResolvePositionalShadowAtlasSize"/> frees unused
+	/// 4096x4096 positional shadow atlas VRAM when <c>placed_light_shadows = false</c> and budget is 0.
+	/// </summary>
+	[TestCase]
+	public void PositionalShadowAtlasZeroesWhenPlacedLightShadowsDisabledAndBudgetZero()
+	{
+		AssertThat(GameWindowSettings.ResolvePositionalShadowAtlasSize(placedLightShadows: false, shadowBudget: 0)).IsEqual(0);
+		AssertThat(GameWindowSettings.ResolvePositionalShadowAtlasSize(placedLightShadows: true, shadowBudget: 0)).IsEqual(4096);
+		AssertThat(GameWindowSettings.ResolvePositionalShadowAtlasSize(placedLightShadows: false, shadowBudget: 4)).IsEqual(4096);
+
+		var lowCfg = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		{
+			["placed_light_shadows"] = "false",
+			["display_resolution"] = "1920x1080",
+		};
+		GameWindowSettings parsed = GameWindowSettings.FromValues(lowCfg, "refii.toml");
+		AssertThat(parsed.PlacedLightShadows).IsFalse();
+	}
+
+	/// <summary>
+	/// Verifies <see cref="Engine_LevelAmbientOcclusion.ShouldRebakeForResolution"/> accepts higher-resolution
+	/// cached terrain AO when a lower resolution is configured unless rebuild is explicitly forced,
+	/// and verifies <see cref="GameWorld.ShouldTriggerLohHighWatermark"/>.
+	/// </summary>
+	[TestCase]
+	public void AoResolutionCacheGuardAndLohHighWatermarkBehaveDeterministically()
+	{
+		AssertThat(Engine_LevelAmbientOcclusion.ShouldRebakeForResolution(4096, 2048)).IsFalse();
+		AssertThat(Engine_LevelAmbientOcclusion.ShouldRebakeForResolution(2048, 2048)).IsFalse();
+		AssertThat(Engine_LevelAmbientOcclusion.ShouldRebakeForResolution(2048, 4096)).IsTrue();
+		AssertThat(Engine_LevelAmbientOcclusion.ShouldRebakeForResolution(4096, 2048, forceRebuild: true)).IsTrue();
+
+		const long oneGb = 1024L * 1024L * 1024L;
+		AssertThat(GameWorld.ShouldTriggerLohHighWatermark(oneGb, oneGb / 2, worldBuildHeld: false, deviceLost: false)).IsFalse();
+		AssertThat(GameWorld.ShouldTriggerLohHighWatermark(oneGb * 2, oneGb / 2, worldBuildHeld: true, deviceLost: false)).IsFalse();
+		AssertThat(GameWorld.ShouldTriggerLohHighWatermark(oneGb * 2, oneGb / 2, worldBuildHeld: false, deviceLost: true)).IsFalse();
+		AssertThat(GameWorld.ShouldTriggerLohHighWatermark(oneGb * 2, oneGb / 2, worldBuildHeld: false, deviceLost: false)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies <see cref="GameChildProcess.BuildRendererSettingsContent"/> honors optional D3D12
+	/// diagnostic env overrides for soft shadow quality and descriptor heap limits.
+	/// </summary>
+	[TestCase]
+	public void BuildRendererSettingsContentAppliesD3D12DiagnosticOverrides()
+	{
+		var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+		{
+			["lighting_model"] = "modern",
+		};
+		var env = new Dictionary<string, string?>(StringComparer.Ordinal)
+		{
+			["REFII_D3D12_SOFT_SHADOW_QUALITY"] = "0",
+			["REFII_D3D12_MAX_RESOURCE_DESCRIPTORS"] = "65536",
+			["REFII_D3D12_MAX_RESOURCE_DESCRIPTORS_PER_FRAME"] = "32768",
+		};
+
+		string content = GameChildProcess.BuildRendererSettingsContent(config, envOverrides: env);
+		AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors=65536", StringComparison.Ordinal)).IsTrue();
+		AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=32768", StringComparison.Ordinal)).IsTrue();
+		AssertThat(content.Contains("lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0", StringComparison.Ordinal)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies DRY gating of <see cref="Engine_ArrayMeshes.ShouldStripSurfaceLodsForD3d12"/>,
+	/// <see cref="Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask"/>,
+	/// <see cref="Refii.Lighting.Engine_DepthPrepassMarker.ShouldEnableMarker"/>,
+	/// <see cref="GameWorld.ParseDx12Skip3d"/> <c>hero</c> token, shared <c>NextPass</c> copying in
+	/// <c>Engine_MaterialCopy</c>, and post-TDR <see cref="Engine_RdHealth"/> early-outs.
+	/// </summary>
+	[TestCase]
+	public void DryDx12WorkaroundStencilGatingAndRdHealthGuardsHold()
+	{
+		// Upstream Godot #120857: strip runtime surface LODs on D3D12 by default unless overridden.
+		AssertThat(Engine_ArrayMeshes.ShouldStripSurfaceLodsForD3d12(isD3d12: true)).IsTrue();
+		AssertThat(Engine_ArrayMeshes.ShouldStripSurfaceLodsForD3d12(isD3d12: true, keepLodsEnv: "1")).IsFalse();
+		AssertThat(Engine_ArrayMeshes.ShouldStripSurfaceLodsForD3d12(isD3d12: false)).IsFalse();
+
+		// Zero-visual-change driver-agnostic saturation mask gating matching Xbox 360 0x821e5e60.
+		AssertThat(Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask(0.0f, 0.0f)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask(0.005f, -0.009f)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask(0.25f, 0.0f, chainActive: false)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask(0.25f, 0.0f, chainActive: true, coverHeld: true)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask(0.25f, 0.0f, chainActive: true, coverHeld: false)).IsTrue();
+		AssertThat(Refii.Lighting.Engine_PostFxParams.RequiresSaturationMask(0.0f, -0.15f, chainActive: true, coverHeld: false)).IsTrue();
+
+		// Zero-visual-change driver-agnostic depth pre-pass marker gating (Classic-only when native pre-pass is off).
+		AssertThat(Refii.Lighting.Engine_DepthPrepassMarker.ShouldEnableMarker(enabled: true, nativeDepthPrepassEnabled: true)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_DepthPrepassMarker.ShouldEnableMarker(enabled: false, nativeDepthPrepassEnabled: false)).IsFalse();
+		AssertThat(Refii.Lighting.Engine_DepthPrepassMarker.ShouldEnableMarker(enabled: true, nativeDepthPrepassEnabled: false)).IsTrue();
+
+		// Hero skip token in GameWorld.ParseDx12Skip3d.
+		GameWorld.Dx12Skip3dMask heroMask = GameWorld.ParseDx12Skip3d("hero");
+		AssertThat(heroMask).IsEqual(GameWorld.Dx12Skip3dMask.Hero);
+		AssertThat((GameWorld.Dx12Skip3dMask.All & GameWorld.Dx12Skip3dMask.Hero) != 0).IsTrue();
+
+		// Engine_MaterialCopy deep-clones ShaderMaterial NextPass; RD health guards cover FX/PostFX.
+		string srcRoot = Path.Combine(FindRepoRoot(), "src");
+		string matCopy = File.ReadAllText(Path.Combine(srcRoot, "Engine", "material", "Engine_MaterialCopy.cs"));
+		AssertThat(matCopy.Contains("source.NextPass is ShaderMaterial nextPass", StringComparison.Ordinal)).IsTrue();
+
+		string fxDepth = File.ReadAllText(Path.Combine(srcRoot, "Engine", "fx", "Engine_FxDepthCaptureEffect.cs"));
+		AssertThat(fxDepth.Contains("Engine_FxDepthCaptureEffect.EnsureTarget", StringComparison.Ordinal)).IsTrue();
+
+		string satMask = File.ReadAllText(Path.Combine(srcRoot, "Engine", "Lighting", "Engine_PostFxSaturationMask.cs"));
+		AssertThat(satMask.Contains("Engine_PostFxSaturationMask.Resize", StringComparison.Ordinal)).IsTrue();
+
+		string postFx = File.ReadAllText(Path.Combine(srcRoot, "Engine", "Lighting", "Engine_PostFxEffect.cs"));
+		AssertThat(postFx.Contains("Engine_PostFxEffect.EnsureTargets.quarter", StringComparison.Ordinal)).IsTrue();
+
+		string fxDriver = File.ReadAllText(Path.Combine(srcRoot, "Engine", "fx", "Engine_FxDriver.cs"));
+		AssertThat(fxDriver.Contains("Engine_RdHealth.IsDeviceLost", StringComparison.Ordinal)).IsTrue();
+
+		string fableFx = File.ReadAllText(Path.Combine(srcRoot, "Engine", "fx", "FableFx.cs"));
+		AssertThat(fableFx.Contains("Engine_RdHealth.IsDeviceLost", StringComparison.Ordinal)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies <c>DualParaboloid</c> is retired across C# code, shadow-caster proxy selection uses
+	/// zero-discard solid and 1-tap cutout shaders, surface shaders strip Stage 2 behind
+	/// <c>!IN_SHADOW_PASS</c>, and degenerate water edge-blend diagnostics log at most once per tuple.
+	/// </summary>
+	[TestCase]
+	public void DualParaboloidRetiredShadowPassStrippedAndWaterLogDeduplicated()
+	{
+		string srcRoot = Path.Combine(FindRepoRoot(), "src");
+
+		// Zero DualParaboloid references in runtime C# code.
+		foreach (string csPath in Directory.GetFiles(srcRoot, "*.cs", SearchOption.AllDirectories))
+		{
+			string csCode = File.ReadAllText(csPath);
+			AssertThat(csCode.Contains("DualParaboloid", StringComparison.Ordinal))
+				.OverrideFailureMessage($"{csPath} still references DualParaboloid")
+				.IsFalse();
+		}
+
+		// Shadow proxy solid vs cutout caster policies.
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesSolidProxyCaster(skinned: true, always: false)).IsTrue();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesSolidProxyCaster(skinned: false, always: true)).IsTrue();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesSolidProxyCaster(skinned: false, always: false)).IsFalse();
+
+		AssertThat(Refii.Entities.Engine_ShadowProxy.CanUseDedicatedCutoutCaster(
+			skinned: true, always: false, "res://src/Engine/material/standard_material.gdshader")).IsTrue();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.CanUseDedicatedCutoutCaster(
+			skinned: true, always: false, "res://src/Engine/material/standard_material_phong.gdshader")).IsTrue();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.CanUseDedicatedCutoutCaster(
+			skinned: true, always: false, "res://src/Engine/material/standard_material_wind.gdshader")).IsFalse();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.CanUseDedicatedCutoutCaster(
+			skinned: false, always: false, "res://src/Engine/material/standard_material.gdshader")).IsFalse();
+
+		string cutoutShader = StripShaderComments(File.ReadAllText(
+			Path.Combine(srcRoot, "Engine", "entities", "shadow_caster_cutout.gdshader")));
+		AssertThat(cutoutShader.Contains("textureLod(albedo_tex,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(System.Text.RegularExpressions.Regex.IsMatch(cutoutShader, @"\bdFd[xy]\(")).IsFalse();
+		AssertThat(System.Text.RegularExpressions.Regex.Matches(cutoutShader, @"\bdiscard\s*;").Count).IsEqual(1);
+
+		// Surface shaders must never gate derivatives on runtime UBO IN_SHADOW_PASS, and under
+		// Forward+ (`RENDERER_FORWARD_PLUS`) zero PASS_MODE_COLOR shaders may emit `discard;`.
+		foreach (string relPath in new[]
+		         {
+			         Path.Combine("Engine", "material", "standard_material_body.gdshaderinc"),
+			         Path.Combine("Engine", "material", "standard_material_phong.gdshader"),
+			         Path.Combine("Engine", "material", "families", "tree_canopy.gdshader"),
+			         Path.Combine("Engine", "material", "fur_shell.gdshaderinc"),
+		         })
+		{
+			string code = StripShaderComments(File.ReadAllText(Path.Combine(srcRoot, relPath)));
+			AssertThat(code.Contains("IN_SHADOW_PASS", StringComparison.Ordinal))
+				.OverrideFailureMessage($"{relPath} must not gate fragment work or derivatives on IN_SHADOW_PASS")
+				.IsFalse();
+		}
+
+		string godotRoot = FindRepoRoot();
+		string? ReadRes(string resPath)
+		{
+			string full = Path.Combine(godotRoot, resPath["res://".Length..].Replace('/', Path.DirectorySeparatorChar));
+			return File.Exists(full) ? File.ReadAllText(full).Replace("\r\n", "\n") : null;
+		}
+
+		var depthOnlyAllowedDiscards = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			"res://src/Engine/entities/shadow_caster.gdshader",
+			"res://src/Engine/entities/shadow_caster_cutout.gdshader",
+			"res://src/Engine/Lighting/depth_prepass_marker.gdshader",
+		};
+
+		var expectedForwardPlusDepthPrepassAlpha = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+		{
+			"res://src/Engine/material/standard_material.gdshader",
+			"res://src/Engine/material/standard_material_wind.gdshader",
+			"res://src/Engine/material/standard_material_tree.gdshader",
+			"res://src/Engine/material/fur_shell.gdshader",
+			"res://src/Engine/material/standard_material_phong.gdshader",
+			"res://src/Engine/material/families/tree_canopy.gdshader",
+			"res://src/Engine/entities/entity_highlight_silhouette.gdshader",
+		};
+
+		foreach (string shaderFile in Directory.GetFiles(srcRoot, "*.gdshader", SearchOption.AllDirectories))
+		{
+			string relToGodot = Path.GetRelativePath(godotRoot, shaderFile).Replace('\\', '/');
+			string resPath = "res://" + relToGodot;
+			string rawCode = File.ReadAllText(shaderFile).Replace("\r\n", "\n");
+			string preprocessed = Refii.Models.Engine_ShaderCeilingSource.Preprocess(
+				rawCode,
+				resPath,
+				ReadRes,
+				Refii.Models.Engine_ShaderCeilingSource.RendererForwardPlus);
+
+			bool hasDiscard = System.Text.RegularExpressions.Regex.IsMatch(preprocessed, @"\bdiscard\s*;");
+			bool expectedDiscard = depthOnlyAllowedDiscards.Contains(resPath);
+			AssertThat(hasDiscard)
+				.OverrideFailureMessage($"{resPath} unexpected discard state under Forward+ (got {hasDiscard}, expected {expectedDiscard})")
+				.IsEqual(expectedDiscard);
+
+			if (expectedForwardPlusDepthPrepassAlpha.Contains(resPath))
+			{
+				AssertThat(preprocessed.Contains("depth_prepass_alpha", StringComparison.Ordinal))
+					.OverrideFailureMessage($"{resPath} must enable depth_prepass_alpha under Forward+")
+					.IsTrue();
+			}
+			else if (resPath is "res://src/Engine/material/standard_material_culled.gdshader"
+			         or "res://src/Engine/material/standard_material_translucent.gdshader")
+			{
+				AssertThat(preprocessed.Contains("depth_prepass_alpha", StringComparison.Ordinal))
+					.OverrideFailureMessage($"{resPath} must not enable depth_prepass_alpha under Forward+")
+					.IsFalse();
+			}
+		}
+
+		AssertThat(Refii.Models.Engine_MdlMaterial.CutoutRenderPriority).IsLess(0);
+
+		// Degenerate water edge blend log deduplication.
+		Refii.Level.Engine_WaterTheme.ResetLoggedDegenerateEdgeBlendsForTests();
+		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(0f, 0f, 0f)).IsTrue();
+		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(0f, 0f, 0f)).IsFalse();
+		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(1f, 1f, 0f)).IsTrue();
+		Refii.Level.Engine_WaterTheme.ResetLoggedDegenerateEdgeBlendsForTests();
+		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(0f, 0f, 0f)).IsTrue();
 	}
 }

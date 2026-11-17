@@ -223,7 +223,11 @@ public static class Engine_ModernFur
         var passes = new ShaderMaterial[Engine_ClassicFur.MaxShells - 1];
         for (int i = 0; i < passes.Length; i++)
         {
-            var pass = new ShaderMaterial { Shader = _shader };
+            var pass = new ShaderMaterial
+            {
+                Shader = _shader,
+                RenderPriority = Engine_MdlMaterial.CutoutRenderPriority,
+            };
             pass.SetShaderParameter(LayerName, i + 1);
             pass.SetShaderParameter(OcclusionName, fur[9]);
             pass.SetShaderParameter(SlicesName, slices);

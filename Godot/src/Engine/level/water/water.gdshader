@@ -4,7 +4,7 @@ render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
 #include "res://src/Engine/level/environment/sky_dome.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 
-uniform sampler2D normal_map : filter_linear_mipmap, repeat_enable;
+uniform sampler2D normal_map : hint_normal, filter_linear_mipmap, repeat_enable;
 uniform sampler2D screen_tex : hint_screen_texture, filter_linear;
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 
@@ -21,13 +21,13 @@ uniform bool ocean_mode = false;
 // in, which is what every path that builds water without a live camera (the viewers, headless)
 // gets. The tile is sampled at 1-u: our mirror camera is a proper rotation, so its image is
 // horizontally flipped against the guest's improper-basis render that screen-space lookup assumes.
-uniform sampler2D reflection_tex : filter_linear, repeat_disable;
+uniform sampler2D reflection_tex : hint_default_black, filter_linear, repeat_disable;
 uniform bool planar_reflection = false;
 
 // PLAYER TWO'S MIRROR on split screen: the same plane reflected for the second view's camera. A
 // material serves both views, so a draw takes the mirror of the eye it is drawn from — the nearer
 // of the two eyes Engine_WaterReflection states each frame. Off, it is the one mirror above.
-uniform sampler2D reflection_tex_second : filter_linear, repeat_disable;
+uniform sampler2D reflection_tex_second : hint_default_black, filter_linear, repeat_disable;
 uniform bool second_reflection = false;
 uniform vec3 first_eye = vec3(0.0);
 uniform vec3 second_eye = vec3(0.0);
@@ -36,7 +36,7 @@ uniform vec3 second_eye = vec3(0.0);
 // `Render_BindMaterialTextures_INFERRED` sets MagFilter/MinFilter from *(0x83316FC4) = 1 and
 // AddressU/V from *(0x83316F40) = 2, which decode through the D3D layer as k_Linear and
 // k_ClampToEdge. Point sampling here would make the whole edge ramp a no-op.
-uniform sampler2D water_mask : filter_linear, repeat_disable;
+uniform sampler2D water_mask : hint_default_black, filter_linear, repeat_disable;
 uniform bool has_water_mask = false;
 
 // (minX, minZ, 1/sizeX, 1/sizeZ) — turns a local XZ position into the mask's UV, so the mesh does
@@ -68,7 +68,7 @@ uniform float wave_fade_depth = 0.8;
 uniform float foam_width = 1.1;
 uniform float beach_slope = 0.5;
 
-uniform sampler2D terrain_height_tex : filter_linear, repeat_disable;
+uniform sampler2D terrain_height_tex : hint_default_black, filter_linear, repeat_disable;
 uniform vec4 terrain_bounds = vec4(0.0, 0.0, 1.0, 1.0);
 uniform bool has_terrain_height = false;
 
@@ -101,7 +101,7 @@ global uniform vec3 fable_sun_toward;
 /// The main light's colour already multiplied by its energy.
 global uniform vec3 fable_sun_colour;
 
-uniform sampler2D in_scatter_lut : filter_linear, repeat_disable;
+uniform sampler2D in_scatter_lut : hint_default_black, filter_linear, repeat_disable;
 uniform vec3 beta_rayleigh = vec3(0.001, 0.0015, 0.004);
 uniform vec3 beta_mie = vec3(0.0056, 0.0064, 0.0105);
 uniform vec3 sun_engine = vec3(1.0, 0.0, 0.0);
@@ -230,12 +230,19 @@ vec3 dome_reflect(vec3 r) {
 
 // Only the z and w rows: a perspective inverse has no x/y term in either (jitter and the depth
 // correction live in the other rows), so this is the full product without its exact zeros.
+// D3D12 / Intel Arc DXIL warning: called inside divergent raymarch loops, so use textureLod(..., 0.0).
 float linear_depth(vec2 uv, mat4 inv_proj) {
-	float d = texture(depth_tex, uv).r;
-	return -((inv_proj[2].z * d) + inv_proj[3].z) / ((inv_proj[2].w * d) + inv_proj[3].w);
+	float d = textureLod(depth_tex, uv, 0.0).r;
+	float raw_w = (inv_proj[2].w * d) + inv_proj[3].w;
+	float safe_w = abs(raw_w) > 1e-6 ? raw_w : 1e-6;
+	return -((inv_proj[2].z * d) + inv_proj[3].z) / safe_w;
 }
 
 void fragment() {
+	// Precompute local XZ derivatives in uniform control flow BEFORE any divergent branches so
+	// foam normal_map lookups inside `if (band > 0.003)` can use explicit `textureGrad`.
+	vec2 local_xz_dx = dFdx(v_local.xz);
+	vec2 local_xz_dy = dFdy(v_local.xz);
 	float w_surge = 0.0;
 	float w_low = 0.0;
 	float w_roller = 0.0;
@@ -320,14 +327,15 @@ void fragment() {
 		vec2 mirror_uv = clamp(refl_uv, vec2(0.0), vec2(1.0));
 		bool second_view = second_reflection &&
 			distance(CAMERA_POSITION_WORLD, second_eye) < distance(CAMERA_POSITION_WORLD, first_eye);
+		// Explicit textureLod(..., 0.0) avoids implicit derivatives inside non-uniform if/else.
 		vec3 Rf = max(planar_reflection
 			? (second_view
-				? texture(reflection_tex_second, mirror_uv).rgb
-				: texture(reflection_tex, mirror_uv).rgb)
+				? textureLod(reflection_tex_second, mirror_uv, 0.0).rgb
+				: textureLod(reflection_tex, mirror_uv, 0.0).rgb)
 			: dome, vec3(0.0));
 
 		vec2 refr_uv = SCREEN_UV + (nxy * 0.5 * w_reflp.y);
-		vec3 Rr = max(texture(screen_tex, refr_uv).rgb, vec3(0.0));
+		vec3 Rr = max(textureLod(screen_tex, refr_uv, 0.0).rgb, vec3(0.0));
 
 		vec3 near_col = mix(watercol, mix(Rr, Rf, frefl), refl_str);
 		vec3 far_col = mix(watercol, Rf, refl_str);
@@ -357,7 +365,7 @@ void fragment() {
 				refr_uv = SCREEN_UV;
 				refr_lin = scene_here;
 			}
-			vec3 Rr = texture(screen_tex, refr_uv).rgb;
+			vec3 Rr = textureLod(screen_tex, refr_uv, 0.0).rgb;
 
 			float depth_w = max(refr_lin - water_lin, 0.0);
 			float absorb = 1.0 - exp(-depth_w * (6.0 / max(w_bias.w, 1.0)));
@@ -417,7 +425,7 @@ void fragment() {
 			}
 
 			if (hit > 0.0) {
-				refl_col = mix(refl_col, texture(screen_tex, hit_uv).rgb, hit);
+				refl_col = mix(refl_col, textureLod(screen_tex, hit_uv, 0.0).rgb, hit);
 			}
 		}
 
@@ -437,10 +445,12 @@ void fragment() {
 			* (1.0 - w_low);
 		float band = max(shore_foam, w_roller);
 		if (band > 0.003) {
-			float f0 = texture(normal_map,
-				(v_local.xz * 0.33) + vec2(TIME * 0.020, TIME * 0.012)).x;
-			float f1 = texture(normal_map,
-				(v_local.xz * 0.19) - vec2(TIME * 0.016, TIME * 0.010)).y;
+			float f0 = textureGrad(normal_map,
+				(v_local.xz * 0.33) + vec2(TIME * 0.020, TIME * 0.012),
+				local_xz_dx * 0.33, local_xz_dy * 0.33).x;
+			float f1 = textureGrad(normal_map,
+				(v_local.xz * 0.19) - vec2(TIME * 0.016, TIME * 0.010),
+				local_xz_dx * 0.19, local_xz_dy * 0.19).y;
 			float pattern = mix(f1, f0, clamp((band - 0.4) / 0.4, 0.0, 1.0));
 			float foam = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern)));
 
@@ -492,7 +502,7 @@ void fragment() {
 	// 0x82B3AB24: a 4x4 texture of constant 0.0, and no blur.
 	if (has_water_mask) {
 		vec2 mask_uv = (v_local.xz - w_mask_bounds.xy) * w_mask_bounds.zw;
-		float mask = texture(water_mask, clamp(mask_uv, vec2(0.0), vec2(1.0))).r;
+		float mask = textureLod(water_mask, clamp(mask_uv, vec2(0.0), vec2(1.0)), 0.0).r;
 		float d = 1.0 - mask;
 		ALPHA = clamp(
 			(d - (w_edge.x + w_edge.z)) / max(w_edge.y - w_edge.x, 1e-4),

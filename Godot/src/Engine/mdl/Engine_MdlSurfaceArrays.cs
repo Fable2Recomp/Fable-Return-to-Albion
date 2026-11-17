@@ -69,8 +69,21 @@ public static class Engine_MdlSurfaceArrays
 		Godot.Collections.Dictionary? lods, float[]? levelTable)
 	{
 		Godot.Collections.Array built = Refii.AndroidRuntime.AndroidLeanTreeStreams.ForGodot(arrays);
-		Refii.Core.Engine_ArrayMeshes.AddSurface(mesh, primitive, built, null, lods, Engine_MdlTransfer.FormatOf(built) | Refii.AndroidRuntime.AndroidMeshCompression.FlagFor(primitive, built));
-		int added = mesh.GetSurfaceCount() - 1;
+		int countBefore = mesh.GetSurfaceCount();
+		Refii.Core.Engine_ArrayMeshes.AddSurface(
+			mesh,
+			primitive,
+			built,
+			null,
+			lods,
+			Engine_MdlTransfer.FormatOf(built) | Refii.AndroidRuntime.AndroidMeshCompression.FlagFor(primitive, built));
+		int countAfter = mesh.GetSurfaceCount();
+		if (countAfter <= countBefore)
+		{
+			return -1;
+		}
+
+		int added = countAfter - 1;
 		Record(mesh, added, arrays.Duplicate(false), lods is null ? null : levelTable ?? LevelsOf(lods));
 		return added;
 	}
@@ -108,8 +121,21 @@ public static class Engine_MdlSurfaceArrays
 		Godot.Collections.Dictionary? lods, float[]? levelTable = null)
 	{
 		Godot.Collections.Array built = Refii.AndroidRuntime.AndroidLeanTreeStreams.ForGodot(arrays);
-		Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(mesh, primitive, built, null, lods, Engine_MdlTransfer.FormatOf(built) | Refii.AndroidRuntime.AndroidMeshCompression.FlagFor(primitive, built));
-		int added = mesh.GetSurfaceCount() - 1;
+		int countBefore = mesh.GetSurfaceCount();
+		Refii.Core.Engine_ArrayMeshes.AddSurfaceDirect(
+			mesh,
+			primitive,
+			built,
+			null,
+			lods,
+			Engine_MdlTransfer.FormatOf(built) | Refii.AndroidRuntime.AndroidMeshCompression.FlagFor(primitive, built));
+		int countAfter = mesh.GetSurfaceCount();
+		if (countAfter <= countBefore)
+		{
+			return -1;
+		}
+
+		int added = countAfter - 1;
 		Record(mesh, added, arrays.Duplicate(false), lods is null ? null : levelTable ?? LevelsOf(lods));
 		return added;
 	}
@@ -137,6 +163,11 @@ public static class Engine_MdlSurfaceArrays
 	/// <summary>A surface's recorded level table, edge key and triangle count in pairs; null when it has none.</summary>
 	public static float[]? LevelTable(Mesh mesh, int surface)
 	{
+		if (surface < 0)
+		{
+			return null;
+		}
+
 		lock (Gate)
 		{
 			if (!mesh.HasMeta(LodsMeta) ||
@@ -157,7 +188,7 @@ public static class Engine_MdlSurfaceArrays
 	/// </summary>
 	public static void RecordLevels(Mesh mesh, int surface, Godot.Collections.Dictionary? lods)
 	{
-		if (LevelsOf(lods) is not { } packed)
+		if (surface < 0 || LevelsOf(lods) is not { } packed)
 		{
 			return;
 		}
@@ -213,6 +244,11 @@ public static class Engine_MdlSurfaceArrays
 	/// </summary>
 	public static Godot.Collections.Array Of(Mesh mesh, int surface, [CallerMemberName] string caller = "")
 	{
+		if (surface < 0)
+		{
+			return new Godot.Collections.Array();
+		}
+
 		lock (Gate)
 		{
 			if (mesh.HasMeta(ArraysMeta) &&
@@ -221,6 +257,12 @@ public static class Engine_MdlSurfaceArrays
 			{
 				return all[surface].AsGodotArray().Duplicate(false);
 			}
+		}
+
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			Refii.Core.Engine_RdHealth.NoteSuppressed();
+			return new Godot.Collections.Array();
 		}
 
 		int count = System.Threading.Interlocked.Increment(ref _readbacks);
@@ -248,28 +290,58 @@ public static class Engine_MdlSurfaceArrays
 	}
 
 	/// <summary>A surface's vertex count, from the mesh's own bookkeeping. No readback.</summary>
-	public static int VertexCount(Mesh mesh, int surface) =>
-		mesh is ArrayMesh array
-			? array.SurfaceGetArrayLen(surface)
-			: Of(mesh, surface)[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length;
+	public static int VertexCount(Mesh mesh, int surface)
+	{
+		if (surface < 0)
+		{
+			return 0;
+		}
+
+		if (mesh is ArrayMesh array)
+		{
+			return Refii.Core.Engine_RdHealth.ShouldAcceptSurfaceIndex(surface, array.GetSurfaceCount())
+				? array.SurfaceGetArrayLen(surface)
+				: 0;
+		}
+
+		Godot.Collections.Array arrays = Of(mesh, surface);
+		return arrays.Count > (int)Mesh.ArrayType.Vertex
+			? arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array().Length
+			: 0;
+	}
 
 	/// <summary>True when the surface carries bone indices and weights. No readback.</summary>
 	public static bool Skinned(Mesh mesh, int surface)
 	{
+		if (surface < 0)
+		{
+			return false;
+		}
+
 		if (mesh is ArrayMesh array)
 		{
+			if (!Refii.Core.Engine_RdHealth.ShouldAcceptSurfaceIndex(surface, array.GetSurfaceCount()))
+			{
+				return false;
+			}
 			Mesh.ArrayFormat format = array.SurfaceGetFormat(surface);
 			return (format & Mesh.ArrayFormat.FormatBones) != 0 &&
 				(format & Mesh.ArrayFormat.FormatWeights) != 0;
 		}
 
 		Godot.Collections.Array arrays = Of(mesh, surface);
-		return arrays[(int)Mesh.ArrayType.Bones].VariantType != Variant.Type.Nil &&
+		return arrays.Count > (int)Mesh.ArrayType.Weights &&
+			arrays[(int)Mesh.ArrayType.Bones].VariantType != Variant.Type.Nil &&
 			arrays[(int)Mesh.ArrayType.Weights].VariantType != Variant.Type.Nil;
 	}
 
 	private static void Record(Mesh mesh, int surface, Godot.Collections.Array arrays, float[]? lods)
 	{
+		if (surface < 0)
+		{
+			return;
+		}
+
 		long bytes = mesh is ArrayMesh array ? EstimatedBytes(array, surface) : 0;
 		lock (Gate)
 		{
@@ -305,6 +377,11 @@ public static class Engine_MdlSurfaceArrays
 	/// <summary>The surface's arrays at their managed widths, from its format and lengths.</summary>
 	private static long EstimatedBytes(ArrayMesh mesh, int surface)
 	{
+		if (!Refii.Core.Engine_RdHealth.ShouldAcceptSurfaceIndex(surface, mesh.GetSurfaceCount()))
+		{
+			return 0;
+		}
+
 		Mesh.ArrayFormat format = mesh.SurfaceGetFormat(surface);
 		long perVertex = 12;
 		perVertex += (format & Mesh.ArrayFormat.FormatNormal) != 0 ? 12 : 0;

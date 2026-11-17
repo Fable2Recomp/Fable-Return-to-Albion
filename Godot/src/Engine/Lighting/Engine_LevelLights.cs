@@ -1751,6 +1751,7 @@ public static class Engine_LevelLights
 			{
 				OmniRange = light.Range * PlacedRange,
 				OmniAttenuation = 1.0f,
+				OmniShadowMode = OmniLight3D.ShadowMode.Cube,
 				// Zero on the Godot node: Godot's built-in omni volumetric loop does not sample
 				// `fable_static_shadow_atlas` and would bleed a 360-degree sphere through solid walls.
 				// `Engine_PostFxEffect` evaluates omni volumetric scattering and static-shadow

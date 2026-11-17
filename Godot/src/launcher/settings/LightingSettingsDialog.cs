@@ -274,12 +274,11 @@ public partial class LightingSettingsDialog : Control
 			"Placed Fixture Shadows",
 			"Enable dynamic shadow casting for torches, lanterns, and braziers based on the active shadow budget (default: on)."));
 
-		contentCol.AddChild(BuildOptionRow(
-			"omni_shadow_mode",
-			"Point Light Shadow Mode",
-			"Shadow projection for dynamic point lights: Dual Paraboloid renders 2 passes per lamp instead of 6 cubemap faces (default: Dual Paraboloid).",
-			new[] { "dual_paraboloid", "cube" },
-			new[] { "Dual Paraboloid (Fast)", "Cubemap (Ultra)" }));
+		contentCol.AddChild(BuildSliderSpinRow(
+			"placed_shadow_limit",
+			"Shadowing Fixture Limit",
+			"Maximum number of nearby lamps, torches, and braziers casting dynamic cubemap shadows at once when Placed Fixture Shadows is on (Low: 1, Balanced: 2, High: 4, Ultra: 8).",
+			1.0, 8.0, 1.0));
 
 		contentCol.AddChild(BuildCheckBoxRow(
 			"placed_light_fade",
@@ -824,7 +823,7 @@ public partial class LightingSettingsDialog : Control
 			"sun_light_scale",
 			"tree_shadow_reach",
 			"placed_light_shadows",
-			"omni_shadow_mode",
+			"placed_shadow_limit",
 			"placed_light_fade",
 			"placed_light_limit",
 			"placed_light_scale",

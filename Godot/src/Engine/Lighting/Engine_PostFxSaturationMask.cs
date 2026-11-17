@@ -51,6 +51,11 @@ public sealed class Engine_PostFxSaturationMask
 
     public void Resize(Vector2I size)
     {
+        if (Engine_RdHealth.IsDeviceLost)
+        {
+            return;
+        }
+
         ReleaseTargets();
         Texture = _rd.Texture(
             new RDTextureFormat
@@ -64,10 +69,12 @@ public sealed class Engine_PostFxSaturationMask
                     RenderingDevice.TextureUsageBits.CanCopyToBit,
             },
             new RDTextureView());
-        if (Texture.IsValid)
+        if (!Engine_RdHealth.CheckRdValid(Texture, "Engine_PostFxSaturationMask.Resize"))
         {
-            _rd.TextureClear(Texture, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
+            return;
         }
+
+        _rd.TextureClear(Texture, new Color(0.0f, 0.0f, 0.0f, 0.0f), 0, 1, 0, 1);
     }
 
     /// <summary>
@@ -77,7 +84,7 @@ public sealed class Engine_PostFxSaturationMask
     /// </summary>
     public bool Build(Rid depth)
     {
-        if (!_shader.IsValid || !Texture.IsValid || !depth.IsValid)
+        if (Engine_RdHealth.IsDeviceLost || !_shader.IsValid || !Texture.IsValid || !depth.IsValid)
         {
             return false;
         }

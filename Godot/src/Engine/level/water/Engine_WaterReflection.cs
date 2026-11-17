@@ -375,9 +375,32 @@ public sealed partial class Engine_WaterReflection : Node
         }
     }
 
+    /// <summary>Number of reflection bodies currently mounted for the active region.</summary>
+    public int BodyCount => _bodies.Count;
+
+    /// <summary>Stops every planar reflection viewport cleanly (e.g., on RD device loss or skip_3d=reflections).</summary>
+    public void DisableAll()
+    {
+        foreach (Body body in _bodies)
+        {
+            foreach (MirrorRig? mirror in body.Mirrors)
+            {
+                if (mirror is not null && GodotObject.IsInstanceValid(mirror.Viewport))
+                {
+                    mirror.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+                }
+            }
+        }
+    }
+
     public override void _Process(double delta)
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("waterreflection");
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+        {
+            DisableAll();
+            return;
+        }
         if (_view is null || _bodies.Count == 0)
         {
             return;

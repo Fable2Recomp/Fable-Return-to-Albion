@@ -21,14 +21,15 @@ uniform float motion_time = 0.0;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
 
 float precip_depth_fade(vec2 screen_uv, mat4 inverse_projection, float particle_depth) {
-	float depth = texture(scene_depth, screen_uv).r;
+	float depth = textureLod(scene_depth, screen_uv, 0.0).r;
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	vec3 ndc = vec3(screen_uv, depth) * 2.0 - 1.0;
 #else
 	vec3 ndc = vec3(screen_uv * 2.0 - 1.0, depth);
 #endif
 	vec4 scene = inverse_projection * vec4(ndc, 1.0);
-	float scene_distance = -scene.z / scene.w;
+	float safe_w = abs(scene.w) > 1e-6 ? scene.w : 1e-6;
+	float scene_distance = -scene.z / safe_w;
 	return clamp((scene_distance - particle_depth) / 0.25, 0.0, 1.0);
 }
 
@@ -64,13 +65,17 @@ vec3 precip_unit(vec3 v) {
 	return dot(v, v) > 0.0 ? normalize(v) : vec3(0.0);
 }
 
+float precip_channel(vec4 v, int c) {
+	return c == 0 ? v.x : (c == 1 ? v.y : (c == 2 ? v.z : v.w));
+}
+
 vec3 precip_pushed(vec3 p, vec3 r, float lifetime) {
 	vec3 moved = vec3(0.0);
 	vec3 q = 2.0 * r - 1.0;
 	for (int i = 0; i < 8; i++) {
 		vec4 a = texelFetch(fable_snow_pushes, ivec2(2 * i, 0), 0);
 		vec4 b = texelFetch(fable_snow_pushes, ivec2(2 * i + 1, 0), 0);
-		float inv_reach = texelFetch(fable_snow_pushes, ivec2(16 + i / 4, 0), 0)[i % 4];
+		float inv_reach = precip_channel(texelFetch(fable_snow_pushes, ivec2(16 + (i >> 2), 0), 0), i & 3);
 		vec3 along = b.xyz - a.xyz;
 		float length2 = dot(along, along);
 		float t = dot(p - a.xyz, along);

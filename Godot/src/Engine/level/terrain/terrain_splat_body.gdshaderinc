@@ -63,10 +63,10 @@ uniform bool has_lightmap = false;
 // chunk rectangles packed edge to edge (black filler between), so it carries no generated mips:
 // they would average neighbouring rectangles into every chunk seam.
 uniform bool page_mode = false;
-uniform sampler2D page_albedo : filter_linear, repeat_disable;
+uniform sampler2D page_albedo : filter_linear, repeat_disable, hint_default_black;
 
-uniform sampler2DArray lod_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable;
-uniform sampler2DArray lod_detail_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable;
+uniform sampler2DArray lod_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable, hint_default_white;
+uniform sampler2DArray lod_detail_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable, hint_default_white;
 
 // The per-layer normal maps, sampled with their colour partner's UV because that is what the
 // guest does — `sub_82215BE0` passes the SAME scale float to the ground pair (material+0xB0 and
@@ -79,7 +79,7 @@ uniform bool has_normals = false;
 // The ground's share of the ORM: per-layer cavity derived from the normal slices — base
 // occlusion in R, the cliff projection's in G — sampled with the colour's own tiling. Linear
 // data, no source_color. It darkens only the AMBIENT half below, like the props' ao does.
-uniform sampler2DArray lod_ao_array : filter_linear_mipmap_anisotropic, repeat_enable;
+uniform sampler2DArray lod_ao_array : filter_linear_mipmap_anisotropic, repeat_enable, hint_default_white;
 uniform bool has_ao = false;
 
 // The ground's PARALLAX — the same offset-mapping the props run, from a height the same
@@ -89,7 +89,7 @@ uniform bool has_ao = false;
 uniform bool has_height = false;
 uniform float parallax_scale : hint_range(0.0, 0.1) = 0.02;
 
-uniform sampler2DArray material_weight : filter_linear, repeat_disable;
+uniform sampler2DArray material_weight : filter_linear, repeat_disable, hint_default_black;
 // Which material planes are painted near each weight texel, 32 bits as RGBA8
 // (Engine_TerrainSplatMaterial). Unbound it is white: every layer, the full loop.
 uniform sampler2D material_mask : filter_nearest, repeat_disable, hint_default_white;
@@ -243,11 +243,17 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 
 	// The cavity's R and the height's B share the undisplaced ground coordinate: one fetch.
 	// has_height implies has_ao (Engine_TerrainSplatMaterial binds them together).
+	//
+	// D3D12 / Intel Arc DXIL warning: `sample_layer` runs inside the per-pixel divergent splat
+	// loop below. Every texture fetch here MUST use explicit `textureGrad` with derivatives
+	// computed before any per-pixel branch or `discard;`, NEVER implicit `texture()`.
 	vec2 buv = ground_uv(world_xy, base_scale);
+	vec2 buv_dx = vec2(local_dx.x * mesh_xform.x, -local_dx.z * mesh_xform.y) * base_scale;
+	vec2 buv_dy = vec2(local_dy.x * mesh_xform.x, -local_dy.z * mesh_xform.y) * base_scale;
 #ifdef FABLE_LITE_FLAT_TERRAIN
 	vec4 aoh = vec4(0.0);
 #else
-	vec4 aoh = has_ao ? texture(lod_ao_array, vec3(buv, fs)) : vec4(0.0);
+	vec4 aoh = has_ao ? textureGrad(lod_ao_array, vec3(buv, fs), buv_dx, buv_dy) : vec4(0.0);
 #endif
 
 	// One-tap offset mapping in this layer's own UV space, exactly the props' line. The cliff
@@ -265,7 +271,7 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 	// weighted sum of SQUARED colours. Squaring the blended result instead computes
 	// (sum w*c)^2 where the guest computes sum w*c^2, and those differ wherever two layers
 	// overlap — which is every transition in the region.
-	vec3 base = texture(lod_array, vec3(buv, fs)).rgb;
+	vec3 base = textureGrad(lod_array, vec3(buv, fs), buv_dx, buv_dy).rgb;
 	base *= base;
 	colour = base;
 
@@ -275,7 +281,7 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 	normal = vec3(0.0, 0.0, 1.0);
 #ifndef FABLE_LITE_FLAT_TERRAIN
 	if (has_normals) {
-		vec2 gxy = texture(lod_normal_array, vec3(buv, fs)).xy * 2.0 - 1.0;
+		vec2 gxy = textureGrad(lod_normal_array, vec3(buv, fs), buv_dx, buv_dy).xy * 2.0 - 1.0;
 		normal = vec3(gxy, sqrt(max(1.0 - dot(gxy, gxy), 0.0)));
 	}
 #endif
@@ -320,8 +326,8 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 		if (has_ao) {
 			// The cavity's G channel rides the cliff's two planes.
 			float cliff_ao =
-				texture(lod_ao_array, vec3(uv_x, fs)).g * pw.x +
-				texture(lod_ao_array, vec3(uv_z, fs)).g * pw.y;
+				textureGrad(lod_ao_array, vec3(uv_x, fs), local_dx.zy * cliff_scale, local_dy.zy * cliff_scale).g * pw.x +
+				textureGrad(lod_ao_array, vec3(uv_z, fs), local_dx.xy * cliff_scale, local_dy.xy * cliff_scale).g * pw.y;
 			cavity = mix(aoh.r, cliff_ao, cliff_w);
 		}
 #endif
@@ -331,12 +337,33 @@ void sample_layer(int slice, vec2 world_xy, vec3 local, vec3 n, float slope_w, v
 
 void fragment() {
 	FABLE_TERRAIN_FRAGMENT_IN
+    // D3D12 / Intel Arc DXIL warning: precompute ALL screen-space derivatives unconditionally in
+    // uniform control flow at the top of `fragment()` BEFORE any conditional/diagnostic/per-layer
+    // branches or `discard;`. Never execute `dFdx*`/`dFdy*` inside a diagnostic `if` block.
+    vec3 local_dx = dFdx(v_local);
+    vec3 local_dy = dFdy(v_local);
+    vec2 page_dx = dFdx(UV);
+    vec2 page_dy = dFdy(UV);
+    vec3 geom_cross = cross(dFdx(VERTEX), dFdy(VERTEX));
+    vec3 geom_normal = normalize(v_local_normal);
+#ifdef FABLE_LITE_NO_CLIFF
+    // The chunk was proven flat at build (Engine_TerrainSplatMaterial.ForChunk): every vertex
+    // normal, so every interpolated one, is inside the ground band and this is exactly zero.
+    float slope_w = 0.0;
+    bool quad_cliff = false;
+#else
+    float slope_w = 1.0 - clamp(abs(geom_normal.y) * cliff_blend.y + cliff_blend.x, 0.0, 1.0);
+
+    // Whether ANY lane of this pixel quad has a slope: slope_w is never negative, so
+    // x + |dx| > 0 exactly when x or its horizontal neighbour is, and the same again vertically
+    // covers all four. One answer per quad keeps the cliff fetches' derivatives what they were.
+    float quad_x = slope_w + abs(dFdxFine(slope_w));
+    bool quad_cliff = (quad_x + abs(dFdyFine(quad_x))) > 0.0;
+#endif
     // Keep the diagnostic neutral by default; derivatives precede per-layer branches.
 #ifndef FABLE_LITE
     if ((fable_shader_cost_diagnostic & 1) == 0) {
 #endif
-    vec3 local_dx = dFdx(v_local);
-    vec3 local_dy = dFdy(v_local);
 	// TWO-SIDED, LIKE THE PROPS — AND THIS LINE IS WHY THE GROUND TOOK NO LIGHT. The level
 	// root carries Scale(-1, 1, 1), which flips the winding of everything under it, so the
 	// terrain's TOP rasterises as a BACK face and Godot hands fragment NORMAL through
@@ -344,7 +371,7 @@ void fragment() {
 	// lamp's — clamped to zero, while the shadow term (no NdotL) stayed perfect, which is
 	// exactly the year of "shadows received but never seen". standard_material has carried
 	// this pair since the beginning; the splat never did.
-	float side = fable_normal_side(NORMAL, VERTEX, VIEW);
+	float side = fable_normal_side_precomputed(NORMAL, geom_cross, VIEW);
 	NORMAL *= side;
 #if !defined(FABLE_LITE_FLAT_TERRAIN) && !defined(FABLE_LITE_TERRAIN_NM_ANALYTIC)
 	BINORMAL *= side;
@@ -360,22 +387,6 @@ void fragment() {
 
 	vec2 chunk_co = (world_xy - origin) / extent;
 	vec2 chunk_clamped = clamp(chunk_co, vec2(0.0), vec2(cw - 0.001, ch - 0.001));
-
-	vec3 geom_normal = normalize(v_local_normal);
-#ifdef FABLE_LITE_NO_CLIFF
-	// The chunk was proven flat at build (Engine_TerrainSplatMaterial.ForChunk): every vertex
-	// normal, so every interpolated one, is inside the ground band and this is exactly zero.
-	float slope_w = 0.0;
-	bool quad_cliff = false;
-#else
-	float slope_w = 1.0 - clamp(abs(geom_normal.y) * cliff_blend.y + cliff_blend.x, 0.0, 1.0);
-
-	// Whether ANY lane of this pixel quad has a slope: slope_w is never negative, so
-	// x + |dx| > 0 exactly when x or its horizontal neighbour is, and the same again vertically
-	// covers all four. One answer per quad keeps the cliff fetches' derivatives what they were.
-	float quad_x = slope_w + abs(dFdxFine(slope_w));
-	bool quad_cliff = (quad_x + abs(dFdyFine(quad_x))) > 0.0;
-#endif
 
 	// The view direction in the mesh's tangent frame, once per fragment — the analytic frame
 	// ToArrayMesh emits (T = local +X, B = local -Z via w = +1) maps tangent xy straight onto
@@ -403,7 +414,7 @@ void fragment() {
 	{
 		vec2 half_texel = 0.5 / vec2(textureSize(page_albedo, 0));
 		vec2 page_uv = clamp(UV, v_page_rect.xy + half_texel, max(v_page_rect.zw - half_texel, v_page_rect.xy + half_texel));
-		vec3 page = texture(page_albedo, page_uv).rgb;
+		vec3 page = textureGrad(page_albedo, page_uv, page_dx, page_dy).rgb;
 		final = page * page;
 		mapped_normal = vec3(0.0, 0.0, 1.0);
 		ao = 1.0;
@@ -485,6 +496,8 @@ void fragment() {
 	mapped_normal /= weight_sum;
 	ao /= weight_sum;
 #else
+	// D3D12 / Intel Arc DXIL warning: every layer fetch inside this per-pixel divergent loop
+	// (including `material_weight`) MUST use explicit `textureGrad` / `textureLod`.
 	for (int mat = 0; mat < 32; mat++) {
 #ifdef FABLE_LITE
 		// A lite splat is never a page (FABLE_TERRAIN_PAGE is its own file), and the sparse
@@ -545,7 +558,7 @@ void fragment() {
 		// texel in: bilinear at a rectangle's edge otherwise mixes in its neighbour.
 		vec2 half_texel = 0.5 / vec2(textureSize(page_albedo, 0));
 		vec2 page_uv = clamp(UV, v_page_rect.xy + half_texel, max(v_page_rect.zw - half_texel, v_page_rect.xy + half_texel));
-		vec3 page = texture(page_albedo, page_uv).rgb;
+		vec3 page = textureGrad(page_albedo, page_uv, page_dx, page_dy).rgb;
 		final = page * page;
 		mapped_normal = vec3(0.0, 0.0, 1.0);
 		ao = 1.0;
@@ -587,11 +600,16 @@ void fragment() {
 	METALLIC = 0.0;
 	SPECULAR = 0.0;
 #ifndef FABLE_LITE
-	vec3 weather_weights = surface_weights(fable_world, normalize(v_weather_normal));
-	surface_material(weather_weights, fable_world, final, ROUGHNESS, METALLIC);
-	v_weather_specular = weather_weights.x * (1.0 - weather_weights.y);
-	v_weather_power = mix(70.0, 350.0, weather_weights.z);
-	SPECULAR = v_weather_specular * 0.5;
+	v_weather_specular = 0.0;
+	v_weather_power = 70.0;
+	vec3 weather_weights = vec3(0.0);
+	if (dynamic_surface_weather.w * surface_weather_response > 0.001) {
+		weather_weights = surface_weights(fable_world, normalize(v_weather_normal));
+		surface_material(weather_weights, fable_world, final, ROUGHNESS, METALLIC);
+		v_weather_specular = weather_weights.x * (1.0 - weather_weights.y);
+		v_weather_power = mix(70.0, 350.0, weather_weights.z);
+		SPECULAR = v_weather_specular * 0.5;
+	}
 #endif
 	ALBEDO = final;
 
@@ -730,10 +748,12 @@ void fragment() {
 		EMISSION = final * fable_ambient_occluded(vec3(0.0), combined_ao, darken);
 		AO = combined_ao;
 	} else {
+	// D3D12 warning: `lightmap` uses `filter_linear` (no mipmaps) and sits inside divergent
+	// `if (fable_unified ...)` / `has_lightmap ? ... : ...` control flow — use `textureLod(..., 0.0)`.
 	vec2 lm_dim = vec2(textureSize(lightmap, 0));
 	vec2 lm_uv = (chunk_clamped * 32.0) / max(lm_dim, vec2(1.0));
 	vec3 bake = has_lightmap
-		? pow(max(texture(lightmap, lm_uv).rgb, vec3(0.0)), vec3(FABLE_LIGHTMAP_GAMMA))
+		? pow(max(textureLod(lightmap, lm_uv, 0.0).rgb, vec3(0.0)), vec3(FABLE_LIGHTMAP_GAMMA))
 		: vec3(0.0);
 
 	// The theme's LightmapFactor, applied now that it has the operand the guest authored it
@@ -837,10 +857,6 @@ void fragment() {
 		// facing the sun, black = facing away) — see the same views in standard_material.
 		EMISSION = vec3(0.0);
 		ALBEDO = vec3(1.0);
-	} else if (fable_light_debug == 8) {
-		// The VIEW-SPACE NORMAL as colour, straight from the fragment.
-		EMISSION = (NORMAL * 0.5) + 0.5;
-		ALBEDO = vec3(0.0);
 	} else if (fable_light_debug == 11) {
 		// 11: combined ambient occlusion (micro-cavity normal AO * baked terrain contact AO).
 		EMISSION = vec3(combined_ao);

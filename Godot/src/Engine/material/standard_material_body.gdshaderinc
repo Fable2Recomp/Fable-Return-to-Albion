@@ -35,7 +35,12 @@
 #define FABLE_MODEL_NORMAL NORMAL
 #endif
 
+#if !defined(FABLE_SOLID) && !defined(FABLE_TRANSLUCENT) && CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+render_mode depth_prepass_alpha;
+#endif
+
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
+#include "res://src/Engine/material/fable_dither.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 #ifndef FABLE_LITE
 #include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
@@ -54,7 +59,7 @@
 // it is the scissor threshold.
 uniform sampler2D albedo_tex : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic;
-uniform sampler2D emission_tex : filter_linear_mipmap_anisotropic;
+uniform sampler2D emission_tex : hint_default_black, filter_linear_mipmap_anisotropic;
 
 // BLACK, not white. An unbound specular map has to contribute nothing — the guest's own fallback
 // for this slot is a 16x16 transparent black texture, which is also how its identity as the
@@ -85,7 +90,7 @@ uniform bool has_envmap = false;
 ///
 /// It does NOT replace the specular map. There is no ORM slot for specular colour, and that
 /// colour is also what weights the environment reflection.
-uniform sampler2D orm_tex : filter_linear_mipmap_anisotropic;
+uniform sampler2D orm_tex : hint_default_white, filter_linear_mipmap_anisotropic;
 uniform bool has_orm = false;
 
 /// Flag indicating that the material uses modern authored PBR assets rather than legacy 2008 Blinn-Phong.
@@ -399,20 +404,47 @@ void vertex() {
 }
 
 void fragment() {
+    // D3D12 / Intel Arc DXIL warning (godot#118719 / #120857 / PR #122994):
+    // NEVER emit `discard;` in Forward+ PASS_MODE_COLOR (`!MODE_RENDER_DEPTH`), and NEVER wrap
+    // screen-space derivatives in `if (!IN_SHADOW_PASS)` (in Forward+, `IN_SHADOW_PASS` is a
+    // runtime UBO flag, not a compile-time constant). Precompute derivatives unconditionally at
+    // top of `fragment()`, gate heavy Stage-2 work behind `if (!should_discard)` using explicit
+    // `textureGrad`/`textureLod`, and under Forward+ use `render_mode depth_prepass_alpha` +
+    // `ALPHA = should_discard ? 0.0 : fable_instance_fade` (zero color-pass `discard;`).
+    vec2 base_uv_dx = dFdx(UV);
+    vec2 base_uv_dy = dFdy(UV);
+    vec3 geom_cross = cross(dFdx(VERTEX), dFdy(VERTEX));
+
+    ALBEDO = vec3(0.5);
+    EMISSION = vec3(0.0);
+#if defined(FABLE_TRANSLUCENT) || (!defined(FABLE_SOLID) && CURRENT_RENDERER == RENDERER_FORWARD_PLUS)
+    float fable_instance_fade = ALPHA;
+    ALPHA = 0.0;
+#endif
+    METALLIC = 0.0;
+    ROUGHNESS = 1.0;
+    SPECULAR = 0.0;
+#ifndef FABLE_LITE_NO_SPEC
+    v_specular = vec3(0.0);
+    v_specular_power = 1.0;
+#endif
+    v_combined_ao = 1.0;
+
+    bool should_discard = false;
+
     // The tree fade, as an ordered 4x4 dither (Godot's own pattern style; the title's is a 2x2
     // alpha-to-mask). A copy past its band is wholly discarded. Not in FABLE_SOLID: a discard
     // there refuses the shared depth-only shadow material, and no culled surface has a band.
 #ifndef FABLE_SOLID
     if (v_tree_fade < 0.999) {
-        const float bayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
-            3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
-        ivec2 cell = ivec2(FRAGCOORD.xy) & ivec2(3);
-        if (v_tree_fade <= (bayer[(cell.y * 4) + cell.x] + 0.5) / 16.0) {
-            discard;
+        if (v_tree_fade <= fable_bayer_threshold(FRAGCOORD.xy)) {
+            should_discard = true;
         }
     }
 #endif
 
+    // Stage 1: Coverage & Albedo. Bayer-discarded fragments/quads skip parallax and albedo_tex.
+    if (!should_discard) {
     // PARALLAX FIRST, because every other fetch below has to use the displaced coordinate — a
     // shader that offset only the albedo would slide the colour off its own normal and specular.
     //
@@ -427,12 +459,14 @@ void fragment() {
             float par_fade = clamp((18.0 - sqrt(view_dist_sq)) * (1.0 / 6.0), 0.0, 1.0);
             // The view direction in TANGENT space. Godot gives VIEW in view space, and the tangent
             // frame beside it, so the three dots are the change of basis.
-            vec3 tangent_view = normalize(vec3(
-                dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL)));
+            vec3 tangent_view_raw = vec3(dot(VIEW, TANGENT), dot(VIEW, BINORMAL), dot(VIEW, NORMAL));
+            vec3 tangent_view = dot(tangent_view_raw, tangent_view_raw) > 1e-8
+                ? normalize(tangent_view_raw)
+                : vec3(0.0, 0.0, 1.0);
 
             // Centred on 0.5, so a texel at the solved mean does not move at all and the relief
             // displaces both ways around it.
-            float relief = texture(orm_tex, UV).a - 0.5;
+            float relief = textureGrad(orm_tex, UV, base_uv_dx, base_uv_dy).a - 0.5;
 
             // tangent_view.z FLOORED. It goes to zero at grazing incidence and the offset would go to
             // infinity — the smear that makes bad parallax obvious.
@@ -441,20 +475,41 @@ void fragment() {
     }
 #endif
 
-    vec4 alb = texture(albedo_tex, uv);
+    vec4 alb = textureGrad(albedo_tex, uv, base_uv_dx, base_uv_dy);
     // FABLE_SOLID: no discard either — the second thing that refuses the shared shadow material.
     // A culled material has an albedo without alpha, so its scissor is never on (see vertex()).
 #ifndef FABLE_SOLID
     if (alpha_scissor_on && (alb.a < alpha_scissor_threshold ||
             (entity_no_alpha_depth && alpha_scissor_threshold > FABLE_TWIN_ALPHA_REF_FROM))) {
-        discard;
+        should_discard = true;
+    }
+#endif
+#ifdef FABLE_TRANSLUCENT
+    if (alb.a <= 0.001) {
+        should_discard = true;
     }
 #endif
 
+    // Stage 2: Heavy Shading & Secondary Textures. Cutout/faded fragments skip all remaining ALU/taps.
     // Keep the same vertex shader, parallax coordinate and alpha coverage during the diagnostic.
     // Only the work after coverage is bypassed; this deliberately changes the visible material.
+    if (should_discard) {
+        ALBEDO = vec3(0.0);
+    }
+#ifdef FABLE_TRANSLUCENT
+    else {
+        // ALPHA ENTERS AS THE INSTANCE'S FADE (GeometryInstance3D.Transparency: an entity's stated
+        // opacity, Engine_EntityAppearance; exactly 1.0 for a node at rest), so it is multiplied, not
+        // replaced. The title's blended pass takes the opacity in c26 (`sub_822251D8` 0x82225374..
+        // 0x822253BC splats material+0x44 x opacity, stored at 0x82225BA0) and its pixel shaders end
+        // `oC0.w = c26.w * alpha`; written over, a faded hero's hair cards stayed fully drawn.
+        ALPHA = fable_instance_fade * alb.a;
+    }
+#endif
 #ifndef FABLE_LITE
-    if ((fable_shader_cost_diagnostic & 2) == 0) {
+    if (!should_discard && (fable_shader_cost_diagnostic & 2) == 0) {
+#else
+    if (!should_discard) {
 #endif
     // Gamma 2.0 by squaring for legacy assets; standard sRGB linear decode for authored PBR.
     // Alpha stays raw — it was tested above as the artist authored it.
@@ -473,17 +528,6 @@ void fragment() {
     }
 
     ALBEDO = alb.rgb;
-#ifdef FABLE_TRANSLUCENT
-    if (alb.a <= 0.001) {
-        discard;
-    }
-    // ALPHA ENTERS AS THE INSTANCE'S FADE (GeometryInstance3D.Transparency: an entity's stated
-    // opacity, Engine_EntityAppearance; exactly 1.0 for a node at rest), so it is multiplied, not
-    // replaced. The title's blended pass takes the opacity in c26 (`sub_822251D8` 0x82225374..
-    // 0x822253BC splats material+0x44 x opacity, stored at 0x82225BA0) and its pixel shaders end
-    // `oC0.w = c26.w * alpha`; written over, a faded hero's hair cards stayed fully drawn.
-    ALPHA *= alb.a;
-#endif
 
     // TWO-SIDED GEOMETRY NEEDS A TWO-SIDED NORMAL, and this shader is `cull_disabled`.
     //
@@ -500,7 +544,7 @@ void fragment() {
 #include "res://src/android/standard_lite_normal_map.gdshaderinc"
 #else
     if (!FABLE_FOLIAGE_NORMALS) {
-        float side = fable_normal_side(NORMAL, VERTEX, VIEW);
+        float side = fable_normal_side_precomputed(NORMAL, geom_cross, VIEW);
         NORMAL *= side;
         BINORMAL *= side;
     }
@@ -531,7 +575,7 @@ void fragment() {
     vec3 nm = vec3(0.5, 0.5, 1.0);
     vec3 mapped_view = NORMAL;
     if (FABLE_HAS_NORMAL) {
-        nm = texture(normal_tex, uv).rgb;
+        nm = textureGrad(normal_tex, uv, base_uv_dx, base_uv_dy).rgb;
         NORMAL_MAP = nm;
         vec2 nxy = (nm.xy * 2.0) - 1.0;
         ndotn = sqrt(max(1.0 - dot(nxy, nxy), 0.0));
@@ -561,7 +605,7 @@ void fragment() {
         // and then `r8.x = r8.x * r8.x` component by component, exactly as it does for the
         // diffuse. The ALPHA is left alone here too, because it is the exponent selector rather
         // than a colour.
-        vec4 spec = texture(specular_tex, uv);
+        vec4 spec = textureGrad(specular_tex, uv, base_uv_dx, base_uv_dy);
         spec_colour = spec.rgb * spec.rgb;
         spec_power = mix(spec_power_min, spec_power_max, spec.a);
 
@@ -577,7 +621,7 @@ void fragment() {
     // colour computed from spec_colour still stands, because ORM has nowhere to put it.
     float ao = 1.0;
     if (FABLE_HAS_ORM) {
-        vec3 orm = texture(orm_tex, uv).rgb;
+        vec3 orm = textureGrad(orm_tex, uv, base_uv_dx, base_uv_dy).rgb;
         ao = orm.r;
         ROUGHNESS = orm.g;
         METALLIC = orm.b;
@@ -734,7 +778,7 @@ void fragment() {
         // Linear for authored PBR mod assets (is_pbr = true) with authored physical radiance.
         // Squared for legacy assets per guest pixel shader (r3.xyz = r3.xyz * r3.xyz),
         // scaled by material self_illum_scale and global fable_emission_boost for HDR headroom.
-        FABLE_LITE_MP vec3 selfIllum = texture(emission_tex, uv).rgb;
+        FABLE_LITE_MP vec3 selfIllum = textureGrad(emission_tex, uv, base_uv_dx, base_uv_dy).rgb;
         if (FABLE_IS_PBR) {
             EMISSION += selfIllum * self_illum_scale;
         } else {
@@ -765,7 +809,8 @@ void fragment() {
 
         // SQUARED like the albedo and the specular — `r6.xyz = r6.xyz * r6.xyz` — because gamma
         // 2.0 is the guest's decode for every colour fetch, this one included.
-        FABLE_LITE_MP vec3 env = texture(envmap_tex, reflected).rgb;
+        // Explicit textureLod(..., 0.0) prevents post-discard implicit derivatives on cubemaps.
+        FABLE_LITE_MP vec3 env = textureLod(envmap_tex, reflected, 0.0).rgb;
         EMISSION += spec_colour * env * env;
     }
 #endif
@@ -854,17 +899,25 @@ void fragment() {
 		EMISSION = vec3(combined_ao);
 		ALBEDO = vec3(0.0);
 	}
-    } else {
-        ALBEDO = vec3(0.5);
-        EMISSION = vec3(0.0);
-        NORMAL_MAP = vec3(0.5, 0.5, 1.0);
-        METALLIC = 0.0;
-        ROUGHNESS = 1.0;
-        SPECULAR = 0.0;
-        v_specular = vec3(0.0);
-        v_specular_power = 1.0;
-        v_combined_ao = 1.0;
+#endif
     }
+    }
+
+    // In Forward+ (`CURRENT_RENDERER == RENDERER_FORWARD_PLUS`), `depth_prepass_alpha` tests alpha
+    // during depth pre-pass and shadow passes (`MODE_RENDER_DEPTH`, zero clustered `while` loops),
+    // while `PASS_MODE_COLOR` emits zero `discard;` statements and relies on Hardware Early-Z +
+    // `ALPHA = 0.0` (`blend_mix` identity). FABLE_TRANSLUCENT also omits `discard;`.
+#if !defined(FABLE_SOLID) && !defined(FABLE_TRANSLUCENT)
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+    ALPHA = should_discard ? 0.0 : fable_instance_fade;
+    if (should_discard) {
+        ALBEDO = vec3(0.0);
+    }
+#else
+    if (should_discard) {
+        discard;
+    }
+#endif
 #endif
 #ifdef FABLE_LITE
 #include "res://src/android/standard_lite_fragment_end.gdshaderinc"
@@ -884,6 +937,12 @@ void fragment() {
 /// "Using 'return' in the 'light' processor function is incorrect" — and a shader that fails to
 /// compile falls back to a default material, which strips every texture in the scene.
 void light() {
+#if defined(FABLE_TRANSLUCENT) || (!defined(FABLE_SOLID) && CURRENT_RENDERER == RENDERER_FORWARD_PLUS)
+    bool has_surface_response = (ALPHA > 0.0);
+#else
+    bool has_surface_response = true;
+#endif
+    if (has_surface_response) {
     float ndotl = dot(NORMAL, LIGHT);
 #ifndef FABLE_LITE
     // VIEW 6: the directional light's RAW shadow term, greyscale, on every surface — white
@@ -922,5 +981,6 @@ void light() {
             }
 #endif
         }
+    }
     }
 }

@@ -171,11 +171,13 @@ void fragment() {
 		}
 	}
 
-	// The scissor, clip rect, and alpha floor (evaluated after all derivative and texture operations).
-	if (clipped || colour.a * opacity <= alpha_floor || cover * run_alpha < 0.01) {
-		discard;
+	// Zero-discard `depth_draw_never` blend path: output `ALPHA = 0.0` outside the glyph/clip
+	// so `blend_mix` leaves underlying UI untouched without DXIL `discard;` hazards.
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+	bool should_discard = (clipped || colour.a * opacity <= alpha_floor || cover * run_alpha < 0.01);
+	if (!should_discard) {
+		ALBEDO = outlined ? tint.rgb * texel.a : tint.rgb;
+		ALPHA = cover * run_alpha;
 	}
-
-	ALBEDO = outlined ? tint.rgb * texel.a : tint.rgb;
-	ALPHA = cover * run_alpha;
 }

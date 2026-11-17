@@ -446,6 +446,27 @@ public static class Engine_PostFxParams
 
     public static SkyFrame? Frame { get; private set; }
 
+    private static volatile bool _themeHasSaturationMask;
+
+    /// <summary>
+    /// True when the active tone-map theme states a non-trivial masked saturation/brightness delta
+    /// (<c>0x821e5e60</c>: <c>|SaturationMasked| &gt; 0.01 || |BrightnessMasked| &gt; 0.01</c>) and PostFX is active.
+    /// </summary>
+    public static bool RequiresSaturationMask(
+        float saturationMasked, float brightnessMasked, bool chainActive = true, bool coverHeld = false) =>
+        chainActive && !coverHeld && (MathF.Abs(saturationMasked) > 0.01f || MathF.Abs(brightnessMasked) > 0.01f);
+
+    /// <summary>
+    /// True when entities carrying <c>SetSaturationMask</c> should attach the stencil-mask overlay
+    /// for the active theme and viewport state.
+    /// </summary>
+    public static bool IsSaturationMaskActive =>
+        RequiresSaturationMask(
+            _themeHasSaturationMask ? 1.0f : 0.0f,
+            0.0f,
+            ChainActive,
+            Refii.Game.GameWorld.CoverHeld);
+
     /// <summary>
     /// The sun on the PRIMARY view's screen — <c>Publish</c>'s camera, the window's — for readers on
     /// the main thread. The chain does not read it: each camera's own Engine_PostFxEffect projects
@@ -505,6 +526,8 @@ public static class Engine_PostFxParams
 
             Engine_PostFxModel.Derive(
                 Theme, Tonemap, SunUvScratch, Darkening, DarkeningParam, UserGamma, Derived);
+            _themeHasSaturationMask = HasTheme &&
+                (MathF.Abs(Derived.SaturationMasked) > 0.01f || MathF.Abs(Derived.BrightnessMasked) > 0.01f);
         }
     }
 

@@ -51,6 +51,11 @@ public partial class GameEntities : Node3D
     /// <summary>The live feed node, for the debug channel's levers; retired when that owner leaves the tree.</summary>
     public static GameEntities? Current;
 
+    /// <summary>When true (set via <c>dx12_skip_3d=hero</c>), keeps the principal hero hidden for D3D12 bisection.</summary>
+    public static bool SkipHeroRendering { get; set; }
+
+    private bool _heroTraceLogged;
+
     /// <summary>
     /// Whether the feed re-walks the guest every drawn frame. Off: it walks once per guest
     /// frame (<c>Engine_GuestFrame.Changed</c>, 30 Hz) and redraws the pairs in between.
@@ -1487,6 +1492,18 @@ public partial class GameEntities : Node3D
             }
 
             Refii.Entities.Engine_EntityAppearance.Apply(node, entity.Appearance, IsPrincipal(entity.Address));
+            if (SkipHeroRendering && IsHero(entity.Address) && node.Visible)
+            {
+                node.Visible = false;
+                Refii.Entities.Engine_ShadowProxy.SyncHidden(node);
+            }
+            if (!_heroTraceLogged && entity.Address == _principals.Hero && entity.Address != 0u && node.Mesh is { } heroMesh)
+            {
+                _heroTraceLogged = true;
+                int surfCount = heroMesh.GetSurfaceCount();
+                bool hasOverlay = node.MaterialOverlay is not null;
+                GD.Print($"[dx12-trace] hero-ready addr=0x{entity.Address:X8} surfaces={surfCount} overlay={hasOverlay} visible={node.Visible}");
+            }
             _lastLook[entity.Address] = entity.Appearance;
 
             // A hero's head goes while its player's stated camera is first person, for a hold that
@@ -4837,7 +4854,7 @@ public partial class GameEntities : Node3D
     {
         // Already building, or the pipe is full and this retries next frame. NOT added to the
         // job set in the full case: leaving it out is what makes the retry possible.
-        if (_retirementWorkers.Retired || _compositeJobs.Contains(key) || _inFlight >= InFlightLimit)
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || _retirementWorkers.Retired || _compositeJobs.Contains(key) || _inFlight >= InFlightLimit)
         {
             return;
         }
@@ -4991,7 +5008,7 @@ public partial class GameEntities : Node3D
     /// <summary>Loads one model off this thread, once.</summary>
     private void QueueMeshBuild(uint modelHash, string path)
     {
-        if (_retirementWorkers.Retired || _meshJobs.Contains(modelHash) || _inFlight >= InFlightLimit)
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || _retirementWorkers.Retired || _meshJobs.Contains(modelHash) || _inFlight >= InFlightLimit)
         {
             return;
         }
@@ -5020,6 +5037,11 @@ public partial class GameEntities : Node3D
             {
                 _meshJobs.Remove(modelHash);
                 --_inFlight;
+
+                if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+                {
+                    return;
+                }
 
                 if (error is not null)
                 {

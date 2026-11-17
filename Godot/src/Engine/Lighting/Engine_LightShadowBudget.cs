@@ -10,9 +10,9 @@ namespace Refii.Lighting;
 /// </summary>
 /// <remarks>
 /// Godot serves positional shadows from one fixed atlas and re-renders every map every frame, so
-/// each shadowed fixture is six (cube) or two (paraboloid) extra passes over everything inside
-/// its range. A player inspects a handful of pools at once, so the
-/// maps go to the fixtures whose pools are nearest the eye and inside the view.
+/// each shadowed fixture renders cubemap passes for dynamic casters inside its reach. A player
+/// inspects a handful of pools at once, so the maps go to the fixtures whose pools are nearest
+/// the eye and inside the view.
 ///
 /// The set is STICKY and the change is a FADE: a fixture already casting keeps its map while it
 /// still ranks within the budget plus <see cref="Slack"/>, and a map arriving or leaving ramps
@@ -66,24 +66,18 @@ public partial class Engine_LightShadowBudget : Node
 	/// <summary>Max static world shadow lights at once (legacy compatibility).</summary>
 	public static int MaxStaticWorldShadowLights = 0;
 
-	/// <summary>Max dynamic entity shadow lights at once (default 8; 0 uses uncapped).</summary>
-	public static int MaxDynamicEntityShadowLights = 8;
+	/// <summary>Default maximum number of nearby dynamic cubemap shadow lights when unset.</summary>
+	public const int DefaultShadowLimit = 2;
 
-	/// <summary>Of the dynamic shadow lights, the nearest N that use Cube shadows when <see cref="CubeOmniShadows"/> is true.</summary>
-	public static int MaxCubeShadowLights = 4;
+	/// <summary>Max dynamic entity shadow lights at once; <c>placed_shadow_limit</c>.</summary>
+	public static int MaxDynamicEntityShadowLights = ConfiguredShadowLimit();
 
-	/// <summary>
-	/// Whether dynamic point lights use 6-face cubemap shadows (<c>omni_shadow_mode = "cube"</c>) for
-	/// the nearest <see cref="MaxCubeShadowLights"/> fixtures instead of 2-pass dual-paraboloid maps.
-	/// </summary>
-	public static bool CubeOmniShadows = ConfiguredCubeOmniShadows();
+	/// <summary>Parses and clamps <c>placed_shadow_limit</c> from a config dictionary.</summary>
+	public static int ParseShadowLimit(IReadOnlyDictionary<string, string> values) =>
+		Math.Clamp(Refii.Core.Engine_RefiiConfig.Int(values, "placed_shadow_limit", DefaultShadowLimit), 1, 16);
 
-	private static bool ConfiguredCubeOmniShadows() =>
-		string.Equals(
-			Refii.Core.Engine_RefiiConfig.String(
-				Refii.Core.Engine_RefiiConfig.Read(out _), "omni_shadow_mode", "dual_paraboloid").Trim(),
-			"cube",
-			StringComparison.OrdinalIgnoreCase);
+	private static int ConfiguredShadowLimit() =>
+		ParseShadowLimit(Refii.Core.Engine_RefiiConfig.Read(out _));
 
 	/// <summary>Metres from the eye to a light beyond which its shadow is culled; <c>placed_shadow_range</c>.</summary>
 	public static float MaxShadowDistance = Engine_LevelLights.PlacedShadowRange();
@@ -97,26 +91,11 @@ public partial class Engine_LightShadowBudget : Node
 		MaxShadowDistance = Engine_LevelLights.PlacedShadowRange();
 		MaxLightDistance = Engine_LevelLights.PlacedLightRange();
 		LightBudget = ConfiguredLightBudget();
-		CubeOmniShadows = ConfiguredCubeOmniShadows();
+		MaxDynamicEntityShadowLights = ConfiguredShadowLimit();
 	}
 
 	/// <summary>Debug lever: false hides every placed light regardless of the budget.</summary>
 	public static bool LightsEnabled = true;
-
-	/// <summary>
-	/// Dual-paraboloid omni maps — two passes where a cube map is six — for every fixture whose
-	/// map draws ENTITIES ONLY. On by default; the lever turns it off.
-	/// </summary>
-	/// <remarks>
-	/// A positional shadow costs by the PASS, not the draw: each pass is its own cull, render
-	/// list and setup on the main thread, and animated casters keep every map dirty. Measured
-	/// 2026-09-21 in Fairfax Gardens with eight fixtures casting: cube 14.25 ms / 68 fps,
-	/// paraboloid 9.23 ms / 107 fps at night (13.7 -> 10.6 ms by day), the draw count unchanged.
-	/// The projection bends the straight edges of LARGE triangles, which is why a fixture whose
-	/// map takes the world (`placed_light_shadows_world`) stays a cube; characters and small
-	/// props have none, and the user judged it by eye at night and by day.
-	/// </remarks>
-	public static bool Paraboloid = false;
 
 	/// <summary>Lights holding or fading in a shadow map after the last pass.</summary>
 	public static int Casting;
@@ -219,7 +198,6 @@ public partial class Engine_LightShadowBudget : Node
 		public byte InFrustumBy;
 		public byte VisibleBy;
 		public byte WantedBy;
-		public byte CubeBy;
 		public byte ScoredBy;
 		public bool ShaftActive;
 
@@ -692,7 +670,6 @@ public partial class Engine_LightShadowBudget : Node
 			f.InFrustumBy = 0;
 			f.VisibleBy = 0;
 			f.WantedBy = 0;
-			f.CubeBy = 0;
 			f.ScoredBy = 0;
 		}
 	}
@@ -727,14 +704,13 @@ public partial class Engine_LightShadowBudget : Node
 		// Each view ranks from its own player — player one's from the hero, player two's from player
 		// two — and takes the whole budget; the union casts.
 		int maxShadows = Budget > 0 ? Budget : (MaxDynamicEntityShadowLights > 0 ? MaxDynamicEntityShadowLights : int.MaxValue);
-		int cubeBudget = CubeOmniShadows ? Math.Min(MaxCubeShadowLights, maxShadows) : 0;
 		for (int v = 0; v < views; v++)
 		{
 			Vector3 eye = _views[v].GlobalPosition;
 			Vector3 refPos = (v == 0 ? Refii.Game.GameEntities.HeroPosition : Refii.Game.GameEntities.PlayerTwoPosition) ?? eye;
 			uint zone = ZoneOfView(v);
 			ChooseShadowed(v, eye, refPos, _frustumPlanes[v], Engine_LightingFrame.CurrentInterior || Engine_LightZones.IsIndoors(zone),
-				zone, classic, nowMs, maxShadows, cubeBudget);
+				zone, classic, nowMs, maxShadows);
 		}
 
 		int eligible = 0;
@@ -850,7 +826,7 @@ public partial class Engine_LightShadowBudget : Node
 					f.Casting = true;
 				}
 
-				ApplyMode(light, f.Omni, f.CubeBy != 0);
+				ApplyMode(light, f.Omni);
 				_fading[light] = 1.0f;
 			}
 			else if (f.Casting)
@@ -861,6 +837,20 @@ public partial class Engine_LightShadowBudget : Node
 
 		Casting = casting;
 		_wantedCount = wanted;
+		if (casting > 0)
+		{
+			EnsurePositionalAtlasAllocated(Engine.GetMainLoop() is SceneTree tree ? tree.Root : null);
+			EnsurePositionalAtlasAllocated(Refii.Core.Engine_Views.FirstViewport);
+			EnsurePositionalAtlasAllocated(Refii.Core.Engine_Views.SecondViewport);
+		}
+	}
+
+	private static void EnsurePositionalAtlasAllocated(Viewport? vp)
+	{
+		if (vp is not null && GodotObject.IsInstanceValid(vp) && vp.PositionalShadowAtlasSize == 0)
+		{
+			vp.PositionalShadowAtlasSize = Refii.Game.GameWindowSettings.DefaultPositionalShadowAtlasSize;
+		}
 	}
 
 	/// <summary>The light zone view <paramref name="view"/>'s player stands in.</summary>
@@ -960,7 +950,7 @@ public partial class Engine_LightShadowBudget : Node
 	/// player's position.
 	/// </summary>
 	private static void ChooseShadowed(int view, Vector3 eye, Vector3 refPos, Plane[] frustum, bool viewerIndoors,
-		uint heroZone, bool classic, ulong nowMs, int maxShadows, int cubeBudget)
+		uint heroZone, bool classic, ulong nowMs, int maxShadows)
 	{
 		_ = frustum;
 		byte bit = (byte)(1 << view);
@@ -1052,35 +1042,6 @@ public partial class Engine_LightShadowBudget : Node
 				taken++;
 			}
 		}
-
-		int cubes = 0;
-		int cubeReach = SaturatingAdd(cubeBudget, 2);
-		int chosenRank = 0;
-		for (int c = 0; c < n && cubes < cubeBudget && chosenRank < cubeReach; c++)
-		{
-			ref Fixture f = ref _fixtures[_candidates[c].Fixture];
-			if ((f.WantedBy & bit) == 0)
-			{
-				continue;
-			}
-
-			chosenRank++;
-			if (f.Casting && f.Node is OmniLight3D { OmniShadowMode: OmniLight3D.ShadowMode.Cube })
-			{
-				f.CubeBy |= bit;
-				cubes++;
-			}
-		}
-
-		for (int c = 0; c < n && cubes < cubeBudget; c++)
-		{
-			ref Fixture f = ref _fixtures[_candidates[c].Fixture];
-			if ((f.WantedBy & bit) != 0 && (f.CubeBy & bit) == 0)
-			{
-				f.CubeBy |= bit;
-				cubes++;
-			}
-		}
 	}
 
 	/// <summary>Steps every map and light visibility transition toward its target opacity/energy.</summary>
@@ -1163,7 +1124,7 @@ public partial class Engine_LightShadowBudget : Node
 
 	private static float TargetOf(Light3D light) => _fading.TryGetValue(light, out float target) ? target : 1.0f;
 
-	private static void ApplyMode(Light3D light, bool omni, bool useCube)
+	private static void ApplyMode(Light3D light, bool omni)
 	{
 		if (light.DistanceFadeShadow <= 0f || light.DistanceFadeShadow > MaxShadowDistance)
 		{
@@ -1176,12 +1137,9 @@ public partial class Engine_LightShadowBudget : Node
 		}
 
 		var omniLight = (OmniLight3D)light;
-		OmniLight3D.ShadowMode mode = useCube
-			? OmniLight3D.ShadowMode.Cube
-			: OmniLight3D.ShadowMode.DualParaboloid;
-		if (omniLight.OmniShadowMode != mode)
+		if (omniLight.OmniShadowMode != OmniLight3D.ShadowMode.Cube)
 		{
-			omniLight.OmniShadowMode = mode;
+			omniLight.OmniShadowMode = OmniLight3D.ShadowMode.Cube;
 		}
 	}
 

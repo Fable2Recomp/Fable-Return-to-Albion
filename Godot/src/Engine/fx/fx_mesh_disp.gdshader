@@ -7,16 +7,25 @@ global uniform float fx_scene_depth_valid;
 #include "res://src/Engine/core/views.gdshaderinc"
 
 void fragment() {
+	// Zero-discard `depth_draw_never` blend path: output `ALPHA = 0.0` when occluded so
+	// hardware Early-Z remains active without `discard;`.
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
+	vec4 texel = textureGrad(albedo_tex, UV, uv_dx, uv_dy);
+	bool should_discard = false;
 	if (fx_scene_depth_valid > 0.5) {
 		float scene_z = REFII_SCENE_DEPTH(SCREEN_UV).r;
 		if (FRAGCOORD.z < scene_z - 0.00001) {
-			discard;
+			should_discard = true;
 		}
 	}
-	vec4 texel = texture(albedo_tex, UV);
-	vec3 rgb = texel.rgb * texel.rgb * COLOR.rgb * COLOR.a;
-	float py = texel.a * COLOR.a * COLOR.a;
-	float a = max(sqrt(max(py, 0.0)), 0.001);
-	ALBEDO = rgb / a;
-	ALPHA = a;
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+	if (!should_discard) {
+		vec3 rgb = texel.rgb * texel.rgb * COLOR.rgb * COLOR.a;
+		float py = texel.a * COLOR.a * COLOR.a;
+		float a = max(sqrt(max(py, 0.0)), 0.001);
+		ALBEDO = rgb / a;
+		ALPHA = a;
+	}
 }

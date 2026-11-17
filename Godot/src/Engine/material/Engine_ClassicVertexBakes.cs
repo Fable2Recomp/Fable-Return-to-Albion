@@ -33,7 +33,6 @@ public static class Engine_ClassicVertexBakes
     private static int _rows;
     private static int _used;
     private static bool _dirty;
-    private static Image? _image;
     private static ImageTexture? _texture;
     private static bool _registered;
 
@@ -75,14 +74,14 @@ public static class Engine_ClassicVertexBakes
             return;
         }
         _dirty = false;
-        if (_image is not null && _texture is not null && _image.GetHeight() == _rows)
+        if (_texture is not null && _texture.GetHeight() == _rows)
         {
-            _image.SetData(Width, _rows, false, Image.Format.Rgba8, _bytes);
-            _texture.Update(_image);
+            Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                _texture, Width, _rows, false, Image.Format.Rgba8, _bytes);
             return;
         }
-        _image = Image.CreateFromData(Width, _rows, false, Image.Format.Rgba8, _bytes);
-        _texture = ImageTexture.CreateFromImage(_image);
+        var image = Image.CreateFromData(Width, _rows, false, Image.Format.Rgba8, _bytes);
+        _texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
         if (!_registered)
         {
             _registered = true;

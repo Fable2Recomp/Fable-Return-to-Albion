@@ -501,8 +501,9 @@ public partial class Engine_ShaderWarmup : Node
 				full = full.Substring(0, full.Length - ".remap".Length);
 			}
 
-			// Only the surface shader set this process draws: the full one, or the mobile lite one.
-			if (full.EndsWith(".gdshader", System.StringComparison.Ordinal) && !Engine_ShaderVariant.SkipWarm(full))
+			// Only the surface shader set this process draws (and dynamic weather shaders only when
+			// dynamic weather is enabled).
+			if (ShouldWarmShader(full, Refii.Level.Engine_DynamicSky.Enabled))
 			{
 				_paths.Add(full);
 			}
@@ -510,6 +511,19 @@ public partial class Engine_ShaderWarmup : Node
 
 		access.ListDirEnd();
 	}
+
+	/// <summary>True for shader files belonging to the opt-in dynamic sky/weather subsystem.</summary>
+	public static bool IsDynamicWeatherShader(string path) =>
+		path.Replace('\\', '/').Contains("/level/environment/dynamic/", System.StringComparison.Ordinal);
+
+	/// <summary>
+	/// Returns whether <paramref name="path"/> should be pre-warmed at startup for this process.
+	/// Dynamic sky/weather shaders are skipped whenever dynamic weather is disabled.
+	/// </summary>
+	public static bool ShouldWarmShader(string path, bool dynamicWeatherEnabled) =>
+		path.EndsWith(".gdshader", System.StringComparison.Ordinal) &&
+		!Engine_ShaderVariant.SkipWarm(path) &&
+		(dynamicWeatherEnabled || !IsDynamicWeatherShader(path));
 
 	/// <summary>The backdrop behind the preparation text — the seal art, our own, shipped with
 	/// the app rather than read from the banks, which are still mounting while this is up.</summary>

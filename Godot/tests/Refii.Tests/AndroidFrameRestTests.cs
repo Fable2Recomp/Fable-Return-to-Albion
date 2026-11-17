@@ -166,7 +166,7 @@ public sealed class AndroidFrameRestTests
         AssertThat(shader).Contains("PROJECTION_MATRIX * vec4(0.0, 0.0, -test, 1.0)");
         AssertThat(shader).Contains("texture(layer_tex, uv).g > 0.5");
         string composite = FileText("Godot/src/android/mobile_highlight_composite.gdshader");
-        AssertThat(composite).Contains("texture(layer_tex, uv).g > 0.5");
+        AssertThat(composite).Contains("textureLod(layer_tex, uv, 0.0).g > 0.5");
         AssertThat(composite).Contains("tests[k] <= scene");
     }
 

@@ -109,7 +109,7 @@ public class RenderingDriverTests
     }
 
     [TestCase]
-    public void TestDirect3D12UsesSafeRenderThreadWhileVulkanHonorsSeparateSetting()
+    public void TestSeparateRenderThreadHonorsConfigForBothDrivers()
     {
         var enabledConfig = new Dictionary<string, string>
         {
@@ -120,9 +120,42 @@ public class RenderingDriverTests
             ["render_thread"] = "false",
         };
 
-        AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(enabledConfig, "d3d12")).IsFalse();
+        AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(enabledConfig, "d3d12")).IsTrue();
         AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(disabledConfig, "d3d12")).IsFalse();
         AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(enabledConfig, "vulkan")).IsTrue();
         AssertThat(GameChildProcess.ShouldUseSeparateRenderThread(disabledConfig, "vulkan")).IsFalse();
+    }
+
+    [TestCase]
+    public void TestRotateExistingLogFilePreservesPriorLogWithoutOverwriting()
+    {
+        string tempDir = System.IO.Path.Combine(Refii.Tests.TestTemp.Root, "log_rotate_" + System.Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(tempDir);
+        try
+        {
+            string logPath = System.IO.Path.Combine(tempDir, "godot.log");
+            System.IO.File.WriteAllText(logPath, "first d3d12 run");
+
+            GameChildProcess.RotateExistingLogFile(logPath, maxFiles: 3);
+
+            AssertThat(System.IO.File.Exists(logPath)).IsFalse();
+            string[] archives = System.IO.Directory.GetFiles(tempDir, "prev_godot_*.log");
+            AssertThat(archives.Length).IsEqual(1);
+            AssertThat(System.IO.File.ReadAllText(archives[0])).IsEqual("first d3d12 run");
+
+            System.IO.File.WriteAllText(logPath, "second run");
+            GameChildProcess.RotateExistingLogFile(logPath, maxFiles: 2);
+
+            archives = System.IO.Directory.GetFiles(tempDir, "prev_godot_*.log");
+            AssertThat(archives.Length).IsEqual(1);
+            AssertThat(System.IO.File.ReadAllText(archives[0])).IsEqual("second run");
+        }
+        finally
+        {
+            if (System.IO.Directory.Exists(tempDir))
+            {
+                System.IO.Directory.Delete(tempDir, recursive: true);
+            }
+        }
     }
 }

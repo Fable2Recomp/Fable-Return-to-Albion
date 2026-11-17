@@ -160,8 +160,8 @@ public partial class Engine_ClassicParticles : Node
         "global uniform sampler2D " + Engine_ClassicDisplacement.SceneDepthName + ";\n" +
         "global uniform sampler2D " + Engine_ClassicDisplacement.SceneDepthSecondName + ";\n" +
         "#define XR_ALPHA_OUT(a) 0.0\n" +
-        "#define XR_BEFORE_OUTPUT(c) if ((XR_SECOND_VIEW ? texture(" + Engine_ClassicDisplacement.SceneDepthSecondName +
-        ", SCREEN_UV).r : texture(" + Engine_ClassicDisplacement.SceneDepthName + ", SCREEN_UV).r) > FRAGCOORD.z) { discard; }";
+        "#define XR_BEFORE_OUTPUT(c) if ((XR_SECOND_VIEW ? textureLod(" + Engine_ClassicDisplacement.SceneDepthSecondName +
+        ", SCREEN_UV, 0.0).r : textureLod(" + Engine_ClassicDisplacement.SceneDepthName + ", SCREEN_UV, 0.0).r) > FRAGCOORD.z) { discard; }";
 
     private static readonly List<ShaderMaterial> _chain = new();
 

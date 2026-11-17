@@ -5,7 +5,7 @@ render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
 // at a fixed height, so toward its vanishing line the UVs compress without bound and a tiled
 // density texture sampled with no mip selection aliases into hard horizontal stripes. The decoder
 // already generates the mip chain (Engine_TexImage).
-uniform sampler2D cloud_density : filter_linear_mipmap, repeat_enable;
+uniform sampler2D cloud_density : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform vec4 layer_params;
 uniform vec4 uv_scale_offset;
 uniform vec4 cloud_globals;
@@ -20,8 +20,12 @@ void vertex() {
 
 void fragment() {
 	vec2 uv = (UV * uv_scale_offset.xy) + uv_scale_offset.zw;
+	// Zero-discard `depth_draw_never` blend path: output `ALPHA = 0.0` below `cloud_globals.z`
+	// so `blend_mix` is a hardware no-op without `discard;`.
+	vec2 uv_dx = dFdx(uv);
+	vec2 uv_dy = dFdy(uv);
 
-	vec4 centre = texture(cloud_density, uv);
+	vec4 centre = textureGrad(cloud_density, uv, uv_dx, uv_dy);
 	float density = centre.a;
 
 	float distance_xy = length(v_world.xz - CAMERA_POSITION_WORLD.xz);
@@ -42,21 +46,18 @@ void fragment() {
 	float edge_fade = smoothstep(0.0, 0.08, min(edge_uv.x, edge_uv.y));
 
 	float alpha = density * layer_params.x * distance_fade * edge_fade;
-
-	if (alpha <= cloud_globals.z) {
-		discard;
-	}
+	bool should_discard = (alpha <= cloud_globals.z);
 
 	vec3 rgb = vec3(0.0);
 
-	if (alpha > 0.001) {
+	if (!should_discard && alpha > 0.001) {
 		// One-texel offsets — 0114's gradient taps are `tfetch2D(..., float2(1, 0))` etc.; a
 		// two-texel baseline halves the slope and softens every cloud normal.
 		vec2 texel = 1.0 / vec2(textureSize(cloud_density, 0));
-		float plus_x = texture(cloud_density, uv + vec2(texel.x, 0.0)).a;
-		float plus_y = texture(cloud_density, uv + vec2(0.0, texel.y)).a;
-		float minus_x = texture(cloud_density, uv - vec2(texel.x, 0.0)).a;
-		float minus_y = texture(cloud_density, uv - vec2(0.0, texel.y)).a;
+		float plus_x = textureGrad(cloud_density, uv + vec2(texel.x, 0.0), uv_dx, uv_dy).a;
+		float plus_y = textureGrad(cloud_density, uv + vec2(0.0, texel.y), uv_dx, uv_dy).a;
+		float minus_x = textureGrad(cloud_density, uv - vec2(texel.x, 0.0), uv_dx, uv_dy).a;
+		float minus_y = textureGrad(cloud_density, uv - vec2(0.0, texel.y), uv_dx, uv_dy).a;
 
 		float gradient_x = plus_x - minus_x;
 		float gradient_y = plus_y - minus_y;
@@ -92,6 +93,6 @@ void fragment() {
 		      vec3(layer_params.z) * centre.rgb;
 	}
 
-	ALBEDO = rgb;
-	ALPHA = alpha;
+	ALBEDO = should_discard ? vec3(0.0) : rgb;
+	ALPHA = should_discard ? 0.0 : alpha;
 }

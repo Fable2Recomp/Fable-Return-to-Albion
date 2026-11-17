@@ -1,6 +1,10 @@
 // SHELL FUR, MODERN: the code shared by the colour shells (fur_shell.gdshader) and the kept depth
 // a faded coat draws first (fur_shell_depth.gdshader, FUR_SHELL_DEPTH). One vertex stage, so both
 // place every shell texel at the same depth. See fur_shell.gdshader for the contract.
+#if !defined(FUR_SHELL_DEPTH) && CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+render_mode depth_prepass_alpha;
+#endif
+
 #include "res://src/Engine/material/fable_lighting.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 
@@ -63,43 +67,69 @@ void vertex() {
 }
 
 void fragment() {
+	// D3D12 / Intel Arc DXIL safety: NEVER wrap `dFdx`/`dFdy` in `IN_SHADOW_PASS` (runtime UBO bit)
+	// and NEVER emit `discard;` in Forward+ PASS_MODE_COLOR (`depth_prepass_alpha` tests alpha in
+	// MODE_RENDER_DEPTH, while PASS_MODE_COLOR outputs `ALPHA = 0.0`).
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
+	vec2 fur_uv_dx = dFdx(v_fur_uv);
+	vec2 fur_uv_dy = dFdy(v_fur_uv);
+#ifndef FUR_SHELL_DEPTH
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+	float fable_instance_fade = ALPHA;
+	ALPHA = 0.0;
+#endif
+#endif
+
 	float h = float(fur_layer) / max(fur_shells, 1.0);
-	vec4 slice = texture(fur_slices, vec3(v_fur_uv, floor(clamp(h, 0.0, 0.9999) * 20.0)));
+	float slice_idx = floor(clamp(h, 0.0, 0.9999) * 20.0);
+	vec4 slice = textureGrad(fur_slices, vec3(v_fur_uv, slice_idx), fur_uv_dx, fur_uv_dy);
 	float alpha = slice.a * v_edge + v_fill;
-#ifdef FUR_SHELL_DEPTH
-	if (alpha < FUR_SHELL_CUT) {
-		discard;
-	}
+	bool should_discard = (alpha < FUR_SHELL_CUT);
 	ALBEDO = vec3(0.0);
+#ifdef FUR_SHELL_DEPTH
 	ALPHA = 0.0;
 #else
+	EMISSION = vec3(0.0);
+	v_fur_share = 0.0;
+	v_fur_spec = 0.0;
 
-	vec3 skin = texture(albedo_tex, UV).rgb;
-	if (is_pbr) {
-		skin = mix(skin / 12.92, pow((skin + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), skin));
-	} else {
-		skin *= skin;
-	}
-	// occlusion ((1 - share) slice + share) skin, split into the fur's and the skin's parts.
-	float fur = (1.0 - v_skin_share) * slice.r;
-	float weight = fur + v_skin_share;
-	vec3 albedo = v_occlusion * weight * skin * entity_tint.rgb;
-	v_fur_share = weight > 0.0 ? fur / weight : 0.0;
-	v_fur_spec = v_occlusion * fur;
+	if (!should_discard) {
+		vec3 skin = textureGrad(albedo_tex, UV, uv_dx, uv_dy).rgb;
+		if (is_pbr) {
+			skin = mix(skin / 12.92, pow((skin + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), skin));
+		} else {
+			skin *= skin;
+		}
+		// occlusion ((1 - share) slice + share) skin, split into the fur's and the skin's parts.
+		float fur = (1.0 - v_skin_share) * slice.r;
+		float weight = fur + v_skin_share;
+		vec3 albedo = v_occlusion * weight * skin * entity_tint.rgb;
+		v_fur_share = weight > 0.0 ? fur / weight : 0.0;
+		v_fur_spec = v_occlusion * fur;
 
-	vec3 bake = fable_bake(v_world_normal, vec4(1.0), vec2(0.0)) * fable_lightmap_rgb();
-	if (lightmap_colour.w < 3.5) {
-		bake = fable_sky_tether(bake);
-	}
-	ALBEDO = albedo;
-	EMISSION = albedo * fable_ambient(bake);
+		vec3 bake = fable_bake(v_world_normal, vec4(1.0), vec2(0.0)) * fable_lightmap_rgb();
+		if (lightmap_colour.w < 3.5) {
+			bake = fable_sky_tether(bake);
+		}
+		ALBEDO = albedo;
+		EMISSION = albedo * fable_ambient(bake);
 
-	vec3 fog_t;
-	vec3 fog_c;
-	if (fable_atmosphere_terms_for(VERTEX, INV_VIEW_MATRIX, true, fog_t, fog_c)) {
-		fable_atmosphere_apply(fog_t, fog_c, 1.0, ALBEDO, EMISSION);
+		vec3 fog_t;
+		vec3 fog_c;
+		if (fable_atmosphere_terms_for(VERTEX, INV_VIEW_MATRIX, true, fog_t, fog_c)) {
+			fable_atmosphere_apply(fog_t, fog_c, 1.0, ALBEDO, EMISSION);
+		}
 	}
-	if (alpha < FUR_SHELL_CUT) {
+#endif
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+#ifdef FUR_SHELL_DEPTH
+	DEPTH = should_discard ? 0.0 : FRAGCOORD.z;
+#else
+	ALPHA = should_discard ? 0.0 : fable_instance_fade;
+#endif
+#else
+	if (should_discard) {
 		discard;
 	}
 #endif
@@ -107,6 +137,7 @@ void fragment() {
 
 #ifndef FUR_SHELL_DEPTH
 void light() {
+	if (any(greaterThan(ALBEDO, vec3(0.0)))) {
 	float n_dot_l = dot(NORMAL, LIGHT);
 	// Both the skin's N.L and the fur's gate are zero below N.L = -0.1.
 	float gate = clamp(2.0 * n_dot_l + 0.2, 0.0, 1.0);
@@ -125,6 +156,7 @@ void light() {
 		vec3 lobes = FUR_PRIMARY * clamp(4.0 * clamp(t_dot_l, 0.0, 1.0), 0.0, 1.0) * (r2 * r2)
 			+ FUR_SECONDARY * pow(r_dot_v, 7.0);
 		SPECULAR_LIGHT += colour * gate * v_fur_spec * lobes;
+	}
 	}
 }
 #endif

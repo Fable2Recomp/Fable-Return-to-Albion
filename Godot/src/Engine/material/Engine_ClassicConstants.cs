@@ -64,7 +64,6 @@ public static class Engine_ClassicConstants
         public int Height;
         public byte[] Bytes = Array.Empty<byte>();
         public bool Dirty = true;
-        public Image? Image;
         public ImageTexture? Texture;
         /// <summary>First and last register of this stage's per-row light block.</summary>
         public int BlockStart, BlockEnd;
@@ -482,13 +481,13 @@ public static class Engine_ClassicConstants
                     RenderingServer.GlobalShaderParameterSet(global, state.Texture!);
                     state.Dirty = true;
                 }
-                if (!state.Dirty || state.Image is null)
+                if (!state.Dirty)
                 {
                     continue;
                 }
                 Pack(state);
-                state.Image.SetData(state.Width, state.Height, false, Image.Format.Rgbaf, state.Bytes);
-                state.Texture.Update(state.Image);
+                Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                    state.Texture, state.Width, state.Height, false, Image.Format.Rgbaf, state.Bytes);
                 state.Dirty = false;
             }
         }
@@ -506,8 +505,8 @@ public static class Engine_ClassicConstants
         state.Width = Registers * _views;
         state.Bytes = new byte[state.Width * 16 * height];
         Pack(state);
-        state.Image = Image.CreateFromData(state.Width, height, false, Image.Format.Rgbaf, state.Bytes);
-        state.Texture = ImageTexture.CreateFromImage(state.Image);
+        var image = Image.CreateFromData(state.Width, height, false, Image.Format.Rgbaf, state.Bytes);
+        state.Texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
     }
 
     /// <summary>

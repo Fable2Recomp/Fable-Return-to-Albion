@@ -22,7 +22,7 @@ public static class DesktopGraphicsPresets
     public const string RevisionKey = "performance_preset_revision";
 
     /// <summary>Current revision of the desktop preset definitions.</summary>
-    public const int Revision = 1;
+    public const int Revision = 3;
 
     /// <summary>Preset tuned for entry-level integrated GPUs and battery play.</summary>
     public const string Low = "low";
@@ -68,7 +68,7 @@ public static class DesktopGraphicsPresets
             ["tree_shadow_reach"] = "stated",
             ["placed_light_limit"] = "24",
             ["placed_light_shadows"] = "true",
-            ["omni_shadow_mode"] = "dual_paraboloid",
+            ["placed_shadow_limit"] = "2",
             ["lighting_preset"] = "balanced",
             ["placed_light_range"] = "65.0",
             ["placed_shadow_range"] = "50.0",
@@ -89,7 +89,8 @@ public static class DesktopGraphicsPresets
             ["volumetric_fog"] = "false",
             ["sun_shadow_distance"] = "100",
             ["placed_light_limit"] = "16",
-            ["placed_light_shadows"] = "false",
+            ["placed_light_shadows"] = "true",
+            ["placed_shadow_limit"] = "1",
             ["lighting_preset"] = "performance",
             ["placed_light_range"] = "45.0",
             ["placed_shadow_range"] = "30.0",
@@ -117,7 +118,7 @@ public static class DesktopGraphicsPresets
             ["tree_shadow_reach"] = "full",
             ["placed_light_limit"] = "32",
             ["placed_light_shadows"] = "true",
-            ["omni_shadow_mode"] = "dual_paraboloid",
+            ["placed_shadow_limit"] = "4",
             ["lighting_preset"] = "balanced",
             ["placed_light_range"] = "65.0",
             ["placed_shadow_range"] = "50.0",
@@ -139,7 +140,7 @@ public static class DesktopGraphicsPresets
             ["sun_shadow_splits"] = "4",
             ["sun_shadow_distance"] = "250",
             ["placed_light_limit"] = "0",
-            ["omni_shadow_mode"] = "cube",
+            ["placed_shadow_limit"] = "8",
             ["lighting_preset"] = "quality",
             ["placed_light_range"] = "85.0",
             ["placed_shadow_range"] = "70.0",
@@ -172,10 +173,10 @@ public static class DesktopGraphicsPresets
     /// <summary>Returns a concise one-line summary describing what <paramref name="preset"/> enables.</summary>
     public static string Summary(string preset) => preset switch
     {
-        Low => "FSR Quality (67%), fast static shadows, fog & dynamic lamp shadows off — maximum FPS on integrated GPUs.",
-        Balanced => "FSR Ultra Quality (77%), volumetric fog, fast dual-paraboloid lamp shadows — crisp 60 FPS target.",
-        High => "Native 100%, real-time SDFGI global illumination, SMAA, 4096 sun shadows — recommended for discrete GPUs.",
-        Ultra => "Native 100%, full-res SDFGI, 8192 4-cascade sun shadows, cubemap point shadows & extended draw reach.",
+        Low => "FSR Quality (67%), fast static shadows, fog off, 1 cubemap lamp shadow — maximum FPS on integrated GPUs.",
+        Balanced => "FSR Ultra Quality (77%), volumetric fog, cubemap lamp shadows (2 lights) — crisp 60 FPS target.",
+        High => "Native 100%, real-time SDFGI global illumination, SMAA, 4096 sun & 4 cubemap lamp shadows — recommended for discrete GPUs.",
+        Ultra => "Native 100%, full-res SDFGI, 8192 4-cascade sun shadows, 8 cubemap lamp shadows & extended draw reach.",
         _ => "One or more graphics or display scaling settings have been customized individually.",
     };
 
@@ -264,7 +265,7 @@ public static class DesktopGraphicsPresets
     /// </summary>
     public static bool Upgrade(IDictionary<string, string> values)
     {
-        if (!Offered || !values.TryGetValue(Key, out string? preset) || Values(preset) is null)
+        if (!Offered || !values.TryGetValue(Key, out string? preset))
         {
             return false;
         }
@@ -277,7 +278,9 @@ public static class DesktopGraphicsPresets
             return false;
         }
 
-        if (Current((IReadOnlyDictionary<string, string>)values) == Custom)
+        values.Remove("omni_shadow_mode");
+
+        if (preset == Custom || Values(preset) is null)
         {
             values[Key] = Custom;
             values[RevisionKey] = currentRev;

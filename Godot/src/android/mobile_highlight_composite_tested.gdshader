@@ -9,8 +9,8 @@ shader_type spatial;
 render_mode unshaded, blend_premul_alpha, depth_draw_never, cull_disabled, fog_disabled,
 	shadows_disabled, ambient_light_disabled, specular_disabled;
 
-uniform sampler2D layer_tex : filter_nearest;
-uniform sampler2D glow_tex : filter_linear;
+uniform sampler2D layer_tex : hint_default_black, filter_nearest;
+uniform sampler2D glow_tex : hint_default_black, filter_linear;
 
 /// This object's screen rect (u0, v0, u1, v1).
 uniform vec4 rect = vec4(0.0);
@@ -26,11 +26,12 @@ void vertex() {
 
 void fragment() {
 	vec2 uv = SCREEN_UV;
-	if (uv.x < rect.x || uv.x > rect.z || uv.y < rect.y || uv.y > rect.w || texture(layer_tex, uv).g > 0.5) {
-		discard;
+	bool should_discard = (uv.x < rect.x || uv.x > rect.z || uv.y < rect.y || uv.y > rect.w || texture(layer_tex, uv).g > 0.5);
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+	if (!should_discard) {
+		vec4 glow = clamp(textureLod(glow_tex, uv, 0.0), vec4(0.0), vec4(1.0));
+		ALBEDO = glow.rgb;
+		ALPHA = glow.a;
 	}
-
-	vec4 glow = clamp(texture(glow_tex, uv), vec4(0.0), vec4(1.0));
-	ALBEDO = glow.rgb;
-	ALPHA = glow.a;
 }

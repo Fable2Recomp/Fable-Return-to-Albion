@@ -13,6 +13,8 @@
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
+#include "res://src/Engine/material/fable_dither.gdshaderinc"
+
 // PINNED to the body's slots: a twin keeps a prop's alpha-cut surfaces with their own (body)
 // material beside this one on the same instance, and Godot takes one index per name.
 instance uniform vec4 xr_tree_fade_in : instance_index(10) = vec4(0.0);
@@ -34,18 +36,19 @@ void vertex() {
 }
 
 void fragment() {
-	if (!IN_SHADOW_PASS) {
-		discard;
-	}
+	// D3D12 / Intel Arc DXIL warning: NEVER place multiple or mid-shader `discard;` statements.
+	// Evaluate non-shadow pass first into `should_discard` so skipped fragments bypass Bayer math,
+	// and emit ONE single `if (should_discard) { discard; }` at the very end of `fragment()`.
+	bool should_discard = !IN_SHADOW_PASS;
 
-	if (v_fade < 0.999) {
-		const float bayer[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0,
-			3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
-		ivec2 cell = ivec2(FRAGCOORD.xy) & ivec2(3);
-		if (v_fade <= (bayer[(cell.y * 4) + cell.x] + 0.5) / 16.0) {
-			discard;
+	if (!should_discard && v_fade < 0.999) {
+		if (v_fade <= fable_bayer_threshold(FRAGCOORD.xy)) {
+			should_discard = true;
 		}
 	}
 
 	ALBEDO = vec3(0.0);
+	if (should_discard) {
+		discard;
+	}
 }

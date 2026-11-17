@@ -127,7 +127,11 @@ public static class Engine_MaterialCopy
 		if (shader is not null && shader.GetMode() == Shader.Mode.Spatial)
 		{
 			copy.RenderPriority = source.RenderPriority;
-			copy.NextPass = source.NextPass;
+			// Clone ShaderMaterial NextPass so per-instance mutators (e.g. Engine_HeroTextureMorph)
+			// never corrupt shared NextPass instances.
+			copy.NextPass = source.NextPass is ShaderMaterial nextPass
+				? Shallow(nextPass, callerFile, callerMember)
+				: source.NextPass;
 		}
 		copy.Shader = shader;
 		for (int i = 0; i < list.Length; i++)

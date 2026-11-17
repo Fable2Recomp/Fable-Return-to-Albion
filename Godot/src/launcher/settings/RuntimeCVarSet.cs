@@ -517,11 +517,10 @@ public static class RuntimeCVarsGodot
             new("placed_light_shadows", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Let torches, lamps and fixtures cast dynamic shadows within placed_shadow_range. "
                 + "Off follows the shipped data, where only the few spot lights marked to cast do."),
-            new("omni_shadow_mode", LightingCategory, RuntimeCVarType.String, "dual_paraboloid",
-                "Shadow map projection used by dynamic point lights (torches, lamps, braziers). "
-                + "Dual Paraboloid renders 2 shadow passes per lamp instead of 6 cubemap faces with near-identical "
-                + "character shadows; Cubemap uses 6-face point shadows for the nearest lamps on Ultra.",
-                "dual_paraboloid|Dual Paraboloid (Fast),cube|Cubemap (Ultra)"),
+            new("placed_shadow_limit", LightingCategory, RuntimeCVarType.Int, "2",
+                "Maximum number of nearby torches, lamps, and braziers that cast dynamic cubemap shadows on "
+                + "characters at once within placed_shadow_range (Low: 1, Balanced: 2, High: 4, Ultra: 8). "
+                + "Static world shadows are pre-baked separately at zero per-light pass cost."),
             new("sdfgi_enabled", LightingCategory, RuntimeCVarType.Bool, "true",
                 "Enable real-time bounced sky and surface global illumination (SDFGI) in Modern mode. "
                 + "Off keeps Modern direct lighting, sky-tethered ambient fill, and ambient occlusion while "

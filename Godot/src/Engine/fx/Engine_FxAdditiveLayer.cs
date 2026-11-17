@@ -50,10 +50,14 @@ public partial class Engine_FxAdditiveLayer : Node
 
     private static readonly object Gate = new();
     private static Engine_FxAdditiveLayer? _current;
-    private static readonly Rid[] _publishedRd = new Rid[Views];
+    private static readonly Rid[] _publishedTex = new Rid[Views];
+    private static readonly Vector2I[] _publishedSize = new Vector2I[Views];
+    private static readonly Rid[] _resolvedTex = new Rid[Views];
+    private static readonly Vector2I[] _resolvedSize = new Vector2I[Views];
+    private static readonly Rid[] _resolvedRd = new Rid[Views];
 
     /// <summary>Per view: the post chain found the published texture is no longer a device
-    /// texture, so the next publish asks the rendering server again.</summary>
+    /// texture, so the next publish re-queries the viewport texture RID.</summary>
     private static readonly bool[] _stale = new bool[Views];
     private static readonly bool[] _publishedActive = new bool[Views];
     private static ulong _activeFrame;
@@ -134,17 +138,23 @@ public partial class Engine_FxAdditiveLayer : Node
     /// </summary>
     public static bool TrySnapshot(int view, out Rid layer)
     {
+        Rid texRid;
+        Vector2I size;
         lock (Gate)
         {
-            if (view < 0 || view >= Views)
+            if (view < 0 || view >= Views || !_publishedActive[view])
             {
                 layer = default;
                 return false;
             }
 
-            layer = _publishedRd[view];
-            return layer.IsValid && _publishedActive[view];
+            texRid = _publishedTex[view];
+            size = _publishedSize[view];
         }
+
+        layer = Refii.Core.Engine_RdHealth.ResolveRdOnRenderThread(
+            texRid, size, ref _resolvedTex[view], ref _resolvedSize[view], ref _resolvedRd[view]);
+        return layer.IsValid;
     }
 
     public void SetEnabled(bool on)
@@ -279,13 +289,14 @@ public partial class Engine_FxAdditiveLayer : Node
         _second = null;
         lock (Gate)
         {
-            _publishedRd[1] = default;
+            _publishedTex[1] = default;
+            _publishedSize[1] = default;
             _publishedActive[1] = false;
         }
     }
 
-    private Rid LayerRd() =>
-        RenderingServer.TextureGetRdTexture(RenderingServer.ViewportGetTexture(_viewport.GetViewportRid()));
+    private Rid ViewportTexRid() =>
+        RenderingServer.ViewportGetTexture(_viewport.GetViewportRid());
 
     /// <summary>
     /// Render thread: <paramref name="view"/>'s published texture is no longer a device texture.
@@ -303,28 +314,6 @@ public partial class Engine_FxAdditiveLayer : Node
 
     private Rid _layerRd;
     private Vector2I _layerRdSize;
-
-    /// <summary>The layer's render-device texture, asked for once per size: each query behind
-    /// <see cref="LayerRd"/> waits for the render thread.</summary>
-    private Rid CachedLayerRd()
-    {
-        Vector2I size = _viewport.Size;
-        bool stale;
-        lock (Gate)
-        {
-            stale = _stale[_view];
-            _stale[_view] = false;
-        }
-
-        if (stale || !_layerRd.IsValid || size != _layerRdSize)
-        {
-            _layerRd = LayerRd();
-            _layerRdSize = size;
-        }
-
-        return _layerRd;
-    }
-
     public override void _ExitTree()
     {
         if (_current == this)
@@ -339,7 +328,8 @@ public partial class Engine_FxAdditiveLayer : Node
 
         lock (Gate)
         {
-            _publishedRd[_view] = default;
+            _publishedTex[_view] = default;
+            _publishedSize[_view] = default;
             _publishedActive[_view] = false;
         }
     }
@@ -376,7 +366,8 @@ public partial class Engine_FxAdditiveLayer : Node
             Engine.GetProcessFrames() - _activeFrame <= 1;
         _viewport.RenderTargetUpdateMode = active ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
 
-        Rid rd = default;
+        Rid vpTex = default;
+        Vector2I vpSize = default;
         if (active)
         {
             _camera.GlobalTransform = main.GlobalTransform;
@@ -388,14 +379,27 @@ public partial class Engine_FxAdditiveLayer : Node
             _camera.KeepAspect = main.KeepAspect;
             _camera.HOffset = main.HOffset;
             _camera.VOffset = main.VOffset;
-            rd = CachedLayerRd();
-            _usable = rd.IsValid;
+            vpSize = _viewport.Size;
+            bool stale;
+            lock (Gate)
+            {
+                stale = _stale[_view];
+                _stale[_view] = false;
+            }
+            if (stale || !_layerRd.IsValid || vpSize != _layerRdSize)
+            {
+                _layerRd = ViewportTexRid();
+                _layerRdSize = vpSize;
+            }
+            vpTex = _layerRd;
+            _usable = vpTex.IsValid;
         }
 
         lock (Gate)
         {
-            _publishedRd[_view] = rd;
-            _publishedActive[_view] = active && rd.IsValid;
+            _publishedTex[_view] = vpTex;
+            _publishedSize[_view] = vpSize;
+            _publishedActive[_view] = active && vpTex.IsValid;
         }
     }
 }

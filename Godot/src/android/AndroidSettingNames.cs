@@ -67,6 +67,7 @@ public static class AndroidSettingNames
         ["placed_light_limit"] = ("Lamps", "How many of the nearest lamps, torches and fires light their surroundings at once. 0 lights all."),
         ["placed_light_range"] = ("Lamp distance", "How far away, in metres, a lamp or torch still lights its surroundings."),
         ["placed_light_shadows"] = ("Lamp shadows", "Lets lamps and torches near you cast moving shadows. Costs a lot."),
+        ["placed_shadow_limit"] = ("Shadowing lamps", "How many of the nearest lamps and torches can cast moving shadows at once when Lamp shadows is on."),
         ["placed_shadow_range"] = ("Lamp shadow distance", "How far away, in metres, a lamp's shadows are drawn."),
         ["tree_far_reach"] = ("Tree distance", "How far away, in metres, trees are still drawn. 0 draws them as far as the area does."),
         ["tree_lod_bias"] = ("Distant tree detail", "When distant trees switch to their simpler versions: lower switches nearer."),

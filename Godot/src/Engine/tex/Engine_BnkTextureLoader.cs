@@ -92,6 +92,12 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 			return Variant.CreateFrom((int)Error.FileUnrecognized);
 		}
 
+		if (Engine_RdHealth.IsDeviceLost)
+		{
+			Engine_RdHealth.NoteSuppressed();
+			return Variant.CreateFrom((int)Error.CantCreate);
+		}
+
 		Func<string, byte[]?> read = ReadBytes;
 
 		// THROUGH THE LIBRARY, not straight to the decoder. This route and the material route
@@ -115,7 +121,10 @@ public partial class Engine_BnkTextureLoader : ResourceFormatLoader
 		}
 
 		ImageTexture texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
-		if (!GodotObject.IsInstanceValid(texture) || !texture.GetRid().IsValid)
+		if (Engine_RdHealth.IsDeviceLost ||
+		    !GodotObject.IsInstanceValid(texture) ||
+		    !texture.GetRid().IsValid ||
+		    texture.GetWidth() <= 0)
 		{
 			return Variant.CreateFrom((int)Error.CantCreate);
 		}

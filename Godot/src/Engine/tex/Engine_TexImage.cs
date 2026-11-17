@@ -419,12 +419,22 @@ public static class Engine_TexImage
 		}
 
 		Image.Format format = ToGodotFormat(faces[0].Format);
-		var decoded = new Image[faces.Length];
-		for (int face = 0; face < faces.Length; ++face)
+		if (format == Image.Format.Max)
 		{
-			decoded[face] = Image.CreateFromData(
-				faces[face].Width, faces[face].Height, faces[face].HasMipmaps, format,
-				faces[face].Data);
+			error = $"unsupported cubemap face format {faces[0].Format}";
+			return null;
+		}
+
+		bool suppressMips = OS.GetEnvironment("REFII_TEX_NO_MIPS") == "1";
+		int fullChain = FullChainLength(faces[0].Width, faces[0].Height);
+		bool tryMips = fullChain > 1 && !suppressMips && faces[0].HasMipmaps;
+
+		Image[]? decoded = tryMips ? BuildCubemapFaces(faces, format, fullChain, useMips: true) : null;
+		decoded ??= BuildCubemapFaces(faces, format, fullChain, useMips: false);
+		if (decoded is null)
+		{
+			error = $"cubemap faces could not be decoded for {faces[0].Width}x{faces[0].Height} {faces[0].Format}";
+			return null;
 		}
 
 		Cubemap? cubemap = CubemapFromImages(decoded, out error);
@@ -434,6 +444,68 @@ public static class Engine_TexImage
 		}
 
 		return cubemap;
+	}
+
+	/// <summary>
+	/// Builds six uniform-format, uniform-mip-status <see cref="Image"/> faces for a cubemap,
+	/// extending partial Xbox 360 mip chains to <c>1x1</c> via <see cref="TryExtendChain"/> when requested.
+	/// </summary>
+	private static Image[]? BuildCubemapFaces(
+		TexSurface[] faces, Image.Format format, int fullChain, bool useMips)
+	{
+		var result = new Image[faces.Length];
+		for (int face = 0; face < faces.Length; ++face)
+		{
+			TexSurface surface = faces[face];
+			if (useMips)
+			{
+				byte[]? extended = null;
+				int extendedLength = 0;
+				try
+				{
+					if (surface.MipLevels < fullChain)
+					{
+						if (!TryExtendChain(surface, out extended, out extendedLength))
+						{
+							return null;
+						}
+					}
+
+					ReadOnlySpan<byte> chain = extended is not null
+						? new ReadOnlySpan<byte>(extended, 0, extendedLength)
+						: surface.Bytes;
+					Image img = Image.CreateFromData(surface.Width, surface.Height, true, format, chain);
+					if (!IsUsable(img, surface))
+					{
+						return null;
+					}
+
+					result[face] = img;
+				}
+				finally
+				{
+					if (extended is not null)
+					{
+						System.Buffers.ArrayPool<byte>.Shared.Return(extended);
+					}
+				}
+			}
+			else
+			{
+				int topLevel = TopLevelBytes(surface);
+				int topLength = topLevel > 0 && surface.Bytes.Length > topLevel ? topLevel : surface.Bytes.Length;
+				Image img = Image.CreateFromData(
+					surface.Width, surface.Height, false, format, surface.Bytes[..topLength]);
+				if (!IsUsable(img, surface))
+				{
+					return null;
+				}
+
+				result[face] = img;
+			}
+		}
+
+		return result;
 	}
 
 	/// <summary>

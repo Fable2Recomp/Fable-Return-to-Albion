@@ -181,6 +181,9 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 	/// <summary>The two text lines' point size.</summary>
 	public const int TextSize = 18;
 
+	/// <summary>Debug/isolation toggle to suppress 3D world-space HUD sprites.</summary>
+	public static bool Suppressed { get; set; }
+
 	/// <summary>
 	/// Takes this frame's icons: builds, re-texts and retires. Placement is NOT done here — see
 	/// <see cref="_Process"/>.
@@ -190,6 +193,15 @@ public sealed partial class Engine_HudWorldSprites : Node3D
 		foreach (Drawn drawn in _drawn.Values)
 		{
 			drawn.Used = false;
+		}
+
+		if (Suppressed || Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			foreach (Drawn drawn in _drawn.Values)
+			{
+				drawn.Node.Visible = false;
+			}
+			return;
 		}
 
 		foreach (Sprite sprite in sprites)

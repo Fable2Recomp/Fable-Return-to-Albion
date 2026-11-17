@@ -519,7 +519,7 @@ public static partial class Engine_MdlMaterial
         bool tangentBasis)
     {
         overridden = false;
-        if (material is null)
+        if (material is null || Refii.Core.Engine_RdHealth.IsDeviceLost)
         {
             return null;
         }
@@ -667,6 +667,10 @@ public static partial class Engine_MdlMaterial
         ShaderMaterial result = Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () =>
         {
             var mat = new ShaderMaterial { Shader = chosen ?? shader };
+            if (cutout || translucent || twoSided is not null)
+            {
+                mat.RenderPriority = CutoutRenderPriority;
+            }
             mat.SetMeta(TextureNamesMeta, new[]
             {
                 material.Diffuse, material.Normal, material.Specular, material.SelfIllumination,
@@ -682,10 +686,12 @@ public static partial class Engine_MdlMaterial
                 {
                     mat.SetShaderParameter("alpha_scissor_threshold", onePass ? CutoutAlpha : OpaquePassAlpha);
                 }
-                else if (cutout && !vegetation)
+                else if (cutout)
                 {
                     mat.SetShaderParameter("alpha_scissor_threshold",
-                        (diffuseFlags & 0xA0) == 0x20 ? CutoutAlpha : OpaquePassAlpha);
+                        vegetation
+                            ? VegetationCutoutAlpha
+                            : (diffuseFlags & 0xA0) == 0x20 ? CutoutAlpha : OpaquePassAlpha);
                 }
             }
 
@@ -746,6 +752,7 @@ public static partial class Engine_MdlMaterial
             {
                 var second = Refii.Models.Engine_MaterialCopy.Shallow(mat);
                 second.Shader = blended;
+                second.RenderPriority = 0;
                 second.SetShaderParameter("alpha_scissor_on", false);
                 mat.NextPass = second;
             }
@@ -799,11 +806,19 @@ public static partial class Engine_MdlMaterial
         return result;
     }
 
+    /// <summary>
+    /// Draws <c>depth_prepass_alpha</c> cutout surfaces ahead of semi-transparents at priority 0.
+    /// </summary>
+    public const int CutoutRenderPriority = -16;
+
     /// <summary>The translucent surface's opaque pass keeps alpha GREATER 254 (ref 254 of 255).</summary>
     private const float OpaquePassAlpha = 254.5f / 255.0f;
 
     /// <summary>A cutout-only texture's ALPHAREF 128, GREATER.</summary>
     private const float CutoutAlpha = 128.5f / 255.0f;
+
+    /// <summary>Default vegetation alpha scissor threshold (matches the shader uniform default).</summary>
+    private const float VegetationCutoutAlpha = 0.25f;
 
     /// <summary>The SP1 pair's exponent: saturate(V.R) squared twice.</summary>
     private const float FixedSpecularPower = 4.0f;

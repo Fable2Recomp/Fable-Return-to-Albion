@@ -32,12 +32,16 @@ public sealed class ShaderCostDiagnosticTests
         AssertThat(new Engine_ShaderCostDiagnostic().Mask).IsEqual(0);
         AssertThat(Source("project.godot").Contains("fable_shader_cost_diagnostic={\n\"type\": \"int\",\n\"value\": 0\n}")).IsTrue();
         string model = Source("src/Engine/material/standard_material_body.gdshaderinc");
-        AssertThat(model.IndexOf("discard;") < model.IndexOf("if ((fable_shader_cost_diagnostic & 2) == 0)")).IsTrue();
+        int modelDiagIdx = model.IndexOf("if (!should_discard && (fable_shader_cost_diagnostic & 2) == 0)");
+        AssertThat(modelDiagIdx).IsGreaterEqual(0);
+        AssertThat(model.IndexOf("should_discard = true;") < modelDiagIdx).IsTrue();
         AssertThat(model.Contains("global uniform int fable_shader_cost_diagnostic;")).IsFalse();
         AssertThat(Source("src/Engine/material/fable_lighting.gdshaderinc").Contains("global uniform int fable_shader_cost_diagnostic;")).IsTrue();
         AssertThat(Source("src/Engine/level/terrain/terrain_splat_body.gdshaderinc").Contains("if ((fable_shader_cost_diagnostic & 1) == 0)")).IsTrue();
         string canopy = Source("src/Engine/material/families/tree_canopy.gdshader");
-        AssertThat(canopy.IndexOf("discard;") < canopy.IndexOf("if ((fable_shader_cost_diagnostic & 4) == 0)")).IsTrue();
+        int canopyDiagIdx = canopy.IndexOf("if (!should_discard && (fable_shader_cost_diagnostic & 4) == 0)");
+        AssertThat(canopyDiagIdx).IsGreaterEqual(0);
+        AssertThat(canopy.IndexOf("bool should_discard =") < canopyDiagIdx).IsTrue();
         AssertThat(Source("src/Engine/material/fable_lighting.gdshaderinc").Contains("if ((fable_shader_cost_diagnostic & 8) != 0) { return vec4(0.0); }")).IsTrue();
     }
 

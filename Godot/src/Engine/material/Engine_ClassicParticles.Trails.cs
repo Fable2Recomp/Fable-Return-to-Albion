@@ -36,8 +36,7 @@ public partial class Engine_ClassicParticles
         public ulong TextureSignature;
         public int Vertices;
         public ImageTexture? Stream;
-        /// <summary>The control-point image, refilled in place; and its bytes.</summary>
-        public Image? StreamImage;
+        /// <summary>The control-point byte staging buffer for immutable image updates.</summary>
         public byte[] StreamBytes = Array.Empty<byte>();
         /// <summary>The material the held array parameters were last sent to.</summary>
         public ShaderMaterial? SentTo;
@@ -244,23 +243,17 @@ public partial class Engine_ClassicParticles
                 texels[(points + p) * 4 + lane] = _trailBuffer[src + 4 + lane];
             }
         }
-        if (trail.StreamImage is null)
-        {
-            trail.StreamImage = Image.CreateFromData(points, 2, false, Image.Format.Rgbaf, trail.StreamBytes);
-        }
-        else
-        {
-            trail.StreamImage.SetData(points, 2, false, Image.Format.Rgbaf, trail.StreamBytes);
-        }
         if (trail.Stream is null || trail.StreamWidth != points)
         {
-            trail.Stream = ImageTexture.CreateFromImage(trail.StreamImage);
+            var image = Image.CreateFromData(points, 2, false, Image.Format.Rgbaf, trail.StreamBytes);
+            trail.Stream = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
             trail.StreamWidth = points;
             trail.Material?.SetShaderParameter(VertexStreamName, trail.Stream);
         }
         else
         {
-            trail.Stream.Update(trail.StreamImage);
+            Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                trail.Stream, points, 2, false, Image.Format.Rgbaf, trail.StreamBytes);
         }
     }
 

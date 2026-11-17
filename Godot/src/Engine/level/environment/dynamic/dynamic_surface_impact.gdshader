@@ -52,14 +52,22 @@ void vertex() {
 
 void fragment() {
     float radius = length(impact_uv);
-    float angle = atan(impact_uv.y, impact_uv.x);
-    float ring_radius = 0.78 + 0.012 * sin(angle * 7.0 + impact_seed * TAU);
-    float shape = impact_part < 0.5
-        ? exp(-pow((radius - ring_radius) * 17.0, 2.0)) * (0.65 + 0.35 * sin(angle * 3.0 + impact_seed * TAU))
-        : pow(max(0.0, 1.0 - radius * radius), 1.4);
-    if (impact_kind > 0.5 && impact_kind < 1.5)
-        shape *= smoothstep(0.0, 0.4, 0.7 + 0.3 * sin(impact_uv.x * 13.0 + impact_seed * 17.0) * cos(impact_uv.y * 11.0));
-    ALPHA = impact_alpha * shape;
-    if (ALPHA < 0.005) discard;
-    ALBEDO = (impact_kind > 0.5 && impact_kind < 1.5 ? vec3(0.85, 0.90, 0.97) : vec3(0.52, 0.65, 0.76)) * brightness;
+    bool should_discard = (impact_alpha <= 0.005 || radius > 1.15);
+    ALBEDO = vec3(0.0);
+    ALPHA = 0.0;
+
+    if (!should_discard) {
+        float angle = atan(impact_uv.y, impact_uv.x);
+        float ring_radius = 0.78 + 0.012 * sin(angle * 7.0 + impact_seed * TAU);
+        float shape = impact_part < 0.5
+            ? exp(-pow((radius - ring_radius) * 17.0, 2.0)) * (0.65 + 0.35 * sin(angle * 3.0 + impact_seed * TAU))
+            : pow(max(0.0, 1.0 - radius * radius), 1.4);
+        if (impact_kind > 0.5 && impact_kind < 1.5)
+            shape *= smoothstep(0.0, 0.4, 0.7 + 0.3 * sin(impact_uv.x * 13.0 + impact_seed * 17.0) * cos(impact_uv.y * 11.0));
+        float alpha = impact_alpha * shape;
+        if (alpha >= 0.005) {
+            ALPHA = alpha;
+            ALBEDO = (impact_kind > 0.5 && impact_kind < 1.5 ? vec3(0.85, 0.90, 0.97) : vec3(0.52, 0.65, 0.76)) * brightness;
+        }
+    }
 }

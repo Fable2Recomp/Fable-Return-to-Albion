@@ -46,50 +46,59 @@ vec3 particle_swap(vec3 v) {
 }
 
 // A texture lane's texel in its frame's cell; a lane with no sheet reads the whole texture.
-vec4 particle_texel(sampler2D tex, vec2 uv, float frame, float columns, vec4 cell) {
+// Uses explicit `textureGrad` with precomputed quad derivatives so cell/lane branching stays safe on D3D12.
+vec4 particle_texel(sampler2D tex, vec2 uv, vec2 uv_dx, vec2 uv_dy, float frame, float columns, vec4 cell) {
 	if (max(cell.x, cell.y) <= 0.0) {
-		return texture(tex, uv);
+		return textureGrad(tex, uv, uv_dx, uv_dy);
 	}
 	float across = max(columns, 1.0);
 	float n = max(frame, 0.0);
 	float row = floor(n / across);
 	float column = n - row * across;
-	return texture(tex, (uv + vec2(column, row)) * cell.xy);
+	return textureGrad(tex, (uv + vec2(column, row)) * cell.xy, uv_dx * cell.xy, uv_dy * cell.xy);
 }
 
 void fragment() {
-	vec4 texel = particle_texel(ps_g_ParticleTextureSamplers, UV, v_frames.x, ps_g_TextureNumXDivs.x, ps_g_TextureUVScales[0]);
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
+	vec4 texel = particle_texel(ps_g_ParticleTextureSamplers, UV, uv_dx, uv_dy, v_frames.x, ps_g_TextureNumXDivs.x, ps_g_TextureUVScales[0]);
 	if (particle_textures > 1) {
 		float w = clamp((v_texture_time - ps_g_TextureStartTimes.x) * ps_g_TextureStartTimesInvDelta.x, 0.0, 1.0);
-		texel = mix(texel, particle_texel(ps_s1, UV, v_frames.y, ps_g_TextureNumXDivs.y, ps_g_TextureUVScales[1]), w);
+		texel = mix(texel, particle_texel(ps_s1, UV, uv_dx, uv_dy, v_frames.y, ps_g_TextureNumXDivs.y, ps_g_TextureUVScales[1]), w);
 	}
 	if (particle_textures > 2) {
 		float w = clamp((v_texture_time - ps_g_TextureStartTimes.y) * ps_g_TextureStartTimesInvDelta.y, 0.0, 1.0);
-		texel = mix(texel, particle_texel(ps_s2, UV, v_frames.z, ps_g_TextureNumXDivs.z, ps_g_TextureUVScales[2]), w);
+		texel = mix(texel, particle_texel(ps_s2, UV, uv_dx, uv_dy, v_frames.z, ps_g_TextureNumXDivs.z, ps_g_TextureUVScales[2]), w);
 	}
 	if (particle_textures > 3) {
 		float w = clamp((v_texture_time - ps_g_TextureStartTimes.z) * ps_g_TextureStartTimesInvDelta.z, 0.0, 1.0);
-		texel = mix(texel, particle_texel(ps_s3, UV, v_frames.w, ps_g_TextureNumXDivs.w, ps_g_TextureUVScales[3]), w);
+		texel = mix(texel, particle_texel(ps_s3, UV, uv_dx, uv_dy, v_frames.w, ps_g_TextureNumXDivs.w, ps_g_TextureUVScales[3]), w);
 	}
 
 	float alpha = texel.a * v_alpha;
-	float soft = fx_soft_fade_by(ps_g_DepthFadeScale.x, alpha, VERTEX, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
-	alpha *= soft;
-	if (alpha < xr_alpha_threshold) {
-		discard;
+	bool should_discard = (alpha < xr_alpha_threshold);
+	ALBEDO = vec3(0.0);
+	EMISSION = vec3(0.0);
+	ALPHA = 0.0;
+	// Lit depth_draw_never blended particles never emit mid-PSMain `discard`: ALBEDO/EMISSION/ALPHA = 0
+	// is a hardware blend no-op and lets light() skip cleanly without fragment/IBL helper-lane hazards.
+	if (!should_discard) {
+		float soft = fx_soft_fade_by(ps_g_DepthFadeScale.x, alpha, VERTEX, SCREEN_UV, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
+		alpha *= soft;
+		if (alpha >= xr_alpha_threshold) {
+			// Colour premultiplied by the vertex's alpha, as the game writes it; the blend does the rest.
+			vec3 base = texel.rgb * texel.rgb * v_alpha * soft;
+			vec3 lit = base * (1.0 - v_self_illum);
+			ALBEDO = lit;
+			EMISSION = lit * (fable_ambient(vec3(0.0)) + vs_g_GlobalAmbient.rgb) + base * v_key_colour * v_self_illum;
+			ALPHA = alpha * particle_alpha_out;
+			NORMAL = mat3(VIEW_MATRIX) * v_normal_world;
+		}
 	}
-
-	// Colour premultiplied by the vertex's alpha, as the game writes it; the blend does the rest.
-	vec3 base = texel.rgb * texel.rgb * v_alpha * soft;
-	vec3 lit = base * (1.0 - v_self_illum);
-	ALBEDO = lit;
-	EMISSION = lit * (fable_ambient(vec3(0.0)) + vs_g_GlobalAmbient.rgb) + base * v_key_colour * v_self_illum;
-	ALPHA = alpha * particle_alpha_out;
-	NORMAL = mat3(VIEW_MATRIX) * v_normal_world;
 }
 
 void light() {
-	if (dot(NORMAL, LIGHT) > 0.0) {
+	if (any(greaterThan(ALBEDO, vec3(0.0))) && dot(NORMAL, LIGHT) > 0.0) {
 		float atten = fable_attenuation(ATTENUATION, LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
 		if (atten > 0.0) {
 			DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);

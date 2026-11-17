@@ -17,6 +17,9 @@ shader_type spatial;
 // vertex stage, exactly as the guest's does. It also implies `ambient_light_disabled` and
 // `specular_disabled`, so naming those as well would be noise.
 render_mode cull_disabled, unshaded;
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+render_mode depth_prepass_alpha;
+#endif
 
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 // This family does not include fable_lighting; declare the same opt-in diagnostic global here.
@@ -68,18 +71,24 @@ void vertex() {
 }
 
 void fragment() {
-	vec4 texel = texture(albedo_tex, UV);
+	// D3D12 / Intel Arc DXIL safety: NEVER wrap `dFdx`/`dFdy` in `IN_SHADOW_PASS` (runtime UBO bit)
+	// and NEVER emit `discard;` in Forward+ PASS_MODE_COLOR (`depth_prepass_alpha` tests alpha in
+	// MODE_RENDER_DEPTH, while PASS_MODE_COLOR outputs `ALPHA = 0.0`).
+	vec2 uv_dx = dFdx(UV);
+	vec2 uv_dy = dFdy(UV);
+	vec4 texel = textureGrad(albedo_tex, UV, uv_dx, uv_dy);
 
 	// THE ALPHA TEST TAKES THE RAW SAMPLE, NEVER THE SQUARED ONE. The guest's tail is
 	// `PSConstants(2).w * rawAlpha` fed to `clip()`, while the colour path squares. Feeding the
 	// squared value here moves every leaf's cutout edge inward and thins the whole canopy.
 	float raw_alpha = texel.a;
-	if (raw_alpha * alpha_scale < alpha_threshold) {
-		discard;
-	}
+	bool should_discard = (raw_alpha * alpha_scale < alpha_threshold);
+
+	ALBEDO = should_discard ? vec3(0.0) : vec3(0.5);
+	ALPHA = 1.0;
 
 	// Keep alpha cutouts and the existing unshaded render mode when pricing canopy fragment work.
-	if ((fable_shader_cost_diagnostic & 4) == 0) {
+	if (!should_discard && (fable_shader_cost_diagnostic & 4) == 0) {
 	// UN-PREMULTIPLIED IN SQUARED SPACE: the guest computes `rgb*rgb` and `a*a` and divides, which
 	// is `(rgb/a)^2`. Algebraically the same as un-premultiplying first, but the guard matters —
 	// a zero alpha here is a texel the discard above already removed.
@@ -132,8 +141,13 @@ void fragment() {
 	// reads EMISSION — putting the result there instead draws a black canopy, which looks exactly
 	// like a failed texture bind and would have cost a run to diagnose.
 	ALBEDO = colour;
-	} else {
-		ALBEDO = vec3(0.5);
 	}
-	ALPHA = 1.0;
+
+#if CURRENT_RENDERER == RENDERER_FORWARD_PLUS
+	ALPHA = should_discard ? 0.0 : 1.0;
+#else
+	if (should_discard) {
+		discard;
+	}
+#endif
 }

@@ -1029,7 +1029,7 @@ void main() {
 		terrainMinH = 0.0f;
 		terrainMaxH = 1.0f;
 
-		if (terrainW <= 0 || terrainH <= 0 || worldBvh.TriangleCount == 0 || Engine_AppRoot.IsTestHost)
+		if (terrainW <= 0 || terrainH <= 0 || worldBvh.TriangleCount == 0 || Engine_AppRoot.IsTestHost || Refii.Core.Engine_RdHealth.IsDeviceLost)
 		{
 			return false;
 		}
@@ -1122,6 +1122,11 @@ void main() {
 				string? compileErr = null;
 				Engine_ServerSyncs.RunGpuUpload(bvhBytes + ghfBytes.LongLength + midBufferBytes, () =>
 				{
+					if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+					{
+						return;
+					}
+
 					rd = RenderingServer.CreateLocalRenderingDevice();
 					if (rd is null)
 					{

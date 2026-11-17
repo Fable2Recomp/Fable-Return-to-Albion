@@ -9,8 +9,9 @@
 #define REFII_SECOND_VIEW (((CAMERA_VISIBLE_LAYERS) & (1u << 28u)) != 0u)
 
 // The scene depth after the opaque pass (Engine_FxDepthCaptureEffect), the drawing view's. The
-// shader declares `fx_scene_depth` itself.
+// shader declares `fx_scene_depth` itself. Uses explicit textureLod(..., 0.0) so D3D12 / DXIL
+// never emits implicit quad derivatives inside non-uniform depth-test branches.
 global uniform sampler2D fx_scene_depth_second;
-#define REFII_SCENE_DEPTH(uv) (REFII_SECOND_VIEW ? texture(fx_scene_depth_second, (uv)) : texture(fx_scene_depth, (uv)))
+#define REFII_SCENE_DEPTH(uv) (REFII_SECOND_VIEW ? textureLod(fx_scene_depth_second, (uv), 0.0) : textureLod(fx_scene_depth, (uv), 0.0))
 
 #endif

@@ -599,8 +599,8 @@ public partial class Engine_ClassicShadows : Node
             }
             // The textures let go of the maps first: both go through the server's queue, so the
             // release below runs after them.
-            _texture.TextureRdRid = default;
-            _ownTexture.TextureRdRid = default;
+            Refii.Core.Engine_RdHealth.ClearTextureRdRidSafely(_texture);
+            Refii.Core.Engine_RdHealth.ClearTextureRdRidSafely(_ownTexture);
             Capture self = this;
             Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects());
         }

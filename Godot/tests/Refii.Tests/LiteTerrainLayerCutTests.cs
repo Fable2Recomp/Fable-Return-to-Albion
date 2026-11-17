@@ -205,8 +205,8 @@ public sealed class LiteTerrainLayerCutTests
         // build, upstream's anisotropic otherwise), and the define changes only that macro's value.
         foreach (string code in new[] { plain, tri })
         {
-            AssertThat(code.Contains("uniform sampler2DArray lod_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable;", StringComparison.Ordinal)).IsTrue();
-            AssertThat(code.Contains("uniform sampler2DArray lod_detail_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable;", StringComparison.Ordinal)).IsTrue();
+            AssertThat(code.Contains("uniform sampler2DArray lod_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable, hint_default_white;", StringComparison.Ordinal)).IsTrue();
+            AssertThat(code.Contains("uniform sampler2DArray lod_detail_array : FABLE_TERRAIN_LOD_FILTER, repeat_enable, hint_default_white;", StringComparison.Ordinal)).IsTrue();
             AssertThat(System.Text.RegularExpressions.Regex.Matches(code, @"\bFABLE_TERRAIN_LOD_FILTER\b").Count).IsEqual(3);
         }
 

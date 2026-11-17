@@ -9,7 +9,6 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
     private readonly Engine_DynamicInteractionState _state = new();
     private readonly Engine_DynamicRoofMap _roofMap = new();
     private byte[]? _roofBytes;
-    private Image? _roofImage;
     private ImageTexture? _roofTexture;
     private bool _roofPublished;
     private readonly Random _random = new(73421);
@@ -312,17 +311,17 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
         {
             _roofBytes ??= new byte[_roofMap.Pixels.Length * sizeof(float)];
             Buffer.BlockCopy(_roofMap.Pixels, 0, _roofBytes, 0, _roofBytes.Length);
-            if (_roofImage is null)
+            if (_roofTexture is null)
             {
-                _roofImage = Image.CreateFromData(Engine_DynamicRoofMap.Size, Engine_DynamicRoofMap.Size,
+                var roofImage = Image.CreateFromData(Engine_DynamicRoofMap.Size, Engine_DynamicRoofMap.Size,
                     false, Image.Format.Rgf, _roofBytes);
-                _roofTexture = ImageTexture.CreateFromImage(_roofImage);
+                _roofTexture = Refii.Textures.Engine_TextureUpload.CreateTexture(roofImage);
             }
             else
             {
-                _roofImage.SetData(Engine_DynamicRoofMap.Size, Engine_DynamicRoofMap.Size,
+                Refii.Textures.Engine_TextureUpload.UpdateFromData(
+                    _roofTexture, Engine_DynamicRoofMap.Size, Engine_DynamicRoofMap.Size,
                     false, Image.Format.Rgf, _roofBytes);
-                _roofTexture!.Update(_roofImage);
             }
         }
         if (!_roofPublished)
@@ -470,6 +469,5 @@ public partial class Engine_DynamicSurfaceInteractions : Node3D
     {
         Disable();
         _roofTexture?.Dispose();
-        _roofImage?.Dispose();
     }
 }

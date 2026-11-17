@@ -331,21 +331,60 @@ public partial class Engine_ClassicScreenShadow : CompositorEffect
     }
 
 
+    private bool _released;
+
     public override void _Notification(int what)
     {
         if (what != NotificationPredelete)
         {
             return;
         }
+        ReleaseNow(releaseStaticFallbacks: false);
+    }
+
+    /// <summary>
+    /// Releases per-effect and (on shutdown) shared static screen-shadow RD resources while the render thread is alive.
+    /// </summary>
+    public void ReleaseNow(bool releaseStaticFallbacks = false)
+    {
+        if (_released && !releaseStaticFallbacks)
+        {
+            return;
+        }
+        _released = true;
+
+        if (releaseStaticFallbacks)
+        {
+            if (_mask is not null)
+            {
+                _mask.TextureRdRid = default;
+                _mask = null;
+            }
+            if (_white is not null && GodotObject.IsInstanceValid(_white))
+            {
+                _white.Dispose();
+            }
+            _white = null;
+        }
+
         Engine_ClassicScreenShadow self = this;
-        Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects());
+        Refii.Core.Engine_RdRetire.OnRenderThread(() => self.ReleaseDeviceObjects(releaseStaticFallbacks));
     }
 
     /// <summary>Frees the device objects. Render thread (<see cref="Refii.Core.Engine_RdRetire.OnRenderThread"/>).</summary>
-    private void ReleaseDeviceObjects()
+    private void ReleaseDeviceObjects(bool releaseStatic = false)
     {
         _ready = false;
         RenderingDevice? rd = RenderingServer.GetRenderingDevice();
+        if (rd is not null && releaseStatic)
+        {
+            if (_target.IsValid && rd.TextureIsValid(_target)) rd.FreeRid(_target);
+            if (_whiteRid.IsValid && rd.TextureIsValid(_whiteRid)) rd.FreeRid(_whiteRid);
+            _target = default;
+            _whiteRid = default;
+            _targetSize = default;
+        }
+
         if (_rd is null || rd is null)
         {
             _rd = null;

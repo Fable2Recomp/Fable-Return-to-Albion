@@ -79,11 +79,28 @@ public static class Engine_ServerSyncs
 
 	/// <summary>
 	/// Maximum background GPU upload staging bytes per drawn frame before background workers yield
-	/// for the next frame fence (24 MB/frame in play, 48 MB/frame under load cover -> &lt;144 MB across
-	/// 3 frames in flight, keeping D3D12 and unified-memory drivers well clear of the 512 MB staging ceiling).
+	/// for the next frame fence (24 MB/frame in play, 48 MB/frame under load cover on Vulkan;
+	/// 8 MB / 16 MB on D3D12).
+	/// D3D12 VRAM / Upload Pacing warning: Under `--rendering-driver d3d12`, `D3D12MA` allocates
+	/// larger block alignments and retains upload heaps across 3 frames in flight on unified memory
+	/// (Intel Arc 140V). Never bypass `EffectiveMaxUploadBytesPerFrame` or trigger synchronous
+	/// worker `ForceSync()` loops during region/level load cover.
 	/// </summary>
 	internal const long MaxBackgroundUploadBytesPerFrame = 24L * 1024L * 1024L;
 	internal const long MaxLoadCoverUploadBytesPerFrame = 48L * 1024L * 1024L;
+	internal const long MaxD3D12BackgroundUploadBytesPerFrame = 8L * 1024L * 1024L;
+	internal const long MaxD3D12LoadCoverUploadBytesPerFrame = 16L * 1024L * 1024L;
+
+	/// <summary>Per-frame staging upload ceiling tailored by driver and load-cover state.</summary>
+	public static long EffectiveMaxUploadBytesPerFrame(bool loadCoverActive, bool isD3D12)
+	{
+		if (isD3D12)
+		{
+			return loadCoverActive ? MaxD3D12LoadCoverUploadBytesPerFrame : MaxD3D12BackgroundUploadBytesPerFrame;
+		}
+
+		return loadCoverActive ? MaxLoadCoverUploadBytesPerFrame : MaxBackgroundUploadBytesPerFrame;
+	}
 
 	/// <summary>Bytes staged into the current frame's command list across both main-thread and worker uploads.</summary>
 	internal static long FrameUploadBytes => DefaultPacer.FrameUploadBytes;
@@ -118,6 +135,14 @@ public static class Engine_ServerSyncs
 			{
 				if (Interlocked.CompareExchange(ref State, 1, 0) != 0)
 				{
+					return false;
+				}
+
+				if (Engine_RdHealth.IsDeviceLost)
+				{
+					Engine_RdHealth.NoteSuppressed();
+					Volatile.Write(ref State, 2);
+					Done.Set();
 					return false;
 				}
 
@@ -211,15 +236,34 @@ public static class Engine_ServerSyncs
 
 			long start = Stopwatch.GetTimestamp();
 			long maxTicks = (long)(System.Math.Max(0.5, budgetMs) * (Stopwatch.Frequency / 1000.0));
+			if (Engine_RdHealth.IsDeviceLost)
+			{
+				while (_workerUploads.TryDequeue(out GpuUploadWorkItem? cancelled))
+				{
+					cancelled.Cancel();
+				}
+				return;
+			}
+
 			while (_workerUploads.TryPeek(out GpuUploadWorkItem? next))
 			{
+				if (Engine_RdHealth.IsDeviceLost)
+				{
+					while (_workerUploads.TryDequeue(out GpuUploadWorkItem? cancelled))
+					{
+						cancelled.Cancel();
+					}
+					break;
+				}
+
 				if (Volatile.Read(ref next.State) != 0)
 				{
 					_workerUploads.TryDequeue(out _);
 					continue;
 				}
 
-				long maxBytes = LoadCoverActive ? MaxLoadCoverUploadBytesPerFrame : MaxBackgroundUploadBytesPerFrame;
+				long maxBytes = EffectiveMaxUploadBytesPerFrame(
+					LoadCoverActive, Refii.Textures.Engine_TextureUpload.IsD3D12Driver);
 				long currentBytes = Interlocked.Read(ref _frameUploadBytes);
 				if (currentBytes >= maxBytes && currentBytes > 0)
 				{
@@ -243,12 +287,23 @@ public static class Engine_ServerSyncs
 
 		public void RunGpuUpload(long estimatedBytes, System.Action action)
 		{
+			if (Engine_RdHealth.IsDeviceLost)
+			{
+				Engine_RdHealth.NoteSuppressed();
+				return;
+			}
+
 			long bytes = System.Math.Max(4096L, estimatedBytes);
 			bool isMain = OnMainThread || Volatile.Read(ref _mainThreadId) == -1;
 			if (isMain)
 			{
 				lock (_gpuUploadGate)
 				{
+					if (Engine_RdHealth.IsDeviceLost)
+					{
+						Engine_RdHealth.NoteSuppressed();
+						return;
+					}
 					Interlocked.Add(ref _frameUploadBytes, bytes);
 					action();
 				}

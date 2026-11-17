@@ -7,8 +7,8 @@ vec2 cloud_layer_uv(vec3 position) {
 
 float cloud_layer_noise(vec2 uv) {
     vec2 drift = cloud_offset * 0.004;
-    float shape = texture(cloud_shape, uv).r;
-    float detail = texture(cloud_detail, uv * 2.7 + drift * 1.6).r;
+    float shape = textureLod(cloud_shape, uv, 0.0).r;
+    float detail = textureLod(cloud_detail, uv * 2.7 + drift * 1.6, 0.0).r;
     return shape - (1.0 - detail) * 0.22 * (1.0 - overcast * 0.5);
 }
 

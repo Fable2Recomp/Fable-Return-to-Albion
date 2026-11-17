@@ -582,14 +582,26 @@ public static class Engine_LevelAmbientOcclusion
 	}
 
 	/// <summary>
+	/// Pure cache-resolution validity predicate: cached terrain AO satisfies <paramref name="expectedResolution"/>
+	/// whenever its dimensions meet or exceed the requested preset resolution unless rebuild is forced.
+	/// </summary>
+	public static bool ShouldRebakeForResolution(int cachedWidth, int expectedResolution, bool forceRebuild = false) =>
+		forceRebuild || (cachedWidth >= 128 && cachedWidth < expectedResolution);
+
+	/// <summary>
 	/// Fast header-only check verifying whether an existing <c>.ao</c> file on disk has valid magic,
 	/// version, and expected file size without reading the payload into memory.
 	/// </summary>
-	public static bool IsFileValid(string path)
+	public static bool IsFileValid(string path) => IsFileValid(path, TerrainAoResolution, forceRebuild: false);
+
+	/// <summary>
+	/// Overload of <see cref="IsFileValid(string)"/> parameterized by target resolution and forced rebuild.
+	/// </summary>
+	public static bool IsFileValid(string path, int expectedResolution, bool forceRebuild = false)
 	{
 		try
 		{
-			if (!File.Exists(path))
+			if (forceRebuild || !File.Exists(path))
 			{
 				return false;
 			}
@@ -622,9 +634,9 @@ public static class Engine_LevelAmbientOcclusion
 				return false;
 			}
 
-			// Invalidate legacy low-res (257/513/1024) or whole-prop-darkened .ao files and re-bake when
-			// the user changes the ground AO resolution preset (2048 / 4096 / 8192).
-			if ((terrainW >= 128 && terrainW != TerrainAoResolution) ||
+			// Invalidate legacy low-res (257/513/1024) or whole-prop-darkened .ao files and re-bake only
+			// when the requested ground AO resolution is strictly larger than the cached asset.
+			if (ShouldRebakeForResolution(terrainW, expectedResolution, forceRebuild) ||
 			    (placementCount > 16 && propVertCount > 0))
 			{
 				return false;
@@ -823,8 +835,22 @@ public static class Engine_LevelAmbientOcclusion
 
 	private static void BindAoTextures(StaticAoContainer? container)
 	{
+		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+		{
+			Refii.Core.Engine_RdHealth.NoteSuppressed();
+			return;
+		}
+
 		long uploadBytes = container?.TerrainAoBytes is { Length: > 0 } bytes ? bytes.LongLength : 4096L;
-		Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () => BindAoTexturesOnMainThread(container));
+		Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () =>
+		{
+			if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+			{
+				Refii.Core.Engine_RdHealth.NoteSuppressed();
+				return;
+			}
+			BindAoTexturesOnMainThread(container);
+		});
 	}
 
 	private static void BindAoTexturesOnMainThread(StaticAoContainer? container)
@@ -1089,7 +1115,9 @@ public static class Engine_LevelAmbientOcclusion
 				cropSpanZ > 1e-5f ? 1.0f / cropSpanZ : 0.0f);
 
 			GhfHeights? gpuGhf = hasGhf ? ghf : null;
-			bool gpuBaked = !Refii.Core.Engine_AppRoot.IsTestHost &&
+			bool aborted = Refii.Core.Engine_RdHealth.IsDeviceLost || isCancelled?.Invoke() == true;
+			bool gpuBaked = !aborted &&
+				!Refii.Core.Engine_AppRoot.IsTestHost &&
 				worldBvh.TriangleCount > 0 &&
 				Engine_GpuBvhBaker.TryBakeGroundAoGpu(
 					worldBvh,
@@ -1105,9 +1133,9 @@ public static class Engine_LevelAmbientOcclusion
 					out terrainAoBytes,
 					out terrainMinH,
 					out terrainMaxH,
-					isCancelled);
+					() => Refii.Core.Engine_RdHealth.IsDeviceLost || isCancelled?.Invoke() == true);
 
-			if (!gpuBaked && isCancelled?.Invoke() != true)
+			if (!gpuBaked && !Refii.Core.Engine_RdHealth.IsDeviceLost && isCancelled?.Invoke() != true)
 			{
 				int texelTotal = terrainW * terrainH;
 				var rawTerrAo = new float[texelTotal];

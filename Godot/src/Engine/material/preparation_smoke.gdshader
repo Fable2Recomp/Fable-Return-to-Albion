@@ -19,7 +19,7 @@ uniform vec4 void_color : source_color = vec4(0.0, 0.0, 0.0, 1.0);
 
 global uniform float fable_emission_boost = 1.0;
 
-uniform sampler2D noise_texture : repeat_enable, filter_linear;
+uniform sampler2D noise_texture : hint_default_black, repeat_enable, filter_linear;
 uniform float flow_speed : hint_range(0.005, 0.15) = 0.02;
 uniform float distortion_intensity : hint_range(0.0, 1.0) = 0.5;
 

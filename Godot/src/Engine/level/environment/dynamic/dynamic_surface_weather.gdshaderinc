@@ -38,7 +38,8 @@ float surface_track(vec3 world) {
     if (dynamic_track_projection.w < 0.5) return 0.0;
     vec2 uv = (world.xz - dynamic_track_projection.xy) / dynamic_track_projection.z + 0.5;
     if (min(uv.x, uv.y) < 0.01 || max(uv.x, uv.y) > 0.99) return 0.0;
-    vec2 track = texture(dynamic_track_map, uv).rg;
+    // Explicit textureLod(..., 0.0) avoids implicit derivatives after caller early-outs or discard.
+    vec2 track = textureLod(dynamic_track_map, uv, 0.0).rg;
     float height = track.y / max(track.x, 0.0001) + dynamic_track_height;
     return track.x * (1.0 - smoothstep(0.08, 0.3, abs(world.y - height)));
 }
@@ -91,6 +92,9 @@ vec2 surface_ripple(vec3 world) {
 }
 
 vec3 surface_classic(vec3 colour, vec3 world, vec3 normal, vec3 view) {
+    if (dynamic_surface_weather.w * surface_weather_response < 0.001 && dynamic_cloud_projection.w < 0.5) {
+        return colour;
+    }
     vec3 w = surface_weights(world, normal);
     vec3 coated = colour;
     float lum = dot(colour, vec3(0.299, 0.587, 0.114));

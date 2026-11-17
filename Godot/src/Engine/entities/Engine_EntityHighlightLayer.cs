@@ -62,10 +62,14 @@ public partial class Engine_EntityHighlightLayer : Node
 
     private static readonly object Gate = new();
     private static Engine_EntityHighlightLayer? _current;
-    private static readonly Rid[] _publishedRd = new Rid[Views];
+    private static readonly Rid[] _publishedTex = new Rid[Views];
+    private static readonly Vector2I[] _publishedSize = new Vector2I[Views];
+    private static readonly Rid[] _resolvedTex = new Rid[Views];
+    private static readonly Vector2I[] _resolvedSize = new Vector2I[Views];
+    private static readonly Rid[] _resolvedRd = new Rid[Views];
 
     /// <summary>Per view: the post chain found the published texture is no longer a device
-    /// texture, so the next publish asks the rendering server again.</summary>
+    /// texture, so the next publish re-queries the viewport texture RID.</summary>
     private static readonly bool[] _stale = new bool[Views];
     private static readonly bool[] _publishedActive = new bool[Views];
     private static readonly float[] _publishedScale = { 1f, 1f };
@@ -149,9 +153,11 @@ public partial class Engine_EntityHighlightLayer : Node
     /// </summary>
     public static bool TrySnapshot(int view, out Rid layer, out float scale, Target[] targets)
     {
+        Rid texRid;
+        Vector2I size;
         lock (Gate)
         {
-            if (view < 0 || view >= Views)
+            if (view < 0 || view >= Views || !_publishedActive[view])
             {
                 layer = default;
                 scale = 1f;
@@ -159,11 +165,21 @@ public partial class Engine_EntityHighlightLayer : Node
                 return false;
             }
 
-            layer = _publishedRd[view];
+            texRid = _publishedTex[view];
+            size = _publishedSize[view];
             scale = _publishedScale[view];
             System.Array.Copy(_published[view], targets, Slots);
-            return layer.IsValid && _publishedActive[view];
         }
+
+        layer = Refii.Core.Engine_RdHealth.ResolveRdOnRenderThread(
+            texRid, size, ref _resolvedTex[view], ref _resolvedSize[view], ref _resolvedRd[view]);
+        if (!layer.IsValid)
+        {
+            System.Array.Clear(targets, 0, Slots);
+            return false;
+        }
+
+        return true;
     }
 
     public void SetEnabled(bool on)
@@ -290,18 +306,18 @@ public partial class Engine_EntityHighlightLayer : Node
         _second = null;
         lock (Gate)
         {
-            _publishedRd[1] = default;
+            _publishedTex[1] = default;
+            _publishedSize[1] = default;
             _publishedActive[1] = false;
         }
     }
 
-    private Rid LayerRd() =>
-        RenderingServer.TextureGetRdTexture(RenderingServer.ViewportGetTexture(_viewport.GetViewportRid()));
+    private Rid ViewportTexRid() =>
+        RenderingServer.ViewportGetTexture(_viewport.GetViewportRid());
 
     /// <summary>
     /// Render thread: <paramref name="view"/>'s published texture is no longer a device texture.
-    /// The viewport's render target can be recreated at an unchanged size, which frees the
-    /// texture the size-keyed cache still holds; the next publish asks again.
+    /// Invalidate the cached viewport texture and render-thread resolution so the next publish refreshes.
     /// </summary>
     public static void MarkStale(int view)
     {
@@ -309,28 +325,9 @@ public partial class Engine_EntityHighlightLayer : Node
         lock (Gate)
         {
             _stale[view] = true;
+            _resolvedTex[view] = default;
+            _resolvedRd[view] = default;
         }
-    }
-
-    /// <summary>The layer's render-device texture, asked for once per size: each query behind
-    /// <see cref="LayerRd"/> waits for the render thread.</summary>
-    private Rid CachedLayerRd()
-    {
-        Vector2I size = _viewport.Size;
-        bool stale;
-        lock (Gate)
-        {
-            stale = _stale[_view];
-            _stale[_view] = false;
-        }
-
-        if (stale || !_layerRd.IsValid || size != _layerRdSize)
-        {
-            _layerRd = LayerRd();
-            _layerRdSize = size;
-        }
-
-        return _layerRd;
     }
 
     public override void _ExitTree()
@@ -347,7 +344,8 @@ public partial class Engine_EntityHighlightLayer : Node
 
         lock (Gate)
         {
-            _publishedRd[_view] = default;
+            _publishedTex[_view] = default;
+            _publishedSize[_view] = default;
             _publishedActive[_view] = false;
         }
     }
@@ -401,7 +399,8 @@ public partial class Engine_EntityHighlightLayer : Node
 
         float scale = WidthScale(WidthTexels > 0 ? WidthTexels : 1);
 
-        Rid rd = default;
+        Rid vpTex = default;
+        Vector2I vpSize = default;
         if (active)
         {
             _camera.GlobalTransform = main.GlobalTransform;
@@ -413,16 +412,29 @@ public partial class Engine_EntityHighlightLayer : Node
             _camera.KeepAspect = main.KeepAspect;
             _camera.HOffset = main.HOffset;
             _camera.VOffset = main.VOffset;
-            rd = CachedLayerRd();
-            _usable = rd.IsValid;
+            vpSize = _viewport.Size;
+            bool stale;
+            lock (Gate)
+            {
+                stale = _stale[_view];
+                _stale[_view] = false;
+            }
+            if (stale || !_layerRd.IsValid || vpSize != _layerRdSize)
+            {
+                _layerRd = ViewportTexRid();
+                _layerRdSize = vpSize;
+            }
+            vpTex = _layerRd;
+            _usable = vpTex.IsValid;
         }
 
         lock (Gate)
         {
-            _publishedRd[_view] = rd;
+            _publishedTex[_view] = vpTex;
+            _publishedSize[_view] = vpSize;
             _publishedScale[_view] = scale;
             System.Array.Copy(_targets, _published[_view], Slots);
-            _publishedActive[_view] = active && rd.IsValid;
+            _publishedActive[_view] = active && vpTex.IsValid;
         }
 
         Engine_MobileHighlight.Follow(this, _viewport, main, _targets, active, scale, _view == 1);

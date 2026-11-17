@@ -147,8 +147,6 @@ public static class Engine_LightTable
 		return false;
 	}
 
-	private static Image? _image;
-
 	private static ImageTexture? _texture;
 
 	private static int _live;
@@ -325,23 +323,16 @@ public static class Engine_LightTable
 			}
 
 			Buffer.BlockCopy(Data, 0, Bytes, 0, Bytes.Length);
-			if (_image is null)
-			{
-				_image = Image.CreateFromData(Capacity, 3, false, Image.Format.Rgbaf, Bytes);
-			}
-			else
-			{
-				_image.SetData(Capacity, 3, false, Image.Format.Rgbaf, Bytes);
-			}
-
 			if (_texture is null)
 			{
-				_texture = Refii.Textures.Engine_TextureUpload.CreateTexture(_image);
+				var image = Image.CreateFromData(Capacity, 3, false, Image.Format.Rgbaf, Bytes);
+				_texture = Refii.Textures.Engine_TextureUpload.CreateTexture(image);
 				RenderingServer.GlobalShaderParameterSet(GlobalName, _texture);
 			}
 			else
 			{
-				_texture.Update(_image);
+				Refii.Textures.Engine_TextureUpload.UpdateFromData(
+					_texture, Capacity, 3, false, Image.Format.Rgbaf, Bytes);
 			}
 		}
 	}

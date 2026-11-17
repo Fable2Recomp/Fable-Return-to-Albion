@@ -114,9 +114,6 @@ public partial class GameVideo : Node
 	private ImageTexture? _luma;
 	private ImageTexture? _chromaU;
 	private ImageTexture? _chromaV;
-	private Image? _lumaImage;
-	private Image? _chromaUImage;
-	private Image? _chromaVImage;
 	private byte[] _y = Array.Empty<byte>();
 	private byte[] _u = Array.Empty<byte>();
 	private byte[] _v = Array.Empty<byte>();
@@ -785,13 +782,7 @@ public partial class GameVideo : Node
 			return;  // caught up without a new frame — nothing to upload
 		}
 
-		_lumaImage!.SetData(_decoder.Width, _decoder.Height, false, Image.Format.R8, _y);
-		_chromaUImage!.SetData(chromaWidth, chromaHeight, false, Image.Format.R8, _u);
-		_chromaVImage!.SetData(chromaWidth, chromaHeight, false, Image.Format.R8, _v);
-
-		if (_luma is null || _chromaU is null || _chromaV is null ||
-			_lumaImage is null || _chromaUImage is null || _chromaVImage is null ||
-			_lumaImage.IsEmpty() || _chromaUImage.IsEmpty() || _chromaVImage.IsEmpty())
+		if (_luma is null || _chromaU is null || _chromaV is null)
 		{
 			return;
 		}
@@ -810,9 +801,9 @@ public partial class GameVideo : Node
 			return;
 		}
 
-		_luma.Update(_lumaImage);
-		_chromaU.Update(_chromaUImage);
-		_chromaV.Update(_chromaVImage);
+		Refii.Textures.Engine_TextureUpload.UpdateFromData(_luma, _decoder.Width, _decoder.Height, false, Image.Format.R8, _y);
+		Refii.Textures.Engine_TextureUpload.UpdateFromData(_chromaU, chromaWidth, chromaHeight, false, Image.Format.R8, _u);
+		Refii.Textures.Engine_TextureUpload.UpdateFromData(_chromaV, chromaWidth, chromaHeight, false, Image.Format.R8, _v);
 
 		// An embedded movie must not also paint the screen — the two share one material. A
 		// hosting element keeps it off unless the guest's live player states a fullscreen
@@ -897,7 +888,6 @@ public partial class GameVideo : Node
 			IsTextureReady(_luma, "GameVideo.Allocate.reuseLuma") &&
 			IsTextureReady(_chromaU, "GameVideo.Allocate.reuseChromaU") &&
 			IsTextureReady(_chromaV, "GameVideo.Allocate.reuseChromaV") &&
-			_lumaImage is not null && _chromaUImage is not null && _chromaVImage is not null &&
 			_y is not null && _u is not null && _v is not null)
 		{
 			_embedded.Size = new Vector2I(decoder.Width, decoder.Height);
@@ -906,19 +896,18 @@ public partial class GameVideo : Node
 			return;
 		}
 
-		// Buffers sized exactly to their planes: Image.SetData requires the byte count to match
-		// the image's dimensions, and an over-sized chroma buffer is rejected silently.
+		// Buffers sized exactly to their planes: image data must match the texture layout on UpdateFromData.
 		_y = new byte[decoder.Width * decoder.Height];
 		_u = new byte[chromaWidth * chromaHeight];
 		_v = new byte[chromaWidth * chromaHeight];
 
-		_lumaImage = Image.CreateEmpty(decoder.Width, decoder.Height, false, Image.Format.R8);
-		_chromaUImage = Image.CreateEmpty(chromaWidth, chromaHeight, false, Image.Format.R8);
-		_chromaVImage = Image.CreateEmpty(chromaWidth, chromaHeight, false, Image.Format.R8);
+		var lumaImage = Image.CreateEmpty(decoder.Width, decoder.Height, false, Image.Format.R8);
+		var chromaUImage = Image.CreateEmpty(chromaWidth, chromaHeight, false, Image.Format.R8);
+		var chromaVImage = Image.CreateEmpty(chromaWidth, chromaHeight, false, Image.Format.R8);
 
-		_luma = ImageTexture.CreateFromImage(_lumaImage);
-		_chromaU = ImageTexture.CreateFromImage(_chromaUImage);
-		_chromaV = ImageTexture.CreateFromImage(_chromaVImage);
+		_luma = Refii.Textures.Engine_TextureUpload.CreateTexture(lumaImage);
+		_chromaU = Refii.Textures.Engine_TextureUpload.CreateTexture(chromaUImage);
+		_chromaV = Refii.Textures.Engine_TextureUpload.CreateTexture(chromaVImage);
 
 		if (!IsTextureReady(_luma, "GameVideo.Allocate.luma") ||
 			!IsTextureReady(_chromaU, "GameVideo.Allocate.chromaU") ||

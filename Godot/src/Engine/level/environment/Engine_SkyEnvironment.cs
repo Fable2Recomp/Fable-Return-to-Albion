@@ -167,7 +167,10 @@ public static class Engine_SkyEnvironment
         if (reuse is not null && reuse.GetWidth() == image.GetWidth() &&
             reuse.GetHeight() == image.GetHeight())
         {
-            reuse.Update(image);
+            // --render-thread separate warning: never call image.Dispose() immediately after
+            // texture.Update(image); route through Engine_TextureUpload so RD health and
+            // storage-layout invariants are enforced consistently, then retire deterministically.
+            Refii.Textures.Engine_TextureUpload.SetImage(reuse, image, allowD3D12Replace: false);
             RetireLutImage(image);
             return (state, reuse);
         }

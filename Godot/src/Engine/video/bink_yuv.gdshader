@@ -10,9 +10,9 @@ shader_type canvas_item;
 // Chroma is NOT simply half luma — every dimension is independently (x+7) & ~7 — so the
 // planes are sampled by normalised UV rather than by any assumed ratio.
 
-uniform sampler2D luma : filter_linear, source_color;
-uniform sampler2D chroma_r : filter_linear;
-uniform sampler2D chroma_b : filter_linear;
+uniform sampler2D luma : hint_default_black, filter_linear, source_color;
+uniform sampler2D chroma_r : hint_default_black, filter_linear;
+uniform sampler2D chroma_b : hint_default_black, filter_linear;
 
 void fragment() {
 	// Single-channel textures carry the value in .r.
