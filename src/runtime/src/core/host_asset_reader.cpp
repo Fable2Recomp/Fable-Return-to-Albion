@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstring>
 #include <string>
-#include <vector>
 
 #include <rex/logging.h>
 
@@ -142,42 +141,26 @@ extern "C" int32_t refii_bridge_read_host_asset(const char* path, size_t length,
 
   const HostAssetReaderFn reader = ReaderOrCount();
   const std::string terminated = Terminated(path, length);
-  uint32_t size = 0;
-  if (!QuerySize(reader, terminated, size)) {
+  if (reader == nullptr || terminated.empty()) {
     return 0;
   }
 
-  if (size == 0u) {
-    return 1;
-  }
-
   if (out == nullptr || capacity == 0u) {
+    uint32_t size = 0;
+    if (!QuerySize(reader, terminated, size)) {
+      return 0;
+    }
     if (out_size != nullptr) {
       *out_size = size;
     }
     return 1;
   }
 
+  // No size is asked first: the caller sized `out`. Godot writes at most `capacity` bytes straight
+  // into it, the front of the asset when the buffer is shorter, and states how many.
   uint32_t written = 0;
-  if (capacity >= size) {
-    if (reader(terminated.c_str(), out, size, &written) == 0) {
-      return 0;
-    }
-    if (written > size) {
-      return 0;
-    }
-  } else {
-    std::vector<uint8_t> whole(size);
-    if (reader(terminated.c_str(), whole.data(), size, &written) == 0) {
-      return 0;
-    }
-    if (written > size) {
-      return 0;
-    }
-    if (written > capacity) {
-      written = capacity;
-    }
-    std::memcpy(out, whole.data(), written);
+  if (reader(terminated.c_str(), out, capacity, &written) == 0 || written > capacity) {
+    return 0;
   }
 
   if (out_size != nullptr) {
@@ -200,42 +183,32 @@ extern "C" int32_t refii_bridge_read_host_asset_prefix(const char* path, size_t 
 
   const HostAssetReaderFn reader = ReaderOrCount();
   const std::string terminated = Terminated(path, length);
-  uint32_t size = 0;
-  if (!QuerySize(reader, terminated, size)) {
+  if (reader == nullptr || terminated.empty()) {
     return 0;
   }
 
   // Shorter than asked is not a failure: a sniff on a file smaller than the window is a real
   // answer.
-  const uint32_t take = count < size ? count : size;
-  if (take == 0u) {
-    return 1;
-  }
-
   if (out == nullptr || capacity == 0u) {
+    uint32_t size = 0;
+    if (!QuerySize(reader, terminated, size)) {
+      return 0;
+    }
     if (out_size != nullptr) {
-      *out_size = take;
+      *out_size = count < size ? count : size;
     }
     return 1;
   }
 
-  std::vector<uint8_t> whole(size);
+  // Only the window is asked for, so Godot inflates only the chunks under it.
+  const uint32_t want = count < capacity ? count : capacity;
   uint32_t written = 0;
-  if (reader(terminated.c_str(), whole.data(), size, &written) == 0) {
+  if (reader(terminated.c_str(), out, want, &written) == 0 || written > want) {
     return 0;
   }
-  if (written > size) {
-    return 0;
-  }
-
-  uint32_t copy = written < take ? written : take;
-  if (copy > capacity) {
-    copy = capacity;
-  }
-  std::memcpy(out, whole.data(), copy);
 
   if (out_size != nullptr) {
-    *out_size = copy;
+    *out_size = written;
   }
   return 1;
 }

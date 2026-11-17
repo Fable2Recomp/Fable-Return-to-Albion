@@ -847,7 +847,8 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	public static Engine_EntitySkeleton? TryBuild(uint entity, Engine_MdlRig? rig) =>
 		rig is { } model && HostBridge.GetEntityBoneNames(entity) is { Length: > 0 } guestNames
-			? Build(model, guestNames, HostBridge.GetEntityRestPose(entity))
+			? Build(model, guestNames, HostBridge.GetEntityRestPose(entity),
+				HostBridge.GetEntityBoneParents(entity))
 			: null;
 
 	/// <summary>
@@ -859,7 +860,8 @@ public sealed class Engine_EntitySkeleton
 	/// existed when the guest was live would be a second implementation waiting to happen.
 	/// </summary>
 	public static Engine_EntitySkeleton? Build(
-		Engine_MdlRig rig, string[] guestNames, HostBridge.BonePose? guestRest = null)
+		Engine_MdlRig rig, string[] guestNames, HostBridge.BonePose? guestRest = null,
+		int[]? guestParents = null)
 	{
 		// MANUAL MODIFIER PROCESSING: no Godot modifier ever drives these bones (poses are the
 		// guest's, ragdolls included), but every Skeleton3D gets an inactive compatibility
@@ -942,28 +944,34 @@ public sealed class Engine_EntitySkeleton
 			}
 		}
 
+		int[]? byTree = guestParents is { } parents && parents.Length == guestNames.Length
+			? MapByTree(rig, guestNames, parents)
+			: null;
 		var modelToGuest = new int[rig.BoneCount];
 		var unmapped = new List<string>();
 		int mapped = 0;
 		for (int m = 0; m < rig.BoneCount; ++m)
 		{
-			modelToGuest[m] = byName.TryGetValue(rig.Names[m], out int g) ? g : -1;
+			modelToGuest[m] = byTree is not null ? byTree[m]
+				: byName.TryGetValue(rig.Names[m], out int g) ? g : -1;
 			if (modelToGuest[m] >= 0)
 			{
 				++mapped;
 			}
-			else
+			else if (rig.Parents[m] >= 0)
 			{
-				// NAME the miss, and say where it sits in the hierarchy.
+				// A model ROOT is not a miss. The guest pins it to its skeleton's root before
+				// comparing any name (`sub_82B7F648` → `sub_82B7F4C8`: `stw r8, 8(r29)` stores
+				// the skeleton root's index into the model root's node), the root of all 299
+				// skeletons in the animation table is `Locator`, so no name ever matches it, and
+				// that root's pose is stamped identity (`sub_821F57D0`) —
+				// the rest every shipped model root carries (919 of 919 rigged models). Left
+				// unmapped it draws at that rest, which is what the guest draws.
 				//
-				// "142 of 143 mapped" is a number that cannot be acted on. WHICH bone decides
-				// everything: an unmapped fingertip is cosmetic, an unmapped spine holds every
-				// descendant at its rest while its parent moves — and a bone frozen mid-chain
-				// does not look like a missing bone, it looks like the mesh tearing, which is
-				// what sent this investigation at scale and at the composition maths first.
-				//
-				// The child count is the tell. A leaf costs one bone; a bone with children
-				// costs its whole subtree.
+				// NAME the miss, and say where it sits in the hierarchy. An unmapped bone keeps
+				// its LOCAL rest under its parent and rides with it (`WriteBlended`, as
+				// `sub_8222E2B8` composes the guest's own unmapped bones); what tears is geometry
+				// weighted to it while mapped neighbours move. The child count is the tell.
 				int children = 0;
 				for (int c = 0; c < rig.BoneCount; ++c)
 				{
@@ -988,9 +996,24 @@ public sealed class Engine_EntitySkeleton
 		// running. Keyed on the message so a genuinely different miss still prints.
 		if (unmapped.Count != 0)
 		{
-			string line = $"[rig] {rig.BoneCount - mapped} model bone(s) the guest never " +
-				$"names, so they hold their REST while their parents move: " +
-				string.Join(", ", unmapped);
+			string line = $"[rig] {unmapped.Count} model bone(s) with no guest bone of that " +
+				$"name keep their local rest under their parent (the guest's unmapped palette " +
+				$"entry, sub_8222E2B8): " + string.Join(", ", unmapped);
+			if (_reportedUnmapped.Add(line))
+			{
+				GD.Print(line);
+			}
+		}
+
+		// NO NAME MATCHED: the guest's own model→skeleton map (`sub_82B7F4C8`, CRC-32 of the
+		// full name, `sub_823B0A38`) matches nothing below the root either, so the guest draws
+		// this mesh at its rest whatever its skeleton plays. Both tables are printed because
+		// that verdict belongs to the data — the mesh was authored on another rig's names.
+		if (mapped == 0 && unmapped.Count != 0)
+		{
+			string line = $"[rig] model names {{{string.Join(", ", rig.Names)}}} share none " +
+				$"with the guest skeleton {{{string.Join(", ", guestNames)}}} — the guest leaves " +
+				$"this mesh at rest too";
 			if (_reportedUnmapped.Add(line))
 			{
 				GD.Print(line);
@@ -1004,6 +1027,59 @@ public sealed class Engine_EntitySkeleton
 			BindGapBone = bindGapBone,
 			GuestRestReach = guestReach,
 		};
+	}
+
+	/// <summary>
+	/// The guest's own model→skeleton map (`sub_82B7F648`): both bone tables become trees
+	/// (`sub_82B7F348`, the skeleton's from each entry's parent word), the model's root is paired
+	/// with the skeleton's FIRST root whatever either is called, and below a paired node only its
+	/// children are compared, by the CRC-32 of the full name (`sub_82B7F4C8`, `sub_823B0A38`). A
+	/// bone whose parent did not pair is not paired, even when the skeleton has a bone of its
+	/// name elsewhere — a held lantern's `FX_Particle_DummyObject` never takes the carrier's.
+	/// A model root pairs only where its name is the skeleton root's (an identity either way:
+	/// the guest stamps that root identity, `sub_821F57D0`).
+	/// </summary>
+	private static int[] MapByTree(Engine_MdlRig rig, string[] guestNames, int[] guestParents)
+	{
+		int guestRoot = System.Array.IndexOf(guestParents, -1);
+		var children = new Dictionary<(int Parent, string Name), int>(guestNames.Length);
+		for (int g = 0; g < guestNames.Length; ++g)
+		{
+			if (guestParents[g] >= 0 && guestNames[g].Length != 0)
+			{
+				children.TryAdd((guestParents[g], guestNames[g]), g);
+			}
+		}
+
+		const int Unresolved = -2;
+		var map = new int[rig.BoneCount];
+		System.Array.Fill(map, Unresolved);
+
+		int Resolve(int m, int depth)
+		{
+			if (map[m] != Unresolved)
+			{
+				return map[m];
+			}
+
+			int parent = rig.Parents[m];
+			if (parent < 0 || parent >= rig.BoneCount || parent == m || depth > rig.BoneCount)
+			{
+				map[m] = guestRoot >= 0 && rig.Names[m] == guestNames[guestRoot] ? guestRoot : -1;
+				return map[m];
+			}
+
+			int anchor = rig.Parents[parent] < 0 ? guestRoot : Resolve(parent, depth + 1);
+			map[m] = anchor >= 0 && children.TryGetValue((anchor, rig.Names[m]), out int g) ? g : -1;
+			return map[m];
+		}
+
+		for (int m = 0; m < rig.BoneCount; ++m)
+		{
+			Resolve(m, 0);
+		}
+
+		return map;
 	}
 
 	/// <summary>

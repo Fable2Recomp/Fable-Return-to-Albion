@@ -30,7 +30,12 @@ public static class CoopHeroKit
 	/// <summary>Ability ids 1..14, the range <c>HeroVitals.AbilityLevels</c> carries.</summary>
 	private const int AbilityCount = 15;
 
-	/// <summary>Everything about a hero that we can both read and re-apply. Weapons are GDB record ids.</summary>
+	/// <summary>
+	/// Everything about a hero that we can both read and re-apply. Weapons are GDB record ids.
+	/// <see cref="WornDyes"/> is the dye on each worn item that holds one — the dye is the item
+	/// instance's own record, which a worn def hash alone does not carry — and <see cref="Scars"/>
+	/// the hero's `CECMorph` scars; both cross as the HeroState's looks extension.
+	/// </summary>
 	public readonly record struct Kit(
 		bool Known,
 		bool Female,
@@ -58,7 +63,9 @@ public static class CoopHeroKit
 		int DogCombat = 0,
 		string[]? DogTricks = null,
 		uint[]? DogWorn = null,
-		string? DogName = null)
+		string? DogName = null,
+		Fable2Bridge.WornDye[]? WornDyes = null,
+		Fable2Bridge.Scar[]? Scars = null)
 	{
 		/// <summary>The creature this hero's body is, in the guest's own naming.</summary>
 		public string Creature => Female ? "CreatureHeroFemale" : "CreatureHero";
@@ -121,9 +128,15 @@ public static class CoopHeroKit
 
 		List<HostBridge.GuestWornItem> worn = HostBridge.GetEntityWornItems(entity);
 
-		// Gender comes off the worn walk rather than a component read of our own: the same
-		// component-12 test the guest uses is already folded into every item's flag there.
-		bool female = worn.Count > 0 && worn[0].Female;
+		// The hero's OWN gender, `CECGender` +12 — not the worn walk's per-item flag, which a hero
+		// wearing nothing does not have. The flag is the same read, so it stands in only for a
+		// bridge without the gender export.
+		bool female = Fable2Bridge.GetEntityFemale(entity) ?? (worn.Count > 0 && worn[0].Female);
+
+		// The dye on each worn item, off the instance it lives on, and the scars.
+		Fable2Bridge.WornDye[] dyes = Fable2Bridge.GetEntityWornDyes(entity)
+			.FindAll(dye => dye.Primary is not null || dye.Secondary is not null).ToArray();
+		Fable2Bridge.Scar[] scars = Fable2Bridge.GetEntityScars(entity).ToArray();
 
 		var hashes = new uint[worn.Count];
 		for (int i = 0; i < worn.Count; ++i)
@@ -275,7 +288,12 @@ public static class CoopHeroKit
 			DogCombat: keep ? before.DogCombat : dogCombat,
 			DogTricks: keep ? before.DogTricks : dogTricks,
 			DogWorn: keep ? before.DogWorn : dogWorn,
-			DogName: keep ? before.DogName : dogName);
+			DogName: keep ? before.DogName : dogName,
+			// What the body shows: taken live, as the outfit is. A torn worn walk reads no dyes,
+			// so the previous dyes stand exactly when the previous outfit does; an empty scar read
+			// on a standing hero is the same kind of miss (a scar is never restated away).
+			WornDyes: keep && worn.Count == 0 ? before.WornDyes : dyes,
+			Scars: keep && scars.Length == 0 && before.Scars is { Length: > 0 } ? before.Scars : scars);
 	}
 
 	/// <summary>
@@ -396,7 +414,10 @@ public static class CoopHeroKit
 			DogTricks: hero.DogTricks.ConvertAll(id => RecordName?.Invoke(id) ?? string.Empty)
 				.FindAll(trick => trick.Length != 0).ToArray(),
 			DogWorn: hero.DogWorn.ToArray(),
-			DogName: hero.DogName);
+			DogName: hero.DogName,
+			WornDyes: hero.WornDyes.ConvertAll(dye => new Fable2Bridge.WornDye(
+				dye.Record, SlotOf(dye.Primary), SlotOf(dye.Secondary))).ToArray(),
+			Scars: hero.Scars.ConvertAll(scar => new Fable2Bridge.Scar(scar.Area, scar.Record, scar.Permanent)).ToArray());
 
 		Godot.GD.Print($"[coop-kit] chosen save '{name}' read: {hero.Worn.Count} worn, " +
 			$"{hero.Inventory.Count} inventory record(s), melee '{Name(hero.Melee)}' (0x{hero.Melee:X8}), " +
@@ -404,6 +425,10 @@ public static class CoopHeroKit
 			$"money {hero.Money}, renown {hero.Renown}, face 0x{hero.Face:X8}");
 		return kit;
 	}
+
+	/// <summary>A saved dye slot as the kit carries it.</summary>
+	private static Fable2Bridge.SlotDye? SlotOf(Engine_SaveHero.Dye? dye) =>
+		dye is null ? null : new Fable2Bridge.SlotDye(dye.Red, dye.Green, dye.Blue, dye.Brightness);
 
 	/// <summary>A record's def name for a log line; empty without a GDB view.</summary>
 	private static string Name(uint record) =>

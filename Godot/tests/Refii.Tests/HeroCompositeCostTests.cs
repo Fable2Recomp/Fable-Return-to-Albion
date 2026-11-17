@@ -149,9 +149,9 @@ public sealed class HeroCompositeCostTests
             uint original = Engine_TexPathIndex.PathHash(path);
             var layers = new[] { new Layer { Texture = original, HasTint = true, Weight = 1, Brightness = 1 } };
             long joined = Engine_HeroTextureMorph.SavedWork.CompositesJoined;
-            Task<Texture2D?> first = Task.Run(() => Engine_HeroTextureMorph.Composite(original, layers, null, false));
+            Task<Texture2D?> first = Task.Run(() => Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse));
             AssertThat(reading.Wait(TimeSpan.FromSeconds(20))).IsTrue();
-            Task<Texture2D?> second = Task.Run(() => Engine_HeroTextureMorph.Composite(original, layers, null, false));
+            Task<Texture2D?> second = Task.Run(() => Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse));
             for (int wait = 0; wait < 200 && Engine_HeroTextureMorph.SavedWork.CompositesJoined == joined && !second.IsCompleted; wait++)
             {
                 if (wait == 50) release.Set();

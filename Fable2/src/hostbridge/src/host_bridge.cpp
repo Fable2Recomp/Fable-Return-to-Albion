@@ -132,8 +132,9 @@ uint32_t StatedTextureLayers(uint32_t entity, uint32_t* out, uint32_t capacity,
 // Fable2/src/vfs/src/core/decal_state.cpp.
 uint32_t StatedDecals(uint32_t* out, uint32_t capacity, uint32_t* out_serial);
 uint32_t StatedFxMeshes(uint32_t* out, uint32_t capacity);
+void StatedFxMeshLook(uint32_t descriptor, uint32_t handle, float* out);
 // Fable2/src/vfs/src/core/item_dye_layer_state.cpp.
-uint32_t StatedItemDyeLayers(uint32_t record, uint32_t* out, uint32_t capacity,
+uint32_t StatedItemDyeLayers(uint32_t item_address, uint32_t* out, uint32_t capacity,
                              uint32_t* out_generation);
 
 // Defined in Fable2/src/vfs/src/core/pubgame_state.cpp — the pub-game seam. The host posts what
@@ -922,9 +923,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityPartMorphs(uint32_t entity, uin
 }
 
 /// WHICH GARMENTS ARE DYED, by the guest's own test `sub_826CAFA8`, sampled on the GUI tick for
-/// what the hero wears and carries in categories 9..11 and 17..24. Two words per item: the
-/// item's record hash, then flags — bit 0 slot 1 dyed, bit 1 slot 2 dyed, bit 2 worn. A worn
-/// item is listed ahead of a carried one of the same record. Returns the item count.
+/// what the hero wears and carries in categories 9..11 and 17..24 — one entry per ITEM INSTANCE,
+/// since the dye is the instance's type-2 record. Three words per item: the item (its guest
+/// address, the instance RefiiHostGetHeroInventoryItems names), its record hash, then flags —
+/// bit 0 slot 1 dyed, bit 1 slot 2 dyed, bit 2 worn. Worn items are listed first, then the
+/// inventory in list order. Returns the item count.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetDyeStates(uint32_t* out_words, uint32_t word_capacity) {
     return refii::vfs::SampledDyeStates(out_words, word_capacity);
 }
@@ -943,14 +946,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityTextureLayers(uint32_t entity, 
                                            out_statements);
 }
 
-/// One inventory item's dye composites, as the guest's own dye builder states them for the
-/// item's dye component — [original, count | kind << 16, count x 7 layer words] per texture,
-/// the words RefiiHostGetEntityTextureLayers uses. Empty for an item that is not dyed. Returns
-/// the words written; `out_generation` moves when the layers changed.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetItemDyeLayers(uint32_t record, uint32_t* out_words,
+/// One inventory item INSTANCE's dye composites, as the guest's own dye builder states them for
+/// the item's dye component — [original, count | kind << 16, count x 7 layer words] per texture,
+/// the words RefiiHostGetEntityTextureLayers uses. `item` is the instance's guest address, as
+/// RefiiHostGetHeroInventoryItems and RefiiHostGetDyeStates name it. Empty for an item that is
+/// not dyed. Returns the words written; `out_generation` moves when the layers changed.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetItemDyeLayers(uint32_t item, uint32_t* out_words,
                                                         uint32_t word_capacity,
                                                         uint32_t* out_generation) {
-    return refii::vfs::StatedItemDyeLayers(record, out_words, word_capacity, out_generation);
+    return refii::vfs::StatedItemDyeLayers(item, out_words, word_capacity, out_generation);
 }
 
 /// THE PAUSE MINIMAP'S QUEST MARKERS, as the guest states them: each marker the pass
@@ -2235,6 +2239,15 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroVitals(uint32_t* words, uint32_t 
 /// fitted.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventory(uint32_t* words, uint32_t word_capacity) {
     return refii_bridge_hero_inventory_snapshot(words, word_capacity);
+}
+
+/// The same snapshot with each record's ITEM INSTANCE: five words per record — {recordId, count,
+/// category, flags, item} — the item the inventory list node holds (`node+8`), the key the dye
+/// exports use (RefiiHostGetDyeStates, RefiiHostGetItemDyeLayers). Two records of one id are two
+/// instances, dyed apart. `item` is 0 when the pump published without instances. Returns the
+/// number of records in the snapshot, which may exceed what fitted.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetHeroInventoryItems(uint32_t* words, uint32_t word_capacity) {
+    return refii_bridge_hero_inventory_items_snapshot(words, word_capacity);
 }
 
 /// PLAYER 1's OR 2's INVENTORY, whoever's menus are open — what a mod reads for a named player
@@ -6410,8 +6423,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
         row[19] = 0u;           // no renderable -> no pair -> do not interpolate
         row[20] = 0x000000FFu;  // no renderable -> the guest's OFF colour, {0,0,0,255}
 
-        // The appearance, as constructed (`sub_82571DF8`) unless a setter or a load stated
-        // otherwise: alpha, camera alpha and scale 1.0, tint 1,1,1,1, drawable, unmasked.
+        // The appearance, as constructed (`sub_82571DF8`) unless a setter, a load or the
+        // definition (vf8, +192) stated otherwise: alpha, camera alpha and scale 1.0, tint
+        // 1,1,1,1, drawable, unmasked, depth writes as the material's.
         uint32_t* appearance = row + 21;
         appearance[0] = appearance[1] = appearance[2] = 0x3F800000u;
         appearance[3] = appearance[4] = appearance[5] = appearance[6] = 0x3F800000u;
@@ -6610,6 +6624,178 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityWornItems(uint32_t entity, uint
         return 0u;  // a push reallocated mid-walk
     }
     return written / 2u;
+}
+
+/// THE DYE ON EACH WORN ITEM, per item instance. The dye is the item's type-2 instance record
+/// (`sub_823A1E18` = `sub_82764B30(item, 2)`: the extras vector at item+28..+32, stride 8,
+/// elem+0 the object, matched here by its vtable `CInventoryInstanceDataDyed` 0x820C7E58, whose
+/// slot 1 `sub_828EDC88` answers 2). Its words as `CInventoryInstanceDataDyed_vf5` saves them:
+/// +4 Colour1 (bytes +0 blue, +1 green, +2 red, +3 alpha), +8 Brightness1, +12 Colour2,
+/// +16 Brightness2. A slot is dyed by the guest's own test `sub_826CAFA8`: brightness != 0 or
+/// colour != `dword_8331B158` (0x000000FF, opaque black, what the scrub `sub_826CAE08` restores).
+/// Walks component 15's worn vector in the order RefiiHostGetEntityWornItems does. Writes
+/// REFII_WORN_DYE_WORDS words per worn item: record hash, flags (bit 0 slot 1 dyed, bit 1 slot 2
+/// dyed), colour 1, brightness 1 bits, colour 2, brightness 2 bits — a colour word packs the
+/// bytes from the low end in memory order (blue | green << 8 | red << 16 | alpha << 24).
+/// Returns the item count; 0 on a torn walk.
+#define REFII_WORN_DYE_WORDS 6u
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityWornDyes(uint32_t entity, uint32_t* out_words,
+                                                          uint32_t word_capacity) {
+    // `dword_8331B158` = 0x000000FF, bytes 00 00 00 FF, packed below as 0xFF000000.
+    constexpr uint32_t kUndyed = 0xFF000000u;
+    constexpr uint32_t kMaxExtras = 16u;
+    if (out_words == nullptr || word_capacity < REFII_WORN_DYE_WORDS) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    const uint32_t appearance = EntityComponent(base, entity, 15u);
+    if (appearance == 0u) {
+        return 0u;
+    }
+    const uint32_t dyed_vtable = refii::guest::Address(0x820C7E58u);
+    const uint32_t begin = GuestWordAt(base, appearance + 16u);
+    const uint32_t end = GuestWordAt(base, appearance + 20u);
+    if (!plausible(begin) || !plausible(end) || end <= begin) {
+        return 0u;
+    }
+    constexpr uint32_t kStride = 24u;
+    const uint32_t span = end - begin;
+    if ((span % kStride) != 0u || (span / kStride) > 256u) {
+        return 0u;
+    }
+    // A colour word packs the four bytes in memory order from the low byte up:
+    // blue | green << 8 | red << 16 | alpha << 24.
+    const auto colour_of = [base](uint32_t at) {
+        return static_cast<uint32_t>(GuestByteAt(base, at)) |
+               (static_cast<uint32_t>(GuestByteAt(base, at + 1u)) << 8) |
+               (static_cast<uint32_t>(GuestByteAt(base, at + 2u)) << 16) |
+               (static_cast<uint32_t>(GuestByteAt(base, at + 3u)) << 24);
+    };
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at < end && written + REFII_WORN_DYE_WORDS <= word_capacity;
+         at += kStride) {
+        const uint32_t item = GuestWordAt(base, at);
+        if (!plausible(item)) {
+            continue;
+        }
+        const uint32_t hash = GuestWordAt(base, item + 4u);
+        if (hash == 0u) {
+            continue;
+        }
+        uint32_t dye = 0u;
+        const uint32_t extras = GuestWordAt(base, item + 28u);
+        const uint32_t extras_end = GuestWordAt(base, item + 32u);
+        if (plausible(extras) && extras_end >= extras) {
+            const uint32_t count = std::min((extras_end - extras) >> 3, kMaxExtras);
+            for (uint32_t i = 0u; i < count && dye == 0u; ++i) {
+                const uint32_t record = GuestWordAt(base, extras + 8u * i);
+                if (plausible(record) && GuestWordAt(base, record) == dyed_vtable) {
+                    dye = record;
+                }
+            }
+        }
+        uint32_t flags = 0u;
+        uint32_t colour1 = kUndyed;
+        uint32_t colour2 = kUndyed;
+        uint32_t bright1 = 0u;
+        uint32_t bright2 = 0u;
+        if (dye != 0u) {
+            colour1 = colour_of(dye + 4u);
+            bright1 = GuestWordAt(base, dye + 8u);
+            colour2 = colour_of(dye + 12u);
+            bright2 = GuestWordAt(base, dye + 16u);
+            // The test is a float compare with 0.0: +0 and -0 both read as undyed.
+            if ((bright1 & 0x7FFFFFFFu) != 0u || colour1 != kUndyed) flags |= 1u;
+            if ((bright2 & 0x7FFFFFFFu) != 0u || colour2 != kUndyed) flags |= 2u;
+        }
+        out_words[written++] = hash;
+        out_words[written++] = flags;
+        out_words[written++] = colour1;
+        out_words[written++] = bright1;
+        out_words[written++] = colour2;
+        out_words[written++] = bright2;
+    }
+    if (GuestWordAt(base, appearance + 16u) != begin || GuestWordAt(base, appearance + 20u) != end) {
+        return 0u;  // a push reallocated mid-walk
+    }
+    return written / REFII_WORN_DYE_WORDS;
+}
+
+/// THE SCARS ON AN ENTITY, as `CECMorph` (component 116) holds them: the vector at +20 (begin
+/// +24, end +28) of 12-byte records the save names in `CECMorph_vf9` — +0 BodyArea (a mask),
+/// +4 TextureMorphRecordID, +8 Permanent (byte). `sub_825B8420` draws each with the record's
+/// `MorphTexture`/`ScarTextureSpec`/`ScarTextureBump` when +8 is set, the `...Fresh` ones when
+/// not. Three words per scar: area, record, permanent (0/1). Returns the scar count; 0 on a torn
+/// read or an entity with no morph component.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityScars(uint32_t entity, uint32_t* out_words,
+                                                       uint32_t word_capacity) {
+    constexpr uint32_t kStride = 12u;
+    if (out_words == nullptr || word_capacity < 3u) {
+        return 0u;
+    }
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xC0000000u; };
+    if (!plausible(entity)) {
+        return 0u;
+    }
+    const uint32_t morph = EntityComponent(base, entity, 116u);
+    if (morph == 0u) {
+        return 0u;
+    }
+    const uint32_t begin = GuestWordAt(base, morph + 24u);
+    const uint32_t end = GuestWordAt(base, morph + 28u);
+    if (begin == end) {
+        return 0u;
+    }
+    if (!plausible(begin) || end < begin || ((end - begin) % kStride) != 0u ||
+        (end - begin) / kStride > 64u) {
+        return 0u;
+    }
+    uint32_t written = 0u;
+    for (uint32_t at = begin; at < end && written + 3u <= word_capacity; at += kStride) {
+        out_words[written++] = GuestWordAt(base, at);
+        out_words[written++] = GuestWordAt(base, at + 4u);
+        out_words[written++] = GuestByteAt(base, at + 8u) != 0u ? 1u : 0u;
+    }
+    if (GuestWordAt(base, morph + 24u) != begin || GuestWordAt(base, morph + 28u) != end) {
+        return 0u;  // a push reallocated mid-read
+    }
+    return written / 3u;
+}
+
+/// AN ENTITY'S GENDER, as `CECGender` (component 12) states it: the enum at +12 that
+/// `CECGender_vf9` saves as "Gender" and the hider `sub_824C13A8` tests (`lwz r11, 0xC(r10);
+/// cmpwi cr6, r11, 1` at 0x824C152C, 1 = female). Returns the enum (1 female, 2 male), or 0 when
+/// the entity has no gender component.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityGender(uint32_t entity) {
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr || entity < 0x10000u || entity >= 0xC0000000u) {
+        return 0u;
+    }
+    const uint32_t gender = EntityComponent(base, entity, 12u);
+    return gender != 0u ? GuestWordAt(base, gender + 12u) : 0u;
 }
 
 /// THE POST-FOLD AIM AND LOOK. After evaluating any animation node (`sub_822DC980`, the tail
@@ -7131,6 +7317,33 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetEntityDrawRange(uint32_t entity, float* ou
     };
     *out_fade_factor = readf(renderable + 0x24u);
     *out_distance = readf(renderable + 0x28u);
+    return 1;
+}
+
+/// THE STATED CLOTH DISTANCE. The renderable (component 3) holds its definition's
+/// `MaxClothDistance` at +0x2C (TU1 `sub_82572438` @0x825724f4, disc `sub_825470E0` @0x8254719c).
+/// The twin is built from the renderable's ten floats at +0x24: `addi r10, r30, 0x24`
+/// (TU1 0x822372d4 in `sub_822370A8`, disc 0x82237314) into `sub_82A442E8`, whose loop
+/// (0x82a44350) copies them to descriptor+0x3C; the animated gather copies the same ten
+/// (0x82209938, `sub_82209480`). The twin's init (`sub_82AA2A68`) hands descriptor+0x3C to
+/// vtable+0x60, `sub_82AA2B30` (disc `sub_82A985E8`), which stores block[1] at twin+0x124 and
+/// block[2] at twin+0x128. The cloth gate `sub_821E34B0` (disc `sub_821E3070`) loads twin+0x128
+/// (`lfs f31, 0x128(r30)`, r30 = proxy+0xC), takes the distance from the twin's translation
+/// (twin+0x150) to the view's eye (view+0x50) and steps only below it (`fcmpu f30, f31` / `bge`).
+/// A twin whose renderable never states one keeps the constructor's `flt_83317D74` (20).
+/// Returns 1 and writes the distance when the entity carries the component, else 0.
+REFII_HOST_ABI_EXPORT int RefiiHostGetEntityClothDistance(uint32_t entity, float* out_distance) {
+    if (out_distance == nullptr) {
+        return 0;
+    }
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    if (renderable == 0u) {
+        return 0;
+    }
+    const uint32_t raw = GuestWordAt(base, renderable + 0x2Cu);
+    std::memcpy(out_distance, &raw, sizeof(*out_distance));
     return 1;
 }
 
@@ -9655,6 +9868,61 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char
     return bones;
 }
 
+/// Each guest skeleton bone's PARENT index, -1 for a root, in the order of
+/// RefiiHostGetEntityBoneNames. The skeleton's bone table (comp6+0x94 -> +0x2C..+0x30) holds
+/// 8-byte entries {parent index, name}; `sub_82B7F348` builds the tree the model is matched
+/// against from that first word (`*(_DWORD *)v11 == -1` is the root).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneParents(uint32_t entity, int32_t* out_parents,
+                                                             uint32_t max_bones) {
+    constexpr uint8_t kAnimatedMeshId = 6u;
+    if (out_parents == nullptr || max_bones == 0u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    uint8_t* base = memory != nullptr ? memory->virtual_membase() : nullptr;
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) -> uint32_t { return GuestWordAt(base, at); };
+    const auto plausible = [](uint32_t address) {
+        return address >= 0x10000u && address < 0xC0000000u;
+    };
+
+    if (!plausible(entity) || ((read32(entity + 0x24u) >> kAnimatedMeshId) & 1u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t component = EntityComponent(base, entity, kAnimatedMeshId);
+    if (!plausible(component)) {
+        return 0u;
+    }
+
+    const uint32_t skeleton = read32(component + 0x94u);
+    if (!plausible(skeleton)) {
+        return 0u;
+    }
+
+    const uint32_t table = read32(skeleton + 0x2Cu);
+    const uint32_t table_end = read32(skeleton + 0x30u);
+    if (!plausible(table) || table_end <= table) {
+        return 0u;
+    }
+
+    uint32_t bones = (table_end - table) / 8u;
+    if (bones > max_bones) {
+        bones = max_bones;
+    }
+
+    for (uint32_t i = 0u; i < bones; ++i) {
+        const int32_t parent = static_cast<int32_t>(read32(table + (i * 8u)));
+        out_parents[i] = parent >= 0 && static_cast<uint32_t>(parent) < bones ? parent : -1;
+    }
+
+    return bones;
+}
+
 /// The command-stream rings, read-only. `sub_8222ABE0` blocks when the reader traps the
 /// writer, and these four numbers per slot are the whole condition.
 ///
@@ -11093,9 +11361,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetClassicWeather(float* out, uint32_t c
 /// (`sub_821CEA80` kind 4) keeps it with its messages. Per mesh 24 floats:
 ///   [0] descriptor (bits) [1] model hash (descriptor +128) [2] flags (descriptor +20: 0x800
 ///   displacement) [3..14] the world rows twin+336 (3 x vec4, translation in w, `sub_8220B6A8`)
-///   [15..18] the tint twin+240 (message 17 -> PS c49, `sub_82220CA8`) [19] alpha, the state
-///   block's (*(twin+176)) +104 -> +108 at its +16 (message 16; `sub_8221E5F0`) [20..22] the
-///   distance fade twin+284 (full within), +288 (slope), +292 (gone beyond) [23] twin type (+4).
+///   [15..18] the tint the renderer states to the handle (model command 17, vtable 0x820B6EFC,
+///   +16..+28; the twin binds it as PS c49) [19] the alpha it states (model command 16, vtable
+///   0x820B6EF0, +4: particle alpha x effect alpha) — both taken at `Render_ApplyCommandToHandle`,
+///   1.0 until stated [20..22] the distance fade twin+284 (full within), +288 (slope), +292 (gone
+///   beyond) [23] twin type (+4).
 /// out[0] = meshes; returns the floats written.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxMeshes(float* out, uint32_t capacity) {
     if (out == nullptr || capacity < 1u) {
@@ -11138,16 +11408,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxMeshes(float* out, uint32_t capacit
         std::memcpy(m + 1, &hash, sizeof(float));
         m[2] = static_cast<float>(GuestWordAt(base, descriptor + 20u));
         read_floats(twin + 336u, m + 3, 12u);
-        read_floats(twin + 240u, m + 15, 4u);
-        const uint32_t state = GuestWordAt(base, twin + 176u);
-        float alpha = 1.0f;
-        if (plausible(state)) {
-            float lanes[3];
-            read_floats(state + 104u, lanes, 2u);
-            read_floats(state + 16u, lanes + 2, 1u);
-            alpha = lanes[0] + (lanes[1] - lanes[0]) * lanes[2];
-        }
-        m[19] = alpha;
+        refii::vfs::StatedFxMeshLook(descriptor, handle, m + 15);
         read_floats(twin + 284u, m + 20, 3u);
         m[23] = static_cast<float>(GuestWordAt(base, twin + 4u));
         used += 24u;

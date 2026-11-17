@@ -26,6 +26,19 @@
 // A LOAD writes Alpha, TintColour, SaturationMask and Scale straight into the component
 // (`sub_82572238`, no setter), so that is hooked too. The constructor and destructor drop what
 // was stated for the address: component memory is reused.
+//
+// THE DEFINITION states +192, DisableAlphaDepthWrites (vf8 `sub_825720A8`, 0x825721b8
+// `stb r3, 0xC0(r31)`; disc `sub_82546D50`, 0x82546e60), the class's only writer of it. Each
+// replication the command builder (`sub_82572C18`, disc `sub_825478C0`) posts model command 16
+// whenever the opacity product is below 1.0 OR +192 is set, its alpha reference 255 when +192 is
+// set or the product is under 1e-4, else -1 (0x82572c58..0x82572c94: `lbz r10, 0xC0(r31)` /
+// `li r11, -1` / `li r11, 0xFF`). The twin keeps a reference >= 0 at its +228 (0x822d9e7c), 254
+// from its constructor (`sub_82AA2658`), and binds it as ALPHAREF under ALPHAFUNC GREATER
+// (`dword_83316F5C` = 4) on its alpha-tested draws: the colour draw of a surface that is not a
+// cutout only (`sub_82220CA8` 0x82220d50 -> `sub_822251D8` 0x82225ac4) and the depth-only draw
+// (`sub_822015B8` 0x822016fc). GREATER 255 passes nothing, so those draws write no colour and no
+// depth and a translucent surface is left with its blended draw alone. Shipped, only the base
+// definition (#330c5a47) names the field, and false.
 
 namespace {
 
@@ -44,7 +57,8 @@ void StateAppearance(uint8_t* base, uint32_t component) {
   words[6] = refii::vfs::LoadGuestU32(base, component + 92u);
   words[kAppearanceFlags] =
       (refii::vfs::LoadGuestU8(base, component + 197u) != 0u ? kAppearanceDrawable : 0u) |
-      (refii::vfs::LoadGuestU8(base, component + 196u) != 0u ? kAppearanceSaturation : 0u);
+      (refii::vfs::LoadGuestU8(base, component + 196u) != 0u ? kAppearanceSaturation : 0u) |
+      (refii::vfs::LoadGuestU8(base, component + 192u) != 0u ? kAppearanceNoAlphaDepth : 0u);
   refii::vfs::NoteAppearance(component, words);
 }
 
@@ -64,6 +78,16 @@ REX_EXTERN(rex_CECGraphicAppearance_Serialize) {
   REX_FUNC_PROLOGUE();
   const uint32_t component = ctx.r3.u32;
   __imp__rex_CECGraphicAppearance_Serialize(ctx, base);
+  StateAppearance(base, component);
+}
+
+// vf8 `sub_825720A8(CECGraphicAppearance* r3, definition r4)`: the definition's fields, +192
+// among them, written after the constructor.
+REX_EXTERN(rex_CECGraphicAppearance_ApplyDefinition) {
+  refii::vfs::EnsureAlternateSignalStack();
+  REX_FUNC_PROLOGUE();
+  const uint32_t component = ctx.r3.u32;
+  __imp__rex_CECGraphicAppearance_ApplyDefinition(ctx, base);
   StateAppearance(base, component);
 }
 

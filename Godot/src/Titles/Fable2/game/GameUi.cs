@@ -1302,9 +1302,10 @@ public partial class GameUi : Node, IGameTitleUi
 			_pauseView = new Engine_FrontEndMenuView
 			{
 				Name = "PauseMenu",
-				// The pause root fades BOTH end slots: `sub_826A19E0` runs FadeOutBottomItemEarly
-				// and FadeOutTopItemEarly (0x826a1a38 / 0x826a1a60) on open.
+				// The end fades as the pause populate states them: `sub_826A19E0` (disc
+				// `sub_8240DD98`) runs FadeOutBottomItemEarly and FadeOutTopItemEarly.
 				ScreenId = 0,
+				StatedEndFades = () => StatedMenuEndFades(_pauseAddress),
 				Theme = book,
 				RowTemplate = template,
 				CursorTemplate = book?.Art("MenuHighlight"),
@@ -2277,6 +2278,15 @@ public partial class GameUi : Node, IGameTitleUi
 		return _inGameScreen is { } up && (uint)up != 0u && (uint)up != 31u ? (uint)up : 0u;
 	}
 
+	/// <summary>
+	/// The `FadeOutTopItemEarly` / `FadeOutBottomItemEarly` statements the model holds for
+	/// <paramref name="presentation"/>, or null when the guest stated no menu there.
+	/// </summary>
+	private (bool Top, bool Bottom)? StatedMenuEndFades(uint presentation) =>
+		presentation != 0 && _menuModel.Menus.TryGetValue(presentation, out Engine_UiMenuModel.Menu? menu)
+			? (menu.FadesTopEnd, menu.FadesBottomEnd)
+			: null;
+
 	private void AdoptScreenMenu(uint address, Engine_UiDrawnPresentation drawn, uint screenId)
 	{
 		if (_screenLists.TryGetValue(address, out Engine_UiScreenMenu? list))
@@ -2345,10 +2355,10 @@ public partial class GameUi : Node, IGameTitleUi
 			CursorTemplate = book?.Art("MenuHighlight"),
 			CursorPose = cursorPose,
 
-			// WHICH SCREEN, for the end-slot fade only. The two functions that retarget slots 2
-			// and 11 are run per screen from C++ and two screens ask for only one end — see
-			// Engine_FrontEndMenuView.FadesTopEnd.
+			// The end-slot fades this presentation's populate stated; ScreenId is the template
+			// fallback for a list with no stated menu — see Engine_FrontEndMenuView.FadesTopEnd.
 			ScreenId = screenId,
+			StatedEndFades = () => StatedMenuEndFades(address),
 
 			// The star and pip states, read out of THIS screen's document — every screen
 			// authors its own button pool, so the slides differ per file.

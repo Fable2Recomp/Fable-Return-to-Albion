@@ -925,7 +925,8 @@ public sealed class BnkFileSystem : IDisposable
         var nestedRead = new BnkEntryReader(
             target => NestedArchive(slot).ReadEntryBytes(target),
             (target, destination, offset) => NestedArchive(slot).ReadEntryInto(target, destination, offset),
-            (target, count) => NestedArchive(slot).ReadEntryHead(target, count));
+            (target, count) => NestedArchive(slot).ReadEntryHead(target, count),
+            (target, destination) => NestedArchive(slot).ReadEntryRange(target, destination));
 
         try
         {
@@ -1218,17 +1219,22 @@ public sealed class BnkContainer
 /// How a bank file reaches its entry. <see cref="ReadInto"/> and <see cref="ReadHead"/> exist for
 /// entries in a bank; a loose or virtual file has only <see cref="Read"/>.
 /// </summary>
+/// <summary>The entry's first <c>destination.Length</c> bytes into <paramref name="destination"/>; see <see cref="BnkArchive.ReadEntryRange"/>.</summary>
+internal delegate void BnkRangeReader(BnkEntry entry, Memory<byte> destination);
+
 internal sealed class BnkEntryReader(
     Func<BnkEntry, byte[]> read,
     Action<BnkEntry, byte[], int>? readInto = null,
-    Func<BnkEntry, int, byte[]>? readHead = null)
+    Func<BnkEntry, int, byte[]>? readHead = null,
+    BnkRangeReader? readRange = null)
 {
     public readonly Func<BnkEntry, byte[]> Read = read;
     public readonly Action<BnkEntry, byte[], int>? ReadInto = readInto;
     public readonly Func<BnkEntry, int, byte[]>? ReadHead = readHead;
+    public readonly BnkRangeReader? ReadRange = readRange;
 
     public static BnkEntryReader Of(BnkArchive archive) =>
-        new(archive.ReadEntryBytes, archive.ReadEntryInto, archive.ReadEntryHead);
+        new(archive.ReadEntryBytes, archive.ReadEntryInto, archive.ReadEntryHead, archive.ReadEntryRange);
 }
 
 public sealed class BnkFile
@@ -1320,6 +1326,29 @@ public sealed class BnkFile
         byte[] result = ReadAllBytesCore();
         CachedResolvedSize = result.LongLength;
         return result;
+    }
+
+    /// <summary>
+    /// The first <c>destination.Length</c> bytes of what <see cref="ReadAllBytes"/> returns, written
+    /// into <paramref name="destination"/>; answers how many, fewer when the file is shorter. A file
+    /// that is one bank entry is read straight into it with no array of its own; a joined model or
+    /// texture, or a file with no range reader, is read as before and copied.
+    /// </summary>
+    public int ReadInto(Memory<byte> destination)
+    {
+        if ((IsOverride || !HasAlternates) && _read.ReadRange is { } readRange)
+        {
+            int count = (int)Math.Min((uint)destination.Length, Entry.Size);
+            readRange(Entry, destination[..count]);
+            return count;
+        }
+
+        byte[] bytes = CachedResolvedSize >= 0 && destination.Length < CachedResolvedSize
+            ? ReadHead(destination.Length)
+            : ReadAllBytes();
+        int written = Math.Min(bytes.Length, destination.Length);
+        bytes.AsSpan(0, written).CopyTo(destination.Span);
+        return written;
     }
 
     /// <summary>
@@ -1635,10 +1664,8 @@ public sealed class BnkFile
         int firstSize = checked((int)first.Entry.Size);
         int total = checked(prefixLength + firstSize + (int)(second?.Entry.Size ?? 0));
 
-        // Stored entries overwrite every byte; an inflated one relies on its range being zero.
-        byte[] joined = first.Entry.IsCompressed || second?.Entry.IsCompressed == true
-            ? new byte[total]
-            : GC.AllocateUninitializedArray<byte>(total);
+        // The prefix and the entries' reads write every byte.
+        byte[] joined = GC.AllocateUninitializedArray<byte>(total);
         prefix?.CopyTo(joined, 0);
         readFirst(first.Entry, joined, prefixLength);
         second?._read.ReadInto!(second.Entry, joined, prefixLength + firstSize);

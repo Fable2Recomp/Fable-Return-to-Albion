@@ -430,6 +430,9 @@ extern "C" void refii_bridge_hero_derived_snapshot(void* out) {
 namespace {
 std::mutex g_inventory_mutex;
 std::vector<uint32_t> g_inventory;
+/// The item instance of each g_inventory record, in the same order; empty when the publish
+/// that wrote g_inventory stated none.
+std::vector<uint32_t> g_inventory_items;
 }  // namespace
 
 extern "C" void refii_bridge_publish_hero_inventory(const uint32_t* words, uint32_t count) {
@@ -441,6 +444,7 @@ extern "C" void refii_bridge_publish_hero_inventory(const uint32_t* words, uint3
               (n != 0 && std::memcmp(g_inventory.data(), words, n * sizeof(uint32_t)) != 0);
     if (changed) {
       g_inventory.assign(words, words + n);
+      g_inventory_items.clear();
     }
   }
   if (changed) {
@@ -459,6 +463,43 @@ extern "C" uint32_t refii_bridge_hero_inventory_snapshot(uint32_t* out, uint32_t
     }
   }
   return words / 4u;
+}
+
+extern "C" void refii_bridge_publish_hero_inventory_items(const uint32_t* words, uint32_t count) {
+  std::vector<uint32_t> records;
+  std::vector<uint32_t> items;
+  records.reserve(static_cast<size_t>(count) * 4u);
+  items.reserve(count);
+  for (uint32_t i = 0; i < count && words != nullptr; ++i) {
+    records.insert(records.end(), words + 5u * i, words + 5u * i + 4u);
+    items.push_back(words[5u * i + 4u]);
+  }
+  bool changed = false;
+  {
+    std::lock_guard lock(g_inventory_mutex);
+    changed = g_inventory != records || g_inventory_items != items;
+    if (changed) {
+      g_inventory = std::move(records);
+      g_inventory_items = std::move(items);
+    }
+  }
+  if (changed) {
+    refii_bridge_ui_data_changed();
+  }
+}
+
+extern "C" uint32_t refii_bridge_hero_inventory_items_snapshot(uint32_t* out, uint32_t word_capacity) {
+  std::lock_guard lock(g_inventory_mutex);
+  const uint32_t records = static_cast<uint32_t>(g_inventory.size() / 4u);
+  const bool paired = g_inventory_items.size() == records;
+  if (out != nullptr) {
+    const uint32_t fits = std::min(records, word_capacity / 5u);
+    for (uint32_t i = 0; i < fits; ++i) {
+      std::memcpy(out + 5u * i, g_inventory.data() + 4u * i, 4u * sizeof(uint32_t));
+      out[5u * i + 4u] = paired ? g_inventory_items[i] : 0u;
+    }
+  }
+  return records;
 }
 
 namespace {

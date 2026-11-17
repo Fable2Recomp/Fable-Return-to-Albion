@@ -140,6 +140,22 @@ public sealed class Engine_UiMenuModel
 		/// view re-derives every row's drawn ghosting when this moves.</summary>
 		public int GhostRefreshes;
 
+		/// <summary>
+		/// `g_MenuFormatter:FadeOutTopItemEarly()` has run: `g_MenuPositionSlots[2]
+		/// .opacity_scale_index = 5` (`expandablemenuformatting.lua` main.0), slot 2 wears the
+		/// zero-opacity style. A formatter global, so no list boundary and no Push/Pop resets it —
+		/// only the presentation's script init. Literal 0x820CD420 (disc 0x820AFD24), run from
+		/// twelve screen populates.
+		/// </summary>
+		public bool FadesTopEnd;
+
+		/// <summary>
+		/// `g_MenuFormatter:FadeOutBottomItemEarly()`: `g_MenuPositionSlots[11]
+		/// .opacity_scale_index = 5` (main.1), as <see cref="FadesTopEnd"/> for slot 11. Literal
+		/// 0x820CD3F4 (disc 0x820AFCF8).
+		/// </summary>
+		public bool FadesBottomEnd;
+
 		/// <summary>True while a `PushMenuState` stands unpopped.</summary>
 		public bool Pushed => _saved is not null;
 
@@ -579,10 +595,39 @@ public sealed class Engine_UiMenuModel
 				++menu.GhostRefreshes;
 				break;
 
+			case "FadeOutTopItemEarly":
+				if (menu.FadesTopEnd)
+				{
+					return;
+				}
+
+				menu.FadesTopEnd = true;
+				break;
+
+			case "FadeOutBottomItemEarly":
+				if (menu.FadesBottomEnd)
+				{
+					return;
+				}
+
+				menu.FadesBottomEnd = true;
+				break;
+
+			case "HandleEnter":
+				// `g_Menu.HandleEnter` is an empty function — `expandablemenuinput.lua` main.7 is a
+				// lone RETURN. Run by the pause populate (`sub_826A19E0`, 0x826a1b04; disc
+				// `sub_8240DD98`, 0x8240debc).
+				return;
+
+			case "GetHighlightedMenuItemData":
+			case "IsHighlightedItemAtRoot":
+			case "CountSpawnedItems":
+				// Read-backs: no state changes. `sub_826C1B50` (disc `sub_8259DB00`) is answered
+				// natively in gui_menu_hooks.cpp; the front end's `sub_826E4AE8` (disc `sub_826CBB58`)
+				// never loads its out slots after 0x826DED20.
+				return;
+
 			default:
-				// Not modelled: the formatter's fades, and the read-backs
-				// (`GetHighlightedMenuItemData`, `IsHighlightedItemAtRoot`, `CountSpawnedItems`),
-				// which the hooks answer natively.
 				NoteUnhandled(chunk);
 				return;
 		}

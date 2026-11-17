@@ -247,6 +247,17 @@ global uniform vec2 fable_wind_factors;
 /// diffuse, self-illumination and reflection by `.xyz` before the atmosphere; `.w` is never read.
 instance uniform vec4 entity_tint = vec4(1.0);
 
+/// THE TWIN'S ALPHA REFERENCE AT 255: an entity whose definition states DisableAlphaDepthWrites
+/// (CECGraphicAppearance +192; Engine_EntityAppearance). The twin's reference (+228, 254 from
+/// `sub_82AA2658`) binds as ALPHAREF under GREATER on every alpha-tested draw that is not a cutout
+/// only (`sub_822251D8` 0x82225ac4); at 255 none passes, so such a surface writes neither colour
+/// nor depth and a translucent one keeps only its blended pass (FABLE_TRANSLUCENT, unscissored).
+/// The materials state that reference as their threshold, Engine_MdlMaterial.OpaquePassAlpha
+/// (254.5/255), and a cutout only its own 128.5/255, so a threshold above
+/// FABLE_TWIN_ALPHA_REF_FROM is the twin's. Pinned clear of the unhinted 0..6 and the pins 9..15.
+instance uniform bool entity_no_alpha_depth : instance_index(7) = false;
+#define FABLE_TWIN_ALPHA_REF_FROM 0.75
+
 #ifndef FABLE_LITE_NO_SPEC
 varying vec3 v_specular;
 varying float v_specular_power;
@@ -407,7 +418,8 @@ void fragment() {
     // FABLE_SOLID: no discard either — the second thing that refuses the shared shadow material.
     // A culled material has an albedo without alpha, so its scissor is never on (see vertex()).
 #ifndef FABLE_SOLID
-    if (alpha_scissor_on && alb.a < alpha_scissor_threshold) {
+    if (alpha_scissor_on && (alb.a < alpha_scissor_threshold ||
+            (entity_no_alpha_depth && alpha_scissor_threshold > FABLE_TWIN_ALPHA_REF_FROM))) {
         discard;
     }
 #endif

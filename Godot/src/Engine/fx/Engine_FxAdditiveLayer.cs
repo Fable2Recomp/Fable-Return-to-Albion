@@ -51,6 +51,10 @@ public partial class Engine_FxAdditiveLayer : Node
     private static readonly object Gate = new();
     private static Engine_FxAdditiveLayer? _current;
     private static readonly Rid[] _publishedRd = new Rid[Views];
+
+    /// <summary>Per view: the post chain found the published texture is no longer a device
+    /// texture, so the next publish asks the rendering server again.</summary>
+    private static readonly bool[] _stale = new bool[Views];
     private static readonly bool[] _publishedActive = new bool[Views];
     private static ulong _activeFrame;
 
@@ -283,6 +287,20 @@ public partial class Engine_FxAdditiveLayer : Node
     private Rid LayerRd() =>
         RenderingServer.TextureGetRdTexture(RenderingServer.ViewportGetTexture(_viewport.GetViewportRid()));
 
+    /// <summary>
+    /// Render thread: <paramref name="view"/>'s published texture is no longer a device texture.
+    /// The viewport's render target can be recreated at an unchanged size, which frees the
+    /// texture the size-keyed cache still holds; the next publish asks again.
+    /// </summary>
+    public static void MarkStale(int view)
+    {
+        if (view is < 0 or >= Views) return;
+        lock (Gate)
+        {
+            _stale[view] = true;
+        }
+    }
+
     private Rid _layerRd;
     private Vector2I _layerRdSize;
 
@@ -291,7 +309,14 @@ public partial class Engine_FxAdditiveLayer : Node
     private Rid CachedLayerRd()
     {
         Vector2I size = _viewport.Size;
-        if (!_layerRd.IsValid || size != _layerRdSize)
+        bool stale;
+        lock (Gate)
+        {
+            stale = _stale[_view];
+            _stale[_view] = false;
+        }
+
+        if (stale || !_layerRd.IsValid || size != _layerRdSize)
         {
             _layerRd = LayerRd();
             _layerRdSize = size;

@@ -260,6 +260,64 @@ public class BnkMappedReadTests
 		}
 	}
 
+	/// <summary>
+	/// The guest's read: an entry written straight into native memory that starts full of junk is
+	/// the whole read's bytes, whole or as a front, stored or compressed, mapped or copied. 70
+	/// chunks reaches the parallel inflate on a thread outside the pool. Nothing past the range is
+	/// touched.
+	/// </summary>
+	[TestCase]
+	public void ReadEntryRangeIntoJunkNativeMemoryMatchesTheWholeRead()
+	{
+		byte[] payload = Pattern(ChunkSize * 70 + 4321, 12);
+		byte[] compressedBank = WriteCompressedBank(new[] { ("big.bin", payload) });
+		byte[] storedBank = BnkWriter.Write(new[] { new BnkWriterEntry { Path = "big.bin", Bytes = payload } });
+
+		const int Guard = 16;
+		IntPtr native = System.Runtime.InteropServices.Marshal.AllocHGlobal(payload.Length + Guard);
+		string dir = NewTempDir();
+		try
+		{
+			foreach ((string name, byte[] bank) in new[] { ("compressed.bnk", compressedBank), ("stored.bnk", storedBank) })
+			{
+				string path = Path.Combine(dir, name);
+				File.WriteAllBytes(path, bank);
+				AssertThat(BnkArchive.TryOpen(path, out BnkArchive? mapped, out _)).IsTrue();
+				AssertThat(BnkArchive.TryOpenBytes("copy", bank, out BnkArchive? copy, out _)).IsTrue();
+				using (mapped)
+				using (copy)
+				{
+					foreach (BnkArchive archive in new[] { mapped!, copy! })
+					{
+						BnkEntry big = Find(archive, "big.bin");
+						foreach (int count in new[] { 0, 1, 8, ChunkSize - 1, ChunkSize + 1, ChunkSize * 3, payload.Length })
+						{
+							var junk = new byte[payload.Length + Guard];
+							Array.Fill(junk, (byte)0xCD);
+							System.Runtime.InteropServices.Marshal.Copy(junk, 0, native, junk.Length);
+
+							var memory = new Refii.Core.Engine_NativeMemory(native, count);
+							archive.ReadEntryRange(big, memory.Memory);
+
+							var back = new byte[payload.Length + Guard];
+							System.Runtime.InteropServices.Marshal.Copy(native, back, 0, back.Length);
+							AssertThat(back.AsSpan(0, count).SequenceEqual(payload.AsSpan(0, count))).IsTrue();
+							AssertThat(back.AsSpan(count).IndexOfAnyExcept((byte)0xCD)).IsEqual(-1);
+						}
+
+						AssertThrown(() => archive.ReadEntryRange(big, new byte[payload.Length + 1]))
+							.IsInstanceOf<ArgumentOutOfRangeException>();
+					}
+				}
+			}
+		}
+		finally
+		{
+			System.Runtime.InteropServices.Marshal.FreeHGlobal(native);
+			Directory.Delete(dir, true);
+		}
+	}
+
 	[TestCase]
 	public void MountedJoinsMatchTheirParts()
 	{
@@ -330,6 +388,25 @@ public class BnkMappedReadTests
 			byte[] joinedSplit = [.. splitHeader, .. mip0, .. rest];
 			AssertThat(splitFile.ReadAllBytes()).IsEqual(joinedSplit);
 			AssertThat(splitFile.ReadHead(92)[..92]).IsEqual(joinedSplit[..92]);
+
+			// The guest's in-place read gives the same bytes as the whole read: joined, overridden,
+			// stub, whole or a front, and a buffer longer than the file takes only the file.
+			foreach ((BnkFile file, byte[] expected) in new[]
+			{
+				(model, joinedModel), (stub, modelHeader), (override_, loose),
+				(wholeFile, joinedWhole), (splitFile, joinedSplit),
+			})
+			{
+				foreach (int count in new[] { 8, 92, expected.Length, expected.Length + 40 })
+				{
+					var into = new byte[count];
+					Array.Fill(into, (byte)0xCD);
+					int written = file.ReadInto(into);
+					int expectedCount = Math.Min(count, expected.Length);
+					AssertThat(written).IsEqual(expectedCount);
+					AssertThat(into.AsSpan(0, written).SequenceEqual(expected.AsSpan(0, written))).IsTrue();
+				}
+			}
 		}
 		finally
 		{

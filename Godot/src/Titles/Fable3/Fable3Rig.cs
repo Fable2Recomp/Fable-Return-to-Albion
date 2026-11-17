@@ -15,9 +15,6 @@ using Refii.Animations;
 /// control at +128, as Fable 2's `sub_8229CD30` does at +116; the overlay blend `sub_82206348`
 /// (0x8220679C..0x82206B3C) remembers the hip, blends, and rewrites those children as Fable 2's
 /// `sub_8220CB18` (0x8220CC08..) does. Both roles are named, so the shared compensation runs.</para>
-/// <para>NO AMBIENT FACE. The idle face is the host's, not the guest's, and Fable 3's rigs carry
-/// another face (`Shadow_L_jaw`, `Shadow_R_jaw`, brows and lids at 0x820C4100..); <see cref="Face"/>
-/// stays null, so no facial bone is marked.</para>
 /// <para>NO FOCAL FALLBACK. Mounting an unnamed <c>Character.Focal.*</c> dummy on a bone is a host
 /// rule never shown in this binary; <see cref="Engine_TitleRig.FocalBone"/> stays -1.</para>
 /// </remarks>

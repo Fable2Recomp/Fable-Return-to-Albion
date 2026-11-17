@@ -429,12 +429,19 @@ public static partial class Engine_HeroTextureMorph
                     composite = new Refii.Host.HostBridge.GuestTextureComposite(original, swapped);
                 }
 
-                Refii.Host.HostBridge.GuestTextureLayer[]? slotOver =
-                    slot == DiffuseSlot || slot == NormalSlot ? over : null;
+                // An overlay is drawn as a whole material: its diffuse, spec and bump each land
+                // on the matching map, under the diffuse's coverage.
+                Refii.Host.HostBridge.GuestTextureLayer[]? slotOver = over;
+                OverlayMap map = slot switch
+                {
+                    NormalSlot => OverlayMap.Normal,
+                    SpecularSlot => OverlayMap.Specular,
+                    _ => OverlayMap.Diffuse,
+                };
 
                 var layers = slot == DiffuseSlot && everyMap[DiffuseSlot] is null
                     ? SkinLayers(names[slot], composite.Layers, tan) : composite.Layers;
-                if (Composite(original, layers, slotOver, slot == NormalSlot)
+                if (Composite(original, layers, slotOver, map)
                     is not Texture2D composited)
                 {
                     continue;
@@ -579,13 +586,13 @@ public static partial class Engine_HeroTextureMorph
     /// <param name="original">Guest hash of the material's original texture.</param>
     /// <param name="layers">Ordered guest composite layers, or null for no replacement layers.</param>
     /// <param name="overlays">Guest overlays whose diffuse alpha masks colour or normal contributions.</param>
-    /// <param name="normalSlot">Whether to composite bump sources under the diffuse coverage mask.</param>
+    /// <param name="map">Which map of an overlay lands here: its diffuse, or its spec or bump under the diffuse's coverage.</param>
     /// <returns>A borrowed texture, or null when no valid composite is needed. Retirement never disposes this borrow.</returns>
     public static Texture2D? Composite(
         uint original,
         Refii.Host.HostBridge.GuestTextureLayer[]? layers,
         Refii.Host.HostBridge.GuestTextureLayer[]? overlays,
-        bool normalSlot)
+        OverlayMap map)
     {
         layers ??= Array.Empty<Refii.Host.HostBridge.GuestTextureLayer>();
         overlays ??= Array.Empty<Refii.Host.HostBridge.GuestTextureLayer>();
@@ -597,7 +604,7 @@ public static partial class Engine_HeroTextureMorph
         foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
         {
             if (overlay.Weight > Engine_HeroMorph.WeightFloor &&
-                (normalSlot ? overlay.Bump != 0 : overlay.Texture != 0))
+                OverlaySource(overlay, map) != 0)
             {
                 overlaid = true;
             }
@@ -608,7 +615,12 @@ public static partial class Engine_HeroTextureMorph
             return null;
         }
 
-        var key = new System.Text.StringBuilder(normalSlot ? "N" : "L");
+        var key = new System.Text.StringBuilder(map switch
+        {
+            OverlayMap.Normal => "N",
+            OverlayMap.Specular => "S",
+            _ => "L",
+        });
         key.Append(original.ToString("x8"));
         foreach (Refii.Host.HostBridge.GuestTextureLayer layer in layers)
         {
@@ -648,12 +660,12 @@ public static partial class Engine_HeroTextureMorph
 
         if (mine is null)
         {
-            return BuildComposite(original, layers, overlays, normalSlot, cacheKey, epoch);
+            return BuildComposite(original, layers, overlays, map, cacheKey, epoch);
         }
 
         try
         {
-            ImageTexture? built = BuildComposite(original, layers, overlays, normalSlot, cacheKey, epoch);
+            ImageTexture? built = BuildComposite(original, layers, overlays, map, cacheKey, epoch);
             mine.Result = built;
             mine.Answered = true;
             return built;
@@ -668,7 +680,7 @@ public static partial class Engine_HeroTextureMorph
         uint original,
         Refii.Host.HostBridge.GuestTextureLayer[] layers,
         Refii.Host.HostBridge.GuestTextureLayer[] overlays,
-        bool normalSlot,
+        OverlayMap map,
         string cacheKey,
         long epoch)
     {
@@ -718,7 +730,7 @@ public static partial class Engine_HeroTextureMorph
 
         try
         {
-            return BlendAndUpload(output, width, height, original, layers, decoded, overlays, normalSlot, cacheKey, epoch, stored);
+            return BlendAndUpload(output, width, height, original, layers, decoded, overlays, map, cacheKey, epoch, stored);
         }
         finally
         {
@@ -737,11 +749,12 @@ public static partial class Engine_HeroTextureMorph
         Refii.Host.HostBridge.GuestTextureLayer[] layers,
         DecodedTexture?[] decoded,
         Refii.Host.HostBridge.GuestTextureLayer[] overlays,
-        bool normalSlot,
+        OverlayMap map,
         string cacheKey,
         long epoch,
         string? stored)
     {
+        bool normalSlot = map == OverlayMap.Normal;
         // Whether every layer, mask and bump was there; a composite built without one is not kept.
         bool complete = true;
         if (layers.Length != 0 && layers[0].HasTint)
@@ -767,7 +780,7 @@ public static partial class Engine_HeroTextureMorph
 
         foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
         {
-            if (overlay.Weight <= Engine_HeroMorph.WeightFloor)
+            if (overlay.Weight <= Engine_HeroMorph.WeightFloor || OverlaySource(overlay, map) == 0)
             {
                 continue;
             }
@@ -781,10 +794,10 @@ public static partial class Engine_HeroTextureMorph
             }
 
             DecodedTexture? colour = mask;
-            if (normalSlot)
+            if (map != OverlayMap.Diffuse)
             {
-                string? bumpPath = Engine_TexPathIndex.Resolve(overlay.Bump);
-                colour = bumpPath is null ? null : Decode(bumpPath, epoch);
+                string? sourcePath = Engine_TexPathIndex.Resolve(OverlaySource(overlay, map));
+                colour = sourcePath is null ? null : Decode(sourcePath, epoch);
             }
 
             if (colour is not null && colour.Ok)
@@ -836,7 +849,24 @@ public static partial class Engine_HeroTextureMorph
             .Append(BitConverter.SingleToUInt32Bits(layer.Weight).ToString("x8"))
             .Append(layer.HasTint ? layer.Tint.ToString("x8") : "-")
             .Append(BitConverter.SingleToUInt32Bits(layer.Brightness).ToString("x8"))
-            .Append(layer.Bump.ToString("x8"));
+            .Append(layer.Bump.ToString("x8"))
+            .Append(layer.Spec.ToString("x8"));
+
+    /// <summary>Which of an overlay's maps a composite takes: the guest draws an overlay entry as
+    /// a whole material, {diffuse, spec, bump} (`sub_825B8420`), over the finished one.</summary>
+    public enum OverlayMap
+    {
+        Diffuse,
+        Specular,
+        Normal,
+    }
+
+    private static uint OverlaySource(Refii.Host.HostBridge.GuestTextureLayer overlay, OverlayMap map) => map switch
+    {
+        OverlayMap.Normal => overlay.Bump,
+        OverlayMap.Specular => overlay.Spec,
+        _ => overlay.Texture,
+    };
 
     /// <summary>The composite's floor: `sub_82A5BCE8` starts its max over the layers from 64 x 64.</summary>
     private const int MinimumCompositeSize = 64;

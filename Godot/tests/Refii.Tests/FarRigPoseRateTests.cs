@@ -164,69 +164,6 @@ public sealed class FarRigPoseRateTests
 	}
 
 	[TestCase]
-	public void ComputeFacialBoneMaskRecognizesHeadAnchoredMdlFacialBones()
-	{
-		string[] boneNames =
-		{
-			"Shadow_Hip",
-			"Shadow_Spine",
-			"Shadow_Head",
-			"Shadow_jaw",
-			"Shadow_L_Eye",
-			"Shadow_R_Eye",
-			"Shadow_L_lip_corner",
-			"Focal_Head",
-			"Shadow_Ponytail1",
-			"Shadow_Ponytail2",
-		};
-		int[] boneParents =
-		{
-			-1, // 0: Shadow_Hip
-			0,  // 1: Shadow_Spine
-			1,  // 2: Shadow_Head
-			2,  // 3: Shadow_jaw
-			2,  // 4: Shadow_L_Eye
-			2,  // 5: Shadow_R_Eye
-			3,  // 6: Shadow_L_lip_corner (child of jaw)
-			2,  // 7: Focal_Head (attachment dummy under head)
-			2,  // 8: Shadow_Ponytail1 (hair branch under head)
-			8,  // 9: Shadow_Ponytail2
-		};
-
-		bool[] mask = Refii.Animations.Engine_ClipAnimator.ComputeFacialBoneMask(
-			new Refii.Titles.Fable2.Fable2Rig(),
-			boneNames,
-			boneParents,
-			out int headBone,
-			out int faceRootBone,
-			out int jawBone,
-			out int leftEyeBone,
-			out int rightEyeBone);
-
-		AssertThat(headBone).IsEqual(2);
-		AssertThat(faceRootBone).IsEqual(-1);
-		AssertThat(jawBone).IsEqual(3);
-		AssertThat(leftEyeBone).IsEqual(4);
-		AssertThat(rightEyeBone).IsEqual(5);
-
-		// Head and spine are body/neck bones, not facial bones:
-		AssertThat(mask[0]).IsFalse();
-		AssertThat(mask[1]).IsFalse();
-		AssertThat(mask[2]).IsFalse();
-
-		// Jaw, eyes, and lip bones under Shadow_Head are marked facial:
-		AssertThat(mask[3]).IsTrue();
-		AssertThat(mask[4]).IsTrue();
-		AssertThat(mask[5]).IsTrue();
-		AssertThat(mask[6]).IsTrue();
-
-		// Attachment dummies and hair/ponytail branches under Shadow_Head are excluded:
-		AssertThat(mask[7]).IsFalse();
-		AssertThat(mask[8]).IsFalse();
-		AssertThat(mask[9]).IsFalse();
-	}
-
-	[TestCase]
 	public void ObservePropAndFreewheelDriveHostClockAutonomously()
 	{
 		var playhead = new Refii.Animations.Engine_ClipPlayhead();
@@ -261,6 +198,51 @@ public sealed class FarRigPoseRateTests
 		// A restart cut on the guest (current < Time - 0.15) re-anchors the prop playhead:
 		playhead.ObserveProp(previous: 0.0, current: 0.02, tick: 40u, length: 1.5, loop: false, drawTick: 40.0);
 		AssertThat(Math.Abs(playhead.Time - 0.0) < 1e-5).IsTrue();
+	}
+
+	/// <summary>
+	/// A looping prop clip runs at the rate its stated time moves: the loop byte is every control's
+	/// default (`sub_82283BB8`), and only SetTime (`sub_82200F60`) or a cut (`sub_822B4970`) moves
+	/// the time, so a constant pair is a held pose.
+	/// </summary>
+	[TestCase]
+	public void ObservePropRunsALoopingClipAtItsStatedRate()
+	{
+		var held = new Refii.Animations.Engine_ClipPlayhead();
+		for (int frame = 0; frame < 120; ++frame)
+		{
+			uint tick = 10u + (uint)(frame / 4);
+			double drawTick = 10.0 + (frame / 4.0);
+			held.ObserveProp(previous: 0.4, current: 0.4, tick: tick, length: 2.0, loop: true, drawTick: drawTick);
+			held.Freewheel(1.0 / 60.0, drawTick);
+		}
+
+		AssertThat(held.Rate).IsEqual(0.0);
+		AssertThat(Math.Abs(held.Time - 0.4) < 1e-9).OverrideFailureMessage($"held time {held.Time}").IsTrue();
+
+		// SetTime each tick, one tick's step on: the clip runs at 1x and keeps running past the wrap.
+		const double step = 1.0 / Refii.Core.Engine_TickClock.GameTicksPerSecond;
+		var moving = new Refii.Animations.Engine_ClipPlayhead();
+		double start = double.NaN;
+		for (int frame = 0; frame < 120; ++frame)
+		{
+			uint tick = 10u + (uint)(frame / 4);
+			double drawTick = 10.0 + (frame / 4.0);
+			double current = ((tick - 9u) * step) % 2.0;
+			double previous = (((tick - 10u) * step) % 2.0);
+			moving.ObserveProp(previous, current, tick, length: 2.0, loop: true, drawTick: drawTick);
+			if (frame == 0)
+			{
+				start = moving.Time;
+			}
+
+			moving.Freewheel(1.0 / 60.0, drawTick);
+		}
+
+		double expected = 2.0 * Refii.Core.Engine_DrawAdvance.Pace;
+		AssertThat(Math.Abs(moving.Rate - 1.0) < 1e-6).OverrideFailureMessage($"rate {moving.Rate}").IsTrue();
+		AssertThat(Math.Abs((moving.Time - start) - expected) < 1e-2)
+			.OverrideFailureMessage($"advanced {moving.Time - start} expected {expected}").IsTrue();
 	}
 
 	[TestCase]

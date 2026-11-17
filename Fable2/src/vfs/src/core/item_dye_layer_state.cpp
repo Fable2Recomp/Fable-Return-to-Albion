@@ -5,9 +5,10 @@
 // GUI-tick sampler in Fable2/src/vfs/src/hooks/guest_tick_pump.cpp, on the guest's thread) and the HOST reads
 // (the host bridge, on Godot's).
 //
-// One record per dyed inventory item (worn or carried), keyed by the item's record hash, holding
-// the composites in the same words a character's texture layers use — so the menu's preview of
-// a dyed garment goes through the very compositor that dresses the hero.
+// One record per dyed inventory item INSTANCE (worn or carried), keyed by the item's guest
+// address — the dye is the instance's type-2 record, so two copies of one record hash are dyed
+// apart — holding the composites in the same words a character's texture layers use, so the
+// menu's preview of a dyed garment goes through the very compositor that dresses the hero.
 
 #include <cstdint>
 #include <cstring>
@@ -19,7 +20,7 @@ namespace refii::vfs {
 namespace {
 
 struct ItemLayers {
-  uint32_t record = 0u;
+  uint32_t item = 0u;
   uint32_t generation = 0u;
   uint32_t count = 0u;
   uint32_t words[kItemDyeLayerWords] = {};
@@ -29,9 +30,9 @@ std::mutex g_lock;
 ItemLayers g_items[kItemDyeLayerItems];
 uint32_t g_used = 0u;
 
-ItemLayers* Find(uint32_t record) {
+ItemLayers* Find(uint32_t item) {
   for (uint32_t i = 0u; i < g_used; ++i) {
-    if (g_items[i].record == record) {
+    if (g_items[i].item == item) {
       return &g_items[i];
     }
   }
@@ -40,19 +41,20 @@ ItemLayers* Find(uint32_t record) {
 
 }  // namespace
 
-/// Copies the item's composites into `out` ([original, count | kind << 16, count x
+/// Copies the item instance's composites into `out` ([original, count | kind << 16, count x
 /// kTextureLayerWords] per texture) and returns the words written; 0 for an item the sampler
-/// found undyed or never saw. `out_generation` moves when the item's layers changed.
-uint32_t StatedItemDyeLayers(uint32_t record, uint32_t* out, uint32_t capacity,
+/// found undyed or never saw. `item` is the guest address the sampler keyed it by.
+/// `out_generation` moves when the item's layers changed.
+uint32_t StatedItemDyeLayers(uint32_t item_address, uint32_t* out, uint32_t capacity,
                              uint32_t* out_generation) {
   std::lock_guard<std::mutex> guard(g_lock);
   if (out_generation != nullptr) {
     *out_generation = 0u;
   }
-  if (record == 0u || out == nullptr) {
+  if (item_address == 0u || out == nullptr) {
     return 0u;
   }
-  const ItemLayers* item = Find(record);
+  const ItemLayers* item = Find(item_address);
   if (item == nullptr) {
     return 0u;
   }
@@ -68,40 +70,40 @@ uint32_t StatedItemDyeLayers(uint32_t record, uint32_t* out, uint32_t capacity,
 
 extern "C" {
 
-// The sampler's whole answer for one sweep: `records` with each item's words at
+// The sampler's whole answer for one sweep: `items` (guest addresses) with each item's words at
 // `offsets[i]..offsets[i] + counts[i]`. Items not in the sweep are dropped (they are no longer
 // dyed, or no longer owned).
-void refii_bridge_set_item_dye_layers(const uint32_t* records, const uint32_t* offsets,
-                                      const uint32_t* counts, uint32_t items,
+void refii_bridge_set_item_dye_layers(const uint32_t* items, const uint32_t* offsets,
+                                      const uint32_t* counts, uint32_t item_count,
                                       const uint32_t* words) {
   using namespace refii::vfs;
   std::lock_guard<std::mutex> guard(g_lock);
-  if (records == nullptr || offsets == nullptr || counts == nullptr || words == nullptr) {
-    items = 0u;
+  if (items == nullptr || offsets == nullptr || counts == nullptr || words == nullptr) {
+    item_count = 0u;
   }
-  if (items > static_cast<uint32_t>(kItemDyeLayerItems)) {
-    items = static_cast<uint32_t>(kItemDyeLayerItems);
+  if (item_count > static_cast<uint32_t>(kItemDyeLayerItems)) {
+    item_count = static_cast<uint32_t>(kItemDyeLayerItems);
   }
 
   ItemLayers next[kItemDyeLayerItems];
   uint32_t used = 0u;
-  for (uint32_t i = 0u; i < items; ++i) {
-    const uint32_t record = records[i];
+  for (uint32_t i = 0u; i < item_count; ++i) {
+    const uint32_t key = items[i];
     uint32_t count = counts[i];
-    if (record == 0u || count == 0u) {
+    if (key == 0u || count == 0u) {
       continue;
     }
     if (count > static_cast<uint32_t>(kItemDyeLayerWords)) {
       count = static_cast<uint32_t>(kItemDyeLayerWords);
     }
     ItemLayers& item = next[used++];
-    item.record = record;
+    item.item = key;
     item.count = count;
     std::memcpy(item.words, words + offsets[i], sizeof(uint32_t) * count);
 
     // The generation carries over and moves only when the content did, so a reader that keyed
     // its composite on it rebuilds nothing for a sweep that said the same thing again.
-    const ItemLayers* previous = Find(record);
+    const ItemLayers* previous = Find(key);
     if (previous != nullptr) {
       item.generation = previous->generation;
       if (previous->count != count ||

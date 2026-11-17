@@ -53,6 +53,14 @@ public static class Engine_SaveHero
 		public uint Face;
 		public uint Melee, Ranged;
 		public List<uint> Worn = new();
+
+		/// <summary>The dye on each worn item that holds one, in <see cref="Worn"/>'s order: the
+		/// item's record and its two slots off the inventory item's type-2 instance data, null for
+		/// a slot the guest's test (<c>sub_826CAFA8</c>) would call undyed.</summary>
+		public List<(uint Record, Dye? Primary, Dye? Secondary)> WornDyes = new();
+
+		/// <summary>The hero's scars, as <c>CECMorph_vf9</c> saves them under `MorphComponent`.</summary>
+		public List<(uint Area, uint Record, bool Permanent)> Scars = new();
 		public List<(uint Record, int Count)> Inventory = new();
 		public float ChapterProgress;
 		public HashSet<string> CompletedQuests = new(StringComparer.OrdinalIgnoreCase);
@@ -285,6 +293,30 @@ public static class Engine_SaveHero
 				if (modifier.Child("InventoryIndex")?.Text is int index && ItemAtUnit(hero.Inventory, index) is uint record)
 				{
 					hero.Worn.Add(record);
+
+					// The dye is the inventory item's own instance data — the entry the unit falls in.
+					if (EntryAtUnit(hero.Inventory, index) is int entry &&
+						hero.InventoryInstances.TryGetValue(entry, out InventoryInstance? instance) &&
+						instance.Dyes is { Length: 2 } dyes &&
+						(Dyed(dyes[0]) || Dyed(dyes[1])))
+					{
+						hero.WornDyes.Add((record, Dyed(dyes[0]) ? dyes[0] : null, Dyed(dyes[1]) ? dyes[1] : null));
+					}
+				}
+			}
+		}
+
+		// CECMorph's scars: one `Scar` element each, BodyArea / TextureMorphRecordID / Permanent.
+		if (byHash.TryGetValue(Fnv1("MorphComponent"), out SaveNode? scars))
+		{
+			foreach (SaveNode scar in scars.All("Scar"))
+			{
+				uint area = scar.Child("BodyArea")?.Text switch { uint u => u, int i => unchecked((uint)i), _ => 0u };
+				uint texture = scar.Child("TextureMorphRecordID")?.Text switch { uint u => u, int i => unchecked((uint)i), _ => 0u };
+				bool permanent = scar.Child("Permanent")?.Text is true;
+				if (area != 0u && texture != 0u)
+				{
+					hero.Scars.Add((area, texture, permanent));
 				}
 			}
 		}
@@ -477,6 +509,29 @@ public static class Engine_SaveHero
 		null when fallback.HasValue => fallback.Value,
 		_ => throw new InvalidDataException("Invalid saved inventory value.")
 	};
+
+	/// <summary>
+	/// Whether a saved slot is dyed by the guest's test (<c>sub_826CAFA8</c>): brightness other
+	/// than 0 or a colour other than black (<c>dword_8331B158</c>; the save carries no alpha).
+	/// </summary>
+	private static bool Dyed(Dye dye) => dye.Brightness != 0f || dye.Red != 0 || dye.Green != 0 || dye.Blue != 0;
+
+	/// <summary>The inventory entry a worn unit index falls in, as <see cref="ItemAtUnit"/> walks it.</summary>
+	private static int? EntryAtUnit(List<(uint Record, int Count)> inventory, int unit)
+	{
+		int accumulated = 0;
+		for (int i = 0; i < inventory.Count; ++i)
+		{
+			if (unit < accumulated + inventory[i].Count)
+			{
+				return i;
+			}
+
+			accumulated += inventory[i].Count;
+		}
+
+		return null;
+	}
 
 	private static uint? ItemAtUnit(List<(uint Record, int Count)> inventory, int unit)
 	{

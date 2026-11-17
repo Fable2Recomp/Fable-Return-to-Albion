@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 241;
+	public const int ExpectedAbiVersion = 244;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -499,6 +499,29 @@ public static partial class HostBridge
 		}
 	}
 
+	/// <summary>
+	/// An entity's stated cloth distance, off its renderable (component 3): the definition's
+	/// `MaxClothDistance`, which the guest's twin carries at +0x128 and its cloth gate steps
+	/// within. False when the entity carries no renderable or the title does not state it.
+	/// </summary>
+	public static bool GetEntityClothDistance(uint entity, out float distance)
+	{
+		distance = 0f;
+		if (entity == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return false;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityClothDistance(entity, out distance) != 0;
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return false;
+		}
+	}
+
 	private static bool _lightZoneMissing;
 	private static bool _casterFlagsMissing;
 
@@ -856,7 +879,7 @@ public static partial class HostBridge
 	/// <summary>One part's morph targets: the models the guest blends into it and their weights.</summary>
 	public readonly record struct GuestPartMorph(uint BaseModel, (uint Model, float Weight)[] Targets);
 
-	private static readonly uint[] _partMorphWords = new uint[24 * (2 + 8 * 2)];
+	private static readonly uint[] _partMorphWords = new uint[24 * (2 + 16 * 2)];
 
 	/// <summary>Run total of part submissions the hook has seen; 0 means it never ran.</summary>
 	public static ulong PartMorphStatements { get; private set; }
@@ -929,10 +952,12 @@ public static partial class HostBridge
 
 	/// <summary>
 	/// One layer of a texture composite. Mode: 0 opaque, 1 alpha, 2 additive, 3 blend-factor,
-	/// 4 masked. Tint is the guest's bytes B, G, R, A in memory order.
+	/// 4 masked. Tint is the guest's bytes B, G, R, A in memory order. An overlay entry (a scar)
+	/// carries its own specular and bump maps beside the diffuse in <see cref="Texture"/>.
 	/// </summary>
 	public readonly record struct GuestTextureLayer(
-		uint Texture, int Mode, float Weight, bool HasTint, uint Tint, float Brightness, uint Bump = 0);
+		uint Texture, int Mode, float Weight, bool HasTint, uint Tint, float Brightness, uint Bump = 0,
+		uint Spec = 0);
 
 	/// <summary>
 	/// An original texture and the layers the guest composites in its place, base first; or,
@@ -946,7 +971,7 @@ public static partial class HostBridge
 
 	private const int TextureLayerWords = 7;
 
-	internal static readonly uint[] _textureLayerWords = new uint[40 * (2 + 8 * TextureLayerWords)];
+	internal static readonly uint[] _textureLayerWords = new uint[40 * (2 + 16 * TextureLayerWords)];
 
 	/// <summary>Run total of composites the hook has seen stated; 0 means it never ran.</summary>
 	public static ulong TextureLayerStatements { get; private set; }
@@ -1064,14 +1089,18 @@ public static partial class HostBridge
 			for (int i = 0; i < count; i++)
 			{
 				int w = at + i * TextureLayerWords;
-				layers[i] = new GuestTextureLayer(
-					words[w],
-					kind == ColourMaskKind ? ColourMaskMode : (int)words[w + 1],
-					BitConverter.Int32BitsToSingle((int)words[w + 2]),
-					words[w + 3] != 0,
-					words[w + 4],
-					BitConverter.Int32BitsToSingle((int)words[w + 5]),
-					words[w + 6]);
+				layers[i] = kind == 1u
+					? new GuestTextureLayer(
+						words[w], (int)words[w + 1], BitConverter.Int32BitsToSingle((int)words[w + 2]),
+						false, 0u, 0f, words[w + 6], words[w + 4])
+					: new GuestTextureLayer(
+						words[w],
+						kind == ColourMaskKind ? ColourMaskMode : (int)words[w + 1],
+						BitConverter.Int32BitsToSingle((int)words[w + 2]),
+						words[w + 3] != 0,
+						words[w + 4],
+						BitConverter.Int32BitsToSingle((int)words[w + 5]),
+						words[w + 6]);
 			}
 
 			at += count * TextureLayerWords;
@@ -1877,12 +1906,20 @@ public static partial class HostBridge
 
 		public const uint DrawableFlag = 1u;
 		public const uint SaturationFlag = 2u;
+		public const uint NoAlphaDepthFlag = 4u;
 
 		/// <summary>SetAsDrawable (+197). Clear: the guest releases the proxies — no draw, no shadow.</summary>
 		public bool Drawable => (Flags & DrawableFlag) != 0u;
 
 		/// <summary>SetSaturationMask (+196).</summary>
 		public bool SaturationMask => (Flags & SaturationFlag) != 0u;
+
+		/// <summary>
+		/// The definition's DisableAlphaDepthWrites (+192, vf8 `sub_825720A8`): the twin's alpha
+		/// reference is 255 (`sub_82572C18`), so its alpha-tested draws keyed to that reference
+		/// pass nothing (see Engine_EntityAppearance).
+		/// </summary>
+		public bool NoAlphaDepthWrites => (Flags & NoAlphaDepthFlag) != 0u;
 
 		/// <summary>The opacity the guest blends by: `+116 * +112` (`sub_82572A58`).</summary>
 		public float Opacity => Alpha * CameraAlpha;
@@ -2188,6 +2225,33 @@ public static partial class HostBridge
 
 		return names;
 	}
+
+	/// <summary>
+	/// Each guest skeleton bone's parent index (-1 a root), in <see cref="GetEntityBoneNames"/>'s
+	/// order; null when the bridge does not state them.
+	/// </summary>
+	public static int[]? GetEntityBoneParents(uint entity)
+	{
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		_boneParents ??= new int[MaxBones];
+		uint bones;
+		try
+		{
+			bones = RefiiHostGetEntityBoneParents(entity, _boneParents, MaxBones);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
+
+		return bones == 0 ? null : _boneParents.AsSpan(0, (int)bones).ToArray();
+	}
+
+	private static int[]? _boneParents;
 
 	/// <summary>
 	/// Bytes per name in the bone-name buffer, passed to the bridge rather than agreed with it.
@@ -2539,8 +2603,9 @@ public static partial class HostBridge
 	/// <summary>
 	/// The effects' mesh particles the guest states: out[0] the count, then 24 floats each —
 	/// descriptor and model hash (bits), flags (0x800 displacement), the twin's world rows (3 x
-	/// vec4, translation in w), tint, alpha, distance fade (full within, slope, gone beyond), twin
-	/// type. Returns the floats written.
+	/// vec4, translation in w), the tint and alpha the effect states to the twin (model commands
+	/// 17 and 16), distance fade (full within, slope, gone beyond), twin type. Returns the floats
+	/// written.
 	/// </summary>
 	public static uint GetFxMeshes(float[] into)
 	{
@@ -6220,6 +6285,13 @@ public static partial class HostBridge
 	/// </summary>
 	private static Func<string, long>? _assetSize;
 
+	/// <summary>
+	/// Where it writes bytes into the CALLER's buffer — see `Engine_GameAssets.ReadInto`: the first
+	/// `destination.Length` bytes and the count, -1 for no such asset. With it a read neither builds a
+	/// managed copy of the asset nor copies one, and a short buffer inflates only its front.
+	/// </summary>
+	private static Func<string, Memory<byte>, int>? _assetReadInto;
+
 	[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
 	private delegate int AssetIsOverrideDelegate(IntPtr path, UIntPtr length);
 
@@ -6232,10 +6304,14 @@ public static partial class HostBridge
 	/// every Godot loader uses. Pass null on the way out, so a guest read arriving after teardown
 	/// gets "no reader" instead of a torn-down runtime.
 	/// </summary>
-	public static void SetAssetReader(Func<string, byte[]?>? source, Func<string, long>? size = null)
+	public static void SetAssetReader(
+		Func<string, byte[]?>? source,
+		Func<string, long>? size = null,
+		Func<string, Memory<byte>, int>? readInto = null)
 	{
 		_assetSource = source;
 		_assetSize = size;
+		_assetReadInto = source is null ? null : readInto;
 
 		if (TryGetAbiVersion() is null)
 		{
@@ -6502,6 +6578,23 @@ public static partial class HostBridge
 				if (outSize != IntPtr.Zero)
 				{
 					Marshal.WriteInt32(outSize, (int)known);
+				}
+
+				return 1;
+			}
+
+			if (_assetReadInto is { } readInto)
+			{
+				var destination = new Refii.Core.Engine_NativeMemory(buffer, (int)Math.Min(capacity, int.MaxValue));
+				int written = readInto(name, destination.Memory);
+				if (written < 0)
+				{
+					return 0;
+				}
+
+				if (outSize != IntPtr.Zero)
+				{
+					Marshal.WriteInt32(outSize, written);
 				}
 
 				return 1;
@@ -8249,6 +8342,9 @@ public static partial class HostBridge
 		uint entity, byte[] outNames, uint stride, uint maxBones);
 
 	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityBoneParents(uint entity, int[] outParents, uint maxBones);
+
+	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityComponents(
 		uint entity, uint[] outPairs, uint maxPairs);
 
@@ -9264,6 +9360,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetEntityDrawRange(uint entity, out float distance, out float fadeFactor);
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetEntityClothDistance(uint entity, out float distance);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetEntityLightZone(uint entity);

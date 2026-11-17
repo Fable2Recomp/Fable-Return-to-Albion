@@ -13,14 +13,26 @@ namespace Refii.Physics;
 /// - dt is the frame time clamped to 0.2 s and divided by ceil(dt * 20) — ONE step of at most
 ///   50 ms per frame, never a loop (<c>sub_821E3180</c>; the substep count is computed and
 ///   never iterated).
+/// - dt is the DISPLAY clock, not the sim clock: <c>sub_821E3180</c> differences
+///   <c>dbl_83496E18</c>, which <c>sub_821C3858</c> sets from <c>lhRenderer_RenderFrame</c>'s time —
+///   the vsync count over the refresh rate (<c>sub_82B6FCE8</c>), capped at the last posted frame
+///   request (renderer+0xA0, which <c>lhGameLoop_Tick</c> posts every tick from its wall clock).
+///   Nothing on that chain reads a pause, so a stated pause (<see cref="Refii.Core.Engine_StatedPause"/>)
+///   does not stop the cloth: owners hold, and the cloth settles under the held wind.
 /// - The owner's world matrix is the transform; a jump of more than one unit resets the cloth
 ///   to the skinned pose (<c>sub_8218D9A0</c>).
 /// - The skin palette is the rig's pose times inverse bind, in the model's space, in the
 ///   cloth block's own bone ids (<c>sub_8222E2B8</c>); colliders pose off the same bones.
-/// - Wind is the level's weather wind, direction times speed; gravity is world down.
-/// - Beyond MaxClothDistance, or out of the camera's view, nothing is simulated and the
-///   skinned pose is drawn; inside the last 15% of that distance the drawn pose is lerped
-///   between skinned and simulated (<c>sub_821E34B0</c>).
+/// - Wind is the scene's wind, direction (scene+0xD38) times speed (scene+0xD44), unaltered:
+///   <c>sub_821D1FD8</c> (disc <c>sub_821D1C98</c>) adds a gust (f(3t), f(7t), 0) of the clock
+///   t = fmod(dbl_83496E18 / 6, 26880) scaled by |wind| times <c>flt_8331AC90</c> (disc
+///   <c>flt_8331AB20</c>), which is 0.0 in the image and written by nothing, so the wind the step
+///   reads is exactly direction times speed. Gravity is world down.
+/// - The distance is the entity's own stated <c>MaxClothDistance</c>
+///   (<see cref="Refii.Host.HostBridge.GetEntityClothDistance"/>, twin+0x128). Measured from the
+///   owner's origin to the eye, at or beyond it, or out of the camera's view, nothing is simulated
+///   and the skinned pose is drawn; inside the last 15% of it the drawn pose is lerped between
+///   skinned and simulated (<c>sub_821E34B0</c>).
 /// - The cloth normals are rebuilt from the cloth's own triangle list after each step and are
 ///   what the next step's wind term reads (<c>sub_822BA0B0</c>).
 ///
@@ -46,8 +58,11 @@ public partial class Engine_ClothBody : MeshInstance3D
 {
     public const string NodeName = "ClothBody";
 
-    /// <summary>The guest's config default for "MaxClothDistance" (<c>flt_83317D74</c>).</summary>
-    public static float MaxClothDistance = 20.0f;
+    /// <summary>
+    /// <c>flt_83317D74</c>: the distance a twin's constructor (<c>sub_82AA2658</c>) gives it before its
+    /// renderable states one. Used only for a body whose entity states none.
+    /// </summary>
+    public const float DefaultMaxClothDistance = 20.0f;
 
     /// <summary><c>flt_8209D568</c>: the fade begins at this fraction of the distance.</summary>
     public const float FadeStart = 0.85f;
@@ -550,14 +565,6 @@ public partial class Engine_ClothBody : MeshInstance3D
 
         PhysMat4 world = Engine_PhysicsMatrix.FromTransform3D(parent.GlobalTransform);
         Vector3 wind = Refii.Level.Engine_Weather.WindWorld;
-        if (step && wind.LengthSquared() > 1e-4f && HasWindResponse())
-        {
-            float t = (float)(Time.GetTicksMsec() * 0.001);
-            Vector3 p = parent.GlobalPosition;
-            float phase = (p.X * 0.17f) + (p.Z * 0.23f);
-            float gust = 1.0f + (0.35f * MathF.Sin((t * 2.3f) + phase) * MathF.Cos((t * 1.1f) + (phase * 0.7f)));
-            wind *= gust;
-        }
 
         if (_sleeping)
         {
@@ -789,19 +796,6 @@ public partial class Engine_ClothBody : MeshInstance3D
         CustomAabb = _bounds;
     }
 
-    private bool HasWindResponse()
-    {
-        for (int i = 0; i < _instances.Count; i++)
-        {
-            if (_instances[i].Asset is { WindStrength: > 0.0f })
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /// <summary>The whole step for every piece, on a worker: pure C# over this body's own arrays.</summary>
     private void Solve()
     {
@@ -963,8 +957,10 @@ public partial class Engine_ClothBody : MeshInstance3D
     }
 
     /// <summary>
-    /// <c>sub_821E34B0</c>: 0 beyond the distance or out of view, 1 inside 85% of it, a ramp
-    /// between. Every view counts: in view is in any view's frustum, distance is to the nearest eye.
+    /// <c>sub_821E34B0</c>: d = |twin+0x150 translation − view+0x50 eye|; 0 when d is at or beyond
+    /// the twin's distance (<c>lfs f31, 0x128(r30)</c> / <c>fcmpu f30, f31</c> / <c>bge</c>) or the
+    /// pieces' sphere is outside the frustum (<c>sub_821FF138</c>), 1 within 85% of it, a ramp
+    /// between. Every view counts: in view is in any view's frustum, d is to the nearest eye.
     /// </summary>
     private float FadeWeight(MeshInstance3D parent, out bool inView)
     {
@@ -975,7 +971,7 @@ public partial class Engine_ClothBody : MeshInstance3D
             return 1.0f;
         }
 
-        float max = MaxClothDistance;
+        float max = StatedMaxDistance(parent);
         Vector3 origin = parent.GlobalPosition;
         float distance = float.MaxValue;
         int views = Math.Min(cameras.Count, _frustum.Length);
@@ -990,12 +986,7 @@ public partial class Engine_ClothBody : MeshInstance3D
             return 0.0f;
         }
 
-        inView = InView(cameras, views, parent, out float pieceDistance);
-        if (pieceDistance < distance)
-        {
-            distance = pieceDistance;
-        }
-
+        inView = InView(cameras, views, parent);
         if (!inView || distance >= max)
         {
             return 0.0f;
@@ -1006,31 +997,32 @@ public partial class Engine_ClothBody : MeshInstance3D
     }
 
     /// <summary>
-    /// The union of the pieces' bounding spheres against every view's frustum; the distance is
-    /// the nearest piece's to the nearest eye.
+    /// The guest's twin+0x128 for this body's entity (<see cref="Refii.Host.HostBridge.GetEntityClothDistance"/>);
+    /// <see cref="DefaultMaxClothDistance"/>, the twin constructor's own, where none is stated.
     /// </summary>
-    private bool InView(IReadOnlyList<Camera3D> cameras, int views, MeshInstance3D parent, out float minDistance)
+    private static float StatedMaxDistance(MeshInstance3D parent)
     {
-        minDistance = float.MaxValue;
+        uint entity = parent.HasMeta(EntityAddressMeta) ? (uint)parent.GetMeta(EntityAddressMeta).AsInt64() : 0u;
+        return entity != 0u && Refii.Host.HostBridge.GetEntityClothDistance(entity, out float stated)
+            ? stated
+            : DefaultMaxClothDistance;
+    }
+
+    /// <summary>The union of the pieces' bounding spheres against every view's frustum.</summary>
+    private bool InView(IReadOnlyList<Camera3D> cameras, int views, MeshInstance3D parent)
+    {
         Transform3D world = parent.GlobalTransform;
         float scale = world.Basis.Scale.Length() * 0.577350269f;
         bool anyVisible = false;
         for (int v = 0; v < views; v++)
         {
             Camera3D camera = cameras[v];
-            Vector3 eye = camera.GlobalPosition;
             Plane[] planes = FrameFrustum(camera, v);
             foreach (ClothInstance inst in _instances)
             {
                 PhysVec4 sphere = inst.BoundsSphere;
                 Vector3 center = world * new Vector3(sphere.X, sphere.Y, sphere.Z);
                 float radius = MathF.Max(sphere.W * scale, 0.5f);
-                float d = MathF.Max(0.0f, center.DistanceTo(eye) - radius);
-                if (d < minDistance)
-                {
-                    minDistance = d;
-                }
-
                 bool inside = true;
                 for (int p = 0; p < planes.Length; p++)
                 {

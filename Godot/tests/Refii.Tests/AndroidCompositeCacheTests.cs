@@ -173,7 +173,7 @@ public sealed class AndroidCompositeCacheTests
                 string name = AndroidCompositeCache.Name(label, a, layers, none)!;
                 Array decoded = Array.CreateInstance(decodedType, layers.Length);
                 byte[] output = Noise();
-                blend.Invoke(null, new object?[] { output, 16, 16, a, layers, decoded, none, false, label, -1L, name });
+                blend.Invoke(null, new object?[] { output, 16, 16, a, layers, decoded, none, Refii.Hero.Engine_HeroTextureMorph.OverlayMap.Diffuse, label, -1L, name });
                 AssertThat(File.Exists(Path.Combine(folder, name))).IsEqual(label == "whole");
             }
         }

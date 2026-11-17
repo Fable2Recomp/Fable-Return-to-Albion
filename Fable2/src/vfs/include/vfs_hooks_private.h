@@ -339,10 +339,18 @@ inline void DropDecalsOf(uint32_t twin) { refii_bridge_drop_decals_of(twin); }
 inline void NoteFxMesh(uint32_t descriptor) { refii_bridge_note_fx_mesh(descriptor); }
 inline void DropFxMesh(uint32_t descriptor) { refii_bridge_drop_fx_mesh(descriptor); }
 inline uint32_t FxMeshes(uint32_t* out, uint32_t capacity) { return refii_bridge_fx_meshes(out, capacity); }
+inline void NoteTwinAlpha(uint32_t handle, uint32_t alpha_bits) { refii_bridge_note_twin_alpha(handle, alpha_bits); }
+inline void NoteTwinTint(uint32_t handle, const uint32_t* tint) { refii_bridge_note_twin_tint(handle, tint); }
+inline void ForgetTwin(uint32_t handle) { refii_bridge_forget_twin(handle); }
 
 /// The entity's texture composites are about to be restated.
 inline void BeginTextureLayers(uint32_t entity) { refii_bridge_begin_texture_layers(entity); }
 inline void EndTextureLayers(uint32_t entity) { refii_bridge_end_texture_layers(entity); }
+/// The entity left the world: its texture layers and part morphs go with it.
+inline void ForgetEntityLooks(uint32_t entity) {
+  refii_bridge_forget_texture_layers(entity);
+  refii_bridge_forget_part_morphs(entity);
+}
 
 /// One original texture's layers as the guest just stated them; per core/payload_bridge.h.
 inline void NoteTextureLayers(uint32_t entity, uint32_t original, uint32_t kind,

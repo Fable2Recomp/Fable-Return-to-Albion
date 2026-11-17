@@ -403,22 +403,30 @@ public partial class Engine_FrontEndMenuView : Node3D
 	public uint? ScreenId { get; set; }
 
 	/// <summary>
-	/// Whether slot 2 / slot 11 take the zero-opacity style. The end fade is per-screen and not Lua:
-	/// `FadeOutTopItemEarly` / `FadeOutBottomItemEarly` (`expandablemenuformatting.dis main.0` /
-	/// `main.1`) have no Lua callers; the C++ runs them as `DoString` source (literals at
-	/// `0x820CD420` and `0x820CD3F4`) from thirteen screen contract vtables. Two ask for one end
-	/// only — Options (id 18, `0x826D9D40`) TOP, real estate (id 28, `0x82998300`) BOTTOM — and the
-	/// front end calls neither (`sub_826E1F70`), so with no ScreenId both ends stay at 50%.
+	/// The end-slot fades the guest STATED for this list's presentation — `FadeOutTopItemEarly` /
+	/// `FadeOutBottomItemEarly` (`expandablemenuformatting.lua` main.0 / main.1) as
+	/// <see cref="Engine_UiMenuModel"/> recorded them — or null when the guest stated no menu
+	/// for it. The C++ runs them as `DoString` source (literals 0x820CD420 / 0x820CD3F4, disc
+	/// 0x820AFD24 / 0x820AFCF8) from twelve screen populates; options (`sub_826D9D40`, disc
+	/// `sub_82582968`) states the top only, real estate (`sub_82998300`, disc `sub_828ECC10`) the
+	/// bottom only, the front end neither.
 	/// </summary>
-	/// THE SCREEN STATES IT. This was two id comparisons here; it is `FadesTopEnd` /
-	/// `FadesBottomEnd` on the screen's template now, so a screen's fade is authored with the
-	/// rest of it rather than found in this file. With no ScreenId the front end fades neither
-	/// end, which is what `sub_826E1F70` does.
+	public System.Func<(bool Top, bool Bottom)?>? StatedEndFades { get; set; }
+
+	/// <summary>
+	/// Whether slot 2 / slot 11 take the zero-opacity style: the stated fade wins; a list the
+	/// guest states nothing for (a host-only screen) takes its template's `FadesTopEnd` /
+	/// `FadesBottomEnd`; with neither, no fade.
+	/// </summary>
 	private bool FadesTopEnd =>
-		ScreenId is { } id && (Engine_UiTemplates.Screen(id)?.FadesTopEnd ?? true);
+		StatedEndFades?.Invoke() is { } stated
+			? stated.Top
+			: ScreenId is { } id && (Engine_UiTemplates.Screen(id)?.FadesTopEnd ?? true);
 
 	private bool FadesBottomEnd =>
-		ScreenId is { } id && (Engine_UiTemplates.Screen(id)?.FadesBottomEnd ?? true);
+		StatedEndFades?.Invoke() is { } stated
+			? stated.Bottom
+			: ScreenId is { } id && (Engine_UiTemplates.Screen(id)?.FadesBottomEnd ?? true);
 
 	/// <summary>Which entry each row node is currently drawing. Null means the node is free.</summary>
 	private readonly Engine_UiExpandableMenu.Item?[] _rowItem =

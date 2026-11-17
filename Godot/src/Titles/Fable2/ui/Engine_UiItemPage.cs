@@ -631,8 +631,9 @@ public static class Engine_UiItemPage
 			detail.PreviewRotation,
 			detail.PreviewScale,
 			detail.PreviewRotationAxis,
-			// The record, so the panel can ask what dye the guest holds on this item.
-			Item: id);
+			// The row's item INSTANCE, so the panel asks what dye the guest holds on this copy —
+			// the dye is the instance's own record, and a second copy of a dyed record is not dyed.
+			Item: row.Instance);
 	}
 
 	/// <summary>An outfit row — the inventory source routes its press to `Inventory:outfit`.</summary>

@@ -639,7 +639,7 @@ public partial class Engine_GameAssets : Node
 		Refii.Gdb.Engine_BnkTextBankLoader.Invalidate();
 
 		// The guest reads through this same mount.
-		Refii.Host.HostBridge.SetAssetReader(ReadAllBytes, FileSize);
+		Refii.Host.HostBridge.SetAssetReader(ReadAllBytes, FileSize, ReadInto);
 		Refii.Host.HostBridge.SetAssetOverrideQuery(FileIsOverride, FileIsModOwned);
 
 		// A mod's text for Lua's Refii.text and native refii_mod_text: the one lookup Godot's own surfaces use.
@@ -1086,6 +1086,29 @@ public partial class Engine_GameAssets : Node
 		}
 
 		return file.ReadAllBytes();
+	}
+
+	/// <summary>
+	/// <see cref="ReadAllBytes"/> into memory the caller owns: the first <c>destination.Length</c>
+	/// bytes, and how many were written, or -1 when there is no such file. See
+	/// <see cref="BnkFile.ReadInto"/>.
+	/// </summary>
+	public int ReadInto(string virtualPath, Memory<byte> destination)
+	{
+		if (!TryGetFile(virtualPath, out BnkFile file))
+		{
+			return -1;
+		}
+
+		if (ReferenceEquals(_lastRead.File, file) && _lastRead.Bytes is { } cached)
+		{
+			_lastRead = default;
+			int copied = Math.Min(cached.Length, destination.Length);
+			cached.AsSpan(0, copied).CopyTo(destination.Span);
+			return copied;
+		}
+
+		return file.ReadInto(destination);
 	}
 
 	/// <summary>See <see cref="BnkFile.ReadHead"/>.</summary>

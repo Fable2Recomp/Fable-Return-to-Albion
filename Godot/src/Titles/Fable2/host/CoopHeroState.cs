@@ -14,7 +14,8 @@ using Refii.Host;
 /// </summary>
 /// <remarks>
 /// The record (`HST1`, little-endian) is the whole <see cref="CoopHeroKit.Kit"/>: identity, looks,
-/// outfit, inventory, equipped records, stats, the dog. The pump takes the same bytes, base64, as
+/// outfit, inventory, equipped records, stats, the dog, then the looks extension
+/// (<see cref="LooksMagic"/>): worn dyes and scars. The pump takes the same bytes, base64, as
 /// <c>HeroState:&lt;player&gt;:&lt;base64&gt;</c>.
 ///
 /// Wire grammar, one datagram each, on <see cref="HostBridge.CoopSend"/>:
@@ -34,6 +35,13 @@ public static class CoopHeroState
 {
 	/// <summary>"HST1".</summary>
 	public const uint Magic = 0x31545348u;
+
+	/// <summary>
+	/// "HSL1" — the looks extension after the dog: the dye on each worn item and the scars. An
+	/// older reader stops at the dog name and never sees it; this reader takes a record without it
+	/// as no dyes and no scars. The same bytes reach the pump (DispatchHeroState).
+	/// </summary>
+	public const uint LooksMagic = 0x314C5348u;
 
 	/// <summary>Longest name carried, in UTF-8 bytes.</summary>
 	public const int NameLimit = 48;
@@ -132,6 +140,38 @@ public static class CoopHeroState
 		w.Write((byte)dogName.Length);
 		w.Write(dogName);
 
+		// The looks extension: u16 dyed worn items {u32 record, u8 slots (bit 0 slot 1, bit 1
+		// slot 2), per set bit u8 red, green, blue, f32 brightness}, then u8 scars {u32 area,
+		// u32 record, u8 permanent}.
+		w.Write(LooksMagic);
+		Fable2Bridge.WornDye[] dyes = kit.WornDyes ?? Array.Empty<Fable2Bridge.WornDye>();
+		int dyeCount = Math.Min(dyes.Length, ushort.MaxValue);
+		w.Write((ushort)dyeCount);
+		for (int i = 0; i < dyeCount; ++i)
+		{
+			Fable2Bridge.WornDye dye = dyes[i];
+			w.Write(dye.Record);
+			w.Write((byte)((dye.Primary is null ? 0 : 1) | (dye.Secondary is null ? 0 : 2)));
+			foreach (Fable2Bridge.SlotDye? slot in new[] { dye.Primary, dye.Secondary })
+			{
+				if (slot is { } value)
+				{
+					w.Write(value.Red); w.Write(value.Green); w.Write(value.Blue);
+					w.Write(value.Brightness);
+				}
+			}
+		}
+
+		Fable2Bridge.Scar[] scars = kit.Scars ?? Array.Empty<Fable2Bridge.Scar>();
+		int scarCount = Math.Min(scars.Length, byte.MaxValue);
+		w.Write((byte)scarCount);
+		for (int i = 0; i < scarCount; ++i)
+		{
+			w.Write(scars[i].Area);
+			w.Write(scars[i].Record);
+			w.Write((byte)(scars[i].Permanent ? 1 : 0));
+		}
+
 		w.Flush();
 		return stream.ToArray();
 	}
@@ -212,6 +252,8 @@ public static class CoopHeroState
 			int dogNameLength = r.ReadByte();
 			string dogName = Encoding.UTF8.GetString(r.ReadBytes(dogNameLength), 0, dogNameLength);
 
+			(Fable2Bridge.WornDye[] Dyes, Fable2Bridge.Scar[] Scars) looks = ReadLooks(r);
+
 			var kit = new CoopHeroKit.Kit(
 				Known: known,
 				Female: female,
@@ -240,7 +282,9 @@ public static class CoopHeroState
 				DogCombat: dogCombat,
 				DogTricks: dogTricks,
 				DogWorn: dogWorn,
-				DogName: dogName);
+				DogName: dogName,
+				WornDyes: looks.Dyes,
+				Scars: looks.Scars);
 			return (kit, version);
 		}
 		catch (EndOfStreamException)
@@ -250,6 +294,64 @@ public static class CoopHeroState
 		catch (IOException)
 		{
 			return null;
+		}
+	}
+
+	/// <summary>
+	/// The looks extension at the reader's position, or none: a record from a peer that predates
+	/// it ends at the dog name, and one whose extension is cut short or carries another magic
+	/// keeps the rest of the record and drops only the extension.
+	/// </summary>
+	private static (Fable2Bridge.WornDye[] Dyes, Fable2Bridge.Scar[] Scars) ReadLooks(BinaryReader r)
+	{
+		var none = (Array.Empty<Fable2Bridge.WornDye>(), Array.Empty<Fable2Bridge.Scar>());
+		Stream stream = r.BaseStream;
+		if (stream.Length - stream.Position < 4 || r.ReadUInt32() != LooksMagic)
+		{
+			return none;
+		}
+
+		try
+		{
+			var dyes = new List<Fable2Bridge.WornDye>();
+			int dyeCount = r.ReadUInt16();
+			for (int i = 0; i < dyeCount; ++i)
+			{
+				uint record = r.ReadUInt32();
+				byte slots = r.ReadByte();
+				Fable2Bridge.SlotDye? primary = (slots & 1) != 0 ? ReadSlot(r) : null;
+				Fable2Bridge.SlotDye? secondary = (slots & 2) != 0 ? ReadSlot(r) : null;
+				if (record != 0u && (primary is not null || secondary is not null))
+				{
+					dyes.Add(new Fable2Bridge.WornDye(record, primary, secondary));
+				}
+			}
+
+			var scars = new List<Fable2Bridge.Scar>();
+			int scarCount = r.ReadByte();
+			for (int i = 0; i < scarCount; ++i)
+			{
+				uint area = r.ReadUInt32();
+				uint record = r.ReadUInt32();
+				bool permanent = r.ReadByte() != 0;
+				if (area != 0u && record != 0u)
+				{
+					scars.Add(new Fable2Bridge.Scar(area, record, permanent));
+				}
+			}
+
+			return (dyes.ToArray(), scars.ToArray());
+		}
+		catch (EndOfStreamException)
+		{
+			return none;
+		}
+
+		static Fable2Bridge.SlotDye? ReadSlot(BinaryReader r)
+		{
+			byte red = r.ReadByte(), green = r.ReadByte(), blue = r.ReadByte();
+			float brightness = r.ReadSingle();
+			return float.IsFinite(brightness) ? new Fable2Bridge.SlotDye(red, green, blue, brightness) : null;
 		}
 	}
 
@@ -540,7 +642,8 @@ public static class CoopHeroState
 
 		CoopHeroKit.Kit kit = record.Kit;
 		Godot.GD.Print($"[hero-state] v{version} received: '{kit.Name}', hero {(kit.Known ? "yes" : "no")}, " +
-			$"{(kit.Female ? "female" : "male")}, {kit.Worn.Length} worn, {kit.Inventory.Length} records, " +
+			$"{(kit.Female ? "female" : "male")}, {kit.Worn.Length} worn ({kit.WornDyes?.Length ?? 0} dyed), " +
+			$"{kit.Scars?.Length ?? 0} scar(s), {kit.Inventory.Length} records, " +
 			$"melee 0x{kit.MeleeId:X8}, ranged 0x{kit.RangedId:X8}, {payload.Length} bytes in {total} fragments");
 		return true;
 	}

@@ -14,8 +14,10 @@ namespace Refii.Fx;
 /// <remarks>
 /// THE TITLE'S RULE (`sub_821CEA80`, kind 4): one render twin per live mesh particle, made on the
 /// particle's first frame and destroyed the frame it dies, its model the effect's mesh key; each
-/// frame the effect states its position and rotation (messages 1, 2), uniform scale (6), tint (17
-/// -> twin+240 -> PS c49 g_StandardMaterialTintColour) and alpha (16). The twin's own draw
+/// frame the effect states its position and rotation (messages 1, 2), uniform scale (6), tint (17,
+/// which the twin binds as PS c49 g_StandardMaterialTintColour) and alpha (16, particle alpha x the
+/// effect's). The tint and alpha here are those statements, taken where each command reaches its
+/// twin (`Render_ApplyCommandToHandle`, hooks/fx_meshes.cpp). The twin's own draw
 /// (`sub_8221E5F0`) takes the alpha times its distance fade (full within twin+284, to nothing at
 /// +292) and draws translucent below 0.996 (`sub_822251D8`: constant-colour blend by the alpha). A
 /// displacement mesh (key IsDisplacementMesh, flag 0x800) is not scene geometry: its layer is the
@@ -162,7 +164,7 @@ public partial class Engine_FxMeshTwins : Node
                 ToGodot(Guest(new Vector3(0f, -1f, 0f))) - origin);
             particle.Node.GlobalTransform = ObserveParticleTransform(descriptor, particle, basis, origin);
 
-            // Alpha x the twin's distance fade.
+            // The stated alpha x the twin's distance fade.
             float alpha = _buffer[at + 19];
             float full = _buffer[at + 20], slope = _buffer[at + 21], end = _buffer[at + 22];
             // The fade is the node's: on split screen the nearer player's eye decides it.

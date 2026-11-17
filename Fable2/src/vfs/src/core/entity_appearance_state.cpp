@@ -6,8 +6,9 @@
 //
 // One entry per CECGraphicAppearance (component 3) whose appearance was ever stated away from
 // the constructor's: alpha +112, camera alpha +116, scale +108, tint +80..95, saturation mask
-// +196, drawable +197. A component with no entry draws as constructed, so the table holds the
-// faded, hidden, tinted and rescaled few rather than every renderable in the region.
+// +196, drawable +197, the definition's DisableAlphaDepthWrites +192. A component with no entry
+// draws as constructed, so the table holds the faded, hidden, tinted, rescaled and
+// depth-write-disabled few rather than every renderable in the region.
 
 #include <atomic>
 #include <cstdint>
@@ -83,7 +84,8 @@ StatedAppearance* Claim(uint32_t component) {
 }
 
 /// The constructor's values (`sub_82571DF8`): 1.0 at +108/+112/+116 (0x82571f1c..2c), tint
-/// 1,1,1,1 at +80 (0x82571f04), +196 = 0 and +197 = 1 (0x82571f50/54).
+/// 1,1,1,1 at +80 (0x82571f04), +196 = 0 and +197 = 1 (0x82571f50/54), and a definition with
+/// DisableAlphaDepthWrites false (+192, vf8 `sub_825720A8`).
 bool IsConstructed(const uint32_t* words) {
   constexpr uint32_t kOne = 0x3F800000u;
   for (uint32_t i = 0u; i < kAppearanceFlags; ++i) {

@@ -51,7 +51,7 @@ public sealed class TextureLayerDecodeTests
     {
         uint[] words = Concat(
             Row(0x1111u, 0u, new uint[] { 0x2222u, 1u, F(0.75f), 1u, 0x40506070u, F(0.5f), 0u }),
-            Row(0x3333u, 1u, new uint[] { 0x4444u, 0u, F(1f), 0u, 0u, 0u, 0x5555u }),
+            Row(0x3333u, 1u, new uint[] { 0x4444u, 1u, F(1f), 0u, 0x7777u, 0u, 0x5555u }),
             Row(0u, 2u, new uint[] { 0x6666u, 0u, F(1f), 0u, 0u, 0u, 0u }));
 
         HostBridge.GuestTextureComposite[] decoded = HostBridge.DecodeTextureLayers(words, (uint)words.Length);
@@ -65,6 +65,8 @@ public sealed class TextureLayerDecodeTests
             new HostBridge.GuestTextureLayer(0x2222u, 1, 0.75f, true, 0x40506070u, 0.5f, 0u));
         AssertThat(decoded[1].Overlay).IsTrue();
         AssertThat(decoded[1].Layers[0].Bump).IsEqual(0x5555u);
+        AssertThat(decoded[1].Layers[0].Spec).IsEqual(0x7777u);
+        AssertThat(decoded[1].Layers[0].HasTint).IsFalse();
         AssertThat(decoded[2].Wildcard).IsTrue();
     }
 

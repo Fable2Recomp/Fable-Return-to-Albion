@@ -414,7 +414,10 @@ public static partial class Engine_UiInventorySource
 
 				// `inventory:usable` is a mod's list, named by `ModRowSubject.ItemRow` — no row
 				// the guest spawns.
-				FromMod: usableOnly));
+				FromMod: usableOnly,
+
+				// The item instance: two copies of one record are two rows with their own dye.
+				Instance: record.Item));
 		}
 
 		Report = $"{rows.Count} row(s) from {records.Count} inventory record(s)" +
@@ -847,7 +850,10 @@ public static partial class Engine_UiInventorySource
 					GroupTag: string.Empty,
 					IsHeader: false,
 					Emphasised: false,
-					Counted: slot == 0));
+					Counted: slot == 0,
+
+					// The instance the press acts on — the worn one, else the first carried.
+					Instance: dyed.TryGetValue(recordId, out Fable2Bridge.DyeState target) ? target.Item : 0u));
 			}
 		}
 

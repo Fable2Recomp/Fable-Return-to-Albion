@@ -97,7 +97,7 @@ public sealed class Engine_UiHeadlessElements
 			if (held.Unresolved.Add(id | (timelineOwner ? HeadlessOrdinal : 0u)))
 			{
 				_log($"Refii headless elements: id {id} of 0x{presentation:X8} ({held.File}) is not in the " +
-					(timelineOwner ? "file under a component" : "file") + " — its statements are dropped");
+					(timelineOwner ? "file under a component" : "file") + $" — {WhyUnresolved(presentation, held, document, id)}");
 			}
 
 			return false;
@@ -106,6 +106,32 @@ public sealed class Engine_UiHeadlessElements
 		rootHash = document.Elements[0].NameHash;
 		ordinal = found;
 		return true;
+	}
+
+	/// <summary>
+	/// Why an id has no file element. The usual answer is a name the file does not carry under that
+	/// parent: the guest resolves HUD groups by name (`sub_827F1E18`, disc `sub_827CE7D0`:
+	/// `SafeFrame`, `GolfMeter`, `NPCHighlights`, `ABXY` under `Layer`, none of them in the shipped
+	/// hud.bgf) and child-by-name (`sub_82BB5658`, disc `sub_82BACC90`) answers 0 for them on a
+	/// loaded tree, so the original's writes to them reached no element. The headless core makes
+	/// them fileless instead; their statements have nothing to draw and are dropped here.
+	/// </summary>
+	private string WhyUnresolved(uint presentation, Presentation held, Engine_BgfDocument document, uint id)
+	{
+		if (!Made(presentation, held, id, out uint parentId, out uint nameHash, out _))
+		{
+			return "the guest never stated it; its statements are dropped";
+		}
+
+		int parent = OrdinalOf(presentation, held, document, parentId, 0);
+		if (parent < 0)
+		{
+			return $"named 0x{nameHash:X8} under id {parentId}, which is not in the file either; its statements are dropped";
+		}
+
+		return $"named 0x{nameHash:X8} under file element #{parent} (0x{document.Elements[parent].NameHash:X8}), " +
+			"which has no child of that name: child-by-name answers 0 on a loaded tree, so the original's " +
+			"writes reached no element; its statements are dropped";
 	}
 
 	private Presentation? Held(uint presentation, uint serial)

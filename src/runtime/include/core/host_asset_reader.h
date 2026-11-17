@@ -10,9 +10,10 @@
 
 namespace refii::vfs {
 
-/// Godot's asset loader (`Engine_GameAssets.ReadAllBytes`) as a registered function pointer.
+/// Godot's asset loader (`Engine_GameAssets.ReadInto`) as a registered function pointer.
 /// Call with a null buffer to learn the size, then again with one big enough, so no
-/// allocation crosses the boundary.
+/// allocation crosses the boundary. Godot writes into `out` itself; a buffer shorter than the
+/// asset receives its first `capacity` bytes, and only those are inflated.
 using HostAssetReaderFn = int32_t (*)(const char* path, uint8_t* out, uint32_t capacity,
                                       uint32_t* out_size);
 

@@ -39,6 +39,16 @@ namespace Refii.Entities;
 ///
 /// Not drawn at all — SetAsDrawable(0), or the product not above 1e-4 — the guest releases the
 /// proxies: no body, no shadow. Hiding the node does both; the shadow skeletons mirror it.
+///
+/// DISABLEALPHADEPTHWRITES (the definition's, +192 via vf8 `sub_825720A8`): every replication
+/// then posts model command 16 with alpha reference 255 (`sub_82572C18` 0x82572c78..0x82572c94),
+/// which the twin keeps at +228 (0x822d9e7c) in place of its constructed 254 and binds as
+/// ALPHAREF, GREATER, on its alpha-tested colour draws of a surface that is not a cutout only
+/// (`sub_822251D8` 0x82225ac4) and its depth-only draws (`sub_822015B8` 0x822016fc). Nothing is
+/// greater than 255, so those draws write no colour and no depth and a translucent surface shows
+/// its blended draw alone. The node carries it as the instance uniform `entity_no_alpha_depth`
+/// (standard_material_body), which discards the opaque pass of each surface keyed to the twin's
+/// reference. No shipped definition sets it; the classic shaders do not read it yet.
 /// </remarks>
 public static class Engine_EntityAppearance
 {
@@ -47,6 +57,9 @@ public static class Engine_EntityAppearance
         new(ReferenceEqualityComparer.Instance);
 
     private static readonly StringName TintParameter = "entity_tint";
+
+    /// <summary>The twin's alpha reference at 255 (<see cref="HostBridge.EntityAppearance.NoAlphaDepthWrites"/>).</summary>
+    private static readonly StringName NoAlphaDepthParameter = "entity_no_alpha_depth";
 
     /// <summary>
     /// The tints <see cref="Apply"/> last wrote on each node, modern then classic (null where it
@@ -287,6 +300,12 @@ public static class Engine_EntityAppearance
                 classic = held.Classic;
             }
             Tints[node] = (modern, classic);
+        }
+
+        // Written only when it differs from what the node holds: a node never stated holds false.
+        if (look.NoAlphaDepthWrites != (had && was.NoAlphaDepthWrites))
+        {
+            Refii.Core.Engine_InstanceParams.Set(node, NoAlphaDepthParameter, look.NoAlphaDepthWrites);
         }
 
         if (look.IsConstructed)

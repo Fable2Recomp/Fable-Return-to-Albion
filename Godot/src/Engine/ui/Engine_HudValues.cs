@@ -113,6 +113,7 @@ public sealed class Engine_HudValues
     public void StateRegistrySlide(int registry, uint hash, int slide, bool played)
     {
         _registryPlayed[(registry, hash)] = played;
+        _registrySlideNames.Add(hash);
         if (_registrySlides.TryGetValue((registry, hash), out int was) && was == slide)
         {
             return;
@@ -123,6 +124,9 @@ public sealed class Engine_HudValues
     }
 
     private readonly Dictionary<(int Registry, uint Hash), bool> _registryPlayed = new();
+
+    /// <summary>Every name a registry slide writer has stated, whatever the registry.</summary>
+    private readonly HashSet<uint> _registrySlideNames = new();
 
     /// <summary>
     /// Whether the last write to a registry name PLAYED its slide (`sub_82426CA8`: toggles and
@@ -747,7 +751,7 @@ public sealed class Engine_HudValues
         int found = 0;
         foreach (Handle handle in wanted)
         {
-            if (_meters.ContainsKey(handle.Hash) || _texts.ContainsKey(handle.Hash))
+            if (Stated(handle.Hash))
             {
                 ++found;
             }
@@ -766,7 +770,7 @@ public sealed class Engine_HudValues
         int found = 0;
         foreach (Handle handle in wanted)
         {
-            if (_meters.ContainsKey(handle.Hash) || _texts.ContainsKey(handle.Hash))
+            if (Stated(handle.Hash))
             {
                 ++found;
             }
@@ -778,6 +782,18 @@ public sealed class Engine_HudValues
 
         return $"{found} bound, {_meters.Count} meter(s) and {_texts.Count} text field(s) " +
             $"published" +
-            (missing.Count == 0 ? string.Empty : $"; NOT PUBLISHED: {string.Join(", ", missing)}");
+            (missing.Count == 0 ? string.Empty : $"; NOT YET STATED on any channel: {string.Join(", ", missing)}");
     }
+
+    /// <summary>
+    /// Whether the guest has stated a name on ANY channel a HUD piece draws from: meter and text
+    /// reads, the registry slide writers (`@Gui.Slide`: toggles, faders, slide sets), the
+    /// natives' toggles, fades and slide sets, the pulsers and the image registry. A slide toggle
+    /// or a pulser is never a meter or a text; counting only those two listed every toggle,
+    /// fader and pulser of the HUD as unpublished.
+    /// </summary>
+    private bool Stated(uint hash) =>
+        _meters.ContainsKey(hash) || _texts.ContainsKey(hash) || _stated.ContainsKey(hash) ||
+        _registrySlideNames.Contains(hash) || _toggled.ContainsKey(hash) || _faded.ContainsKey(hash) ||
+        _slideSets.ContainsKey(hash) || _pulsers.ContainsKey(hash) || _registryImages.ContainsKey(hash);
 }

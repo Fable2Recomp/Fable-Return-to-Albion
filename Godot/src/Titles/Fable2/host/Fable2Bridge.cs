@@ -54,7 +54,10 @@ public static class Fable2Bridge
 
 	private static uint[]? _coopSessionWords;
 	private static uint[]? _coopWords;
-	private static readonly uint[] _dyeStateWords = new uint[160 * 2];
+	private static readonly uint[] _dyeStateWords = new uint[160 * DyeStateWords];
+
+	/// <summary>Words per entry of <c>RefiiHostGetDyeStates</c>: item, record, flags.</summary>
+	private const int DyeStateWords = 3;
 	private static readonly byte[] _estateIntent = new byte[128];
 	private static float[]? _exitRequestAt;
 	private static uint[]? _frontEndModelWords;
@@ -76,14 +79,16 @@ public static class Fable2Bridge
 		TryGetAbiVersion() is not null && IsGuestUp ? RefiiHostGetGoldenCockInteraction() : 0u;
 
 	/// <summary>
-	/// The layers the guest's own dye builder states for ONE inventory item (worn or not), by
-	/// record id, in the same words a character's composites use — so the menu shows a dyed
-	/// garment through the very compositor that dresses the hero. Empty for an undyed item.
+	/// The layers the guest's own dye builder states for ONE inventory item INSTANCE (worn or
+	/// not) — <paramref name="item"/> is its guest address, <see cref="InventoryRecord.Item"/> —
+	/// in the same words a character's composites use, so the menu shows a dyed garment through
+	/// the very compositor that dresses the hero. The dye is the instance's own record, so two
+	/// copies of one record answer apart. Empty for an undyed item.
 	/// </summary>
-	public static GuestTextureComposite[] GetItemDyeLayers(uint record, out uint generation)
+	public static GuestTextureComposite[] GetItemDyeLayers(uint item, out uint generation)
 	{
 		generation = 0;
-		if (record == 0 || TryGetAbiVersion() is null || !IsGuestUp)
+		if (item == 0 || TryGetAbiVersion() is null || !IsGuestUp)
 		{
 			return System.Array.Empty<GuestTextureComposite>();
 		}
@@ -92,7 +97,7 @@ public static class Fable2Bridge
 		uint written;
 		try
 		{
-			written = RefiiHostGetItemDyeLayers(record, words, (uint)words.Length, out generation);
+			written = RefiiHostGetItemDyeLayers(item, words, (uint)words.Length, out generation);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -382,7 +387,9 @@ public static class Fable2Bridge
 	/// <remarks>
 	/// `ScreenId` names which panel it belongs to (8 receive-items, 15 items/weapons, 22 shop,
 	/// 25 gift, 26 selection, 27 decoration) — and therefore which anchor element to hang it
-	/// on. The model hash is the same currency the model index keys on.
+	/// on. The model hash is the same currency the model index keys on. `Item` is the inventory
+	/// item INSTANCE the panel shows (<see cref="InventoryRecord.Item"/>), the key
+	/// <see cref="GetItemDyeLayers"/> takes; 0 when the panel shows no owned item.
 	/// </remarks>
 	public readonly record struct UiPreviewObject(
 		uint ScreenId, uint ModelHash, uint Entity,
@@ -894,8 +901,11 @@ public static class Fable2Bridge
 	/// <param name="Count">How many of this thing the record holds.</param>
 	/// <param name="Category">−1 when the item states none.</param>
 	/// <param name="Viewed">The new-item marker the pause tabs decorate with.</param>
+	/// <param name="Item">The item INSTANCE the inventory node holds (its guest address) — the
+	/// key the dye reads take (<see cref="GetItemDyeLayers"/>); 0 when the snapshot stated none.
+	/// Meaningful only until the next inventory sample.</param>
 	public readonly record struct InventoryRecord(
-		uint RecordId, int Count, int Category, bool Viewed);
+		uint RecordId, int Count, int Category, bool Viewed, uint Item = 0);
 
 	/// <summary>
 	/// One options page as the GUEST holds it while the screen is open: the row its cursor is on
@@ -2001,12 +2011,19 @@ public static class Fable2Bridge
 		return family;
 	}
 
-	/// <summary>One garment's dye state, by the guest's own test (<c>sub_826CAFA8</c>).</summary>
-	public readonly record struct DyeState(bool Slot1, bool Slot2, bool Worn);
+	/// <summary>
+	/// One garment's dye state, by the guest's own test (<c>sub_826CAFA8</c>), and the item
+	/// instance it was read off (<see cref="InventoryRecord.Item"/>).
+	/// </summary>
+	public readonly record struct DyeState(bool Slot1, bool Slot2, bool Worn, uint Item = 0);
 
 	/// <summary>
-	/// Which of the hero's garments are dyed, keyed by item record. Sampled on the guest's GUI
-	/// tick, so it is current while a book is open; a record not listed has not been sampled.
+	/// Which of the hero's garments are dyed, keyed by item record: for each record, the instance
+	/// a dye press acts on — the worn one, else the first the inventory lists (the pump's
+	/// `Inventory:dye` takes the worn target first, else `sub_824F1C90`'s find). The sampler
+	/// reports per instance, worn first then the inventory in list order, so the first entry of
+	/// a record is that one. Sampled on the guest's GUI tick, so it is current while a book is
+	/// open; a record not listed has not been sampled.
 	/// </summary>
 	public static Dictionary<uint, DyeState> GetDyeStates()
 	{
@@ -2026,11 +2043,12 @@ public static class Fable2Bridge
 			return states;
 		}
 
-		for (uint i = 0; i < found && (i * 2) + 1 < _dyeStateWords.Length; ++i)
+		for (uint i = 0; i < found && (i * DyeStateWords) + 2 < _dyeStateWords.Length; ++i)
 		{
-			uint flags = _dyeStateWords[(i * 2) + 1];
-			states.TryAdd(_dyeStateWords[i * 2],
-				new DyeState((flags & 1u) != 0, (flags & 2u) != 0, (flags & 4u) != 0));
+			uint flags = _dyeStateWords[(i * DyeStateWords) + 2];
+			states.TryAdd(_dyeStateWords[(i * DyeStateWords) + 1],
+				new DyeState((flags & 1u) != 0, (flags & 2u) != 0, (flags & 4u) != 0,
+					_dyeStateWords[i * DyeStateWords]));
 		}
 
 		return states;
@@ -2087,11 +2105,12 @@ public static class Fable2Bridge
 			return records;
 		}
 
-		const int stride = 4;
+		// Five words per record, the item instance last (RefiiHostGetHeroInventoryItems).
+		const int stride = 5;
 		uint count;
 		try
 		{
-			count = RefiiHostGetHeroInventory(null, 0);
+			count = RefiiHostGetHeroInventoryItems(null, 0);
 		}
 		catch (EntryPointNotFoundException)
 		{
@@ -2106,17 +2125,123 @@ public static class Fable2Bridge
 		// The snapshot is published whole on the guest's thread; headroom only for a publish
 		// landing between the probe and the read.
 		var words = new uint[(count + 32u) * stride];
-		uint written = RefiiHostGetHeroInventory(words, (uint)words.Length);
+		uint written = RefiiHostGetHeroInventoryItems(words, (uint)words.Length);
 
 		int usable = (int)Math.Min(written, (uint)(words.Length / stride));
 		for (int i = 0; i < usable; ++i)
 		{
 			int at = i * stride;
 			records.Add(new InventoryRecord(
-				words[at], (int)words[at + 1], (int)words[at + 2], words[at + 3] != 0u));
+				words[at], (int)words[at + 1], (int)words[at + 2], words[at + 3] != 0u, words[at + 4]));
 		}
 
 		return records;
+	}
+
+	/// <summary>One worn item's dye slot: the colour the guest stores and the brightness.</summary>
+	public readonly record struct SlotDye(byte Red, byte Green, byte Blue, float Brightness);
+
+	/// <summary>
+	/// One worn item's dye, off its own instance record (<c>RefiiHostGetEntityWornDyes</c>): the
+	/// record hash and each slot the guest's own test (<c>sub_826CAFA8</c>) calls dyed; null for
+	/// a slot that is not.
+	/// </summary>
+	public readonly record struct WornDye(uint Record, SlotDye? Primary, SlotDye? Secondary);
+
+	/// <summary>What the entity wears, with each item's dye, in its worn order. Empty when unreadable.</summary>
+	public static List<WornDye> GetEntityWornDyes(uint entity)
+	{
+		const int stride = 6;
+		var result = new List<WornDye>();
+		if (entity == 0u || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return result;
+		}
+
+		var words = new uint[64 * stride];
+		uint count;
+		try
+		{
+			count = RefiiHostGetEntityWornDyes(entity, words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return result;
+		}
+
+		// A colour word packs the guest's bytes from the low end: blue, green, red, alpha.
+		static SlotDye Slot(uint colour, uint brightness) => new(
+			(byte)(colour >> 16), (byte)(colour >> 8), (byte)colour,
+			BitConverter.UInt32BitsToSingle(brightness));
+
+		for (int i = 0; i < count && (i + 1) * stride <= words.Length; ++i)
+		{
+			int at = i * stride;
+			uint flags = words[at + 1];
+			result.Add(new WornDye(
+				words[at],
+				(flags & 1u) != 0u ? Slot(words[at + 2], words[at + 3]) : null,
+				(flags & 2u) != 0u ? Slot(words[at + 4], words[at + 5]) : null));
+		}
+
+		return result;
+	}
+
+	/// <summary>One scar as <c>CECMorph</c> holds it: body-area mask, texture-morph record, permanence.</summary>
+	public readonly record struct Scar(uint Area, uint Record, bool Permanent);
+
+	/// <summary>The entity's scars (<c>RefiiHostGetEntityScars</c>), in the guest's order. Empty when it has none.</summary>
+	public static List<Scar> GetEntityScars(uint entity)
+	{
+		var result = new List<Scar>();
+		if (entity == 0u || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return result;
+		}
+
+		var words = new uint[64 * 3];
+		uint count;
+		try
+		{
+			count = RefiiHostGetEntityScars(entity, words, (uint)words.Length);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return result;
+		}
+
+		for (int i = 0; i < count && (i + 1) * 3 <= words.Length; ++i)
+		{
+			result.Add(new Scar(words[i * 3], words[(i * 3) + 1], words[(i * 3) + 2] != 0u));
+		}
+
+		return result;
+	}
+
+	/// <summary>
+	/// The entity's own gender, as <c>CECGender</c> states it (<c>RefiiHostGetEntityGender</c>):
+	/// true female, false male, null when the entity has no gender component.
+	/// </summary>
+	public static bool? GetEntityFemale(uint entity)
+	{
+		if (entity == 0u || TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			return null;
+		}
+
+		try
+		{
+			return RefiiHostGetEntityGender(entity) switch
+			{
+				1u => true,
+				2u => false,
+				_ => null,
+			};
+		}
+		catch (EntryPointNotFoundException)
+		{
+			return null;
+		}
 	}
 
 	/// <summary>
@@ -2709,7 +2834,16 @@ public static class Fable2Bridge
 		int[] stats, uint statsCapacity, uint[] trickIds, uint trickCapacity);
 
 	[DllImport(Library)]
-	private static extern uint RefiiHostGetHeroInventory(uint[]? outWords, uint wordCapacity);
+	private static extern uint RefiiHostGetHeroInventoryItems(uint[]? outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityWornDyes(uint entity, [Out] uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityScars(uint entity, [Out] uint[] outWords, uint wordCapacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetEntityGender(uint entity);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetPlayerInventory(int player, uint[]? outWords, uint wordCapacity);
@@ -2751,7 +2885,7 @@ public static class Fable2Bridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetItemDyeLayers(
-		uint record, [Out] uint[] outWords, uint wordCapacity, out uint generation);
+		uint item, [Out] uint[] outWords, uint wordCapacity, out uint generation);
 
 	/// <summary>
 	/// The building entity the guest's own per-frame query finds the HERO standing in, 0 when it

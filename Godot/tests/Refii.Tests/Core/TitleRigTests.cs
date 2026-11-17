@@ -25,8 +25,6 @@ public class TitleRigTests
 		"0x274D3DEB", // Shadow_R_Eye
 	};
 
-	private static readonly int[] Fable3Parents = { -1, 0, 1, 1, 3, 4, 4, 4 };
-
 	/// <summary>
 	/// The hash is the guest's: `sub_823F04B8` is CRC-32 of the unmodified name, table 0x82064E40,
 	/// initial 0, no final xor, so "Locator" is the 0x2897988D Fable 3's clips root on and
@@ -79,22 +77,6 @@ public class TitleRigTests
 		AssertThat(fable3.BoneName(Engine_TitleRig.RigRole.Neck)).IsEqual("0x4C283B19");
 		AssertThat(fable3.BoneName(Engine_TitleRig.RigRole.RightEye)).IsEqual("0x274D3DEB");
 		AssertThat(Engine_TitleRig.None.BoneName(Engine_TitleRig.RigRole.Head)).IsNull();
-	}
-
-	/// <summary>The ambient face is Fable 2's host feature: on Fable 3 no bone is facial and no bone is resolved for it.</summary>
-	[TestCase]
-	public void Fable3RigsTakeNoAmbientFace()
-	{
-		bool[] mask = Engine_ClipAnimator.ComputeFacialBoneMask(
-			new Fable3Rig(), Fable3Bones, Fable3Parents,
-			out int head, out int faceRoot, out int jaw, out int leftEye, out int rightEye);
-
-		AssertThat(System.Array.IndexOf(mask, true)).IsEqual(-1);
-		AssertThat(head).IsEqual(-1);
-		AssertThat(faceRoot).IsEqual(-1);
-		AssertThat(jaw).IsEqual(-1);
-		AssertThat(leftEye).IsEqual(-1);
-		AssertThat(rightEye).IsEqual(-1);
 	}
 
 	[TestCase]

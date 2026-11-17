@@ -291,6 +291,13 @@ PPC_EXTERN_FUNC(rex_lhCoopScreen_SpawnPreviewMannequin);   // co-op screen: spaw
 // releases the ref `sub_824F0370` handed back. `sub_824EFFC8(comp13)` / `sub_824BEB78(comp15)`
 // are creation's own `InitialItems` / `InitialModifiers` passes, the fallback when no kit names
 // an outfit. All verified in the decompile; all present in the recompile.
+// A kit's dye restated on a worn item: `Lua_AppearanceModifierManager_SetClothingItemDyeColour`
+// (r3 comp15, r4 a registered item ref, r5 the slot byte — nonzero writes +4/+8, zero +12/+16 of
+// the item's type-2 record, created by `sub_823A2040` when the item has none — r6 red to byte +2,
+// r7 green +1, r8 blue +0, alpha +3 = 0xFF, f1 brightness), then `sub_824BFD78(comp15, ref)`,
+// the wearer's dye refresh. The ORIGINAL body: the clothing_dyed event the mod layer raises
+// from its hook is for a player dyeing, not for a body being given its owner's kit.
+PPC_EXTERN_FUNC(__imp__rex_CECAppearanceModifiers_SetDyeColour);
 PPC_EXTERN_FUNC(rex_CECInventory_AddItemByDefHash);
 PPC_EXTERN_FUNC(rex_CECInventory_AddOneOfRecord);
 PPC_EXTERN_FUNC(rex_CECAppearanceModifiers_WearItemByDefHash);
@@ -912,7 +919,12 @@ constexpr const char* kActionModWeatherPrefix = "ModWeather:";
 ///   u16 wornCount, u32[wornCount] worn def hashes; u16 invCount, (u32 record, u16 count)[];
 ///   then, when present, the dog: u32 definition (0 none), u8 searching, u8 combat,
 ///   u8 trickCount, (u8 len, len bytes of a trick's GDB name)[trickCount],
-///   u8 wornCount, u32[wornCount] the dog's worn def hashes, u8 nameLen, its given name (UTF-8).
+///   u8 wornCount, u32[wornCount] the dog's worn def hashes, u8 nameLen, its given name (UTF-8);
+///   then, when present, the looks extension: u32 magic 'H','S','L','1'; u16 dyeCount,
+///   (u32 worn record, u8 slots, per set bit — slot 1 then slot 2 — u8 red, u8 green, u8 blue,
+///   f32 brightness)[dyeCount]; u8 scarCount, (u32 BodyArea, u32 TextureMorphRecordID,
+///   u8 Permanent)[scarCount]. Bytes past what a reader knows are ignored, so an older pump
+///   takes a newer record and a newer pump an older one.
 /// A malformed payload (bad magic, short buffer, a count past the end, version 0) is logged
 /// once and ignored; the stores keep the last good version.
 constexpr const char* kActionHeroStatePrefix = "HeroState:";
@@ -3423,6 +3435,37 @@ std::vector<uint32_t> g_coop_wear[3];
 uint32_t g_coop_dressed_entity[3] = {0u, 0u, 0u};
 std::string g_coop_dressed_set[3];
 
+/// One worn item's dye as its owner's HeroState states it — the item instance's type-2 record
+/// (`sub_823A1E18`), read by RefiiHostGetEntityWornDyes. `slots` bit 0 is slot 1 (+4 colour,
+/// +8 brightness), bit 1 slot 2 (+12, +16); a clear bit is the undyed state `sub_826CAFA8`
+/// tests for (colour 0x000000FF, brightness 0).
+struct CoopItemDye {
+  uint32_t record = 0u;
+  uint8_t slots = 0u;
+  uint8_t red[2] = {0u, 0u};
+  uint8_t green[2] = {0u, 0u};
+  uint8_t blue[2] = {0u, 0u};
+  float brightness[2] = {0.0f, 0.0f};
+};
+
+/// One scar as its owner's HeroState states it — a `CECMorph` (component 116) record at +20,
+/// as `CECMorph_vf9` saves it: BodyArea mask, TextureMorphRecordID, Permanent.
+struct CoopScar {
+  uint32_t area = 0u;
+  uint32_t record = 0u;
+  uint8_t permanent = 0u;
+};
+
+/// The dyes and scars per player (index 2 the co-op preview, mirroring player two), and the
+/// body + statement last restated for each, so a body takes each statement once. A re-dress
+/// clears the dye latch: wearing again can hand the body different item instances.
+std::vector<CoopItemDye> g_coop_dyes[3];
+uint32_t g_coop_dyed_entity[3] = {0u, 0u, 0u};
+std::string g_coop_dyed_set[3];
+std::vector<CoopScar> g_coop_scars[3];
+uint32_t g_coop_scarred_entity[3] = {0u, 0u, 0u};
+std::string g_coop_scarred_set[3];
+
 /// The inventory per player — (record, count) pairs off the HeroState, the drawn weapons
 /// included — and the entity + set last given for each. See CoopGivePlayer.
 std::vector<std::pair<uint32_t, uint32_t>> g_coop_give[3];
@@ -3541,6 +3584,8 @@ bool CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
     // is the honest state; the latch is left clear so the first named outfit dresses it.
     g_coop_dressed_entity[slot] = 0u;
     g_coop_dressed_set[slot].clear();
+    g_coop_dyed_entity[slot] = 0u;
+    g_coop_dyed_set[slot].clear();
     return true;
   }
 
@@ -3552,6 +3597,8 @@ bool CoopRedressPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t enti
 
   g_coop_dressed_entity[slot] = entity;
   g_coop_dressed_set[slot] = set;
+  g_coop_dyed_entity[slot] = 0u;
+  g_coop_dyed_set[slot].clear();
 
   uint32_t worn = 0u;
   uint32_t given = 0u;
@@ -3606,6 +3653,222 @@ void WearHashes(PPCContext& ctx, uint8_t* base, uint32_t inventory, uint32_t mod
   }
   *worn_out = worn;
   *given_out = given;
+}
+
+/// Gives one player's worn items the dyes their owner's HeroState states, through the guest's
+/// own setter, once per (body, statement); run after CoopRedressPlayer, which clears the latch
+/// when it wears again.
+///
+/// Each worn record of component 15 (+0x10..+0x14, 24-byte records {item +0, index +4}) is
+/// matched to the kit's entry for its record hash (item+4), in order when a record repeats, and
+/// handed to `SetClothingItemDyeColour` as DispatchDye hands a worn target to the inventory's
+/// apply: a ref {item, index, 0, 0} registered on the item (`sub_82764D00(item, ref)`), so the
+/// split `sub_823A2040` makes of a stack rebinds it, released after
+/// (`sub_82764DC0` = rex_lhTrackedObject_RemoveHandleRef). A slot the kit states undyed is
+/// written back to the undyed state — colour {0, 0, 0}, alpha 0xFF, brightness 0, which is
+/// `dword_8331B158` and 0, what `sub_826CAE08` restores — only when `sub_826CAFA8` says it is
+/// dyed now, so an undyed item never gains a type-2 record. The refresh the setter ends with
+/// (`sub_824BFD78`) is handed this body's comp15; the inventory's own apply `sub_826CAB78` and
+/// scrub `sub_826CAE08` refresh the GUI player's (`sub_8229EE78(sub_821C7CE0(*0x83496B08))`,
+/// component 15) instead, which is why they are not used for player two.
+/// True when restated (or nothing to restate); false when the body has no comp15 yet.
+bool CoopDyePlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+  const int slot = player - 1;
+  if (entity == 0u || g_coop_wear[slot].empty()) {
+    return true;
+  }
+
+  std::string set;
+  for (const CoopItemDye& dye : g_coop_dyes[slot]) {
+    char entry[96];
+    uint32_t bright[2];
+    std::memcpy(bright, dye.brightness, sizeof(bright));
+    std::snprintf(entry, sizeof(entry), "%08X:%u:%02X%02X%02X:%08X:%02X%02X%02X:%08X,", dye.record,
+                  dye.slots, dye.red[0], dye.green[0], dye.blue[0], bright[0], dye.red[1],
+                  dye.green[1], dye.blue[1], bright[1]);
+    set += entry;
+  }
+
+  if (entity == g_coop_dyed_entity[slot] && set == g_coop_dyed_set[slot]) {
+    return true;
+  }
+
+  const uint32_t appearance = EntityComponent(base, entity, 15u);
+  if (appearance == 0u) {
+    return false;
+  }
+
+  PPCFunc* retain = FindGuestFunction(refii::guest::Address(0x82764D00u));
+  PPCFunc* is_dyed = FindGuestFunction(refii::guest::Address(0x826CAFA8u));
+  if (retain == nullptr || is_dyed == nullptr) {
+    return true;
+  }
+
+  const uint32_t begin = LoadGuestU32(base, appearance + 0x10u);
+  const uint32_t end = LoadGuestU32(base, appearance + 0x14u);
+  if (begin != end && (!LooksLikeGuestPointer(begin) || end < begin ||
+                       ((end - begin) % 24u) != 0u || (end - begin) > 24u * 64u)) {
+    return false;  // a torn worn vector — the next tick reads it again
+  }
+
+  // Snapshot the worn records first: the setter's split and refresh may move the vector.
+  std::vector<std::pair<uint32_t, uint32_t>> worn;
+  for (uint32_t at = begin; at < end; at += 24u) {
+    const uint32_t item = LoadGuestU32(base, at);
+    if (LooksLikeGuestPointer(item)) {
+      worn.emplace_back(item, LoadGuestU32(base, at + 4u));
+    }
+  }
+
+  g_coop_dyed_entity[slot] = entity;
+  g_coop_dyed_set[slot] = set;
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t ref = frame + 0x60u;
+  std::vector<bool> taken(g_coop_dyes[slot].size(), false);
+  uint32_t dyed = 0u;
+  uint32_t scrubbed = 0u;
+  for (const auto& [item, index] : worn) {
+    const uint32_t record = LoadGuestU32(base, item + 4u);
+    const CoopItemDye* stated = nullptr;
+    for (std::size_t i = 0; i < g_coop_dyes[slot].size(); ++i) {
+      if (!taken[i] && g_coop_dyes[slot][i].record == record) {
+        taken[i] = true;
+        stated = &g_coop_dyes[slot][i];
+        break;
+      }
+    }
+
+    StoreGuestU32(base, ref, item);
+    StoreGuestU32(base, ref + 4u, index);
+    StoreGuestU32(base, ref + 8u, 0u);
+    StoreGuestU32(base, ref + 12u, 0u);
+    PPCContext work = saved;
+    work.r1.u32 = frame;
+    work.r3.u32 = item;
+    work.r4.u32 = ref;
+    if (!SafeInvokeGuestCall(retain, work, base)) {
+      continue;
+    }
+
+    for (uint32_t dye_slot = 0u; dye_slot < 2u; ++dye_slot) {
+      const bool wanted = stated != nullptr && (stated->slots & (1u << dye_slot)) != 0u;
+      if (!wanted) {
+        work = saved;
+        work.r1.u32 = frame;
+        work.r3.u32 = 0u;
+        work.r4.u32 = ref;
+        work.r5.u32 = dye_slot;
+        if (!SafeInvokeGuestCall(is_dyed, work, base) || (work.r3.u32 & 0xFFu) == 0u) {
+          continue;
+        }
+      }
+
+      work = saved;
+      work.r1.u32 = frame;
+      work.r3.u32 = appearance;
+      work.r4.u32 = ref;
+      work.r5.u32 = dye_slot == 0u ? 1u : 0u;
+      work.r6.u32 = wanted ? stated->red[dye_slot] : 0u;
+      work.r7.u32 = wanted ? stated->green[dye_slot] : 0u;
+      work.r8.u32 = wanted ? stated->blue[dye_slot] : 0u;
+      work.f1.f64 = wanted ? static_cast<double>(stated->brightness[dye_slot]) : 0.0;
+      __imp__rex_CECAppearanceModifiers_SetDyeColour(work, base);
+      ++(wanted ? dyed : scrubbed);
+    }
+
+    if (const uint32_t held = LoadGuestU32(base, ref); held != 0u) {
+      PPCContext release = saved;
+      release.r1.u32 = frame;
+      release.r3.u32 = held;
+      release.r4.u32 = ref;
+      rex_lhTrackedObject_RemoveHandleRef(release, base);
+    }
+  }
+  ctx = saved;
+
+  if (dyed != 0u || scrubbed != 0u) {
+    REXLOG_INFO("Refii guest-tick pump: CoopDye — player {} 0x{:08X}: {} slot(s) dyed, {} "
+                "restored undyed, across {} worn item(s)", player, entity, dyed, scrubbed,
+                worn.size());
+  }
+  return true;
+}
+
+/// Gives one player's body the scars their owner's HeroState states, once per (body,
+/// statement), through the guest's own entry for a stated scar: `sub_825F2F88(morph, msg)`, the
+/// receiver of the morph's replication message (`sub_82392250` hands it the payload for
+/// component 116; the sender is `sub_825F2518`, which posts one `off_820A9B88` message per scar
+/// with +4 BodyArea, +8 TextureMorphRecordID, +12 Permanent). It appends the scar to +20 unless
+/// one with the same area bit, record and permanence is there, so a restatement adds nothing
+/// twice. When any was added the textures are rebuilt with
+/// `Lua_GraphicAppearanceMorph_UpdateTextureMorphs(comp17)` (`sub_825B60F8`), the call the
+/// morph's own replicated-state receiver `sub_825F2A30` makes after its change. The guest names
+/// no entry that removes a GIVEN scar (`RemoveRandomScar` picks at random), so a scar the owner
+/// lost is not taken off. True always: a body with no component 116 carries no scars.
+bool CoopScarPlayer(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) {
+  const int slot = player - 1;
+  if (entity == 0u || g_coop_scars[slot].empty()) {
+    return true;
+  }
+
+  std::string set;
+  for (const CoopScar& scar : g_coop_scars[slot]) {
+    set += std::to_string(scar.area) + ':' + std::to_string(scar.record) + ':' +
+           std::to_string(scar.permanent) + ',';
+  }
+
+  if (entity == g_coop_scarred_entity[slot] && set == g_coop_scarred_set[slot]) {
+    return true;
+  }
+
+  const uint32_t morph = EntityComponent(base, entity, 116u);
+  PPCFunc* add = FindGuestFunction(refii::guest::Address(0x825F2F88u));
+  PPCFunc* update = FindGuestFunction(refii::guest::Address(0x825B60F8u));
+  if (morph == 0u || add == nullptr) {
+    return true;
+  }
+
+  g_coop_scarred_entity[slot] = entity;
+  g_coop_scarred_set[slot] = set;
+
+  const auto count = [&]() {
+    const uint32_t first = LoadGuestU32(base, morph + 0x18u);
+    const uint32_t last = LoadGuestU32(base, morph + 0x1Cu);
+    return last >= first ? (last - first) / 12u : 0u;
+  };
+
+  const PPCContext saved = ctx;
+  const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+  const uint32_t message = frame + 0x60u;
+  const uint32_t before = count();
+  for (const CoopScar& scar : g_coop_scars[slot]) {
+    for (uint32_t i = 0u; i < 16u; i += 4u) StoreGuestU32(base, message + i, 0u);
+    StoreGuestU32(base, message + 4u, scar.area);
+    StoreGuestU32(base, message + 8u, scar.record);
+    StoreGuestU8(base, message + 12u, scar.permanent != 0u ? 1u : 0u);
+    PPCContext work = saved;
+    work.r1.u32 = frame;
+    work.r3.u32 = morph;
+    work.r4.u32 = message;
+    SafeInvokeGuestCall(add, work, base);
+  }
+  const uint32_t added = count() - std::min(count(), before);
+
+  const uint32_t graphic = EntityComponent(base, entity, 17u);
+  if (added != 0u && graphic != 0u && update != nullptr) {
+    PPCContext work = saved;
+    work.r1.u32 = frame;
+    work.r3.u32 = graphic;
+    SafeInvokeGuestCall(update, work, base);
+  }
+  ctx = saved;
+
+  REXLOG_INFO("Refii guest-tick pump: CoopScar — player {} 0x{:08X}: {} of {} stated scar(s) "
+              "added (morph 0x{:08X} holds {})", player, entity, added,
+              g_coop_scars[slot].size(), morph, count());
+  return true;
 }
 
 /// Both players, whenever a body exists that has not been dressed with the current outfit.
@@ -3675,9 +3938,15 @@ void CoopDressMannequin(PPCContext& ctx, uint8_t* base) {
   if (bit && entity != 0u) {
     CoopGivePlayer(ctx, base, 3, entity);
     CoopRedressPlayer(ctx, base, 3, entity);
+    CoopDyePlayer(ctx, base, 3, entity);
+    CoopScarPlayer(ctx, base, 3, entity);
   } else {
     g_coop_dressed_entity[2] = 0u;
     g_coop_dressed_set[2].clear();
+    g_coop_dyed_entity[2] = 0u;
+    g_coop_dyed_set[2].clear();
+    g_coop_scarred_entity[2] = 0u;
+    g_coop_scarred_set[2].clear();
   }
 }
 
@@ -3729,6 +3998,10 @@ void CoopResetLatches() {
     g_coop_dressed_set[slot].clear();
     g_coop_given_entity[slot] = 0u;
     g_coop_given_set[slot].clear();
+    g_coop_dyed_entity[slot] = 0u;
+    g_coop_dyed_set[slot].clear();
+    g_coop_scarred_entity[slot] = 0u;
+    g_coop_scarred_set[slot].clear();
   }
   g_coop_stats_entity = 0u;
   g_coop_face_entity = 0u;
@@ -3766,6 +4039,14 @@ void CoopForgetBody(uint32_t entity) {
       g_coop_given_entity[slot] = 0u;
       g_coop_given_set[slot].clear();
     }
+    if (g_coop_dyed_entity[slot] == entity) {
+      g_coop_dyed_entity[slot] = 0u;
+      g_coop_dyed_set[slot].clear();
+    }
+    if (g_coop_scarred_entity[slot] == entity) {
+      g_coop_scarred_entity[slot] = 0u;
+      g_coop_scarred_set[slot].clear();
+    }
   }
   if (g_coop_stats_entity == entity) {
     g_coop_stats_entity = 0u;
@@ -3791,6 +4072,8 @@ void CoopResetSession() {
   for (int slot = 0; slot < 3; ++slot) {
     g_coop_give[slot].clear();
     g_coop_wear[slot].clear();
+    g_coop_dyes[slot].clear();
+    g_coop_scars[slot].clear();
   }
   for (auto& pair : g_coop_held) {
     pair[0] = 0u;
@@ -3900,6 +4183,8 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
       ApplySkills(ctx, base, two, g_coop_record[1].skills);
       ApplyBuild(ctx, base, two, g_coop_record[1].build);
       ApplyFace(ctx, base, two, g_coop_record[1].face);
+      CoopDyePlayer(ctx, base, 2, two);
+      CoopScarPlayer(ctx, base, 2, two);
     }
 
     if (IsCoopJoiner(base)) {
@@ -3910,6 +4195,10 @@ void CoopRedress(PPCContext& ctx, uint8_t* base) {
   } else {
     g_coop_dressed_entity[1] = 0u;
     g_coop_dressed_set[1].clear();
+    g_coop_dyed_entity[1] = 0u;
+    g_coop_dyed_set[1].clear();
+    g_coop_scarred_entity[1] = 0u;
+    g_coop_scarred_set[1].clear();
   }
 }
 
@@ -4926,6 +5215,48 @@ bool DispatchHeroState(const std::string& text) {
   if (in.bad) {
     return reject("short buffer");
   }
+
+  // THE LOOKS EXTENSION, after the dog: "HSL1", u16 dyed worn items {u32 record, u8 slots, per
+  // set bit (slot 1, then slot 2) u8 red, u8 green, u8 blue, f32 brightness}, u8 scars {u32 area,
+  // u32 record, u8 permanent}. Absent from an older peer's record, and an older pump stops before
+  // it. Read on its own cursor: a malformed extension drops the extension, never the record.
+  constexpr uint32_t kLooksMagic = 0x314C5348u;  // 'H','S','L','1' little-endian
+  std::vector<CoopItemDye> dyes;
+  std::vector<CoopScar> scars;
+  if (bytes.size() - in.at >= 4u) {
+    HeroStateReader looks{bytes, in.at};
+    if (looks.u32() == kLooksMagic) {
+      const uint16_t dye_count = looks.u16();
+      for (uint16_t i = 0; i < dye_count && !looks.bad; ++i) {
+        CoopItemDye dye;
+        dye.record = looks.u32();
+        dye.slots = looks.u8() & 3u;
+        for (uint32_t slot = 0u; slot < 2u; ++slot) {
+          if ((dye.slots & (1u << slot)) == 0u) continue;
+          dye.red[slot] = looks.u8();
+          dye.green[slot] = looks.u8();
+          dye.blue[slot] = looks.u8();
+          dye.brightness[slot] = looks.f32();
+          if (!std::isfinite(dye.brightness[slot])) dye.slots &= ~(1u << slot);
+        }
+        if (dye.record != 0u && dye.slots != 0u) dyes.push_back(dye);
+      }
+      const uint8_t scar_count = looks.u8();
+      for (uint8_t i = 0; i < scar_count && !looks.bad; ++i) {
+        CoopScar scar;
+        scar.area = looks.u32();
+        scar.record = looks.u32();
+        scar.permanent = looks.u8() != 0u ? 1u : 0u;
+        if (scar.area != 0u && scar.record != 0u) scars.push_back(scar);
+      }
+      if (looks.bad) {
+        REXLOG_INFO("Refii guest-tick pump: HeroState v{} for player {}: looks extension "
+                    "truncated — dyes and scars dropped", version, player);
+        dyes.clear();
+        scars.clear();
+      }
+    }
+  }
   if (version == 0u) {
     return reject("version 0");
   }
@@ -4991,22 +5322,27 @@ bool DispatchHeroState(const std::string& text) {
   if (player == 2) {
     g_coop_wear[2] = worn;
     g_coop_give[2] = give;
+    g_coop_dyes[2] = dyes;
+    g_coop_scars[2] = scars;
   }
   g_coop_wear[slot] = std::move(worn);
   g_coop_give[slot] = std::move(give);
+  g_coop_dyes[slot] = std::move(dyes);
+  g_coop_scars[slot] = std::move(scars);
 
   REXLOG_INFO("Refii guest-tick pump: HeroState v{} for player {}: {} worn, {} record(s), "
               "melee 0x{:08X} ranged 0x{:08X}, face 0x{:08X}, {} rank(s), looks {}, known {}, "
-              "name '{}', dog 0x{:08X}", version, player, g_coop_wear[slot].size(),
-              g_coop_give[slot].size(), melee, ranged, face, ranks.size(), has_looks ? "yes" : "no",
-              known ? "yes" : "no", record.name, record.dog_definition);
+              "name '{}', dog 0x{:08X}, {} dyed worn item(s), {} scar(s)", version, player,
+              g_coop_wear[slot].size(), g_coop_give[slot].size(), melee, ranged, face, ranks.size(),
+              has_looks ? "yes" : "no", known ? "yes" : "no", record.name, record.dog_definition,
+              g_coop_dyes[slot].size(), g_coop_scars[slot].size());
   return true;
 }
 
-/// THE ONE APPLY. Give the inventory, wear the outfit, draw the weapons, then for player two
-/// the HeroSave block, ranks, body morphs and face — in that order, because wear needs the
-/// records held, equip needs the weapons held, and the stats walk needs the body to be the one
-/// they belong to. Once per (body, generation): every step is idempotent on its own, so a new
+/// THE ONE APPLY. Give the inventory, wear the outfit, dye what is worn, give the scars, draw
+/// the weapons, then for player two the HeroSave block, ranks, body morphs and face — in that
+/// order, because wear needs the records held, a dye needs the item worn, equip needs the
+/// weapons held, and the stats walk needs the body to be the one they belong to. Once per (body, generation): every step is idempotent on its own, so a new
 /// generation re-runs only what changed (a new outfit re-wears; the same weapons are not
 /// re-drawn). Each step reports done or DEFERRED (a component the body does not have yet, a
 /// record not held yet); the generation is latched only when every step is done, and every
@@ -5027,6 +5363,10 @@ void CoopApplyHero(PPCContext& ctx, uint8_t* base, int player, uint32_t entity) 
   HeapCheckAfter(base, player == 2 ? "CoopApplyHero give (player two)" : "CoopApplyHero give (player one)");
   done = CoopRedressPlayer(ctx, base, player, entity) && done;
   HeapCheckAfter(base, "CoopApplyHero redress");
+  done = CoopDyePlayer(ctx, base, player, entity) && done;
+  HeapCheckAfter(base, "CoopApplyHero dye");
+  done = CoopScarPlayer(ctx, base, player, entity) && done;
+  HeapCheckAfter(base, "CoopApplyHero scars");
   done = ApplyEquip(ctx, base, player, entity, record.melee, record.ranged) && done;
   HeapCheckAfter(base, "CoopApplyHero equip");
   if (player == 2) {
@@ -7715,10 +8055,15 @@ uint32_t BuildItemDyeLayers(PPCContext& ctx, uint8_t* base, const PPCContext& sa
           return a.key != b.key ? static_cast<int32_t>(a.key) < static_cast<int32_t>(b.key)
                                 : a.texture < b.texture;
         });
-        const uint32_t layers = 1u + (j - i);
+        // One texture's overflow costs that texture only: past kTextureLayersPerTexture its
+        // layers are clipped (the base and the first by key order kept), and a texture that does
+        // not fit what is left is skipped while the item's other textures still go out.
+        const uint32_t layers =
+            std::min(1u + (j - i), static_cast<uint32_t>(kTextureLayersPerTexture));
         const uint32_t needed = 2u + layers * kTextureLayerWords;
-        if (written + needed > capacity || layers > static_cast<uint32_t>(kTextureLayersPerTexture)) {
-          break;
+        if (written + needed > capacity) {
+          i = j;
+          continue;
         }
         out[written++] = records[i].original;
         out[written++] = layers;  // kind 0: a composite
@@ -7731,7 +8076,7 @@ uint32_t BuildItemDyeLayers(PPCContext& ctx, uint8_t* base, const PPCContext& sa
         layer[5] = 0u;
         layer[6] = 0u;
         layer += kTextureLayerWords;
-        for (uint32_t k = i; k < j; ++k, layer += kTextureLayerWords) {
+        for (uint32_t k = i; k < i + (layers - 1u); ++k, layer += kTextureLayerWords) {
           layer[0] = records[k].texture;
           layer[1] = records[k].mode;
           layer[2] = records[k].weight;
@@ -7750,14 +8095,17 @@ uint32_t BuildItemDyeLayers(PPCContext& ctx, uint8_t* base, const PPCContext& sa
   return written;
 }
 
-/// Which of the hero's garments are dyed, by the guest's own test.
+/// Which of the hero's garments are dyed, by the guest's own test, PER ITEM INSTANCE.
 ///
 /// `sub_826CAFA8(_, itemRef, slot)` reads only `*itemRef` (the item) and the item's type-2
-/// component through `sub_823A1E18`, so the ref need not be registered. Worn items first
-/// (component 15, +0x10..+0x14, 24-byte records, item at +0), then the inventory (component 13:
-/// the list head at +16, node+0 next, node+8 the item — the walk `sub_824F1C90` makes). Record
-/// hash at item+4, category at item+16; only what the dye list offers is asked about —
-/// categories 9..11 and 17..24 (`sub_829B2168`).
+/// component through `sub_823A1E18`, so the ref need not be registered. The dye is that
+/// instance's record, so the key is the item's address, not its record hash: two copies of one
+/// record are two entries, each with its own flags and layers. Worn items first (component 15,
+/// +0x10..+0x14, 24-byte records, item at +0), then the inventory (component 13: the list head
+/// at +16, node+0 next, node+8 the item — the walk `sub_824F1C90` makes); a worn item the list
+/// holds too is the same address and is noted once, as worn. Record hash at item+4, category at
+/// item+16; only what the dye list offers is asked about — categories 9..11 and 17..24
+/// (`sub_829B2168`).
 void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
   uint32_t screen_owner = 0;
   uint32_t screen_id = 0;
@@ -7783,7 +8131,7 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
 
   // The dyed items' layers, from the guest's own builder (BuildItemDyeLayers), for the menu.
   // Static: one sampler, one thread, and the buffer is too large for a guest thread's stack.
-  static uint32_t layer_records[kItemDyeLayerItems];
+  static uint32_t layer_keys[kItemDyeLayerItems];
   static uint32_t layer_offsets[kItemDyeLayerItems];
   static uint32_t layer_counts[kItemDyeLayerItems];
   static uint32_t layer_words[kItemDyeLayerItems * kItemDyeLayerWords];
@@ -7798,12 +8146,12 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
         !offered(LoadGuestU32(base, item + 16u))) {
       return;
     }
-    const uint32_t record = LoadGuestU32(base, item + 4u);
     for (uint32_t i = 0u; i < count; ++i) {
-      if (words[i * kDyeStateWords] == record) {
+      if (words[i * kDyeStateWords] == item) {
         return;
       }
     }
+    const uint32_t record = LoadGuestU32(base, item + 4u);
 
     uint32_t flags = worn ? 4u : 0u;
     for (uint32_t slot = 0u; slot < 2u; ++slot) {
@@ -7822,8 +8170,9 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
     }
     ctx = saved;
 
-    words[count * kDyeStateWords] = record;
-    words[count * kDyeStateWords + 1u] = flags;
+    words[count * kDyeStateWords] = item;
+    words[count * kDyeStateWords + 1u] = record;
+    words[count * kDyeStateWords + 2u] = flags;
     ++count;
 
     if ((flags & 3u) != 0u && layer_items < static_cast<uint32_t>(kItemDyeLayerItems) &&
@@ -7833,7 +8182,7 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
           ctx, base, saved, frame, item, appearance, layer_words + layer_used,
           static_cast<uint32_t>(kItemDyeLayerWords));
       if (wrote != 0u) {
-        layer_records[layer_items] = record;
+        layer_keys[layer_items] = item;
         layer_offsets[layer_items] = layer_used;
         layer_counts[layer_items] = wrote;
         ++layer_items;
@@ -7865,7 +8214,7 @@ void SampleDyeStates(PPCContext& ctx, uint8_t* base) {
 
   ctx = saved;
   refii_bridge_note_dye_states(words, count);
-  refii_bridge_set_item_dye_layers(layer_records, layer_offsets, layer_counts, layer_items,
+  refii_bridge_set_item_dye_layers(layer_keys, layer_offsets, layer_counts, layer_items,
                                    layer_words);
 }
 
@@ -8073,9 +8422,10 @@ void SampleLogbookAttractiveness(PPCContext& ctx, uint8_t* base, bool logbook_ac
 /// (`RefiiHostGetHeroInventory` serves the snapshot). The walk Godot ran per sourced entry from
 /// its own thread read an MS-STL `std::list` the guest was patching: `_Mysize` is bumped before
 /// the links, and an erase frees its node the moment a count reaches zero. Here nothing moves
-/// under the walk. The shape is the bridge's: four words per record — {recordId, count,
-/// category, viewed} — `+0x10` the sentinel, `node+8` the item, `item+4/+0xC/+0x10/+0x14`
-/// (`GetNumberOfItems`, `sub_824F23D0`). Sampled with the hero derived values: every 15 ticks
+/// under the walk. The shape is the bridge's: five words per record — {recordId, count,
+/// category, viewed, item} — `+0x10` the sentinel, `node+8` the item (the instance the dye
+/// tables key on), `item+4/+0xC/+0x10/+0x14` (`GetNumberOfItems`, `sub_824F23D0`); the
+/// four-word snapshot is published with it. Sampled with the hero derived values: every 15 ticks
 /// and on the tick after a UI change; a publish that differs bumps the generation, so a removal
 /// no hook announces (a gift, a drop) still reaches the open list within the cadence.
 void SamplePlayerInventories(uint8_t* base);
@@ -8098,13 +8448,14 @@ void SampleHeroInventory(uint8_t* base) {
           words.push_back(LoadGuestU32(base, item + 0x0Cu));
           words.push_back(LoadGuestU32(base, item + 0x10u));
           words.push_back(LoadGuestU8(base, item + 0x14u) != 0u ? 1u : 0u);
+          words.push_back(item);
           ++found;
         }
         node = LoadGuestU32(base, node);
       }
     }
   }
-  refii_bridge_publish_hero_inventory(words.data(), static_cast<uint32_t>(words.size() / 4u));
+  refii_bridge_publish_hero_inventory_items(words.data(), static_cast<uint32_t>(words.size() / 5u));
   SamplePlayerInventories(base);
 }
 

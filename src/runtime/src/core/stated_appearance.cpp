@@ -347,7 +347,9 @@ void refii_bridge_texture_layers_end(uint32_t entity) {
 
 void refii_bridge_texture_layers_stated(uint32_t entity, uint32_t original, uint32_t kind,
                                         const uint32_t* layers, uint32_t count) {
-  if (entity == 0u || original == 0u || layers == nullptr || count == 0u) {
+  // A whole-entity swap (kind 2) names its map by slot, 0 the diffuse maps (the stone of a hero
+  // statue, a shadow creature's skin: rex_lhTextureMorph_StateWildcard); any other kind names a texture.
+  if (entity == 0u || (original == 0u && kind != 2u) || layers == nullptr || count == 0u) {
     return;
   }
 

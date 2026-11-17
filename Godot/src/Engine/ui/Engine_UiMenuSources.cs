@@ -101,7 +101,15 @@ public static class Engine_UiMenuSources
 		/// id and some act on the result without checking it — see Engine_UiAbilitySource.
 		/// Everything else about the row — its command, its press — is as stated.
 		/// </summary>
-		bool FromMod = false);
+		bool FromMod = false,
+
+		/// <summary>
+		/// The guest OBJECT this row stands for when its id names only a kind — an inventory
+		/// row's item instance, where <see cref="Id"/> is the record and two copies of one record
+		/// are two objects with their own instance data (a dye). 0 when the row names none.
+		/// Copied to <see cref="Engine_UiExpandableMenu.Item.Instance"/>.
+		/// </summary>
+		uint Instance = 0);
 
 	/// <summary>A provider: given the source's argument, the rows it supplies.</summary>
 	public delegate IReadOnlyList<Row> Provider(string argument);

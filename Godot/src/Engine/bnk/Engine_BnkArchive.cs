@@ -673,22 +673,18 @@ public sealed class BnkArchive : IDisposable
 
 	public byte[] ReadEntryBytes(BnkEntry entry)
 	{
-		// A stored entry fills its array from the bank, so the array need not be cleared first. An
-		// inflated one stays zeroed: a chunk that ends early leaves its tail as zeros.
-		byte[] output = entry.IsCompressed
-			? new byte[entry.Size]
-			: GC.AllocateUninitializedArray<byte>(checked((int)entry.Size));
-		ReadEntryInto(entry, output, 0);
+		// Every byte of the range is written, inflated or zero-filled, so the array starts uncleared.
+		byte[] output = GC.AllocateUninitializedArray<byte>(checked((int)entry.Size));
+		ReadEntryRange(entry, output);
 		return output;
 	}
 
 	/// <summary>
 	/// Writes the entry's <see cref="BnkEntry.Size"/> bytes into <paramref name="destination"/> at
 	/// <paramref name="offset"/>, for a caller that joins entries and wants no array of their own.
-	/// A compressed entry's range must be zero on entry, as it is in a new array.
 	/// </summary>
 	public void ReadEntryInto(BnkEntry entry, byte[] destination, int offset) =>
-		ReadEntryRange(entry, destination, offset, checked((int)entry.Size));
+		ReadEntryRange(entry, destination.AsMemory(offset, checked((int)entry.Size)));
 
 	/// <summary>
 	/// The first <paramref name="count"/> bytes of the entry, or all of it when it is shorter. A
@@ -696,13 +692,25 @@ public sealed class BnkArchive : IDisposable
 	/// </summary>
 	public byte[] ReadEntryHead(BnkEntry entry, int count)
 	{
-		var head = new byte[Math.Min((uint)count, entry.Size)];
-		ReadEntryRange(entry, head, 0, head.Length);
+		byte[] head = GC.AllocateUninitializedArray<byte>((int)Math.Min((uint)count, entry.Size));
+		ReadEntryRange(entry, head);
 		return head;
 	}
 
-	private void ReadEntryRange(BnkEntry entry, byte[] output, int outputOffset, int length)
+	/// <summary>
+	/// The entry's first <c>output.Length</c> bytes, written into <paramref name="output"/>, which
+	/// may be any memory — the guest's own read buffer among them. Every byte of it is written: a
+	/// compressed entry whose chunks end short of it leaves zeros, so it need not start cleared. A
+	/// compressed entry inflates only the chunks the range covers.
+	/// </summary>
+	public void ReadEntryRange(BnkEntry entry, Memory<byte> output)
 	{
+		if ((uint)output.Length > entry.Size)
+		{
+			throw new ArgumentOutOfRangeException(
+				nameof(output), $"{entry.RelativePath} is {entry.Size} bytes; {output.Length} were asked");
+		}
+
 		if (!_hasData)
 		{
 			throw new InvalidDataException(
@@ -713,7 +721,7 @@ public sealed class BnkArchive : IDisposable
 
 		if (!entry.IsCompressed)
 		{
-			Span<byte> raw = output.AsSpan(outputOffset, length);
+			Span<byte> raw = output.Span;
 			if (_range is not null)
 			{
 				_range.CopyTo(dataOffset, raw);
@@ -734,9 +742,7 @@ public sealed class BnkArchive : IDisposable
 		if (_range is not null)
 		{
 			// Each chunk inflates straight out of the map: no copy of the stored bytes, no lock.
-			InflateChunks(
-				entry, output, outputOffset, length, storedLength,
-				new StoredBytes(_range, dataOffset, null));
+			InflateChunks(entry, output, storedLength, new StoredBytes(_range, dataOffset, null));
 			return;
 		}
 
@@ -752,9 +758,7 @@ public sealed class BnkArchive : IDisposable
 				ReadExact(_stream, stored.AsSpan(0, storedLength));
 			}
 
-			InflateChunks(
-				entry, output, outputOffset, length, storedLength,
-				new StoredBytes(null, 0, stored));
+			InflateChunks(entry, output, storedLength, new StoredBytes(null, 0, stored));
 		}
 		finally
 		{
@@ -771,20 +775,20 @@ public sealed class BnkArchive : IDisposable
 	}
 
 	/// <summary>
-	/// Inflates the first <paramref name="length"/> output bytes of a compressed entry into
-	/// <paramref name="output"/> at <paramref name="outputOffset"/>. Chunk i's compressed bytes sit
-	/// at <c>i * 0x8000</c> of the stored region.
+	/// Inflates the first <c>output.Length</c> bytes of a compressed entry into
+	/// <paramref name="output"/>. Chunk i's compressed bytes sit at <c>i * 0x8000</c> of the stored
+	/// region. Output past the last chunk's end is zero-filled.
 	/// </summary>
-	private static void InflateChunks(
-		BnkEntry entry, byte[] output, int outputOffset, int length, int storedLength, StoredBytes stored)
+	private static void InflateChunks(BnkEntry entry, Memory<byte> output, int storedLength, StoredBytes stored)
 	{
 		int chunkCount = entry.ChunkSizes.Count;
+		int length = output.Length;
 
 		// Nested parallel dispatch inside an existing thread-pool worker can saturate
 		// the thread pool and cause work starvation; only parallelize on dedicated threads.
 		if (chunkCount >= ParallelInflateChunks && !Thread.CurrentThread.IsThreadPoolThread)
 		{
-			InflateChunksParallel(entry, output, outputOffset, length, storedLength, stored);
+			InflateChunksParallel(entry, output, storedLength, stored);
 			return;
 		}
 
@@ -792,36 +796,40 @@ public sealed class BnkArchive : IDisposable
 		for (int i = 0; i < chunkCount && start < length; ++i)
 		{
 			int end = (int)Math.Min((long)start + entry.ChunkSizes[i], length);
-			InflateChunk(entry, i, output, outputOffset + start, end - start, storedLength, stored);
+			InflateChunk(entry, i, output[start..end], storedLength, stored);
 			start = end;
 		}
+
+		output.Span[start..].Clear();
 	}
 
 	private static void InflateChunksParallel(
-		BnkEntry entry, byte[] output, int outputOffset, int length, int storedLength, StoredBytes stored)
+		BnkEntry entry, Memory<byte> output, int storedLength, StoredBytes stored)
 	{
 		int chunkCount = entry.ChunkSizes.Count;
 		var starts = new int[chunkCount + 1];
 		for (int i = 0; i < chunkCount; ++i)
 		{
-			starts[i + 1] = (int)Math.Min((long)starts[i] + entry.ChunkSizes[i], length);
+			starts[i + 1] = (int)Math.Min((long)starts[i] + entry.ChunkSizes[i], output.Length);
 		}
 
 		try
 		{
 			System.Threading.Tasks.Parallel.For(0, chunkCount, i => InflateChunk(
-				entry, i, output, outputOffset + starts[i], starts[i + 1] - starts[i], storedLength, stored));
+				entry, i, output[starts[i]..starts[i + 1]], storedLength, stored));
 		}
 		catch (AggregateException aggregate) when (aggregate.InnerException is not null)
 		{
 			throw aggregate.InnerException;
 		}
+
+		output.Span[starts[chunkCount]..].Clear();
 	}
 
 	private static void InflateChunk(
-		BnkEntry entry, int i, byte[] output, int outOffset, int outLength, int storedLength, StoredBytes stored)
+		BnkEntry entry, int i, Memory<byte> output, int storedLength, StoredBytes stored)
 	{
-		if (outLength <= 0)
+		if (output.IsEmpty)
 		{
 			return;
 		}
@@ -834,7 +842,7 @@ public sealed class BnkArchive : IDisposable
 		}
 
 		int compressedSize = Math.Min(CompressedChunkSize, storedLength - compressedOffset);
-		if (!InflateInto(stored, compressedOffset, compressedSize, output, outOffset, outLength))
+		if (!InflateInto(stored, compressedOffset, compressedSize, output))
 		{
 			throw new InvalidDataException(
 				$"failed to inflate chunk {i} of {entry.RelativePath}");
@@ -843,8 +851,12 @@ public sealed class BnkArchive : IDisposable
 
 	private const int ParallelInflateChunks = 64;
 
+	/// <summary>
+	/// One chunk inflated into <paramref name="output"/>; a chunk that inflates short of it leaves
+	/// the rest zero.
+	/// </summary>
 	private static bool InflateInto(
-		StoredBytes stored, int compressedOffset, int compressedSize, byte[] output, int outOffset, int outLength)
+		StoredBytes stored, int compressedOffset, int compressedSize, Memory<byte> output)
 	{
 		for (int wrapper = 0; wrapper < 3; ++wrapper)
 		{
@@ -860,10 +872,11 @@ public sealed class BnkArchive : IDisposable
 
 				using (decompressor)
 				{
+					Span<byte> target = output.Span;
 					int read = 0;
-					while (read < outLength)
+					while (read < target.Length)
 					{
-						int got = decompressor.Read(output, outOffset + read, outLength - read);
+						int got = decompressor.Read(target[read..]);
 						if (got <= 0)
 						{
 							break;
@@ -872,11 +885,12 @@ public sealed class BnkArchive : IDisposable
 						read += got;
 					}
 
-					if (read == 0 && outLength > 0)
+					if (read == 0 && !target.IsEmpty)
 					{
 						continue;
 					}
 
+					target[read..].Clear();
 					return true;
 				}
 			}

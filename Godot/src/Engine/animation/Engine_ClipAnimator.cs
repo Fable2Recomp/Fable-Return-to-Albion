@@ -53,21 +53,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		/// prop Idle or marker poses), so advancing playhead time never changes the sampled bone pose.
 		/// </summary>
 		public bool IsStatic;
-
-		/// <summary>
-		/// True when at least one facial bone track in this clip poses a facial bone away from the
-		/// raw skeleton bind pose (<c>_restRotation</c>). False for carry/body clips like
-		/// <c>IdleHoldBeerLoop</c> and <c>SitHoldBeerLoop</c> that either omit facial tracks or bake
-		/// 1-keyframe unposed bind-pose tracks across facial bones.
-		/// </summary>
-		public bool HasPosedFace;
-
-		/// <summary>
-		/// True when <see cref="HasPosedFace"/> is true and at least one facial bone track has
-		/// multi-keyframe animation (<see cref="Keys.Animated"/>), such as blinking, smiling, or
-		/// head/mouth micro-movement in <c>IdleHappy</c>.
-		/// </summary>
-		public bool HasAnimatedFace;
 	}
 
 	/// <summary>
@@ -217,7 +202,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	/// Only linear tracks are lifted: the managed sample reproduces Godot's linear case and
 	/// nothing else, so any other interpolation keeps using the resource.
 	/// </remarks>
-	private static void LiftKeys(Built built, bool[] isFacialBone, Quaternion[] restRotation, int jawBone, int leftEyeBone, int rightEyeBone)
+	private static void LiftKeys(Built built)
 	{
 		if (built.KeysLifted)
 		{
@@ -232,9 +217,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 
 		built.RotationKeys = new Keys[built.RotationTrack.Length];
 		built.PositionKeys = new Keys[built.PositionTrack.Length];
-		bool hasPosedFace = false;
-		bool anyFacialAnimated = false;
-
 		for (int b = 0; b < built.RotationTrack.Length; ++b)
 		{
 			int rt = built.RotationTrack[b];
@@ -253,20 +235,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			}
 
 			built.RotationKeys[b] = keys;
-			if (b < isFacialBone.Length && isFacialBone[b] && b < restRotation.Length)
-			{
-				if (keys.Animated && !Constant(keys.Rotations))
-				{
-					anyFacialAnimated = true;
-				}
-
-				if (!hasPosedFace &&
-					(b == jawBone || b == leftEyeBone || b == rightEyeBone || anyFacialAnimated) &&
-					IsFacialTrackPosed(keys.Rotations, restRotation[b]))
-				{
-					hasPosedFace = true;
-				}
-			}
 		}
 
 		for (int b = 0; b < built.PositionTrack.Length; ++b)
@@ -288,37 +256,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 
 			built.PositionKeys[b] = keys;
 		}
-
-		built.HasPosedFace = hasPosedFace;
-		built.HasAnimatedFace = hasPosedFace && anyFacialAnimated;
-	}
-
-	/// <summary>
-	/// Returns true when at least one keyframe in <paramref name="trackRotations"/> rotates a
-	/// facial bone away from its raw skeleton bind pose (<paramref name="restRotation"/>) by more
-	/// than ~1.15° (<c>|dot| &lt; 0.9998f</c>). Carry/body clips like <c>IdleHoldBeerLoop</c> and
-	/// <c>SitHoldBeerLoop</c> export 1-keyframe unposed bind-pose tracks on all 66 facial bones
-	/// (<c>|dot| == 1.0</c>), whereas every posed idle, walk, mood, or phoneme clip rotates the
-	/// eyes (<c>~8.5°</c>) and jaw (<c>~7.3°</c>) into a natural expression.
-	/// </summary>
-	public static bool IsFacialTrackPosed(Quaternion[]? trackRotations, Quaternion restRotation)
-	{
-		if (trackRotations is null || trackRotations.Length == 0)
-		{
-			return false;
-		}
-
-		Quaternion restUnit = restRotation.Normalized();
-		for (int i = 0; i < trackRotations.Length; ++i)
-		{
-			float dot = Mathf.Abs(trackRotations[i].Normalized().Dot(restUnit));
-			if (dot < 0.9998f)
-			{
-				return true;
-			}
-		}
-
-		return false;
 	}
 
 	/// <summary>The clip's rotation for one bone, from the key cache when it has one.</summary>
@@ -501,7 +438,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	private readonly HashSet<uint> _extraRunners = new();
 	private readonly List<Channel> _overlays = new();
 
-	/// <summary>The title's rigs: bones by role, the face, the pick's rules. Read once, at construction.</summary>
+	/// <summary>The title's rigs: bones by role, the pick's rules. Read once, at construction.</summary>
 	private readonly Engine_TitleRig _titleRig;
 
 	/// <summary>The title's hip bone (<see cref="Engine_TitleRig.RigRole.Hip"/>), or -1.</summary>
@@ -513,134 +450,12 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	/// <summary>The hip children an overlay rewrites, at most <see cref="HipChildSlots"/>, in the guest's bone order.</summary>
 	private readonly int[] _hipChildren = System.Array.Empty<int>();
 
-	private int _headBone = -1;
-	private int _faceRootBone = -1;
-	private int _jawBone = -1;
-	private int _leftEyeBone = -1;
-	private int _rightEyeBone = -1;
-	private readonly bool _hasFacialRig;
-	private readonly bool[] _isFacialBone;
-	private Quaternion _neutralJawRotation = Quaternion.Identity;
-	private Quaternion _neutralLeftEyeRotation = Quaternion.Identity;
-	private Quaternion _neutralRightEyeRotation = Quaternion.Identity;
-	private Built? _ambientFaceClip;
-	private float _ambientFaceTime;
-	private bool _ambientFaceTimeSeeded;
+	/// <summary>Whether the rig has the title's jaw and an eye (<see cref="Engine_TitleRig.RigRole"/>).</summary>
+	private readonly bool _hasFace;
 	private ulong _lastFrameUsec;
 
 	/// <summary>True when this animator drives a character or creature rig rather than a simple prop (door, chest, clock, sign).</summary>
-	public bool IsCharacterRig => _hasFacialRig || _skeleton.GetBoneCount() >= 20;
-
-	/// <summary>
-	/// The facial bones of a rig, as <paramref name="rig"/>'s face names them
-	/// (<see cref="Engine_TitleRig.FaceRig"/>): every bone under the face root, else the head, that
-	/// carries the face's prefix and hangs off no non-facial branch. All false, every bone -1, when
-	/// the title has no face.
-	/// </summary>
-	public static bool[] ComputeFacialBoneMask(
-		Engine_TitleRig rig,
-		ReadOnlySpan<string> boneNames,
-		ReadOnlySpan<int> boneParents,
-		out int headBone,
-		out int faceRootBone,
-		out int jawBone,
-		out int leftEyeBone,
-		out int rightEyeBone)
-	{
-		int bones = boneNames.Length;
-		var mask = new bool[bones];
-		headBone = -1;
-		faceRootBone = -1;
-		jawBone = -1;
-		leftEyeBone = -1;
-		rightEyeBone = -1;
-		if (rig.Face is not { } face)
-		{
-			return mask;
-		}
-
-		for (int b = 0; b < bones; ++b)
-		{
-			string name = boneNames[b];
-			if (rig.Is(name, Engine_TitleRig.RigRole.Head))
-			{
-				headBone = b;
-			}
-			else if (rig.Is(name, Engine_TitleRig.RigRole.FaceRoot))
-			{
-				faceRootBone = b;
-			}
-			else if (rig.Is(name, Engine_TitleRig.RigRole.Jaw))
-			{
-				jawBone = b;
-			}
-			else if (rig.Is(name, Engine_TitleRig.RigRole.LeftEye))
-			{
-				leftEyeBone = b;
-			}
-			else if (rig.Is(name, Engine_TitleRig.RigRole.RightEye))
-			{
-				rightEyeBone = b;
-			}
-		}
-
-		int facialAnchor = faceRootBone >= 0 ? faceRootBone : headBone;
-		if (facialAnchor < 0)
-		{
-			return mask;
-		}
-
-		for (int b = 0; b < bones; ++b)
-		{
-			if (b == headBone)
-			{
-				continue;
-			}
-
-			string boneName = boneNames[b];
-			if (!boneName.StartsWith(face.BonePrefix, StringComparison.OrdinalIgnoreCase) &&
-				b != faceRootBone)
-			{
-				continue;
-			}
-
-			bool underAnchor = false;
-			bool nonFacialBranch = false;
-			int p = b;
-			while (p >= 0 && p < boneParents.Length)
-			{
-				if (p == facialAnchor)
-				{
-					underAnchor = true;
-					break;
-				}
-
-				string pName = boneNames[p];
-				foreach (string branch in face.NonFacialBranches)
-				{
-					if (pName.Contains(branch, StringComparison.OrdinalIgnoreCase))
-					{
-						nonFacialBranch = true;
-						break;
-					}
-				}
-
-				if (nonFacialBranch)
-				{
-					break;
-				}
-
-				p = boneParents[p];
-			}
-
-			if (underAnchor && !nonFacialBranch)
-			{
-				mask[b] = true;
-			}
-		}
-
-		return mask;
-	}
+	public bool IsCharacterRig => _hasFace || _skeleton.GetBoneCount() >= 20;
 
 	public Engine_ClipAnimator(Skeleton3D skeleton, string skeletonName, int[] modelToGuest)
 	{
@@ -691,34 +506,9 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			boneNames[b] = boneName;
 		}
 
-		_isFacialBone = ComputeFacialBoneMask(
-			_titleRig,
-			boneNames,
-			_parents,
-			out _headBone,
-			out _faceRootBone,
-			out _jawBone,
-			out _leftEyeBone,
-			out _rightEyeBone);
-		_hasFacialRig = _jawBone >= 0 && (_leftEyeBone >= 0 || _rightEyeBone >= 0);
-		if (_titleRig.Face is { } face)
-		{
-			if (_jawBone >= 0)
-			{
-				Vector3 euler = _restRotation[_jawBone].GetEuler();
-				_neutralJawRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(face.JawRollDegrees)));
-			}
-			if (_leftEyeBone >= 0)
-			{
-				Vector3 euler = _restRotation[_leftEyeBone].GetEuler();
-				_neutralLeftEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(face.EyeRollDegrees)));
-			}
-			if (_rightEyeBone >= 0)
-			{
-				Vector3 euler = _restRotation[_rightEyeBone].GetEuler();
-				_neutralRightEyeRotation = Quaternion.FromEuler(new Vector3(euler.X, euler.Y, Mathf.DegToRad(face.EyeRollDegrees)));
-			}
-		}
+		_hasFace = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Jaw) >= 0 &&
+			(_titleRig.Bone(boneNames, Engine_TitleRig.RigRole.LeftEye) >= 0 ||
+			 _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.RightEye) >= 0);
 
 		_hipBone = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Hip);
 		_hipCompensates = HipCompensation(
@@ -978,15 +768,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 				return false;
 			}
 
-			if (_hasFacialRig && !leaf.Overlay && !leaf.Additive && leaf.Loop &&
-				built.HasPosedFace && built.Length >= 0.5f)
-			{
-				if (_ambientFaceClip is null || (!_ambientFaceClip.HasAnimatedFace && built.HasAnimatedFace))
-				{
-					_ambientFaceClip = built;
-				}
-			}
-
 			_seenRecordUids.Add(leaf.Uid);
 			ulong baseKey = PlayheadKey(leaf);
 			int occ = _keyOccurrences.TryGetValue(baseKey, out int seen) ? seen : 0;
@@ -1139,37 +920,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			}
 
 			ObservePlayhead(channel, leaf, tick, drawTick, !IsCharacterRig);
-		}
-
-		if (_hasFacialRig && _titleRig.Face is { } face)
-		{
-			if (!_ambientFaceTimeSeeded)
-			{
-				_ambientFaceTimeSeeded = true;
-				_ambientFaceTime = ((_entity * 2654435761u) & 0x3FFu) * 0.007f;
-			}
-
-			if (_ambientFaceClip is null || !_ambientFaceClip.HasAnimatedFace)
-			{
-				Built? primaryFace = Ensure(face.PrimaryClip, out _);
-				if (primaryFace is { HasPosedFace: true })
-				{
-					_ambientFaceClip = primaryFace;
-				}
-				else if (_ambientFaceClip is null)
-				{
-					Built? defaultFace = Ensure(face.FallbackClip, out _);
-					if (defaultFace is { HasPosedFace: true })
-					{
-						_ambientFaceClip = defaultFace;
-					}
-				}
-			}
-
-			if (_ambientFaceClip is { Length: > 0f } amb)
-			{
-				_ambientFaceTime = (_ambientFaceTime + frameDt) % amb.Length;
-			}
 		}
 
 		// On the guest's ticks: a seen channel's weight and playhead are the stated per-tick
@@ -1348,7 +1098,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		// Once their pose has been written to both the live skeleton and (when present) its shadow
 		// skeleton, and no channel's sampled time, weight, or list order has changed, folding on the
 		// ThreadPool and calling Write() at display rate produces zero bone changes.
-		if (!_hasFacialRig && _hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
+		if (_hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
 			_channels.Count == _writtenChannelCount && _channels.Count > 0 &&
 			!(Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out _) && _shadowStale))
 		{
@@ -1728,10 +1478,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 					_overlays.Clear();
 					Sample(only.Built, only.Time, 1f, false, _rotation, _rotationWeight, _position, _positionWeight, bones);
 					PostOpsApplied = ApplyPostOpsForRecord(only.Leaf.Uid, _rotation, _rotationWeight, bones);
-					if (_hasFacialRig && (!only.Built.HasPosedFace || (_jawBone >= 0 && _rotationWeight[_jawBone] <= 0f)))
-					{
-						ApplyAmbientFacePose(bones);
-					}
 					goto FinalizePose;
 				}
 			}
@@ -2051,14 +1797,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		// the mood overlay forearm bend by `~2.2x`.
 		PostOpsApplied = ApplyPostOpsForRecord(topUid, _rotation, _rotationWeight, bones);
 
-		// When the primary record leaves facial bones unposed (e.g. `IdleHoldBeerLoop` or
-		// `SitHoldBeerLoop`), populate the facial base pose from the Host-driven ambient facial
-		// source BEFORE crossfading with `runnerUid` and BEFORE layering facial/mood overlays.
-		if (_hasFacialRig && _jawBone >= 0 && _rotationWeight[_jawBone] <= 0f)
-		{
-			ApplyAmbientFacePose(bones);
-		}
-
 		if (partnerSampled)
 		{
 			PostOpsApplied += ApplyPostOpsForRecord(runnerUid, _layerRotation, _layerRotationWeight, bones);
@@ -2105,12 +1843,10 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			float layerWeight = 0f;
 			float recordCap = 0f;
 			uint maskNode = 0;
-			bool overlayHasPosedFace = false;
 			while (j < _overlays.Count && _overlays[j].Leaf.Uid == uid)
 			{
 				Channel ov = _overlays[j];
 				layerWeight += ov.Weight * ov.OverlayFade;
-				overlayHasPosedFace |= ov.Built.HasPosedFace;
 				float cap = RecordWeightAt(ov, pairAt) * ov.OverlayFade;
 				if (cap > recordCap)
 				{
@@ -2151,12 +1887,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 
 			for (int b = 0; b < bones; ++b)
 			{
-				if (b < _isFacialBone.Length && _isFacialBone[b] &&
-					(!overlayHasPosedFace || _layerRotationWeight[b] <= 0f))
-				{
-					continue;
-				}
-
 				float wb = w;
 				if (mask.Length != 0)
 				{
@@ -2507,11 +2237,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	{
 		for (int b = 0; b < bones; ++b)
 		{
-			if (!built.HasPosedFace && b < _isFacialBone.Length && _isFacialBone[b])
-			{
-				continue;
-			}
-
 			// BONE 0 IS IDENTITY IN THE GUEST'S POSE — rotation, translation AND scale. After
 			// sampling, `sub_82208040` (0x82208140..78) overwrites bone 0 with (0,0,0,1) / zero /
 			// one unconditionally, and `sub_821F57D0` does it again before composing model
@@ -2547,57 +2272,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 				position[b] = positionWeight[b] > 0f ? position[b] + p * weight : p * weight;
 				positionWeight[b] += weight;
 			}
-		}
-	}
-
-	/// <summary>
-	/// Fills unposed facial bones (<see cref="_isFacialBone"/>) from the rig's Host-driven ambient
-	/// facial clip (<c>IdleStand1</c> or the rig's last looping facial clip), or falls back to
-	/// neutral parallel eye and relaxed jaw rotations while the ambient clip is still decoding.
-	/// </summary>
-	private void ApplyAmbientFacePose(int bones)
-	{
-		if (_ambientFaceClip is { HasPosedFace: true } amb)
-		{
-			for (int b = 0; b < bones; ++b)
-			{
-				if (b >= _isFacialBone.Length || !_isFacialBone[b] || _rotationWeight[b] > 0f)
-				{
-					continue;
-				}
-
-				int rt = b < amb.RotationTrack.Length ? amb.RotationTrack[b] : -1;
-				if (rt >= 0)
-				{
-					_rotation[b] = SampleRotation(amb, b, rt, _ambientFaceTime);
-					_rotationWeight[b] = 1f;
-				}
-
-				int pt = b < amb.PositionTrack.Length ? amb.PositionTrack[b] : -1;
-				if (pt >= 0 && _parents![b] >= 0 && _positionWeight[b] <= 0f)
-				{
-					_position[b] = SamplePosition(amb, b, pt, _ambientFaceTime);
-					_positionWeight[b] = 1f;
-				}
-			}
-
-			return;
-		}
-
-		if (_jawBone >= 0 && _jawBone < bones && _rotationWeight[_jawBone] <= 0f)
-		{
-			_rotation[_jawBone] = _neutralJawRotation;
-			_rotationWeight[_jawBone] = 1f;
-		}
-		if (_leftEyeBone >= 0 && _leftEyeBone < bones && _rotationWeight[_leftEyeBone] <= 0f)
-		{
-			_rotation[_leftEyeBone] = _neutralLeftEyeRotation;
-			_rotationWeight[_leftEyeBone] = 1f;
-		}
-		if (_rightEyeBone >= 0 && _rightEyeBone < bones && _rotationWeight[_rightEyeBone] <= 0f)
-		{
-			_rotation[_rightEyeBone] = _neutralRightEyeRotation;
-			_rotationWeight[_rightEyeBone] = 1f;
 		}
 	}
 
@@ -3508,8 +3182,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		System.Array.Fill(built.RotationTrack, -1);
 		System.Array.Fill(built.PositionTrack, -1);
 		bool mappedStatic = true;
-		bool hasPosedFace = false;
-		bool anyFacialAnimated = false;
 		for (int track = 0; track < map.Length; ++track)
 		{
 			int b = map[track];
@@ -3523,19 +3195,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			if (shared.Rotations[track].Animated)
 			{
 				mappedStatic = false;
-			}
-			if (b < _isFacialBone.Length && _isFacialBone[b] &&
-				b < _restRotation.Length && IsFacialTrackPosed(shared.Rotations[track].Rotations, _restRotation[b]))
-			{
-				bool rotAnimated = !Constant(shared.Rotations[track].Rotations);
-				if (rotAnimated)
-				{
-					anyFacialAnimated = true;
-				}
-				if (b == _jawBone || b == _leftEyeBone || b == _rightEyeBone || anyFacialAnimated)
-				{
-					hasPosedFace = true;
-				}
 			}
 
 			int parent = _parents is not null && b < _parents.Length ? _parents[b] : _skeleton.GetBoneParent(b);
@@ -3551,8 +3210,6 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		}
 
 		built.IsStatic |= mappedStatic;
-		built.HasPosedFace = hasPosedFace;
-		built.HasAnimatedFace = hasPosedFace && anyFacialAnimated;
 		return built;
 	}
 
@@ -3772,7 +3429,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			built.PositionTrack[b] = animation.FindTrack(path, Animation.TrackType.Position3D);
 		}
 
-		LiftKeys(built, _isFacialBone, _restRotation, _jawBone, _leftEyeBone, _rightEyeBone);
+		LiftKeys(built);
 		return built;
 	}
 

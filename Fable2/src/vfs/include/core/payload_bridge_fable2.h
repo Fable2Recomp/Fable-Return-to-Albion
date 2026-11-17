@@ -60,12 +60,15 @@ void refii_bridge_note_highlight_target(void);
 // Words, as the guest keeps them on CECGraphicAppearance (offsets from the component):
 //   0 alpha +112, 1 camera alpha +116, 2 scale +108 (float bits),
 //   3..6 tint +80, +84, +88, +92 (float bits, memory order),
-//   7 flags: kAppearanceDrawable = +197 non-zero, kAppearanceSaturation = +196 non-zero.
+//   7 flags: kAppearanceDrawable = +197 non-zero, kAppearanceSaturation = +196 non-zero,
+//     kAppearanceNoAlphaDepth = +192 non-zero (the definition's DisableAlphaDepthWrites, vf8
+//     `sub_825720A8` 0x825721b8 `stb r3, 0xC0(r31)`; disc `sub_82546D50` 0x82546e60).
 enum {
   kAppearanceWords = 8,
   kAppearanceFlags = 7,
   kAppearanceDrawable = 1,
   kAppearanceSaturation = 2,
+  kAppearanceNoAlphaDepth = 4,
 };
 void refii_bridge_note_appearance(uint32_t component, const uint32_t* words);
 void refii_bridge_forget_appearance(uint32_t component);
@@ -75,16 +78,23 @@ void refii_bridge_forget_appearance(uint32_t component);
 // Wrapper: refii::vfs::NotePartMorph; table in src/core/part_morph_state.cpp.
 enum {
   kPartMorphParts = 24,
-  kPartMorphTargets = 8,
+  // The guest bounds neither list (`sub_8220DE88` passes every layer it sorted; a part counts
+  // every target above 1e-4); these are capacities, and a clamp counts what it dropped.
+  kPartMorphTargets = 16,
 };
 void refii_bridge_note_part_morph(uint32_t entity, uint32_t base_model, const uint32_t* pairs,
                                   uint32_t count);
+// The entity left the world; its parts are dropped.
+void refii_bridge_forget_part_morphs(uint32_t entity);
 
 // Which of the hero's garments are dyed: the guest's own `sub_826CAFA8` per slot, sampled on
-// the GUI tick. kDyeStateWords words per item: 0 item record hash, 1 flags (bit 0 slot 1 dyed,
-// bit 1 slot 2 dyed, bit 2 the item is worn). Table in src/core/dye_state.cpp.
+// the GUI tick, ONE ENTRY PER ITEM INSTANCE — the dye is the instance's type-2 record, so two
+// copies of one record are dyed apart. kDyeStateWords words per item: 0 the item (guest
+// address, the instance), 1 its record hash, 2 flags (bit 0 slot 1 dyed, bit 1 slot 2 dyed,
+// bit 2 the item is worn). Worn items first, then the inventory in list order. Table in
+// src/core/dye_state.cpp.
 enum {
-  kDyeStateWords = 2,
+  kDyeStateWords = 3,
   kDyeStateItems = 160,
 };
 void refii_bridge_note_dye_states(const uint32_t* words, uint32_t count);
@@ -92,8 +102,8 @@ void refii_bridge_note_dye_states(const uint32_t* words, uint32_t count);
 // Each character's texture work as the guest states it. Wrappers: refii::vfs::BeginTextureLayers
 // / NoteTextureLayers; table in src/core/texture_layer_state.cpp. A layer is kTextureLayerWords
 // words: 0 texture id, 1 blend mode (0 opaque, 1 alpha, 2 additive, 3 blend-factor, 4 masked),
-// 2 weight (float bits), 3 has-tint, 4 tint bytes B G R A (memory order), 5 brightness (float
-// bits), 6 bump texture id (overlays only).
+// 2 weight (float bits), 3 has-tint, 4 tint bytes B G R A (memory order) — an overlay's spec
+// texture id instead —, 5 brightness (float bits), 6 bump texture id (overlays only).
 // `kind` 0 is a composite stated to `sub_825B38B0`, layer 0 the base. `kind` 1 is the OVERLAY
 // list sent as command type 14 through `sub_8222AAC8`: scars and blend-mode-0 morphs, drawn
 // over the finished material; texture id is the overlay's diffuse.
@@ -103,12 +113,14 @@ void refii_bridge_note_dye_states(const uint32_t* words, uint32_t count);
 // `begin` drops what the entity stated before.
 enum {
   kTextureLayerWords = 7,
-  kTextureLayersPerTexture = 8,
+  kTextureLayersPerTexture = 16,
   kTextureLayerTextures = 40,
 };
 void refii_bridge_begin_texture_layers(uint32_t entity);
 // Publishes the statements since the begin as the entity's layers, in one step.
 void refii_bridge_end_texture_layers(uint32_t entity);
+// The entity left the world; its layers are dropped.
+void refii_bridge_forget_texture_layers(uint32_t entity);
 void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32_t kind,
                                       const uint32_t* layers, uint32_t count);
 
@@ -128,17 +140,24 @@ void refii_bridge_drop_decals_of(uint32_t owner);
 void refii_bridge_note_fx_mesh(uint32_t descriptor);
 void refii_bridge_drop_fx_mesh(uint32_t descriptor);
 uint32_t refii_bridge_fx_meshes(uint32_t* out, uint32_t capacity);
+// The ALPHA (model command 16) and TINT (model command 17) the guest states to one render twin,
+// taken where the command reaches the twin (`Render_ApplyCommandToHandle(handle, command)`, same
+// file); forgotten when the twin is destroyed. `alpha_bits` float bits; `tint` 4 lanes of float bits.
+void refii_bridge_note_twin_alpha(uint32_t handle, uint32_t alpha_bits);
+void refii_bridge_note_twin_tint(uint32_t handle, const uint32_t* tint);
+void refii_bridge_forget_twin(uint32_t handle);
 
-// The layers the guest's own dye builder states for ONE inventory item, keyed by the item's
-// record hash and written as a character's composites are (kTextureLayerWords per layer); the
-// menu previews a dyed garment through them. Sampled on the GUI tick for every dyed item the
-// hero wears or carries. Table in src/core/item_dye_layer_state.cpp.
+// The layers the guest's own dye builder states for ONE inventory item INSTANCE, keyed by the
+// item's guest address (the instance its type-2 dye record hangs off) and written as a
+// character's composites are (kTextureLayerWords per layer); the menu previews a dyed garment
+// through them. Sampled on the GUI tick for every dyed item the hero wears or carries. Table in
+// src/core/item_dye_layer_state.cpp.
 enum {
   kItemDyeLayerItems = 64,
   kItemDyeLayerWords = 4 * (2 + kTextureLayersPerTexture * kTextureLayerWords),
 };
-void refii_bridge_set_item_dye_layers(const uint32_t* records, const uint32_t* offsets,
-                                      const uint32_t* counts, uint32_t items,
+void refii_bridge_set_item_dye_layers(const uint32_t* items, const uint32_t* offsets,
+                                      const uint32_t* counts, uint32_t item_count,
                                       const uint32_t* words);
 
 // The pub-game seam. The host claims the guest's pub-game module and posts the fscommands
@@ -265,6 +284,14 @@ void refii_bridge_hero_derived_snapshot(void* out);
 /// copies as many whole records as fit.
 void refii_bridge_publish_hero_inventory(const uint32_t* words, uint32_t count);
 uint32_t refii_bridge_hero_inventory_snapshot(uint32_t* out, uint32_t word_capacity);
+/// The same walk with each record's ITEM INSTANCE: five words per record {recordId, count,
+/// category, viewed, item} — the item at `node+8`, the guest address the dye tables key on
+/// (kDyeStateWords, kItemDyeLayerWords). Publishing it also publishes the four-word snapshot
+/// above, in one step, so the two never disagree; an item address is meaningful only until the
+/// next publish. The snapshot call returns the record count and copies as many whole records as
+/// fit.
+void refii_bridge_publish_hero_inventory_items(const uint32_t* words, uint32_t count);
+uint32_t refii_bridge_hero_inventory_items_snapshot(uint32_t* out, uint32_t word_capacity);
 /// Player 1's or 2's inventory as the pump last walked it (SamplePlayerInventories), whoever's menus
 /// are open: four words per record {recordId, count, category, flags}, flags bit 0 viewed and bit 1
 /// worn. Publishing never bumps the UI generation (no menu lists it). The snapshot call returns the

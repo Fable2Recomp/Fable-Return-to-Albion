@@ -11399,6 +11399,7 @@
 0x82AA3D38 = { name = "rex_lhRenderTwin_ReleaseDecals" }
 0x82456D58 = { name = "rex_lhFx_CreateMeshDescriptor" }
 0x82175918 = { name = "rex_lhRenderTwin_Destroy" }
+0x822222E0 = { name = "rex_lhRender_ApplyCommandToHandle" }
 0x8223D320 = { name = "rex_lhHeroStats_GetMorality" }
 0x8223D910 = { name = "rex_lhHeroStats_GetPurity" }
 0x82284798 = { name = "rex_lhGuiAttributeService_SetElementAttribute" }
@@ -11556,6 +11557,7 @@
 0x82541F30 = { name = "rex_CECSpellManager_SetSpellSlot" }
 0x82571DF8 = { name = "rex_CECGraphicAppearance_Ctor" }
 0x82571FF0 = { name = "rex_CECGraphicAppearance_ScalarDtor" }
+0x825720A8 = { name = "rex_CECGraphicAppearance_ApplyDefinition" }
 0x82572238 = { name = "rex_CECGraphicAppearance_Serialize" }
 0x82573318 = { name = "rex_CECGraphicAppearance_ReplicateAppearance" }
 0x825738F0 = { name = "rex_CECGraphicAppearance_SetHighlightColour" }

@@ -415,6 +415,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneNames(uint32_t entity, char
     return count;
 }
 
+/// The guest skeleton's parent indices. Not read yet for Fable 3 (its records at skeleton+0x38
+/// are {name hash, ?}); 0 tells the host to match the model's bones by name alone.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityBoneParents(uint32_t entity, int32_t* out_parents,
+                                                             uint32_t max_bones) {
+    (void)entity;
+    (void)out_parents;
+    (void)max_bones;
+    return 0u;
+}
+
 REFII_HOST_ABI_EXPORT uint64_t RefiiHostGetEntityUid(uint32_t entity) {
     const uint8_t* base = GuestBase();
     if (base == nullptr || !Plausible(entity)) {
@@ -584,6 +594,14 @@ REFII_HOST_ABI_EXPORT int RefiiHostGetEntityDrawRange(uint32_t entity, float* ou
     *out_distance = Float(base, renderable + 0x24u);
     *out_fade_factor = Float(base, renderable + 0x28u);
     return 1;
+}
+
+/// Fable 3 states its cloth poses (RefiiHostGetEntityClothPieces), so the shell never gates a
+/// solve of its own on a distance: 0, not stated.
+REFII_HOST_ABI_EXPORT int RefiiHostGetEntityClothDistance(uint32_t entity, float* out_distance) {
+    (void)entity;
+    (void)out_distance;
+    return 0;
 }
 
 /// The FNV-1 hashes of the activated layers: the world manager's list at +0x40 (head) / +0x44

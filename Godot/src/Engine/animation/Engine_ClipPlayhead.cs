@@ -212,7 +212,8 @@ public sealed class Engine_ClipPlayhead
 	/// Observes a prop clip (doors, chests, clocks, signs, cogs) so the Host drives its playhead
 	/// autonomously via <see cref="Freewheel"/> without 15 Hz phase-error micro-corrections.
 	/// One-shot prop transitions (<c>!loop</c>) seed a <c>1.0x</c> rate as soon as triggered near
-	/// the start of the clip and run smoothly to completion on the Host clock.
+	/// the start of the clip and run smoothly to completion on the Host clock. A looping clip runs
+	/// at the rate its stated times move, and a constant pair holds it.
 	/// </summary>
 	public void ObserveProp(double previous, double current, uint tick, double length, bool loop, double drawTick)
 	{
@@ -257,13 +258,20 @@ public sealed class Engine_ClipPlayhead
 			return;
 		}
 
-		if (delta > -RestartSeconds && delta < RestartSeconds && System.Math.Abs(delta) > 1e-7)
+		// The loop byte says nothing about motion: `CAnimationControlSimple`'s base ctor sets it for
+		// every control (`sub_82283BB8`: `li r8, 1` / `stb r8, 0x2C(r31)` at 0x82283BE8/0x82283C0C)
+		// and no slot of the control advances its time. The time moves only when the owner calls
+		// SetTime (vf5 `sub_82200F60`: cur -> prev, then cur = t, 0x82200F98/0x82200F9C) or cuts
+		// (vf7 `sub_822B4970`: prev = cur = t, 0x822B499C/0x822B49A4). So the rate is the stated
+		// step — the pair's own, else the step between cuts on successive ticks — and a cut with
+		// no step is a hold.
+		if (delta > -RestartSeconds && delta < RestartSeconds)
 		{
 			Rate = delta * TicksPerSecond;
 		}
 		else if (!Started)
 		{
-			Rate = 1.0;
+			Rate = 0.0;
 		}
 
 		if (!Started)

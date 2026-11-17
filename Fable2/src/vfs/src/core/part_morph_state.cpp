@@ -200,4 +200,19 @@ void refii_bridge_note_part_morph(uint32_t entity, uint32_t base_model, const ui
   ++record->generation;
 }
 
+// The entity left the world (`rex_lhEntity_Destroy`): its parts are freed with it.
+void refii_bridge_forget_part_morphs(uint32_t entity) {
+  using namespace refii::vfs;
+  if (entity == 0u) {
+    return;
+  }
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (EntityParts* record = Find(entity); record != nullptr) {
+    record->entity = 0u;
+    for (PartEntry& part : record->parts) {
+      part.count = 0u;
+    }
+    ++record->generation;
+  }
+}
 }  // extern "C"

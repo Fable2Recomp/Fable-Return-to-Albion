@@ -157,28 +157,6 @@ public class EngineClipAnimatorTests
     }
 
     [TestCase]
-    public void TestIsFacialTrackPosedDetectsUnposedCarryIdles()
-    {
-        // Raw skeleton bind pose for Shadow_L_Eye (-99.6 deg) and Shadow_Jaw (-2.7 deg):
-        Quaternion restLeftEye = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-99.6f)));
-        Quaternion restJaw = Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-2.7f)));
-
-        // IdleHoldBeerLoop (0x3207C71E / 0xE4BD3CF7) and SitHoldBeerLoop (0x509F78EA) bake
-        // 1-keyframe tracks identical to raw bind pose (0.00 deg delta): must be recognized as unposed.
-        var unposedEyeTrack = new[] { restLeftEye };
-        var unposedJawTrack = new[] { restJaw, -restJaw };
-        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(unposedEyeTrack, restLeftEye)).IsFalse();
-        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(unposedJawTrack, restJaw)).IsFalse();
-
-        // IdleStand1 (0xB742E730) and WalkFootstep rotate Shadow_L_Eye to ~ -90 deg (+9.6 deg delta)
-        // and Shadow_Jaw to ~ +4.6 deg (+7.3 deg delta): must be recognized as posed.
-        var posedEyeTrack = new[] { Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(-90.0f))) };
-        var posedJawTrack = new[] { Quaternion.FromEuler(new Vector3(0f, 0f, Mathf.DegToRad(4.6f))) };
-        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(posedEyeTrack, restLeftEye)).IsTrue();
-        AssertThat(Engine_ClipAnimator.IsFacialTrackPosed(posedJawTrack, restJaw)).IsTrue();
-    }
-
-    [TestCase]
     public void TestSmoothPostOpTargetInterpolatesOnHostClock()
     {
         // Upper-body lookRec updates at 15 Hz; between ticks, SmoothPostOpTarget must smoothly

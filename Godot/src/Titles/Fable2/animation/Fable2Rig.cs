@@ -7,7 +7,7 @@ using Refii.Animations;
 
 /// <summary>
 /// Fable 2's rigs to the shared code: its skeletons keep the <c>.mdl</c> bone names, so a role is
-/// its <c>Shadow_*</c> name; it has the host-driven ambient face; its partner is one record.
+/// its <c>Shadow_*</c> name; its partner is one record.
 /// </summary>
 public sealed class Fable2Rig : Engine_TitleRig
 {
@@ -32,23 +32,6 @@ public sealed class Fable2Rig : Engine_TitleRig
 		RigRole.RightToe => "Shadow_R_Toe",
 		_ => null,
 	};
-
-	/// <summary>
-	/// In the <c>.mdl</c> rigs (<c>CH_HeroMale_Morph_Body_Rig_Asset</c>) the face root is absent and
-	/// the 62 facial bones (<c>Shadow_jaw</c>, <c>Shadow_m_mouth_*</c>, <c>Shadow_L_Eye</c>, ...) hang
-	/// directly off <c>Shadow_Head</c>; attachment dummies (<c>Focal_*</c>, <c>Carry_*</c>,
-	/// <c>FX_*</c>) and the hair, ponytail and ear chains are not facial. The loop is
-	/// <c>IdleHappy</c> (7.67 s), else <c>IdleStand1</c>.
-	/// </summary>
-	private static readonly FaceRig AmbientFace = new(
-		BonePrefix: "Shadow_",
-		NonFacialBranches: new[] { "Ponytail", "Hair", "Ear" },
-		PrimaryClip: 0xE903635Fu,
-		FallbackClip: 0xB742E730u,
-		JawRollDegrees: 4.5f,
-		EyeRollDegrees: -90.0f);
-
-	public override FaceRig Face => AmbientFace;
 
 	/// <summary>
 	/// <c>Character.Focal.Mouth|Head</c> on the head, <c>Chest|Torso</c> on the chest,

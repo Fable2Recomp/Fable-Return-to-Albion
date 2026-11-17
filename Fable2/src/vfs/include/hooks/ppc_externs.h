@@ -232,6 +232,7 @@ PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ReplicateAppearance); // CECGrap
 PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_Serialize); // CECGraphicAppearance: save/load of Alpha, TintColour, ...
 PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_Ctor); // CECGraphicAppearance: constructor
 PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ScalarDtor); // CECGraphicAppearance: destructor
+PPC_EXTERN_FUNC(__imp__rex_CECGraphicAppearance_ApplyDefinition); // CECGraphicAppearance vf8: the definition's flags (DisableAlphaDepthWrites +192)
 PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_ApplyTextureLayers); // CECGraphicAppearanceMorph: the composite submit
 PPC_EXTERN_FUNC(__imp__rex_lhGraphicAppearanceMorph_RebuildParts); // CECGraphicAppearanceMorph: rebuilds the part records
 PPC_EXTERN_FUNC(__imp__rex_lhSetTextureLayersCommand_Ctor); // texture composite command: one original, its layers
@@ -244,6 +245,7 @@ PPC_EXTERN_FUNC(__imp__rex_lhDecal_ExecuteClearCommand); // decal clear-all comm
 PPC_EXTERN_FUNC(__imp__rex_lhRenderTwin_ReleaseDecals); // render twin releasing its decal slots
 PPC_EXTERN_FUNC(__imp__rex_lhFx_CreateMeshDescriptor); // FX mesh particle descriptor (sub_82456D58)
 PPC_EXTERN_FUNC(__imp__rex_lhRenderTwin_Destroy); // render twin destroy by handle (sub_82175918)
+PPC_EXTERN_FUNC(__imp__rex_lhRender_ApplyCommandToHandle); // a model command reaching its render twin (sub_822222E0); 16 alpha, 17 tint
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetPositionAndVelocity); // CParticleSystemEntityInstance: states the world position
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_SetOrientation); // CParticleSystemEntityInstance: states the orientation
 PPC_EXTERN_FUNC(__imp__rex_CParticleSystemEntityInstance_Ctor); // CParticleSystemEntityInstance(typeRef): a mod effect's scale and tint applied (particle_dress.cpp)

@@ -99,7 +99,9 @@ REX_EXTERN(rex_lhMorphDescriptor_Ctor) {
 // cmd+4 original texture id, cmd+12..+16 a vector of 20-byte entries {float weight, diffuse,
 // spec, bump, morph texture} (`sub_825B39C8`, `sub_825BA570`). The guest draws the mesh again
 // per entry with that material, blended, wherever the base material's diffuse is the original.
-// A scar fills diffuse and bump; a morph fills only the last word.
+// A scar fills diffuse, spec and bump (`sub_825B8420`: +4 MorphTexture, +8 ScarTextureSpec,
+// +12 ScarTextureBump); a morph fills only the last word. Stated per entry as
+// {diffuse-or-morph, mode 1, weight, 0, spec, 0, bump}.
 REX_EXTERN(rex_lhRenderCommandStream_PostModelCommand) {
   refii::vfs::EnsureAlternateSignalStack();
   REX_FUNC_PROLOGUE();
@@ -124,7 +126,7 @@ REX_EXTERN(rex_lhRenderCommandStream_PostModelCommand) {
         out[1] = 1u;
         out[2] = refii::vfs::LoadGuestU32(base, at);
         out[3] = 0u;
-        out[4] = 0u;
+        out[4] = refii::vfs::LoadGuestU32(base, at + 8u);
         out[5] = 0u;
         out[6] = refii::vfs::LoadGuestU32(base, at + 12u);
         ++count;

@@ -498,7 +498,7 @@ extern "C" {
 ///     — a building's interior records, the weather's roofs; RefiiHostGetClassicWeather's header
 ///     carries the snow's push slots; RefiiHostGetDisplacementQuads — the drunk warp's quad;
 ///     RefiiHostGetFxMeshes — the effects' mesh particles (hooks rex_lhFx_CreateMeshDescriptor,
-///     rex_lhRenderTwin_Destroy); RefiiHostGetEntityDisplacementParts — a composite's
+///     rex_lhRenderTwin_Destroy; since 243 rex_lhRender_ApplyCommandToHandle); RefiiHostGetEntityDisplacementParts — a composite's
 ///     displacement-only parts (GDB DisplacementMeshes); RefiiHostGetSpotFrustums — the spots'
 ///     receive frustums.
 /// 180 adds RefiiHostGetDecals — the decals the guest stated (Fable2/src/vfs/src/hooks/decals.cpp) with their
@@ -692,7 +692,18 @@ extern "C" {
 ///     the guest frame, fractional, of the instant it was posed for (a double), in place of the
 ///     current/previous game tick; RefiiHostGetEntityClothPieces' [6] is the poses kept.
 /// 241 adds RefiiHostPlayerOwned: who this machine plays (3 both, 1 online host, 2 online joiner).
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 241; }
+/// 242 adds RefiiHostGetEntityClothDistance — an entity's stated MaxClothDistance off its renderable
+///     (component 3 +0x2C), the distance the guest's cloth gate steps an instance within.
+/// 243 restates RefiiHostGetFxMeshes [15..19]: the tint and alpha the effect STATES to each twin
+///     (model commands 17 and 16, taken at Render_ApplyCommandToHandle) in place of the twin's
+///     +240 and its state block's interpolated alpha; RefiiHostGetEntities' appearance flags gain
+///     4 = the definition's DisableAlphaDepthWrites (CECGraphicAppearance +192).
+/// 244 keys Fable 2's dye reads by ITEM INSTANCE: RefiiHostGetDyeStates widens to three words
+///     {item, record, flags} and RefiiHostGetItemDyeLayers takes the item's guest address; adds
+///     RefiiHostGetHeroInventoryItems — the inventory snapshot with each record's item — and, for
+///     the co-op kit, RefiiHostGetEntityWornDyes, RefiiHostGetEntityScars and
+///     RefiiHostGetEntityGender.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 244; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();

@@ -182,4 +182,36 @@ public class MenuModelStatementsTests
 		AssertThat(menu.Emphases.Count).IsEqual(0);
 		AssertThat(menu.Renames.Count).IsEqual(0);
 	}
+
+	/// <summary>
+	/// The formatter's end fades are formatter globals: a list boundary and a Push/Pop keep them,
+	/// the script init clears them. `HandleEnter` (an empty function) and the read-backs change
+	/// nothing.
+	/// </summary>
+	[TestCase]
+	public void EndFadesOutliveTheListAndDieWithTheScript()
+	{
+		var model = new Engine_UiMenuModel();
+		model.Apply(Spawn("Sword"));
+		model.Apply(Chunk("g_MenuFormatter:FadeOutBottomItemEarly()"));
+		Engine_UiMenuModel.Menu menu = model.For(Shop);
+		AssertThat(menu.FadesTopEnd).IsFalse();
+		AssertThat(menu.FadesBottomEnd).IsTrue();
+
+		model.Apply(Chunk("g_MenuFormatter:FadeOutTopItemEarly()"));
+		model.Apply(Chunk("g_Menu:DeleteAllSpawnedMenuItems()"));
+		model.Apply(Chunk("g_Menu:PushMenuState()"));
+		model.Apply(Chunk("g_Menu:PopMenuState()"));
+		AssertThat(menu.FadesTopEnd).IsTrue();
+		AssertThat(menu.FadesBottomEnd).IsTrue();
+
+		ulong generation = menu.Generation;
+		model.Apply(Chunk("g_Menu:HandleEnter()"));
+		model.Apply(Chunk("g_Menu:GetHighlightedMenuItemData()"));
+		AssertThat(menu.Generation).IsEqual(generation);
+
+		model.Apply(Chunk(Engine_UiMenuModel.PresentationInitChunk));
+		AssertThat(model.For(Shop).FadesTopEnd).IsFalse();
+		AssertThat(model.For(Shop).FadesBottomEnd).IsFalse();
+	}
 }

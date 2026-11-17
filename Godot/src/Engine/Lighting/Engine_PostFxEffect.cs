@@ -1076,6 +1076,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // bailing on an empty list or an empty rect union at 0x82197ba8 / 0x82197bb4.
             if (Refii.Entities.Engine_EntityHighlightLayer.TrySnapshot(
                     View, out Rid layer, out float scale, _highlightTargets) &&
+                HighlightLayerLive(layer) &&
                 EnsureGlow(layer) &&
                 HighlightTargets(camBasis, camOrigin, projection))
             {
@@ -1090,7 +1091,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // guest's bucket-5 surface (off_8331AA14) is added to the scene in the bloom
             // downscale (0162) and in the tonemap (0509) — one sum, consumed by both, which
             // adding it into the colour buffer once reproduces for the whole chain.
-            if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(View, out Rid additive))
+            if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(View, out Rid additive) &&
+                AdditiveLayerLive(additive))
             {
                 BeginBatch();
                 AddLayer(colour, size, additive);
@@ -1648,6 +1650,23 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// <see cref="Refii.Fx.Engine_FxAdditiveLayer"/>. The classic look's scene is already
     /// exposed, so there the shader multiplies the gain by E as 0162 does (c31.x).
     /// </summary>
+    /// <summary>The highlight layer's texture is a live device texture; a dead one is reported
+    /// back so the layer re-reads it, and nothing is bound to it this frame.</summary>
+    private bool HighlightLayerLive(Rid layer)
+    {
+        if (_rd!.TextureIsValid(layer)) return true;
+        Refii.Entities.Engine_EntityHighlightLayer.MarkStale(View);
+        return false;
+    }
+
+    /// <summary>The additive layer's texture is a live device texture; see <see cref="HighlightLayerLive"/>.</summary>
+    private bool AdditiveLayerLive(Rid layer)
+    {
+        if (_rd!.TextureIsValid(layer)) return true;
+        Refii.Fx.Engine_FxAdditiveLayer.MarkStale(View);
+        return false;
+    }
+
     private void AddLayer(Rid colour, Vector2I size, Rid layer) =>
         AddLayer(colour, size, layer, _addlayerSet, Refii.Fx.Engine_FxAdditiveLayer.Gain);
 

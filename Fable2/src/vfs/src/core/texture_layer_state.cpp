@@ -231,7 +231,9 @@ void refii_bridge_end_texture_layers(uint32_t entity) {
 void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32_t kind,
                                       const uint32_t* layers, uint32_t count) {
   using namespace refii::vfs;
-  if (entity == 0u || original == 0u || layers == nullptr || count == 0u) {
+  // A whole-entity swap (kind 2) names its map by slot, 0 the diffuse maps (the stone of a hero
+  // statue, a shadow creature's skin: rex_lhTextureMorph_StateWildcard); any other kind names a texture.
+  if (entity == 0u || (original == 0u && kind != 2u) || layers == nullptr || count == 0u) {
     return;
   }
 
@@ -257,6 +259,24 @@ void refii_bridge_note_texture_layers(uint32_t entity, uint32_t original, uint32
   }
   Append(*record, original, kind, layers, count, &changed);
   if (changed) {
+    ++record->generation;
+  }
+}
+// The entity left the world (`rex_lhEntity_Destroy`): its record is freed for the next entity,
+// and an entity later made at the same address starts from nothing.
+void refii_bridge_forget_texture_layers(uint32_t entity) {
+  using namespace refii::vfs;
+  if (entity == 0u) {
+    return;
+  }
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (g_staging_active && g_staging.entity == entity) {
+    g_staging_active = false;
+    g_staging.used = 0u;
+  }
+  if (EntityLayers* record = Find(entity); record != nullptr) {
+    record->entity = 0u;
+    record->used = 0u;
     ++record->generation;
   }
 }

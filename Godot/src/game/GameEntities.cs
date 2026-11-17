@@ -2724,15 +2724,17 @@ public partial class GameEntities : Node3D
             ++_alignReports;
 
             // THE NUMBER THAT SAYS WHETHER A CHARACTER CAN BE POSED AT ALL is how many of the
-            // model's bones found a guest bone of the same name. A low count is not a partial
-            // success — it means the two rigs are being related by something other than the
-            // names, and the bones that did not map stay frozen in bind while the rest move.
+            // model's bones found a guest bone of the same name — the only key the guest's own
+            // map uses (`sub_82B7F4C8`). A bone that did not map keeps its local rest under its
+            // parent, as the guest draws it; zero means the guest poses none of the mesh either.
             GD.Print($"[rig] '{(mesh as ArrayMesh)?.ResourceName}' " +
                 $"model={skeleton.BoneCount} guest={skeleton.GuestBoneCount} " +
                 $"mapped={skeleton.Mapped} " +
                 $"({skeleton.BoneCount - skeleton.Mapped} model bones unposed, " +
                 $"{skeleton.GuestOnly} guest bones unused)" +
-                (skeleton.Mapped == 0 ? " — NO NAMES MATCHED, the rig cannot be driven" : ""));
+                (skeleton.Mapped == 0
+                    ? " — no name matches the guest skeleton; the guest's own map leaves it at rest too"
+                    : ""));
         }
 
         _dirtyPlaceHides = true;

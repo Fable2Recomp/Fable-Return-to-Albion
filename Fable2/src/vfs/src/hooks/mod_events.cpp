@@ -4874,6 +4874,7 @@ REX_EXTERN(rex_lhEntity_Destroy) {
   } forget{entity};
   refii::vfs::ForgetDownStates(entity);
   refii::vfs::ForgetSpellFxEntity(entity);
+  refii::vfs::ForgetEntityLooks(entity);
   if (!g_spawned.empty()) {
     g_spawned.erase(std::remove(g_spawned.begin(), g_spawned.end(), entity), g_spawned.end());
   }

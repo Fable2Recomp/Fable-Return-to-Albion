@@ -72,6 +72,12 @@ public sealed class Engine_UiExpandableMenu
 		/// pc29..32.</summary>
 		public int IdHigh;
 
+		/// <summary>
+		/// The guest object a sourced row stands for, beside the id that names its kind —
+		/// see `Engine_UiMenuSources.Row.Instance`. 0 for none.
+		/// </summary>
+		public uint Instance;
+
 		/// <summary>`item.Ghosted` — set by `SetItemGhosting`, which is the guest's own call.</summary>
 		public bool Ghosted;
 

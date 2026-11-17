@@ -6,8 +6,8 @@ namespace Refii.Animations;
 
 /// <summary>
 /// What a title's rigs are to the shared animation and entity code: which bone plays a role, the
-/// name its Godot skeleton gives a bone its own rig tables name, and the title's own rules for the
-/// face, the crossfade and the pose check. The shell asks through
+/// name its Godot skeleton gives a bone its own rig tables name, and the title's own rules for
+/// attachments, the crossfade and the pose check. The shell asks through
 /// <see cref="Refii.Core.Engine_TitleGame.Rig"/>; the default names nothing and adds nothing.
 /// </summary>
 /// <remarks>
@@ -129,28 +129,7 @@ public class Engine_TitleRig
 		return -1;
 	}
 
-	// ---------------------------------------------------------------- the face
-
-	/// <summary>
-	/// The host-driven ambient face: an idle face loop sampled into a character's facial bones
-	/// while its own clips pose none. Null when the title has none, and no facial bone is marked.
-	/// </summary>
-	public virtual FaceRig? Face => null;
-
-	/// <summary>
-	/// A title's facial bones and the ambient face they take: the facial bones are the ones under
-	/// the face root (or the head) named with <paramref name="BonePrefix"/>, outside any branch a
-	/// name in <paramref name="NonFacialBranches"/> marks; the loop is
-	/// <paramref name="PrimaryClip"/>, else <paramref name="FallbackClip"/>; an unposed jaw and eye
-	/// rest at their rest pitch and yaw with the stated roll.
-	/// </summary>
-	public sealed record FaceRig(
-		string BonePrefix,
-		IReadOnlyList<string> NonFacialBranches,
-		uint PrimaryClip,
-		uint FallbackClip,
-		float JawRollDegrees,
-		float EyeRollDegrees);
+	// ---------------------------------------------------------------- attachments
 
 	/// <summary>
 	/// Attachment of a dummy no part's <c>.mdl.gmd</c> names, by the dummy's name: the rig bone in

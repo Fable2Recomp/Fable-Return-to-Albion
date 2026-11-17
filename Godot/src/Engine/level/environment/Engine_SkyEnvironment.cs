@@ -157,7 +157,7 @@ public static class Engine_SkyEnvironment
 
         // The dynamic sky re-evaluates the dome at 15 Hz: the byte copy is kept per thread (Godot
         // copies it into the image), and an image that only updated the kept texture is released
-        // here rather than left to its finalizer.
+        // by RetireLutImage rather than left to its finalizer.
         byte[] bytes = _lutBytes is { } kept && kept.Length == lut.Length * sizeof(float)
             ? kept
             : _lutBytes = new byte[lut.Length * sizeof(float)];
@@ -168,11 +168,40 @@ public static class Engine_SkyEnvironment
             reuse.GetHeight() == image.GetHeight())
         {
             reuse.Update(image);
-            image.Dispose();
+            RetireLutImage(image);
             return (state, reuse);
         }
 
         return (state, Refii.Textures.Engine_TextureUpload.CreateTexture(image));
+    }
+
+    /// <summary>Frames an updated LUT image is held before its wrapper is disposed.</summary>
+    private const ulong LutImageHoldFrames = 2;
+
+    [ThreadStatic]
+    private static Queue<(Image Image, ulong After)>? _retiredLutImages;
+
+    /// <summary>
+    /// Disposes the images handed to <see cref="ImageTexture.Update"/> once the rendering server
+    /// has released them, never in the same tick.
+    /// </summary>
+    /// <remarks>
+    /// `texture_2d_update` takes a <c>Ref&lt;Image&gt;</c>; while that reference is live the
+    /// wrapper's GC handle is the STRONG one, and the server's release swaps it back to weak and
+    /// frees it. Disposing right after Update raced that swap: Dispose freed a handle the swap had
+    /// already freed, threw "Handle is not initialized" out of ApplyAtmosphere, and the tick's dome,
+    /// fog, water and clouds were never written (godot.log 2026-11-15, twice).
+    /// </remarks>
+    private static void RetireLutImage(Image image)
+    {
+        Queue<(Image Image, ulong After)> retired = _retiredLutImages ??= new Queue<(Image, ulong)>();
+        ulong now = Engine.GetProcessFrames();
+        while (retired.Count > 0 && retired.Peek().After <= now)
+        {
+            retired.Dequeue().Image.Dispose();
+        }
+
+        retired.Enqueue((image, now + LutImageHoldFrames));
     }
 
     public static void ApplyDomeUniforms(

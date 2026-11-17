@@ -298,6 +298,9 @@ public sealed class Engine_UiMenuTemplate
 				// Provenance, not drawn: carried so a remount that changes it reaches the statement.
 				current[i].FromMod = rows[i].FromMod;
 
+				// Not drawn either: the object the row stands for, which a split stack moves.
+				current[i].Instance = rows[i].Instance;
+
 				// The rest of what a row states can change under an unchanged name and label
 				// (a viewed flag, a new ticket in its command); restated in place. Not `Ghosted`:
 				// the guest's by-name ghosting writes that after the source has spoken.
@@ -390,6 +393,7 @@ public sealed class Engine_UiMenuTemplate
 				: row.Emphasised ? Engine_UiMenuConstants.Emphasis.PrimaryQuest : Engine_UiMenuConstants.Emphasis.None;
 			sourced.Counted = row.Counted;
 			sourced.Unviewed = row.Unviewed;
+			sourced.Instance = row.Instance;
 			// The row's own action wins; the menu's stands in for a screen whose rows all commit
 			// the same way — see `Engine_UiMenuTemplate.RowCommand`. Never on a HEADER: a header
 			// folds, it does not activate.

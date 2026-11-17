@@ -481,20 +481,20 @@ uint32_t refii_bridge_scene_objects_read(uint32_t holder, uint32_t* out, uint32_
 //   list the guest built after its own entry {base, 1 - sum}; count 0 states the part unmorphed.
 //   Read back per morphed part as [base, count, count x (target, weight bits)].
 #define REFII_PART_MORPH_PARTS 24u
-#define REFII_PART_MORPH_TARGETS 8u
+#define REFII_PART_MORPH_TARGETS 16u
 void refii_bridge_part_morph_stated(uint32_t entity, uint32_t base_model, const uint32_t* pairs,
                                     uint32_t count);
 uint32_t refii_bridge_part_morphs_read(uint32_t entity, uint32_t* out, uint32_t capacity,
                                        uint32_t* out_generation, uint64_t* out_statements);
 // - a character's texture work, per ORIGINAL texture, in Fable 2's layer words: 0 texture, 1 blend
-//   mode, 2 weight (float bits), 3 has-tint, 4 tint bytes B G R A, 5 brightness (float bits),
-//   6 bump texture. Kinds as Fable 2 states them (0 composite with layer 0 the base, 1 overlay,
+//   mode, 2 weight (float bits), 3 has-tint, 4 tint bytes B G R A (an overlay's spec texture),
+//   5 brightness (float bits), 6 bump texture. Kinds as Fable 2 states them (0 composite with layer 0 the base, 1 overlay,
 //   2 whole-entity swap) plus 3, a COLOUR MASK (Fable 3's dye: two layers, each the mask texture
 //   at weight 1 with a dye colour as the tint and its DyeBrightness as the brightness). A rebuild
 //   is staged between `begin` and
 //   `end` and published whole, so a read never sees half of one.
 #define REFII_TEXTURE_LAYER_WORDS 7u
-#define REFII_TEXTURE_LAYERS_PER_TEXTURE 8u
+#define REFII_TEXTURE_LAYERS_PER_TEXTURE 16u
 #define REFII_TEXTURE_LAYER_TEXTURES 40u
 #define REFII_TEXTURE_LAYER_KIND_COLOUR_MASK 3u
 void refii_bridge_texture_layers_begin(uint32_t entity);

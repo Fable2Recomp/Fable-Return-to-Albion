@@ -4,9 +4,10 @@
 // GUI-tick sampler in Fable2/src/vfs/src/hooks/guest_tick_pump.cpp, on the guest's thread) and the HOST reads
 // (the host bridge, on Godot's).
 //
-// One entry per item record the hero wears or carries that answered the guest's own
+// One entry per item INSTANCE the hero wears or carries that answered the guest's own
 // `sub_826CAFA8(_, itemRef, slot)` — the test its dye screen's footer makes to choose between
-// "apply" and "scrub" (`sub_829B5D68`). kDyeStateWords words each, see core/payload_bridge.h.
+// "apply" and "scrub" (`sub_829B5D68`). kDyeStateWords words each {item, record, flags}, see
+// core/payload_bridge_fable2.h.
 
 #include <cstdint>
 #include <cstring>

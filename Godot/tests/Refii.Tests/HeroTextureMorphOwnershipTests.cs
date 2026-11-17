@@ -29,7 +29,7 @@ public sealed class HeroTextureMorphOwnershipTests
             uint original = Engine_TexPathIndex.PathHash(path);
             var layers = new[] { new Refii.Host.HostBridge.GuestTextureLayer
                 { Texture = original, HasTint = true, Weight = 1, Brightness = 1 } };
-            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, false)).IsNull();
+            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse)).IsNull();
             AssertThat(Engine_HeroTextureMorph.CacheMetrics.DecodedEntries).IsEqual(1);
             long built = Engine_HeroTextureMorph.CompositesBuilt;
             Engine_HeroTextureMorph.ReleaseRegionTextures();
@@ -38,7 +38,7 @@ public sealed class HeroTextureMorphOwnershipTests
             AssertThat(Engine_HeroTextureMorph.CacheMetrics.CompositedEntries).IsEqual(0);
             AssertThat(Engine_HeroTextureMorph.CompositesBuilt).IsEqual(built);
             Engine_HeroTextureMorph.ReleaseRegionTextures();
-            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, false)).IsNull();
+            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse)).IsNull();
             AssertThat(reads).IsEqual(2);
             AssertThat(Engine_HeroTextureMorph.CacheMetrics.DecodedEntries).IsEqual(1);
         }
@@ -70,7 +70,7 @@ public sealed class HeroTextureMorphOwnershipTests
             uint original = Engine_TexPathIndex.PathHash(path);
             var layers = new[] { new Refii.Host.HostBridge.GuestTextureLayer
                 { Texture = original, HasTint = true, Weight = 1, Brightness = 1 } };
-            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, false)).IsNull();
+            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse)).IsNull();
             AssertThat(Engine_HeroTextureMorph.CacheMetrics.DecodedEntries).IsEqual(0);
             var active = new System.Collections.Generic.Dictionary<uint,
                 System.Collections.Generic.List<TextureMorphEntry>>
@@ -108,14 +108,14 @@ public sealed class HeroTextureMorphOwnershipTests
             uint original = Engine_TexPathIndex.PathHash(path);
             var layers = new[] { new Refii.Host.HostBridge.GuestTextureLayer
                 { Texture = original, HasTint = true, Weight = 1, Brightness = 1 } };
-            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, false)).IsNull();
+            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse)).IsNull();
             var cached = Engine_HeroTextureMorph.CacheMetrics;
             AssertThat(cached.DecodedEntries).IsEqual(1);
             AssertThat(cached.DecodedRgbaBytes).IsEqual(0L);
             AssertThat(cached.CompositedEntries).IsEqual(0);
             AssertThat(cached.CompositesBuilt).IsEqual(before.CompositesBuilt);
             AssertThat(Engine_HeroTextureMorph.CacheMetrics).IsEqual(cached);
-            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, false)).IsNull();
+            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse)).IsNull();
             AssertThat(reads).IsEqual(1);
             AssertThat(Engine_HeroTextureMorph.CacheMetrics).IsEqual(cached);
             Engine_HeroTextureMorph.Invalidate();
@@ -145,7 +145,7 @@ public sealed class HeroTextureMorphOwnershipTests
             uint original = Engine_TexPathIndex.PathHash(path);
             var layers = new[] { new Refii.Host.HostBridge.GuestTextureLayer
                 { Texture = original, HasTint = true, Weight = 1, Brightness = 1 } };
-            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, false)).IsNull();
+            AssertThat(Engine_HeroTextureMorph.Composite(original, layers, null, Engine_HeroTextureMorph.OverlayMap.Diffuse)).IsNull();
             var failed = Engine_HeroTextureMorph.CacheMetrics;
             AssertThat(failed.DecodedEntries).IsEqual(1);
             AssertThat(failed.DecodedRgbaBytes).IsEqual(0L);

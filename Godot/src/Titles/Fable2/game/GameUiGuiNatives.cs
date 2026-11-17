@@ -937,20 +937,24 @@ public partial class GameUi
 				"(screenId, itemName, ghosted) — it stages String1/Float1 and runs the chunk " +
 				"`g_Menu:SetItemGhosting()`, which the ABI 82 chunk capture ALREADY carries, so " +
 				"routing it here would apply the same statement twice",
+			// THE D-PAD STATES ITSELF. Both natives run in the guest, and what they change on
+			// screen reaches the HUD as the d-pad widget's own `GoToSlide` on
+			// `dpad.dpad.dpadmenu` (`sub_823D35B0`, disc `sub_824072A0`: 2 open, 1 closed), a
+			// headless element statement the HUD stand plays. Routing the natives as well would
+			// state the ring twice.
 			["SetHUDSuggestionMode"] =
-				"NOT a suggestion channel despite the name — it writes a 32-bit mode at +0 of the " +
-				"`HUDDPadMenu` widget (`stb`/`stw r3, 0(r9)` at 0x82306518, reached GUI+0x20 " +
-				"then +0x38), which the guest itself names in its save serialiser. Only TWO " +
-				"readers exist and both test `== 2`: `sub_823D2A68` forces the context-sensitive " +
-				"D-pad OPEN even when IsEnabled is false, and `sub_82413BB8` makes an expression " +
-				"start queue a GUI event and slam the D-pad shut. Every other value, the ctor " +
-				"default of 1 included, behaves identically. The D-pad quick menu " +
-				"(`dpad.dpad.dpadmenu`, slide 2 open / 1 closed) has no owned surface, so owning " +
-				"this would change nothing on screen",
+				"writes the `HUDDPadMenu` widget's mode, `*(*(GUI+32)+56) = r3` " +
+				"(`Lua_GUI_SetHUDSuggestionMode` 0x82306508, disc 0x82908130). Its readers " +
+				"test `== 2`: the d-pad's open (`sub_823D2A68`, disc `sub_824067C0`) then opens " +
+				"the ring even while disabled, and an expression start (`sub_82413BB8`) shuts " +
+				"it. The open and the close are the widget's own GoToSlide on " +
+				"`dpad.dpad.dpadmenu`, already drawn from its statement",
 			["SetDPadEnabled"] =
-				"writes dpadObject+0x20 AND tail-calls sub_823D2898, which closes an open ring and " +
-				"RELEASES guest input-blocks 185 and 186; three other guest sites write the same " +
-				"byte, so a host cannot hold this flag without writing guest memory",
+				"writes `dpad+32` and calls `sub_823D2898` (`Lua_GUI_SetDPadEnabled` " +
+				"0x82305FC8, disc 0x82907BF0 / `sub_824065F0`): an open or opening ring " +
+				"(`dpad+24` 1 or 2) that is no longer enabled closes through `sub_823D2B50` " +
+				"(disc `sub_824068A8`) — GoToSlide 1 on `dpad.dpad.dpadmenu`, already drawn " +
+				"from its statement — and releases input blocks 185 and 186",
 			["PlayFullCutscene"] =
 				"pushes a gameflow command (id 7); the push SUSPENDS the incumbent state, which is " +
 				"how starting a cutscene aborts a playing movie — a consequence a host reproducing " +
