@@ -318,6 +318,45 @@ public static class Engine_RdHealth
 	}
 
 	/// <summary>
+	/// Returns whether a cached <c>RenderingDevice</c> texture RID can be reused for the current
+	/// viewport texture publication without re-querying <c>RenderingServer.TextureGetRdTexture</c>.
+	/// </summary>
+	public static bool ShouldReuseResolvedRd(
+		Rid texRid,
+		Vector2I size,
+		ulong generation,
+		Rid cachedTexRid,
+		Vector2I cachedSize,
+		ulong cachedGeneration,
+		Rid cachedRd,
+		bool rdTextureValid)
+	{
+		return ShouldReuseResolvedRd(
+			texRid.Id, size, generation, cachedTexRid.Id, cachedSize, cachedGeneration, cachedRd.Id, rdTextureValid);
+	}
+
+	/// <summary>
+	/// Value-ID overload of <see cref="ShouldReuseResolvedRd"/> testable without live native <c>Rid</c> allocation.
+	/// </summary>
+	public static bool ShouldReuseResolvedRd(
+		ulong texRidId,
+		Vector2I size,
+		ulong generation,
+		ulong cachedTexRidId,
+		Vector2I cachedSize,
+		ulong cachedGeneration,
+		ulong cachedRdId,
+		bool rdTextureValid)
+	{
+		return texRidId != 0 &&
+		       cachedRdId != 0 &&
+		       rdTextureValid &&
+		       cachedTexRidId == texRidId &&
+		       cachedSize == size &&
+		       cachedGeneration == generation;
+	}
+
+	/// <summary>
 	/// Resolves a canvas/viewport texture's backing <c>RenderingDevice</c> RID on the render thread,
 	/// caching the result per <paramref name="texRid"/> and <paramref name="size"/> so main-thread
 	/// callers never stall on <c>RenderingServer.TextureGetRdTexture</c> (<c>push_and_ret</c>).
@@ -325,15 +364,37 @@ public static class Engine_RdHealth
 	public static Rid ResolveRdOnRenderThread(
 		Rid texRid, Vector2I size, ref Rid cachedTexRid, ref Vector2I cachedSize, ref Rid cachedRd)
 	{
+		ulong ignoredGeneration = 0;
+		return ResolveRdOnRenderThread(
+			texRid, size, 0, ref cachedTexRid, ref cachedSize, ref ignoredGeneration, ref cachedRd, rd: null);
+	}
+
+	/// <summary>
+	/// Resolves a canvas/viewport texture's backing <c>RenderingDevice</c> RID on the render thread,
+	/// invalidating immediately on publication <paramref name="generation"/> changes or freed RD textures.
+	/// </summary>
+	public static Rid ResolveRdOnRenderThread(
+		Rid texRid,
+		Vector2I size,
+		ulong generation,
+		ref Rid cachedTexRid,
+		ref Vector2I cachedSize,
+		ref ulong cachedGeneration,
+		ref Rid cachedRd,
+		RenderingDevice? rd = null)
+	{
 		if (!texRid.IsValid || IsDeviceLost)
 		{
 			cachedTexRid = default;
 			cachedSize = default;
+			cachedGeneration = generation;
 			cachedRd = default;
 			return default;
 		}
 
-		if (cachedTexRid == texRid && cachedSize == size && cachedRd.IsValid)
+		bool rdValid = cachedRd.IsValid && (rd is null || rd.TextureIsValid(cachedRd));
+		if (ShouldReuseResolvedRd(
+			    texRid, size, generation, cachedTexRid, cachedSize, cachedGeneration, cachedRd, rdValid))
 		{
 			return cachedRd;
 		}
@@ -341,6 +402,7 @@ public static class Engine_RdHealth
 		cachedRd = RenderingServer.TextureGetRdTexture(texRid);
 		cachedTexRid = texRid;
 		cachedSize = size;
+		cachedGeneration = generation;
 		return cachedRd;
 	}
 }

@@ -132,29 +132,35 @@ public static class Engine_TextureUpload
 
         return Engine_ServerSyncs.RunGpuUpload(
             image.GetDataSize(),
-            () =>
-            {
-                if (Refii.Core.Engine_RdHealth.IsDeviceLost || image.IsEmpty())
-                {
-                    return new ImageTexture();
-                }
+            () => CreateTextureOnMainThread(image, world));
+    }
 
-                if (Prepares)
-                {
-                    return AndroidTextureUpload.CreateTexture(image, world);
-                }
+    /// <summary>
+    /// Creates an <see cref="ImageTexture"/> directly on the main thread inside an active
+    /// batched <see cref="Engine_ServerSyncs.RunGpuUpload"/> scope without double-counting bytes.
+    /// </summary>
+    internal static ImageTexture CreateTextureOnMainThread(Image image, bool world = false)
+    {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || image is null || image.IsEmpty())
+        {
+            return new ImageTexture();
+        }
 
-                ImageTexture created = ImageTexture.CreateFromImage(image);
-                if (!Refii.Core.Engine_RdHealth.CheckTextureValid(
-                        created.GetRid(), "Engine_TextureUpload.CreateTexture", verifyRdBacking: VerifyRdBackingOnCallerThread))
-                {
-                    return created;
-                }
+        if (Prepares)
+        {
+            return AndroidTextureUpload.CreateTexture(image, world);
+        }
 
-                Layouts.AddOrUpdate(created, new UploadLayout(
-                    image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
-                return created;
-            });
+        ImageTexture created = ImageTexture.CreateFromImage(image);
+        if (!Refii.Core.Engine_RdHealth.CheckTextureValid(
+                created.GetRid(), "Engine_TextureUpload.CreateTexture", verifyRdBacking: VerifyRdBackingOnCallerThread))
+        {
+            return created;
+        }
+
+        Layouts.AddOrUpdate(created, new UploadLayout(
+            image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
+        return created;
     }
 
     /// <summary>

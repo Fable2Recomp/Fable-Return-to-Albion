@@ -20,6 +20,9 @@ namespace Refii.Core;
 /// </remarks>
 public static partial class Engine_LevelCaches
 {
+	/// <summary>Default cross-region texture cache budget in MB when <c>region_cache_budget_mb</c> is unset.</summary>
+	public static int ResolveDefaultRegionCacheBudgetMb(bool isD3d12) => isD3d12 ? 256 : 512;
+
 	/// <summary>Drops every region-scoped cache. Idempotent.</summary>
 	public static void ReleaseRegion() => ReleaseRegion(Refii.Core.Engine_Platform.IsAndroid);
 
@@ -27,9 +30,39 @@ public static partial class Engine_LevelCaches
 	/// <param name="android">Whether to retire Android's additional CPU/lighting owners.</param>
 	internal static void ReleaseRegion(bool android)
 	{
-		Refii.Textures.Engine_TexLibrary.Clear();
+		// Materials and prop meshes pin underlying textures and hold 64 KB-aligned D3D12 buffers,
+		// so clear them unconditionally while retaining only hot raw textures within budget.
 		Refii.Models.Engine_MdlMaterial.ClearSharedCache();
 		Refii.Level.Engine_PropStreamer.ClearCache();
+
+		if (android || Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			Refii.Textures.Engine_TexLibrary.Clear();
+		}
+		else
+		{
+			int defaultBudgetMb = ResolveDefaultRegionCacheBudgetMb(
+				Refii.Textures.Engine_TextureUpload.IsD3D12Driver);
+			int budgetMb = defaultBudgetMb;
+			try
+			{
+				budgetMb = Refii.Core.Engine_RefiiConfig.Int(
+					Refii.Core.Engine_RefiiConfig.Read(out _), "region_cache_budget_mb", defaultBudgetMb);
+			}
+			catch (System.Exception)
+			{
+				budgetMb = defaultBudgetMb;
+			}
+
+			if (budgetMb <= 0)
+			{
+				Refii.Textures.Engine_TexLibrary.Clear();
+			}
+			else
+			{
+				Refii.Textures.Engine_TexLibrary.TrimToBudget((long)budgetMb * 1024L * 1024L);
+			}
+		}
 		Refii.Level.Engine_LevelFx.ClearCaches();
 		Refii.Level.Engine_TerrainSplatMaterial.ClearSharedCache();
 		Refii.Lighting.Engine_LevelBakedLighting.ClearContainerCache();
@@ -37,6 +70,7 @@ public static partial class Engine_LevelCaches
 		Refii.Lighting.Engine_LevelAmbientOcclusion.Clear();
 		Refii.Models.Engine_ModelSelfAo.ClearMemoryCache();
 		Refii.Fx.FableFx.ClearRegionCaches();
+		Refii.Fx.Engine_FxMeshTwins.ClearRegionCaches();
 		Refii.Entities.Engine_EntityHighlight.Forget();
 		Refii.Entities.Engine_EntityAppearance.ForgetAll();
 		Refii.Entities.Engine_ShadowProxy.Forget();

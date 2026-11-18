@@ -79,17 +79,13 @@ public static class Engine_ServerSyncs
 
 	/// <summary>
 	/// Maximum background GPU upload staging bytes per drawn frame before background workers yield
-	/// for the next frame fence (24 MB/frame in play, 48 MB/frame under load cover on Vulkan;
-	/// 8 MB / 16 MB on D3D12).
-	/// D3D12 VRAM / Upload Pacing warning: Under `--rendering-driver d3d12`, `D3D12MA` allocates
-	/// larger block alignments and retains upload heaps across 3 frames in flight on unified memory
-	/// (Intel Arc 140V). Never bypass `EffectiveMaxUploadBytesPerFrame` or trigger synchronous
-	/// worker `ForceSync()` loops during region/level load cover.
+	/// for the next frame fence (32 MB/frame in play, 96 MB/frame under load cover on Vulkan;
+	/// 24 MB / 64 MB on D3D12).
 	/// </summary>
-	internal const long MaxBackgroundUploadBytesPerFrame = 24L * 1024L * 1024L;
-	internal const long MaxLoadCoverUploadBytesPerFrame = 48L * 1024L * 1024L;
-	internal const long MaxD3D12BackgroundUploadBytesPerFrame = 8L * 1024L * 1024L;
-	internal const long MaxD3D12LoadCoverUploadBytesPerFrame = 16L * 1024L * 1024L;
+	internal const long MaxBackgroundUploadBytesPerFrame = 32L * 1024L * 1024L;
+	internal const long MaxLoadCoverUploadBytesPerFrame = 96L * 1024L * 1024L;
+	internal const long MaxD3D12BackgroundUploadBytesPerFrame = 24L * 1024L * 1024L;
+	internal const long MaxD3D12LoadCoverUploadBytesPerFrame = 64L * 1024L * 1024L;
 
 	/// <summary>Per-frame staging upload ceiling tailored by driver and load-cover state.</summary>
 	public static long EffectiveMaxUploadBytesPerFrame(bool loadCoverActive, bool isD3D12)
@@ -178,6 +174,7 @@ public static class Engine_ServerSyncs
 
 		private readonly object _gpuUploadGate = new();
 		private readonly System.Collections.Concurrent.ConcurrentQueue<GpuUploadWorkItem> _workerUploads = new();
+		private readonly ManualResetEventSlim _uploadAvailable = new(false);
 		private int _mainThreadId = -1;
 		private long _lastMainFrameTickMs;
 		private bool _inDraw;
@@ -226,12 +223,12 @@ public static class Engine_ServerSyncs
 			Interlocked.Exchange(ref _frameUploadBytes, 0L);
 		}
 
-		public void PumpWorkerGpuUploads(double budgetMs)
+		public int PumpWorkerGpuUploads(double budgetMs, bool waitForWorkers = false)
 		{
 			NotifyMainFrameTick();
 			if (!OnMainThread && Volatile.Read(ref _mainThreadId) != -1)
 			{
-				return;
+				return 0;
 			}
 
 			long start = Stopwatch.GetTimestamp();
@@ -242,11 +239,48 @@ public static class Engine_ServerSyncs
 				{
 					cancelled.Cancel();
 				}
-				return;
+				return 0;
 			}
 
-			while (_workerUploads.TryPeek(out GpuUploadWorkItem? next))
+			int drained = 0;
+			while (true)
 			{
+				if (!_workerUploads.TryPeek(out GpuUploadWorkItem? next))
+				{
+					if (!waitForWorkers || !LoadCoverActive)
+					{
+						break;
+					}
+
+					long waitMaxBytes = EffectiveMaxUploadBytesPerFrame(
+						LoadCoverActive, Refii.Textures.Engine_TextureUpload.IsD3D12Driver);
+					if (Interlocked.Read(ref _frameUploadBytes) >= waitMaxBytes)
+					{
+						break;
+					}
+
+					long elapsed = Stopwatch.GetTimestamp() - start;
+					if (elapsed >= maxTicks)
+					{
+						break;
+					}
+
+					_uploadAvailable.Reset();
+					if (!_workerUploads.IsEmpty)
+					{
+						continue;
+					}
+
+					int remainingMs = (int)System.Math.Ceiling((maxTicks - elapsed) * 1000.0 / Stopwatch.Frequency);
+					if (remainingMs <= 0)
+					{
+						break;
+					}
+
+					_uploadAvailable.Wait(System.Math.Min(1, remainingMs));
+					continue;
+				}
+
 				if (Engine_RdHealth.IsDeviceLost)
 				{
 					while (_workerUploads.TryDequeue(out GpuUploadWorkItem? cancelled))
@@ -272,10 +306,14 @@ public static class Engine_ServerSyncs
 
 				if (!_workerUploads.TryDequeue(out GpuUploadWorkItem? item))
 				{
-					break;
+					continue;
 				}
 
-				item.TryExecute(this);
+				if (item.TryExecute(this))
+				{
+					++drained;
+				}
+
 				NotifyMainFrameTick();
 
 				if (Stopwatch.GetTimestamp() - start >= maxTicks)
@@ -283,6 +321,8 @@ public static class Engine_ServerSyncs
 					break;
 				}
 			}
+
+			return drained;
 		}
 
 		public void RunGpuUpload(long estimatedBytes, System.Action action)
@@ -313,6 +353,7 @@ public static class Engine_ServerSyncs
 
 			var item = new GpuUploadWorkItem(bytes, action);
 			_workerUploads.Enqueue(item);
+			_uploadAvailable.Set();
 			item.Done.Wait();
 			item.Done.Dispose();
 			if (item.Error is not null)
@@ -326,6 +367,7 @@ public static class Engine_ServerSyncs
 			Volatile.Write(ref _mainThreadId, -1);
 			LoadCoverActive = false;
 			Interlocked.Exchange(ref _frameUploadBytes, 0L);
+			_uploadAvailable.Reset();
 			while (_workerUploads.TryDequeue(out GpuUploadWorkItem? item))
 			{
 				item.Cancel();
@@ -352,7 +394,14 @@ public static class Engine_ServerSyncs
 	/// staging-byte budgets so <see cref="Godot.RenderingDevice"/> is never accessed concurrently
 	/// with main-thread <c>_Process</c> or <c>RenderingServer::draw()</c>.
 	/// </summary>
-	public static void PumpWorkerGpuUploads(double budgetMs) => DefaultPacer.PumpWorkerGpuUploads(budgetMs);
+	public static void PumpWorkerGpuUploads(double budgetMs) => DefaultPacer.PumpWorkerGpuUploads(budgetMs, false);
+
+	/// <summary>
+	/// Executes queued worker-thread GPU uploads on the main thread and, when <paramref name="waitForWorkers"/>
+	/// is true during active load cover, services chained worker uploads within the frame window.
+	/// </summary>
+	public static int PumpWorkerGpuUploads(double budgetMs, bool waitForWorkers) =>
+		DefaultPacer.PumpWorkerGpuUploads(budgetMs, waitForWorkers);
 
 	/// <summary>
 	/// Dispatches a <see cref="Godot.RenderingDevice"/> resource upload on the main thread

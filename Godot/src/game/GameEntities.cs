@@ -293,7 +293,7 @@ public partial class GameEntities : Node3D
     private const int MaxInFlightBuilds = 3;
 
     /// <summary>Under the loading screen the builds are all that is left to wait for.</summary>
-    private int InFlightLimit => LoadHold ? MaxInFlightLoadBuilds : MaxInFlightBuilds;
+    private int InFlightLimit => LoadHold ? EffectiveMaxInFlightLoadBuilds : MaxInFlightBuilds;
 
     /// <summary>The walk begins.</summary>
     private void BeginLoadWalk() => Refii.Entities.Engine_LoadEntityBuilds.Collecting = LoadHold;
@@ -603,12 +603,14 @@ public partial class GameEntities : Node3D
 
         // The walk kicked at frame start (GameWindow) is taken here; without one — the lever
         // off, or no kick this frame — it is walked synchronously. On non-guest frames pumped
-        // under LoadHold, reuse the last entity list so completed worker meshes can be turned
-        // into nodes and reconciled every frame without re-walking guest memory.
+        // under LoadHold, reuse the last entity list once a post-activation walk has landed so
+        // completed worker meshes can be turned into nodes and reconciled every frame without
+        // re-walking guest memory.
         List<HostBridge.GuestEntity> entities;
         uint unknown;
         HostBridge.UnknownPlacement[] unknownVtables;
-        if (!guestFrameChanged && _lastEntities.Count > 0)
+        bool worldActiveNow = !HostBridge.IsInGame || HostBridge.WorldIsActive();
+        if (!guestFrameChanged && _lastEntities.Count > 0 && (!LoadHold || _walkedWhileWorldActive))
         {
             entities = _lastEntities;
             unknown = _lastUnknown;
@@ -622,6 +624,10 @@ public partial class GameEntities : Node3D
             _lastEntities = entities;
             _lastUnknown = unknown;
             _lastUnknownVtables = unknownVtables;
+            if (worldActiveNow)
+            {
+                _walkedWhileWorldActive = true;
+            }
         }
         else
         {
@@ -629,6 +635,10 @@ public partial class GameEntities : Node3D
             _lastEntities = entities;
             _lastUnknown = unknown;
             _lastUnknownVtables = unknownVtables;
+            if (worldActiveNow)
+            {
+                _walkedWhileWorldActive = true;
+            }
         }
 
         if (guestFrameChanged && entities.Count > 0)
@@ -1191,12 +1201,44 @@ public partial class GameEntities : Node3D
             DueLap(DueResolve);
 
             _seen.Add(entity.Address);
+            created = false;
+            bool hasExistingNode = _nodes.TryGetValue(entity.Address, out MeshInstance3D? existingNode);
+            if (!hasExistingNode)
+            {
+                // Node creation is budgeted per frame by time, bounded by a minimum count (so a
+                // region cannot stall on one slow creation) and a maximum; the rest wait a frame.
+                // Under the load hold the larger load budget applies: nothing is on screen, and
+                // a deferred node would appear after the player has control.
+                //
+                // Defer BEFORE Wait/Adopt/_drawnRecords so static build-time twins stay visible
+                // until the exact frame the live entity node is actually created.
+                int maxCreations = LoadHold ? MaxCreationsPerLoadFrame : MaxCreationsPerFrame;
+                double createMs = LoadHold ? CreateMillisecondsPerLoadFrame : CreateMillisecondsPerFrame;
+                long spentTicks = LoadHold
+                    ? _createTicksThisFrame
+                    : System.Diagnostics.Stopwatch.GetTimestamp() - _createFrom;
+                double budgetMs = EntityCreateBudgetMs;
+                bool defer = !LoadHold && budgetMs > 0.0
+                    ? Refii.Entities.Engine_EntityCreateBudget.Defer(_createdThisFrame, maxCreations,
+                        _createTicksThisFrame * 1000.0 / System.Diagnostics.Stopwatch.Frequency, budgetMs)
+                    : _createdThisFrame >= MinCreationsPerFrame &&
+                        (_createdThisFrame >= maxCreations ||
+                            spentTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency >= createMs);
+                if (defer)
+                {
+                    ++_creationsDeferred;
+                    ++_awaitingCreate;
+                    prologueTicks += SectionClock() - prologueFrom;
+                    continue;
+                }
+            }
+
             adopted = _adoptions.ContainsKey(entity.Address);
             // UNRIGGED MODELS ONLY, for now. A rigged twin would have to follow its dominant
             // bone's pose relative to its rest, and the first cut of that displaced the
             // market's double doors; until that delta is verified against a door offline, a
             // rigged entity keeps the hide-and-draw path, which is right but for the seam.
-            if (!adopted && !_nodes.ContainsKey(entity.Address) && Twins is { } adoptable &&
+            if (!adopted && !hasExistingNode && Twins is { } adoptable &&
                 Refii.Models.Engine_MdlRig.TryFrom(mesh) is null &&
                 !MeshHasCloth(mesh) &&
                 (EntityLayers(entity) & (Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LightZones.IndoorLampHostMask)) == 0u &&
@@ -1231,42 +1273,8 @@ public partial class GameEntities : Node3D
                 }
             }
 
-            created = false;
-            if (!_nodes.TryGetValue(entity.Address, out MeshInstance3D? existingNode))
+            if (!hasExistingNode)
             {
-                // Node creation is budgeted per frame by time, bounded by a minimum count (so a
-                // region cannot stall on one slow creation) and a maximum; the rest wait a frame.
-                // Under the load hold the larger load budget applies: nothing is on screen, and
-                // a deferred node would appear after the player has control.
-                //
-                // IN PLAY the clock runs from the walk's start, so the walk itself counts against
-                // the frame's 2 ms. UNDER THE HOLD only the creations count: in Bowerstone the
-                // walk's prologue alone is ~15 ms on the S10e, so a clock from the walk's start
-                // had spent the 12 ms before the first creation and every held frame made the
-                // minimum 8 nodes; ~3,500 nodes took ~430 frames and the hold with them.
-                int maxCreations = LoadHold ? MaxCreationsPerLoadFrame : MaxCreationsPerFrame;
-                double createMs = LoadHold ? CreateMillisecondsPerLoadFrame : CreateMillisecondsPerFrame;
-                long spentTicks = LoadHold
-                    ? _createTicksThisFrame
-                    : System.Diagnostics.Stopwatch.GetTimestamp() - _createFrom;
-                // IN PLAY WITH `entity_create_budget_ms` set, the creations' own time against it
-                // and a minimum of one (Engine_EntityCreateBudget): no frame makes eight slow
-                // creations together because the walk had already spent the 2 ms.
-                double budgetMs = EntityCreateBudgetMs;
-                bool defer = !LoadHold && budgetMs > 0.0
-                    ? Refii.Entities.Engine_EntityCreateBudget.Defer(_createdThisFrame, maxCreations,
-                        _createTicksThisFrame * 1000.0 / System.Diagnostics.Stopwatch.Frequency, budgetMs)
-                    : _createdThisFrame >= MinCreationsPerFrame &&
-                        (_createdThisFrame >= maxCreations ||
-                            spentTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency >= createMs);
-                if (defer)
-                {
-                    ++_creationsDeferred;
-                    ++_awaitingCreate;
-                    prologueTicks += SectionClock() - prologueFrom;
-                    continue;
-                }
-
                 ++_createdThisFrame;
                 created = true;
                 long createFrom = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -3180,6 +3188,9 @@ public partial class GameEntities : Node3D
     /// <summary>Whether the twins have been reconciled at least once for this region.</summary>
     private bool _reconciledOnce;
 
+    /// <summary>Whether at least one entity walk executed after the guest's world became active.</summary>
+    private bool _walkedWhileWorldActive;
+
     private bool _dirtyPlaceHides = true;
 
     /// <summary>
@@ -3191,7 +3202,12 @@ public partial class GameEntities : Node3D
     /// A creation deferred by the per-frame budget (<c>_awaitingCreate</c>) is pending too: its
     /// mesh is built but it has no node yet.
     /// </remarks>
-    public bool ReadyForRelease => _ticks > 1 && _awaitingBuild == 0 && _awaitingCreate == 0 && _reconciledOnce;
+    public bool ReadyForRelease =>
+        _ticks > 1 &&
+        (!HostBridge.IsInGame || _walkedWhileWorldActive) &&
+        _awaitingBuild == 0 &&
+        _awaitingCreate == 0 &&
+        _reconciledOnce;
 
     /// <summary>
     /// True once the entity feed has captured at least two guest frames after the guest's own
@@ -3216,6 +3232,7 @@ public partial class GameEntities : Node3D
     /// <summary>What <see cref="ReadyForRelease"/> is still waiting on, for the hold's log line.</summary>
     public string ReleaseWait =>
         _ticks <= 1 ? "the first entity pass"
+        : (HostBridge.IsInGame && !_walkedWhileWorldActive) ? "guest world activation walk"
         : _awaitingBuild != 0 ? $"{_awaitingBuild} entity mesh build(s) ({_awaitingStub} stub(s) not counted)"
         : _awaitingCreate != 0 ? $"{_awaitingCreate} entity node(s) not yet created"
         : !_reconciledOnce ? "the first twin reconcile"
@@ -4999,6 +5016,23 @@ public partial class GameEntities : Node3D
         {
             _meshes[modelHash] = null;
             return null;
+        }
+
+        // Fast-path: if the region's prop streamer already built and cached this model off-thread,
+        // adopt the immutable ArrayMesh immediately on the main walk without spawning another job.
+        if (Refii.Level.Engine_PropStreamer.TryPeek(path, out ArrayMesh? readyProp, out bool knownPropFailure) &&
+            !knownPropFailure &&
+            readyProp is not null &&
+            readyProp.GetSurfaceCount() > 0 &&
+            Refii.Models.Engine_ClassicMaterial.MeshSettled(readyProp))
+        {
+            string fullPath = Refii.Models.Engine_BnkMeshLoader.PathPrefix + path;
+            if (readyProp.ResourcePath.Length == 0 && !ResourceLoader.HasCached(fullPath))
+            {
+                readyProp.ResourcePath = fullPath;
+            }
+            _meshes[modelHash] = readyProp;
+            return readyProp;
         }
 
         QueueMeshBuild(modelHash, path);

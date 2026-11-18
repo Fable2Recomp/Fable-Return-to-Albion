@@ -121,6 +121,10 @@ public static class Engine_ModernFur
             AttachNow(mesh);
         }
         Gone.Clear();
+        if (!GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree())
+        {
+            return;
+        }
         float halfTan = MathF.Tan(Mathf.DegToRad(camera.Fov) * 0.5f);
         Vector3 eye = camera.GlobalPosition;
         foreach ((ulong id, Furred furred) in FurredById)
@@ -130,7 +134,7 @@ public static class Engine_ModernFur
                 Gone.Add(id);
                 continue;
             }
-            if (!furred.Source.IsVisibleInTree())
+            if (!furred.Source.IsInsideTree() || !furred.Source.IsVisibleInTree())
             {
                 continue;
             }
@@ -166,7 +170,9 @@ public static class Engine_ModernFur
             // The shells are the node's: on split screen the nearer view's (the finer) count and length.
             for (int v = 0; v < Engine_ClassicViews.Count && Engine_ClassicViews.Count > 1; v++)
             {
-                if (Engine_ClassicViews.Camera(v) is not { } view)
+                if (Engine_ClassicViews.Camera(v) is not { } view ||
+                    !GodotObject.IsInstanceValid(view) ||
+                    !view.IsInsideTree())
                 {
                     continue;
                 }

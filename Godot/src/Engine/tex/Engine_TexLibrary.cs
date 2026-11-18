@@ -112,6 +112,12 @@ public static class Engine_TexLibrary
 
 		public long Version;
 
+		public long ApproxBytes;
+
+		public long LastAccess;
+
+		public ulong TracedRidId;
+
 		/// <summary>Everything needed to redo, or undo, the enhancement without a caller.</summary>
 		public required string Path { get; init; }
 
@@ -145,9 +151,343 @@ public static class Engine_TexLibrary
 
 	private static readonly object Gate = new();
 
+	private static readonly Dictionary<string, object> ComposedOrmFlights =
+		new(StringComparer.Ordinal);
+
+	private sealed class SingleFlightBox<T>
+	{
+		public readonly ManualResetEventSlim Done = new(false);
+		public T? Value;
+		public Exception? Error;
+	}
+
+	internal sealed record SharedOrmPayload(
+		byte[] Data, int Width, int Height, bool UseMipmaps, Image.Format Format, bool HasHeight);
+
+	/// <summary>
+	/// Deduplicates concurrent CPU work for identical <paramref name="key"/> so only one leader
+	/// executes <paramref name="producer"/> while concurrent followers await its result.
+	/// </summary>
+	internal static T RunKeyedSingleFlight<T>(
+		object gate,
+		Dictionary<string, object> flights,
+		string key,
+		Func<T> producer,
+		out bool wasLeader)
+	{
+		SingleFlightBox<T>? waiter = null;
+		SingleFlightBox<T>? ownBox = null;
+		lock (gate)
+		{
+			if (flights.TryGetValue(key, out object? existing) && existing is SingleFlightBox<T> active)
+			{
+				waiter = active;
+			}
+			else
+			{
+				ownBox = new SingleFlightBox<T>();
+				flights[key] = ownBox;
+			}
+		}
+
+		if (waiter is not null)
+		{
+			wasLeader = false;
+			waiter.Done.Wait();
+			if (waiter.Error is not null)
+			{
+				System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(waiter.Error).Throw();
+			}
+
+			return waiter.Value!;
+		}
+
+		wasLeader = true;
+		try
+		{
+			T result = producer();
+			ownBox!.Value = result;
+			return result;
+		}
+		catch (Exception ex)
+		{
+			ownBox!.Error = ex;
+			throw;
+		}
+		finally
+		{
+			lock (gate)
+			{
+				flights.Remove(key);
+			}
+
+			ownBox!.Done.Set();
+		}
+	}
+
+	internal static Texture2D? TryPeekLiveTexture(string virtualPath, TexSemantic semantic)
+	{
+		if (string.IsNullOrWhiteSpace(virtualPath))
+		{
+			return null;
+		}
+
+		string memKey = MemKey(Normalise(virtualPath), semantic);
+		lock (Gate)
+		{
+			if (Live.TryGetValue(memKey, out Entry? entry) && entry.Texture is { } tex)
+			{
+				entry.LastAccess = NextAccess();
+				return tex;
+			}
+		}
+
+		return null;
+	}
+
 	private static long _sequence;
 
+	private static long _accessClock;
+
 	private static bool _workersStarted;
+
+	private static long NextAccess() => Interlocked.Increment(ref _accessClock);
+
+	/// <summary>
+	/// Selects the least-recently-used cache keys to evict so remaining bytes stay within
+	/// <paramref name="budgetBytes"/>. Pure helper for deterministic unit tests and swap trimming.
+	/// </summary>
+	internal static List<string> SelectLruKeysToEvict(
+		IReadOnlyList<(string Key, long Bytes, long LastAccess)> items,
+		long budgetBytes)
+	{
+		var toEvict = new List<string>();
+		if (items is null || items.Count == 0)
+		{
+			return toEvict;
+		}
+
+		if (budgetBytes <= 0)
+		{
+			for (int i = 0; i < items.Count; i++)
+			{
+				toEvict.Add(items[i].Key);
+			}
+
+			return toEvict;
+		}
+
+		long totalBytes = 0;
+		for (int i = 0; i < items.Count; i++)
+		{
+			totalBytes += Math.Max(0L, items[i].Bytes);
+		}
+
+		if (totalBytes <= budgetBytes)
+		{
+			return toEvict;
+		}
+
+		var ordered = new List<(string Key, long Bytes, long LastAccess)>(items);
+		ordered.Sort(static (a, b) => a.LastAccess.CompareTo(b.LastAccess));
+		for (int i = 0; i < ordered.Count && totalBytes > budgetBytes; i++)
+		{
+			toEvict.Add(ordered[i].Key);
+			totalBytes -= Math.Max(0L, ordered[i].Bytes);
+		}
+
+		return toEvict;
+	}
+
+	/// <summary>
+	/// Prepared CPU-side result for <see cref="PrepareGet"/> so multiple textures of a material
+	/// can be decoded off-thread first and uploaded together inside one main-thread <c>RunGpuUpload</c>.
+	/// </summary>
+	internal sealed class PreparedTexture : IDisposable
+	{
+		public Texture2D? Ready { get; private set; }
+
+		public bool HasAlpha { get; }
+
+		public long EstimatedBytes => _cpuImage is null || _cpuImage.IsEmpty() ? 0L : Math.Max(4096L, _cpuImage.GetDataSize());
+
+		private Image? _cpuImage;
+		private readonly string? _memKey;
+		private readonly string? _path;
+		private readonly TexSemantic _semantic;
+		private readonly Func<string, byte[]?>? _read;
+		private readonly bool _enhanced;
+		private Engine_TextureTemporaries? _temporaries;
+		private bool _disposed;
+
+		internal PreparedTexture(Texture2D? ready, bool hasAlpha)
+		{
+			Ready = ready;
+			HasAlpha = hasAlpha;
+		}
+
+		internal PreparedTexture(
+			Image cpuImage,
+			bool hasAlpha,
+			string memKey,
+			string path,
+			TexSemantic semantic,
+			Func<string, byte[]?> read,
+			bool enhanced,
+			Engine_TextureTemporaries temporaries)
+		{
+			_cpuImage = cpuImage;
+			HasAlpha = hasAlpha;
+			_memKey = memKey;
+			_path = path;
+			_semantic = semantic;
+			_read = read;
+			_enhanced = enhanced;
+			_temporaries = temporaries;
+		}
+
+		/// <summary>Commits the prepared texture on the main thread and returns the live <see cref="Texture2D"/>.</summary>
+		public Texture2D? CommitOnMainThread()
+		{
+			if (Ready is not null || _cpuImage is null || _cpuImage.IsEmpty() || _memKey is null)
+			{
+				return Ready;
+			}
+
+			lock (Gate)
+			{
+				if (Live.TryGetValue(_memKey, out Entry? existing))
+				{
+					existing.LastAccess = NextAccess();
+					Ready = existing.Texture;
+					Dispose();
+					return Ready;
+				}
+			}
+
+			ImageTexture texture = Engine_TextureUpload.CreateTextureOnMainThread(_cpuImage, world: true);
+			long dataBytes = Math.Max(256L, _cpuImage.GetDataSize());
+			ulong tracedId = texture.GetRid().Id;
+
+			lock (Gate)
+			{
+				if (Live.TryGetValue(_memKey, out Entry? raced))
+				{
+					raced.LastAccess = NextAccess();
+					texture.Dispose();
+					Ready = raced.Texture;
+					Dispose();
+					return Ready;
+				}
+
+				FailedUntil.Remove(_memKey);
+				Held(texture, _cpuImage);
+				var createdEntry = new Entry
+				{
+					Texture = texture,
+					HasAlpha = HasAlpha,
+					Path = _path!,
+					Semantic = _semantic,
+					Read = _read!,
+					State = _enhanced ? EnhancementState.Enhanced : EnhancementState.None,
+					ApproxBytes = dataBytes,
+					LastAccess = NextAccess(),
+					TracedRidId = tracedId,
+				};
+				Live[_memKey] = createdEntry;
+				LibraryEntries.AddOrUpdate(texture, createdEntry);
+			}
+
+			Ready = texture;
+			Dispose();
+			return Ready;
+		}
+
+		public void Dispose()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_disposed = true;
+			_cpuImage = null;
+			_temporaries?.Dispose();
+			_temporaries = null;
+		}
+	}
+
+	internal static PreparedTexture PrepareGet(
+		string virtualPath, TexSemantic semantic, Func<string, byte[]?> read)
+	{
+		if (string.IsNullOrWhiteSpace(virtualPath))
+		{
+			return new PreparedTexture(null, false);
+		}
+
+		string path = Normalise(virtualPath);
+		string memKey = MemKey(path, semantic);
+
+		lock (Gate)
+		{
+			if (Live.TryGetValue(memKey, out Entry? cached))
+			{
+				cached.LastAccess = NextAccess();
+				return new PreparedTexture(cached.Texture, cached.HasAlpha);
+			}
+
+			if (FailedUntil.TryGetValue(memKey, out long retryAt) &&
+				System.Diagnostics.Stopwatch.GetTimestamp() < retryAt)
+			{
+				return new PreparedTexture(null, false);
+			}
+		}
+
+		var temporary = new Engine_TextureTemporaries();
+		try
+		{
+			byte[]? source = null;
+			Image? image = temporary.Own(AndroidTexUploadCache.TryServe(path, read, out AndroidTexSourceKeys.Ticket upload, out bool decodedAlpha));
+			image ??= temporary.Own(Decode(path, semantic, read, out decodedAlpha, out source));
+
+			if (image is null)
+			{
+				temporary.Dispose();
+				lock (Gate)
+				{
+					FailedDecodes++;
+					FailedUntil[memKey] = System.Diagnostics.Stopwatch.GetTimestamp() +
+						System.Diagnostics.Stopwatch.Frequency * FailedRetrySeconds;
+				}
+
+				return new PreparedTexture(null, false);
+			}
+
+			bool enhanced = false;
+			if (image is not null && source is not null && Engine_TexEnhance.Enabled &&
+				Engine_TexSemantic.For(semantic).Filter != TexFilterClass.None &&
+				EnhanceDecoded(source, image, semantic, decodedAlpha, path, compress: true, cacheOnly: true)
+					is { } generated)
+			{
+				image = temporary.Own(generated);
+				enhanced = true;
+			}
+
+			image = temporary.Own(AndroidTexUploadCache.Remember(upload, image, decodedAlpha));
+			if (image is null || image.IsEmpty())
+			{
+				temporary.Dispose();
+				return new PreparedTexture(null, decodedAlpha);
+			}
+
+			return new PreparedTexture(image, decodedAlpha, memKey, path, semantic, read, enhanced, temporary);
+		}
+		catch
+		{
+			temporary.Dispose();
+			throw;
+		}
+	}
 
 	/// <summary>
 	/// Resolves a texture, decoding it only if neither cache has it.
@@ -165,108 +505,15 @@ public static class Engine_TexLibrary
 	public static Texture2D? Get(
 		string virtualPath, TexSemantic semantic, Func<string, byte[]?> read, out bool hasAlpha)
 	{
-		hasAlpha = false;
-
-		if (string.IsNullOrWhiteSpace(virtualPath))
+		using PreparedTexture prepared = PrepareGet(virtualPath, semantic, read);
+		hasAlpha = prepared.HasAlpha;
+		if (prepared.Ready is not null || prepared.EstimatedBytes == 0)
 		{
-			return null;
+			return prepared.Ready;
 		}
 
-		string path = Normalise(virtualPath);
-		string memKey = MemKey(path, semantic);
-
-		// Locked, and the decode stays outside it. A level change has the outgoing region paging
-		// props in on the main thread while the incoming one builds on a worker, so both reach
-		// this map. A Dictionary torn by a concurrent resize does not lose an entry — it corrupts
-		// its buckets, and the next lookup never returns. Two threads racing to decode the same
-		// texture costs one redundant decode and nothing else.
-		lock (Gate)
-		{
-			if (Live.TryGetValue(memKey, out Entry? cached))
-			{
-				hasAlpha = cached.HasAlpha;
-				return cached.Texture;
-			}
-
-			// A recent failure is not retried on every ask, but it is not final either.
-			if (FailedUntil.TryGetValue(memKey, out long retryAt) &&
-				System.Diagnostics.Stopwatch.GetTimestamp() < retryAt)
-			{
-				return null;
-			}
-		}
-
-		using var temporary = new Engine_TextureTemporaries();
-		byte[]? source = null;
-		Image? image = temporary.Own(AndroidTexUploadCache.TryServe(path, read, out AndroidTexSourceKeys.Ticket upload, out bool decodedAlpha));
-		image ??= temporary.Own(Decode(path, semantic, read, out decodedAlpha, out source));
-
-		// A failed decode is not cached: a read can fail transiently (a bank not yet readable
-		// during a region change), and a material with no albedo samples the shader's default,
-		// white. Retried after FailedRetrySeconds instead.
-		if (image is null)
-		{
-			lock (Gate)
-			{
-				FailedDecodes++;
-				FailedUntil[memKey] = System.Diagnostics.Stopwatch.GetTimestamp() +
-					System.Diagnostics.Stopwatch.Frequency * FailedRetrySeconds;
-			}
-
-			return null;
-		}
-
-		// AN ENHANCEMENT ALREADY GENERATED IS THE TEXTURE, from the first frame. However it was made
-		// — the boot sweep, during play, a prebuild — it is on disk under its own key, and handing
-		// out the original first only to swap it moments later uploaded every texture twice and
-		// changed its size under whatever held it. Only a texture with nothing generated yet
-		// starts as the original and takes the in-place swap when its enhancement lands.
-		bool enhanced = false;
-		if (image is not null && source is not null && Engine_TexEnhance.Enabled &&
-			Engine_TexSemantic.For(semantic).Filter != TexFilterClass.None &&
-			EnhanceDecoded(source, image, semantic, decodedAlpha, path, compress: true, cacheOnly: true)
-				is { } generated)
-		{
-			image = temporary.Own(generated);
-			enhanced = true;
-		}
-
-		image = temporary.Own(AndroidTexUploadCache.Remember(upload, image, decodedAlpha));
-		ImageTexture? texture = image is null || image.IsEmpty() ? null : temporary.Own(Engine_TextureUpload.CreateTexture(image, world: true));
-
-		lock (Gate)
-		{
-			// Another thread may have finished the same decode while this one ran. Keep whichever
-			// entry landed first so that one Texture2D instance answers for one texture — which
-			// matters more now than it did for memory alone, because the in-place swap updates
-			// whatever instance is in this map and a second instance would never be updated.
-			if (Live.TryGetValue(memKey, out Entry? raced))
-			{
-				hasAlpha = raced.HasAlpha;
-				return raced.Texture;
-			}
-
-			FailedUntil.Remove(memKey);
-			Held(texture, image);
-			var createdEntry = new Entry
-			{
-				Texture = texture,
-				HasAlpha = decodedAlpha,
-				Path = path,
-				Semantic = semantic,
-				Read = read,
-				State = enhanced ? EnhancementState.Enhanced : EnhancementState.None,
-			};
-			Live[memKey] = createdEntry;
-			if (texture is not null)
-			{
-				LibraryEntries.AddOrUpdate(texture, createdEntry);
-				temporary.Transfer(texture);
-			}
-		}
-
-		hasAlpha = decodedAlpha;
-		return texture;
+		return Refii.Core.Engine_ServerSyncs.RunGpuUpload(
+			prepared.EstimatedBytes, () => prepared.CommitOnMainThread());
 	}
 
 	/// <summary>
@@ -422,6 +669,81 @@ public static class Engine_TexLibrary
 
 		FlagsByPath.Clear();
 		Refii.Core.Engine_TracedMemory.FreeAll(TracedPool);
+	}
+
+	/// <summary>
+	/// Drops transient failure/composite maps and trims live textures and ORMs down to
+	/// <paramref name="maxBytes"/> on a least-recently-used basis so repeated hub swaps on
+	/// desktop keep hot shared assets resident without unbounded VRAM growth.
+	/// </summary>
+	public static void TrimToBudget(long maxBytes = 768L * 1024L * 1024L)
+	{
+		if (maxBytes <= 0)
+		{
+			Clear();
+			return;
+		}
+
+		var freedIds = new List<ulong>();
+		lock (Gate)
+		{
+			FailedUntil.Clear();
+			ComposedOrms.Clear();
+			ComposedOrmsOverLimit.Clear();
+
+			var items = new List<(string Key, long Bytes, long LastAccess)>(Live.Count + LiveOrm.Count);
+			foreach ((string memKey, Entry entry) in Live)
+			{
+				if (entry.Texture is not null)
+				{
+					items.Add(("T:" + memKey, entry.ApproxBytes, entry.LastAccess));
+				}
+			}
+
+			foreach ((string ormKey, OrmEntry ormEntry) in LiveOrm)
+			{
+				if (ormEntry.Texture is not null)
+				{
+					items.Add(("O:" + ormKey, ormEntry.ApproxBytes, ormEntry.LastAccess));
+				}
+			}
+
+			List<string> evict = SelectLruKeysToEvict(items, maxBytes);
+			for (int i = 0; i < evict.Count; i++)
+			{
+				string tagged = evict[i];
+				if (tagged.StartsWith("T:", StringComparison.Ordinal))
+				{
+					string k = tagged[2..];
+					if (Live.Remove(k, out Entry? removed))
+					{
+						if (removed.TracedRidId != 0)
+						{
+							freedIds.Add(removed.TracedRidId);
+						}
+
+						if (removed.Texture is { } tex)
+						{
+							CpuImages.Remove(tex);
+							LibraryEntries.Remove(tex);
+						}
+					}
+				}
+				else if (tagged.StartsWith("O:", StringComparison.Ordinal))
+				{
+					string k = tagged[2..];
+					if (LiveOrm.Remove(k, out OrmEntry? removedOrm) && removedOrm.TracedRidId != 0)
+					{
+						freedIds.Add(removedOrm.TracedRidId);
+					}
+				}
+			}
+		}
+
+		for (int i = 0; i < freedIds.Count; i++)
+		{
+			Refii.Core.Engine_TracedMemory.Free(TracedPool, freedIds[i]);
+		}
 	}
 
 	/// <summary>
@@ -1032,8 +1354,253 @@ public static class Engine_TexLibrary
 			Image.Interpolation.Bilinear);
 	}
 
-	private static readonly Dictionary<string, (ImageTexture? Texture, bool HasHeight)> LiveOrm =
+	private sealed class OrmEntry
+	{
+		public ImageTexture? Texture;
+		public bool HasHeight;
+		public long ApproxBytes;
+		public long LastAccess;
+		public ulong TracedRidId;
+	}
+
+	private static readonly Dictionary<string, OrmEntry> LiveOrm =
 		new(StringComparer.Ordinal);
+
+	/// <summary>
+	/// Prepared CPU-side ORM result from <see cref="PrepareOrm"/> or <see cref="PrepareComposedOrm"/>
+	/// so all maps and ORM upload inside one main-thread <c>RunGpuUpload</c>.
+	/// </summary>
+	internal sealed class PreparedOrm : IDisposable
+	{
+		public ImageTexture? Ready { get; private set; }
+
+		public bool HasHeight { get; private set; }
+
+		public bool IsAuthored { get; }
+
+		public long EstimatedBytes =>
+			_sharedPayload is not null ? Math.Max(4096L, _sharedPayload.Data.LongLength)
+			: _cpuImage is null || _cpuImage.IsEmpty() ? 0L
+			: Math.Max(4096L, _cpuImage.GetDataSize());
+
+		private Image? _cpuImage;
+		private SharedOrmPayload? _sharedPayload;
+		private readonly string? _ormCacheKey;
+		private readonly string? _composedByIdentity;
+		private readonly string? _composedByContent;
+		private readonly bool _cacheNullOrmResult;
+		private readonly bool _noteComposedStats;
+		private readonly long _composedStartTicks;
+		private bool _disposed;
+
+		internal PreparedOrm(ImageTexture? ready, bool hasHeight, bool isAuthored = false)
+		{
+			Ready = ready;
+			HasHeight = hasHeight;
+			IsAuthored = isAuthored;
+		}
+
+		internal PreparedOrm(
+			Image? cpuImage,
+			bool hasHeight,
+			bool isAuthored,
+			string? ormCacheKey,
+			bool cacheNullOrmResult = false,
+			string? composedByIdentity = null,
+			string? composedByContent = null,
+			bool noteComposedStats = false,
+			long composedStartTicks = 0)
+		{
+			_cpuImage = cpuImage;
+			HasHeight = hasHeight;
+			IsAuthored = isAuthored;
+			_ormCacheKey = ormCacheKey;
+			_cacheNullOrmResult = cacheNullOrmResult;
+			_composedByIdentity = composedByIdentity;
+			_composedByContent = composedByContent;
+			_noteComposedStats = noteComposedStats;
+			_composedStartTicks = composedStartTicks;
+		}
+
+		internal PreparedOrm(
+			SharedOrmPayload sharedPayload,
+			string? composedByIdentity,
+			string composedByContent,
+			bool noteComposedStats,
+			long composedStartTicks)
+		{
+			_sharedPayload = sharedPayload;
+			HasHeight = sharedPayload.HasHeight;
+			_composedByIdentity = composedByIdentity;
+			_composedByContent = composedByContent;
+			_noteComposedStats = noteComposedStats;
+			_composedStartTicks = composedStartTicks;
+		}
+
+		public ImageTexture? CommitOnMainThread()
+		{
+			if (Ready is not null)
+			{
+				return Ready;
+			}
+
+			if (_composedByContent is not null)
+			{
+				lock (Gate)
+				{
+					if (TryComposedLocked(_composedByContent, out ImageTexture? raced, out bool racedHeight))
+					{
+						Interlocked.Increment(ref Engine_TexLibrary._composedByContent);
+						if (_composedByIdentity is not null)
+						{
+							KeepLocked(_composedByIdentity, raced, racedHeight);
+						}
+
+						if (_noteComposedStats)
+						{
+							Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, 0);
+						}
+
+						Ready = raced;
+						HasHeight = racedHeight;
+						Dispose();
+						return Ready;
+					}
+				}
+
+				if (_sharedPayload is null && (_cpuImage is null || _cpuImage.IsEmpty()))
+				{
+					return null;
+				}
+
+				Image? createdFromPayload = _sharedPayload is not null
+					? Image.CreateFromData(
+						_sharedPayload.Width, _sharedPayload.Height, _sharedPayload.UseMipmaps, _sharedPayload.Format, _sharedPayload.Data)
+					: null;
+				Image uploadSource = createdFromPayload ?? _cpuImage!;
+				ImageTexture created;
+				try
+				{
+					created = Engine_TextureUpload.CreateTextureOnMainThread(uploadSource);
+				}
+				finally
+				{
+					createdFromPayload?.Dispose();
+				}
+
+				bool height = HasHeight;
+				bool storedFresh = false;
+				lock (Gate)
+				{
+					if (TryComposedLocked(_composedByContent, out ImageTexture? raced, out bool racedHeight))
+					{
+						created.Dispose();
+						Ready = raced;
+						HasHeight = racedHeight;
+					}
+					else
+					{
+						KeepLocked(_composedByContent, created, height);
+						Ready = created;
+						storedFresh = true;
+					}
+
+					if (_composedByIdentity is not null)
+					{
+						KeepLocked(_composedByIdentity, Ready, HasHeight);
+					}
+				}
+
+				if (storedFresh)
+				{
+					Interlocked.Increment(ref _composedPacked);
+				}
+				else
+				{
+					Interlocked.Increment(ref Engine_TexLibrary._composedByContent);
+				}
+
+				if (_noteComposedStats)
+				{
+					Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(
+						reused: !storedFresh,
+						storedFresh ? System.Diagnostics.Stopwatch.GetTimestamp() - _composedStartTicks : 0L);
+				}
+
+				Dispose();
+				return Ready;
+			}
+
+			if (_ormCacheKey is null)
+			{
+				return null;
+			}
+
+			lock (Gate)
+			{
+				if (LiveOrm.TryGetValue(_ormCacheKey, out OrmEntry? existing))
+				{
+					existing.LastAccess = NextAccess();
+					HasHeight = existing.HasHeight;
+					Ready = existing.Texture;
+					Dispose();
+					return Ready;
+				}
+			}
+
+			ImageTexture? built = _cpuImage is null || _cpuImage.IsEmpty()
+				? null
+				: Engine_TextureUpload.CreateTextureOnMainThread(_cpuImage);
+			if (built is null && !_cacheNullOrmResult)
+			{
+				Dispose();
+				return null;
+			}
+
+			long dataBytes = _cpuImage is not null && built is not null ? Math.Max(256L, _cpuImage.GetDataSize()) : 0L;
+			ulong tracedId = built is not null ? built.GetRid().Id : 0UL;
+
+			lock (Gate)
+			{
+				if (LiveOrm.TryGetValue(_ormCacheKey, out OrmEntry? raced))
+				{
+					raced.LastAccess = NextAccess();
+					built?.Dispose();
+					HasHeight = raced.HasHeight;
+					Ready = raced.Texture;
+					Dispose();
+					return Ready;
+				}
+
+				Held(built, _cpuImage);
+				LiveOrm[_ormCacheKey] = new OrmEntry
+				{
+					Texture = built,
+					HasHeight = HasHeight,
+					ApproxBytes = dataBytes,
+					LastAccess = NextAccess(),
+					TracedRidId = tracedId,
+				};
+			}
+
+			Ready = built;
+			Dispose();
+			return Ready;
+		}
+
+		public void Dispose()
+		{
+			if (_disposed)
+			{
+				return;
+			}
+
+			_disposed = true;
+			_cpuImage?.Dispose();
+			_cpuImage = null;
+			_sharedPayload = null;
+		}
+	}
 
 	/// <summary>
 	/// Suffixes checked when probing for an artist-authored ORM (Ambient Occlusion, Roughness, Metallic) texture.
@@ -1057,30 +1624,14 @@ public static class Engine_TexLibrary
 		"_d", "_diff", "_diffuse", "_basecolor", "_albedo", "_col"
 	};
 
-	/// <summary>
-	/// Probes for artist-authored ORM textures matching the material's diffuse, normal, or specular names.
-	/// </summary>
-	/// <remarks>
-	/// When an authored ORM map is found, it bypasses synthetic heuristic generation and is loaded at full resolution,
-	/// preserving micro-detail and marking the material for PBR rendering in the standard material shader.
-	/// </remarks>
-	/// <param name="diffusePath">The material's diffuse texture path.</param>
-	/// <param name="specularPath">The material's specular texture path.</param>
-	/// <param name="normalPath">The material's normal map path.</param>
-	/// <param name="read">VFS read callback.</param>
-	/// <param name="texture">The loaded ORM texture if found.</param>
-	/// <param name="hasHeight">True if the ORM alpha channel contains active height/parallax displacement data.</param>
-	/// <returns>True if an authored ORM map was located and loaded; false otherwise.</returns>
-	private static bool TryResolveAuthoredOrm(
+	private static bool TryPrepareAuthoredOrm(
 		string diffusePath,
 		string specularPath,
 		string normalPath,
 		Func<string, byte[]?> read,
-		out ImageTexture? texture,
-		out bool hasHeight)
+		out PreparedOrm? prepared)
 	{
-		texture = null;
-		hasHeight = false;
+		prepared = null;
 
 		string[] inputPaths = { diffusePath, normalPath, specularPath };
 		foreach (string rawPath in inputPaths)
@@ -1118,14 +1669,11 @@ public static class Engine_TexLibrary
 				string cacheKey = "authored:" + candidate;
 				lock (Gate)
 				{
-					if (LiveOrm.TryGetValue(cacheKey, out (ImageTexture? Texture, bool HasHeight) cached))
+					if (LiveOrm.TryGetValue(cacheKey, out OrmEntry? cached) && cached.Texture is not null)
 					{
-						if (cached.Texture is not null)
-						{
-							texture = cached.Texture;
-							hasHeight = cached.HasHeight;
-							return true;
-						}
+						cached.LastAccess = NextAccess();
+						prepared = new PreparedOrm(cached.Texture, cached.HasHeight, isAuthored: true);
+						return true;
 					}
 				}
 
@@ -1173,22 +1721,43 @@ public static class Engine_TexLibrary
 				Engine_TexImage.CompressBlocks(img, isNormalMap: false);
 				if (img.IsEmpty())
 				{
+					img.Dispose();
 					return false;
 				}
-				texture = Engine_TextureUpload.CreateTexture(img);
-				hasHeight = height;
 
-				lock (Gate)
-				{
-					Held(texture, img);
-					LiveOrm[cacheKey] = (texture, height);
-				}
-
+				prepared = new PreparedOrm(img, height, isAuthored: true, cacheKey, cacheNullOrmResult: false);
 				return true;
 			}
 		}
 
 		return false;
+	}
+
+	/// <summary>
+	/// Probes for artist-authored ORM textures matching the material's diffuse, normal, or specular names.
+	/// </summary>
+	private static bool TryResolveAuthoredOrm(
+		string diffusePath,
+		string specularPath,
+		string normalPath,
+		Func<string, byte[]?> read,
+		out ImageTexture? texture,
+		out bool hasHeight)
+	{
+		if (!TryPrepareAuthoredOrm(diffusePath, specularPath, normalPath, read, out PreparedOrm? prep) || prep is null)
+		{
+			texture = null;
+			hasHeight = false;
+			return false;
+		}
+
+		using (prep)
+		{
+			hasHeight = prep.HasHeight;
+			texture = prep.Ready ?? Refii.Core.Engine_ServerSyncs.RunGpuUpload(
+				prep.EstimatedBytes, () => prep.CommitOnMainThread());
+			return texture is not null;
+		}
 	}
 
 	/// <summary>
@@ -1235,24 +1804,73 @@ public static class Engine_TexLibrary
 		out bool hasHeight) =>
 		GetOrm(string.Empty, specularPath, normalPath, powerMin, powerMax, read, out hasHeight, out _);
 
+	internal static PreparedOrm PrepareOrm(
+		string diffusePath,
+		string specularPath,
+		string normalPath,
+		float powerMin,
+		float powerMax,
+		Func<string, byte[]?> read)
+	{
+		if (TryPrepareAuthoredOrm(diffusePath, specularPath, normalPath, read, out PreparedOrm? authoredPrep) &&
+			authoredPrep is not null)
+		{
+			return authoredPrep;
+		}
+
+		if (!Engine_TexSettings.OrmEnabled ||
+			(string.IsNullOrWhiteSpace(specularPath) && string.IsNullOrWhiteSpace(normalPath)))
+		{
+			return new PreparedOrm(null, false, isAuthored: false);
+		}
+
+		string path = Normalise(specularPath);
+		string normal = Normalise(normalPath);
+		float aoStrength = Engine_TexSettings.OrmAoStrength;
+		float metallicStrength = Engine_TexSettings.OrmMetallicStrength;
+		bool withHeight = Engine_TexSettings.OrmHeight;
+
+		string id = $"{Engine_TexOrm.CacheId(powerMin, powerMax)}-ao{aoStrength:F2}-" +
+			$"me{metallicStrength:F2}-h{(withHeight ? 1 : 0)}-{normal}";
+		string memKey = $"{path} {id}";
+
+		lock (Gate)
+		{
+			if (LiveOrm.TryGetValue(memKey, out OrmEntry? cached))
+			{
+				cached.LastAccess = NextAccess();
+				return new PreparedOrm(cached.Texture, cached.HasHeight, isAuthored: false);
+			}
+		}
+
+		Image? packed = BuildOrmImage(
+			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
+			read, out bool packedHeight);
+		if (packed is null || packed.IsEmpty())
+		{
+			packed?.Dispose();
+			lock (Gate)
+			{
+				if (!LiveOrm.ContainsKey(memKey))
+				{
+					LiveOrm[memKey] = new OrmEntry
+					{
+						Texture = null,
+						HasHeight = false,
+						LastAccess = NextAccess(),
+					};
+				}
+			}
+
+			return new PreparedOrm(null, packedHeight, isAuthored: false);
+		}
+
+		return new PreparedOrm(packed, packedHeight, isAuthored: false, memKey, cacheNullOrmResult: true);
+	}
+
 	/// <summary>
 	/// Resolves, caches and returns an ORM (Occlusion-Roughness-Metallic) texture for a material.
 	/// </summary>
-	/// <remarks>
-	/// Operates in two modes:
-	/// 1. Authored PBR Mode: First probes for artist-authored companion maps (such as <c>&lt;stem&gt;_orm.png</c>).
-	///    If found, the texture is served at full resolution and <paramref name="isAuthored"/> is true.
-	/// 2. Shipped Heuristic Mode: When no authored map exists and <see cref="Engine_TexSettings.OrmEnabled"/> is on,
-	///    packs a derived ORM from specular alpha (roughness), specular color (metallic F0), and tangent-space normal divergence (cavity AO).
-	/// </remarks>
-	/// <param name="diffusePath">The material's diffuse texture path.</param>
-	/// <param name="specularPath">The material's specular texture path.</param>
-	/// <param name="normalPath">The material's normal map path.</param>
-	/// <param name="powerMin">Specular power exponent minimum.</param>
-	/// <param name="powerMax">Specular power exponent maximum.</param>
-	/// <param name="read">VFS read callback.</param>
-	/// <param name="hasHeight">True if parallax height displacement is active.</param>
-	/// <param name="isAuthored">True if an authored PBR map was found; false if derived from legacy maps.</param>
 	public static ImageTexture? GetOrm(
 		string diffusePath,
 		string specularPath,
@@ -1263,67 +1881,225 @@ public static class Engine_TexLibrary
 		out bool hasHeight,
 		out bool isAuthored)
 	{
-		hasHeight = false;
-		isAuthored = false;
-
-		// 1. Probe for authored ORM texture (modded PBR)
-		if (TryResolveAuthoredOrm(diffusePath, specularPath, normalPath, read, out ImageTexture? authoredTex, out bool authoredHeight))
+		using PreparedOrm prep = PrepareOrm(diffusePath, specularPath, normalPath, powerMin, powerMax, read);
+		hasHeight = prep.HasHeight;
+		isAuthored = prep.IsAuthored;
+		if (prep.Ready is not null || prep.EstimatedBytes == 0)
 		{
-			hasHeight = authoredHeight;
-			isAuthored = true;
-			return authoredTex;
+			return prep.Ready;
 		}
 
-		// 2. Fall back to derived legacy ORM if enabled
-		if (!Engine_TexSettings.OrmEnabled ||
-			(string.IsNullOrWhiteSpace(specularPath) && string.IsNullOrWhiteSpace(normalPath)))
+		ImageTexture? result = Refii.Core.Engine_ServerSyncs.RunGpuUpload(
+			prep.EstimatedBytes, () => prep.CommitOnMainThread());
+		hasHeight = prep.HasHeight;
+		return result;
+	}
+
+	internal static Image? TryGetOrmSourceCpuImageByPath(
+		string virtualPath,
+		TexSemantic semantic,
+		Func<string, byte[]?> read,
+		out bool dispose,
+		Texture2D? texture = null)
+	{
+		dispose = false;
+		if (texture is not null &&
+			CpuImages.TryGetValue(texture, out Image? directCpu) &&
+			GodotObject.IsInstanceValid(directCpu) &&
+			!directCpu.IsEmpty())
+		{
+			return directCpu;
+		}
+
+		if (string.IsNullOrWhiteSpace(virtualPath))
 		{
 			return null;
 		}
 
-		string path = Normalise(specularPath);
-		string normal = Normalise(normalPath);
-		float aoStrength = Engine_TexSettings.OrmAoStrength;
-		float metallicStrength = Engine_TexSettings.OrmMetallicStrength;
-		bool withHeight = Engine_TexSettings.OrmHeight;
-
-		// The NORMAL and the strength are part of the identity because the red channel is derived
-		// from them. Leaving them out would serve a cavity map built from another material's
-		// normals, or at another strength, and nothing would report it.
-		// The metallic strength joins the identity for the same reason the AO strength did: it
-		// changes the blue channel, so an entry packed at one strength must not answer for another.
-		string id = $"{Engine_TexOrm.CacheId(powerMin, powerMax)}-ao{aoStrength:F2}-" +
-			$"me{metallicStrength:F2}-h{(withHeight ? 1 : 0)}-{normal}";
-		string memKey = $"{path} {id}";
-
+		string memKey = MemKey(Normalise(virtualPath), semantic);
+		Texture2D? cachedTex = null;
 		lock (Gate)
 		{
-			if (LiveOrm.TryGetValue(memKey, out (ImageTexture? Texture, bool HasHeight) cached))
+			if (Live.TryGetValue(memKey, out Entry? entry))
 			{
-				hasHeight = cached.HasHeight;
-				return cached.Texture;
+				entry.LastAccess = NextAccess();
+				cachedTex = entry.Texture;
 			}
 		}
 
-		Image? packed = BuildOrmImage(
-			path, normal, id, powerMin, powerMax, aoStrength, metallicStrength, withHeight,
-			read, out bool packedHeight);
-		ImageTexture? built = packed is null || packed.IsEmpty() ? null : Engine_TextureUpload.CreateTexture(packed);
-
-		lock (Gate)
+		if (cachedTex is not null &&
+			CpuImages.TryGetValue(cachedTex, out Image? cpu) &&
+			GodotObject.IsInstanceValid(cpu) &&
+			!cpu.IsEmpty())
 		{
-			if (LiveOrm.TryGetValue(memKey, out (ImageTexture? Texture, bool HasHeight) raced))
-			{
-				hasHeight = raced.HasHeight;
-				return raced.Texture;
-			}
-
-			Held(built, packed);
-			LiveOrm[memKey] = (built, packedHeight);
+			return cpu;
 		}
 
-		hasHeight = packedHeight;
-		return built;
+		Image? decoded = Decode(Normalise(virtualPath), semantic, read, out _);
+		if (decoded is not null && !decoded.IsEmpty())
+		{
+			dispose = true;
+			return decoded;
+		}
+
+		decoded?.Dispose();
+		return null;
+	}
+
+	private static readonly object ComposedOrmFlightGate = new();
+
+	internal static bool TryGetReadyComposedOrmByIdentity(
+		Texture2D? identitySpec,
+		Texture2D? identityNorm,
+		float powerMin,
+		float powerMax,
+		float aoStrength,
+		float metallicStrength,
+		bool withHeight,
+		out PreparedOrm? prepared)
+	{
+		prepared = null;
+		if (identitySpec is null && identityNorm is null)
+		{
+			return false;
+		}
+
+		string recipe = ComposedRecipe(powerMin, powerMax, aoStrength, metallicStrength, withHeight);
+		if (IdentityKey(identitySpec, identityNorm, recipe) is not { } byIdentity)
+		{
+			return false;
+		}
+
+		if (TryComposed(byIdentity, out ImageTexture? known, out bool knownHeight))
+		{
+			Interlocked.Increment(ref _composedByIdentity);
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, 0);
+			prepared = new PreparedOrm(known, knownHeight);
+			return true;
+		}
+
+		return false;
+	}
+
+	internal static PreparedOrm PrepareComposedOrm(
+		Image? spec,
+		Image? norm,
+		Texture2D? identitySpec,
+		Texture2D? identityNorm,
+		float powerMin,
+		float powerMax,
+		float aoStrength,
+		float metallicStrength,
+		bool withHeight)
+	{
+		if (spec is null && norm is null)
+		{
+			return new PreparedOrm(null, false);
+		}
+
+		long from = System.Diagnostics.Stopwatch.GetTimestamp();
+		string recipe = ComposedRecipe(powerMin, powerMax, aoStrength, metallicStrength, withHeight);
+		string? byIdentity = identitySpec is not null || identityNorm is not null
+			? IdentityKey(identitySpec, identityNorm, recipe)
+			: null;
+		if (byIdentity is not null && TryComposed(byIdentity, out ImageTexture? known, out bool knownHeight))
+		{
+			Interlocked.Increment(ref _composedByIdentity);
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(reused: true, 0);
+			return new PreparedOrm(known, knownHeight);
+		}
+
+		string byContent = ContentKey(spec, norm, recipe);
+		if (TryComposed(byContent, out known, out knownHeight))
+		{
+			Interlocked.Increment(ref _composedByContent);
+			if (byIdentity is not null)
+			{
+				Keep(byIdentity, known, knownHeight);
+			}
+
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(
+				reused: true, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+			return new PreparedOrm(known, knownHeight);
+		}
+
+		(ImageTexture? Cached, bool CachedHeight, SharedOrmPayload? Payload) outcome = RunKeyedSingleFlight(
+			ComposedOrmFlightGate,
+			ComposedOrmFlights,
+			byContent,
+			() =>
+			{
+				if (TryComposed(byContent, out ImageTexture? racedCached, out bool racedHeight))
+				{
+					return (racedCached, racedHeight, (SharedOrmPayload?)null);
+				}
+
+				Image? packed = Engine_TexOrm.TryPack(
+					spec, norm, powerMin, powerMax, aoStrength, metallicStrength, withHeight, out bool packedHeight);
+				if (packed is null || packed.IsEmpty())
+				{
+					packed?.Dispose();
+					return ((ImageTexture?)null, false, (SharedOrmPayload?)null);
+				}
+
+				try
+				{
+					HalvePackedOrm(packed);
+					packed.GenerateMipmaps();
+					CompressOrReport(packed, isNormalMap: false, "orm");
+					byte[] bytes;
+					using (var raw = new Engine_ImageBytes(packed))
+					{
+						bytes = raw.Span.ToArray();
+					}
+
+					return ((ImageTexture?)null, packedHeight, new SharedOrmPayload(
+						bytes, packed.GetWidth(), packed.GetHeight(), packed.HasMipmaps(), packed.GetFormat(), packedHeight));
+				}
+				finally
+				{
+					packed.Dispose();
+				}
+			},
+			out bool _);
+
+		if (outcome.Cached is not null)
+		{
+			Interlocked.Increment(ref _composedByContent);
+			if (byIdentity is not null)
+			{
+				Keep(byIdentity, outcome.Cached, outcome.CachedHeight);
+			}
+
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(
+				reused: true, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+			return new PreparedOrm(outcome.Cached, outcome.CachedHeight);
+		}
+
+		if (outcome.Payload is null)
+		{
+			return new PreparedOrm(null, false);
+		}
+
+		if (TryComposed(byContent, out ImageTexture? postWaitCached, out bool postWaitHeight))
+		{
+			Interlocked.Increment(ref _composedByContent);
+			if (byIdentity is not null)
+			{
+				Keep(byIdentity, postWaitCached, postWaitHeight);
+			}
+
+			Refii.Entities.Engine_LoadEntityBuilds.NoteOrm(
+				reused: true, System.Diagnostics.Stopwatch.GetTimestamp() - from);
+			return new PreparedOrm(postWaitCached, postWaitHeight);
+		}
+
+		return new PreparedOrm(
+			outcome.Payload,
+			composedByIdentity: byIdentity,
+			composedByContent: byContent,
+			noteComposedStats: true,
+			composedStartTicks: from);
 	}
 
 	/// <summary>

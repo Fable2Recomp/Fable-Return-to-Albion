@@ -1241,13 +1241,13 @@ public sealed class Dx12AndMemoryOptimizationTests
 		var env = new Dictionary<string, string?>(StringComparer.Ordinal)
 		{
 			["REFII_D3D12_SOFT_SHADOW_QUALITY"] = "0",
-			["REFII_D3D12_MAX_RESOURCE_DESCRIPTORS"] = "65536",
-			["REFII_D3D12_MAX_RESOURCE_DESCRIPTORS_PER_FRAME"] = "32768",
+			["REFII_D3D12_MAX_RESOURCE_DESCRIPTORS"] = "131072",
+			["REFII_D3D12_MAX_RESOURCE_DESCRIPTORS_PER_FRAME"] = "65536",
 		};
 
 		string content = GameChildProcess.BuildRendererSettingsContent(config, envOverrides: env);
-		AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors=65536", StringComparison.Ordinal)).IsTrue();
-		AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=32768", StringComparison.Ordinal)).IsTrue();
+		AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors=131072", StringComparison.Ordinal)).IsTrue();
+		AssertThat(content.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=65536", StringComparison.Ordinal)).IsTrue();
 		AssertThat(content.Contains("lights_and_shadows/directional_shadow/soft_shadow_filter_quality=0", StringComparison.Ordinal)).IsTrue();
 	}
 
@@ -1426,5 +1426,280 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(1f, 1f, 0f)).IsTrue();
 		Refii.Level.Engine_WaterTheme.ResetLoggedDegenerateEdgeBlendsForTests();
 		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(0f, 0f, 0f)).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies RD viewport texture invalidation across A -> B -> A Scaling3DScale transitions,
+	/// relaxed D3D12/Vulkan upload budgets, and wake-on-enqueue chained worker servicing.
+	/// </summary>
+	[TestCase]
+	public void LevelSwap_RdResolutionAndUploadPacing_EliminateStaleRidAndChainedWorkerStalls()
+	{
+		var halfSize = new Godot.Vector2I(665, 416);
+		AssertThat(Engine_RdHealth.ShouldReuseResolvedRd(
+			101ul, halfSize, 1ul, 101ul, halfSize, 1ul, 202ul, rdTextureValid: true)).IsTrue();
+
+		// Same Viewport texture RID & returned 665x416 size after an intermediate 1280x800 swap,
+		// but publication generation incremented -> must re-query TextureGetRdTexture.
+		AssertThat(Engine_RdHealth.ShouldReuseResolvedRd(
+			101ul, halfSize, 3ul, 101ul, halfSize, 1ul, 202ul, rdTextureValid: true)).IsFalse();
+
+		// Live device-texture check failing -> must re-query immediately.
+		AssertThat(Engine_RdHealth.ShouldReuseResolvedRd(
+			101ul, halfSize, 1ul, 101ul, halfSize, 1ul, 202ul, rdTextureValid: false)).IsFalse();
+
+		// Relaxed post-TDR upload caps: D3D12 64 MB / 24 MB, Vulkan 96 MB / 32 MB.
+		AssertThat(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: true, isD3D12: true))
+			.IsEqual(64L * 1024L * 1024L);
+		AssertThat(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: false, isD3D12: true))
+			.IsEqual(24L * 1024L * 1024L);
+		AssertThat(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: true, isD3D12: false))
+			.IsEqual(96L * 1024L * 1024L);
+		AssertThat(Engine_ServerSyncs.EffectiveMaxUploadBytesPerFrame(loadCoverActive: false, isD3D12: false))
+			.IsEqual(32L * 1024L * 1024L);
+
+		// Chained worker uploads wake and complete inside a single load-cover pump window.
+		Engine_ServerSyncs.ResetMainThreadForTest();
+		try
+		{
+			Engine_ServerSyncs.MarkMainThread();
+			Engine_ServerSyncs.LoadCoverActive = true;
+			int committed = 0;
+			var workerTask = System.Threading.Tasks.Task.Run(() =>
+			{
+				for (int i = 0; i < 3; i++)
+				{
+					System.Threading.Thread.Sleep(2);
+					Engine_ServerSyncs.RunGpuUpload(4096L, () =>
+					{
+						System.Threading.Interlocked.Increment(ref committed);
+					});
+				}
+			});
+
+			long deadline = System.Diagnostics.Stopwatch.GetTimestamp() + System.Diagnostics.Stopwatch.Frequency * 2;
+			while (!workerTask.IsCompleted && System.Diagnostics.Stopwatch.GetTimestamp() < deadline)
+			{
+				Engine_ServerSyncs.PumpWorkerGpuUploads(25.0, waitForWorkers: true);
+			}
+
+			AssertThat(workerTask.Wait(1000)).IsTrue();
+			AssertThat(committed).IsEqual(3);
+		}
+		finally
+		{
+			Engine_ServerSyncs.ResetMainThreadForTest();
+		}
+	}
+
+	/// <summary>
+	/// Verifies bounded cross-region LRU texture eviction, wind-direction material keying,
+	/// desktop prefetch concurrency scaling, and unfocused load-cover FPS retention.
+	/// </summary>
+	[TestCase]
+	public void CrossRegionWorkingSet_And_ConcurrencyPolicies_RespectLimits()
+	{
+		var entries = new List<(string Key, long Bytes, long LastAccess)>
+		{
+			("T:old_hub", 400, 10),
+			("T:recent_shared", 350, 30),
+			("O:mid_orm", 300, 20),
+		};
+
+		AssertThat(Engine_TexLibrary.SelectLruKeysToEvict(entries, 1200).Count).IsEqual(0);
+		List<string> evicted = Engine_TexLibrary.SelectLruKeysToEvict(entries, 600);
+		AssertThat(evicted.Count).IsEqual(2);
+		AssertThat(evicted[0]).IsEqual("T:old_hub");
+		AssertThat(evicted[1]).IsEqual("O:mid_orm");
+		AssertThat(Engine_TexLibrary.SelectLruKeysToEvict(entries, 0).Count).IsEqual(3);
+
+		Godot.Vector2 prevWind = Refii.Models.Engine_MdlMaterial.WindDirection;
+		try
+		{
+			var mat = new Refii.Models.MdlMaterial
+			{
+				Diffuse = "art/test_tree.tex",
+			};
+			var swaying = new Refii.Models.MdlInfo { MovementMode = 1, WindAmplitude = 0.05f };
+			var rigid = new Refii.Models.MdlInfo { MovementMode = 0, WindAmplitude = 0f };
+
+			Refii.Models.Engine_MdlMaterial.WindDirection = new Godot.Vector2(1f, 0f);
+			string swayEast = Refii.Models.Engine_MdlMaterial.BuildSharedKey(mat, swaying, false);
+			string rigidEast = Refii.Models.Engine_MdlMaterial.BuildSharedKey(mat, rigid, false);
+
+			Refii.Models.Engine_MdlMaterial.WindDirection = new Godot.Vector2(0f, 1f);
+			string swayNorth = Refii.Models.Engine_MdlMaterial.BuildSharedKey(mat, swaying, false);
+			string rigidNorth = Refii.Models.Engine_MdlMaterial.BuildSharedKey(mat, rigid, false);
+
+			AssertThat(swayEast).IsNotEqual(swayNorth);
+			AssertThat(rigidEast).IsEqual(rigidNorth);
+		}
+		finally
+		{
+			Refii.Models.Engine_MdlMaterial.WindDirection = prevWind;
+		}
+
+		AssertThat(Refii.Level.Engine_PropStreamer.ResolvePrefetchWorkerCount(16, isAndroid: true, 100)).IsEqual(2);
+		AssertThat(Refii.Level.Engine_PropStreamer.ResolvePrefetchWorkerCount(16, isAndroid: false, 100)).IsEqual(6);
+		AssertThat(Refii.Level.Engine_PropStreamer.ResolvePrefetchWorkerCount(8, isAndroid: false, 100)).IsEqual(4);
+		AssertThat(Refii.Level.Engine_PropStreamer.ResolvePrefetchWorkerCount(16, isAndroid: false, 3)).IsEqual(3);
+		AssertThat(Refii.Level.Engine_PropStreamer.ResolvePrefetchWorkerCount(16, isAndroid: false, 0)).IsEqual(0);
+		AssertThat(Engine_LevelCaches.ResolveDefaultRegionCacheBudgetMb(isD3d12: true)).IsEqual(256);
+		AssertThat(Engine_LevelCaches.ResolveDefaultRegionCacheBudgetMb(isD3d12: false)).IsEqual(512);
+
+		AssertThat(GameWindow.ResolveEffectiveMaxFps(120, focused: false, loadCoverHeld: true)).IsEqual(120);
+		AssertThat(GameWindow.ResolveEffectiveMaxFps(0, focused: false, loadCoverHeld: true)).IsEqual(0);
+		AssertThat(GameWindow.ResolveEffectiveMaxFps(120, focused: false, loadCoverHeld: false)).IsEqual(30);
+	}
+
+	/// <summary>
+	/// Verifies <see cref="GameWorld.AreGuestEntitiesReadyForMount"/> ignores stale <c>worldReady</c>
+	/// during blocking State 3 loads and waits for <c>WorldIsActive</c> (ABI &gt;= 50), and that
+	/// <see cref="Engine_TexLibrary.RunKeyedSingleFlight{T}"/> deduplicates concurrent ORM solves.
+	/// </summary>
+	[TestCase]
+	public void LevelSwap_MountGateAndSingleFlightOrm_PreventPrematureReleaseAndDuplicateWork()
+	{
+		// Exact BWSMarket fast-travel regression: blocking State 3 keeps stale worldReady=true while World+0xA8=false.
+		AssertThat(GameWorld.AreGuestEntitiesReadyForMount(
+			worldActive: false, worldReady: true, worldActiveSupported: true,
+			hasFullLoadInFlight: true, inFlightState: 3, waitFrames: 10, waitLimit: 1800)).IsFalse();
+		AssertThat(GameWorld.AreGuestEntitiesReadyForMount(
+			worldActive: false, worldReady: true, worldActiveSupported: true,
+			hasFullLoadInFlight: false, inFlightState: 0, waitFrames: 10, waitLimit: 1800)).IsFalse();
+		AssertThat(GameWorld.AreGuestEntitiesReadyForMount(
+			worldActive: true, worldReady: false, worldActiveSupported: true,
+			hasFullLoadInFlight: true, inFlightState: 5, waitFrames: 10, waitLimit: 1800)).IsTrue();
+		// Legacy ABI fallback & timeout safety ceiling.
+		AssertThat(GameWorld.AreGuestEntitiesReadyForMount(
+			worldActive: false, worldReady: true, worldActiveSupported: false,
+			hasFullLoadInFlight: false, inFlightState: 0, waitFrames: 10, waitLimit: 1800)).IsTrue();
+		AssertThat(GameWorld.AreGuestEntitiesReadyForMount(
+			worldActive: false, worldReady: false, worldActiveSupported: true,
+			hasFullLoadInFlight: true, inFlightState: 3, waitFrames: 1800, waitLimit: 1800)).IsTrue();
+
+		// Concurrent crowd ORM deduplication via single-flight gate.
+		const int workers = 8;
+		var gate = new object();
+		var flights = new Dictionary<string, object>(StringComparer.Ordinal);
+		using var barrier = new System.Threading.Barrier(workers);
+		int executions = 0;
+		var results = new string[workers];
+		var leaderFlags = new bool[workers];
+		var tasks = new System.Threading.Tasks.Task[workers];
+		for (int i = 0; i < workers; i++)
+		{
+			int idx = i;
+			tasks[i] = System.Threading.Tasks.Task.Run(() =>
+			{
+				barrier.SignalAndWait();
+				results[idx] = Engine_TexLibrary.RunKeyedSingleFlight(
+					gate,
+					flights,
+					"orm-key-alpha",
+					() =>
+					{
+						int call = System.Threading.Interlocked.Increment(ref executions);
+						System.Threading.Thread.Sleep(25);
+						return $"packed-{call}";
+					},
+					out bool wasLeader);
+				leaderFlags[idx] = wasLeader;
+			});
+		}
+
+		System.Threading.Tasks.Task.WaitAll(tasks);
+		AssertThat(executions).IsEqual(1);
+		int leaderCount = 0;
+		for (int i = 0; i < workers; i++)
+		{
+			if (leaderFlags[i]) leaderCount++;
+			AssertThat(results[i]).IsEqual("packed-1");
+		}
+		AssertThat(leaderCount).IsEqual(1);
+		AssertThat(flights.Count).IsEqual(0);
+	}
+
+	/// <summary>
+	/// Verifies gameplay lean <see cref="Refii.Entities.Engine_EntityInspect.Build"/> matches
+	/// editor mode on <see cref="Refii.Entities.EntityInspectData.HasFor"/> without reading Babel strings.
+	/// </summary>
+	[TestCase]
+	public void EntityInspect_LeanGameplayMode_PreservesHasForWithoutBabelReads()
+	{
+		const uint chestEntity = 0x11110001u;
+		const uint chestComp = 0x11110002u;
+		const uint invComp = 0x11110003u;
+		const uint readableEntity = 0x22220001u;
+		const uint readableComp = 0x22220002u;
+		const uint sceneryEntity = 0x33330001u;
+
+		var db = new Refii.Gdb.GdbPatchDatabase();
+		var chest = new Refii.Gdb.GdbPatchEntry(chestEntity, 0x01);
+		chest.Properties.Add(new Refii.Gdb.GdbPatchProperty(
+			Refii.Entities.Engine_EntityContents.ChestComponent, Refii.Gdb.GdbFieldType.Reference, chestComp));
+		chest.Properties.Add(new Refii.Gdb.GdbPatchProperty(
+			Refii.Entities.Engine_EntityContents.InventoryComponentA, Refii.Gdb.GdbFieldType.Reference, invComp));
+		db.Entries.Add(chest);
+		db.Entries.Add(new Refii.Gdb.GdbPatchEntry(chestComp, 0x02));
+		db.Entries.Add(new Refii.Gdb.GdbPatchEntry(invComp, 0x02));
+
+		var sign = new Refii.Gdb.GdbPatchEntry(readableEntity, 0x01);
+		sign.Properties.Add(new Refii.Gdb.GdbPatchProperty(
+			Refii.Entities.Engine_EntityReadables.ReadableComponent, Refii.Gdb.GdbFieldType.Reference, readableComp));
+		db.Entries.Add(sign);
+		var signComp = new Refii.Gdb.GdbPatchEntry(readableComp, 0x02);
+		signComp.Properties.Add(new Refii.Gdb.GdbPatchProperty(
+			Refii.Entities.Engine_EntityReadables.TextTag, Refii.Gdb.GdbFieldType.ResourceReference, 0x44440001u));
+		db.Entries.Add(signComp);
+		db.Entries.Add(new Refii.Gdb.GdbPatchEntry(sceneryEntity, 0x01));
+
+		byte[] gdbBytes = Refii.Gdb.GdbWriter.Serialize(db);
+		byte[] saveBytes = System.Text.Encoding.UTF8.GetBytes("""
+			<?xml version="1.0" encoding="utf-8"?>
+			<Save version="2">
+			  <Level name="TestArea" version="1">
+			    <id_10000001 name="DefaultLayer" load="AlwaysOn">
+			      <Entity name="Chest_01">0x11110001</Entity>
+			      <Entity name="Sign_01">0x22220001</Entity>
+			      <Entity name="Rock_01">0x33330001</Entity>
+			    </id_10000001>
+			  </Level>
+			</Save>
+			""");
+
+		var level = new Refii.Level.LevelEntry
+		{
+			World = "albion",
+			Name = "TestArea",
+			LevelPath = "albion/testarea",
+			MainEhfPath = "levels/albion/testarea/testarea.ehf",
+		};
+
+		var requestedPaths = new List<string>();
+		byte[]? Read(string path)
+		{
+			requestedPaths.Add(path);
+			if (path.EndsWith("testarea.gdb", StringComparison.OrdinalIgnoreCase)) return gdbBytes;
+			if (path.EndsWith("testarea.save", StringComparison.OrdinalIgnoreCase)) return saveBytes;
+			return null;
+		}
+
+		Refii.Entities.EntityInspectData? lean = Refii.Entities.Engine_EntityInspect.Build(
+			level, Read, fullMetadata: false);
+		AssertThat(requestedPaths.Exists(static p => p.Contains("babel", StringComparison.OrdinalIgnoreCase))).IsFalse();
+		AssertThat(lean).IsNotNull();
+		AssertThat(lean!.FullMetadata).IsFalse();
+		AssertThat(lean.HasFor(chestEntity)).IsTrue();
+		AssertThat(lean.HasFor(readableEntity)).IsTrue();
+		AssertThat(lean.HasFor(sceneryEntity)).IsFalse();
+
+		Refii.Entities.EntityInspectData? full = Refii.Entities.Engine_EntityInspect.Build(
+			level, Read, fullMetadata: true);
+		AssertThat(full).IsNotNull();
+		AssertThat(full!.FullMetadata).IsTrue();
+		AssertThat(full.HasFor(chestEntity)).IsEqual(lean.HasFor(chestEntity));
+		AssertThat(full.HasFor(readableEntity)).IsEqual(lean.HasFor(readableEntity));
+		AssertThat(full.HasFor(sceneryEntity)).IsEqual(lean.HasFor(sceneryEntity));
 	}
 }

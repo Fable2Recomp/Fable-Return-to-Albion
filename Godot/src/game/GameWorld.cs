@@ -103,6 +103,39 @@ public partial class GameWorld : Node3D
 		hasActiveWorld && (!coverHeld || readyForWarmupAndSettle);
 
 	/// <summary>
+	/// Decides whether the guest's entities for a newly built destination are activated and safe to mount against.
+	/// On ABI &gt;= 50 (<paramref name="worldActiveSupported"/>), <paramref name="worldActive"/> (<c>World+0xA8</c>) is
+	/// authoritative because <paramref name="worldReady"/> (<c>game+0x105</c>) remains stale-true throughout State 2
+	/// and State 3's blocking load before clearing at the end of State 3.
+	/// </summary>
+	public static bool AreGuestEntitiesReadyForMount(
+		bool worldActive,
+		bool worldReady,
+		bool worldActiveSupported,
+		bool hasFullLoadInFlight,
+		int inFlightState,
+		int waitFrames,
+		int waitLimit)
+	{
+		if (waitFrames >= waitLimit)
+		{
+			return true;
+		}
+
+		if (hasFullLoadInFlight && inFlightState < 5)
+		{
+			return false;
+		}
+
+		if (worldActiveSupported)
+		{
+			return worldActive || (hasFullLoadInFlight && inFlightState >= 5);
+		}
+
+		return worldActive || worldReady || (hasFullLoadInFlight && inFlightState >= 5);
+	}
+
+	/// <summary>
 	/// Bitmask for <c>dx12_skip_3d</c> / <c>REFII_DX12_SKIP_3D</c> isolation bisection
 	/// (comma-separated: <c>terrain</c>, <c>props</c>, <c>entities</c>, <c>hero</c>, <c>fx</c>, <c>environment</c>,
 	/// <c>water</c>, <c>reflections</c>, <c>ssao</c>, <c>sunshadows</c>, <c>lights</c>,
@@ -419,7 +452,7 @@ public partial class GameWorld : Node3D
 	private string DescribePreDrawState()
 	{
 		Viewport? vp = GetViewport();
-		WorldEnvironment? worldEnv = _region?.FindChild("*", recursive: true, owned: false) as WorldEnvironment;
+		WorldEnvironment? worldEnv = _region?.GetNodeOrNull<WorldEnvironment>(Refii.Level.Engine_SkyEnvironment.NodeName);
 		bool ssao = worldEnv?.Environment?.SsaoEnabled ?? false;
 		bool sdfgi = worldEnv?.Environment?.SdfgiEnabled ?? false;
 		bool sunShadow = false;
@@ -1055,13 +1088,19 @@ public partial class GameWorld : Node3D
 	}
 
 	/// <summary>
-	/// `loh_compaction_defer_seconds` (default 0, the compaction at the release): when above 0,
+	/// `loh_compaction_defer_seconds` (default 30; 0 runs compaction at release): when above 0,
 	/// the release's compaction waits for a moment the player is not watching the world move —
 	/// the pause menu standing for <see cref="CompactionPauseFrames"/> frames (so it has been
 	/// drawn and the freeze lands on a still screen), or the next load's hold — and runs after
-	/// that many seconds of play at the latest, so the memory always comes back. The S10e's
-	/// release line: 1.6-1.9 s for 1201 -> 884 MB live, the last stretch before the world shows.
+	/// that many seconds of play at the latest, so the memory always comes back.
 	/// </summary>
+	private static void CompactImmediateOnTeardown()
+	{
+		long before = System.GC.GetTotalMemory(false);
+		_compactionDue = 0;
+		Compact(before);
+	}
+
 	private static int DeferSeconds()
 	{
 		try
@@ -1359,6 +1398,7 @@ public partial class GameWorld : Node3D
 		// "IsEnginePreLoading" and waits while the answer is yes; Godot is the engine. Set
 		// before the worker starts so there is no frame where the guest could be let through
 		// between the decision to build and the build beginning.
+		HostEntityWalk.Discard();
 		SetWorldBuildHeld(true);
 
 		GD.Print($"[game-world] building {world}/{level} on a worker thread; " +
@@ -1704,8 +1744,12 @@ public partial class GameWorld : Node3D
 		// The other two stay as corroboration, and the frame limit stays as a backstop — but if
 		// this works they should never be what decides, and the log will say which one did.
 		bool active = HostBridge.WorldIsActive();
-		bool entitiesComplete = active || ready || inFlight is { State: >= 5 } ||
-			_entityWaitFrames >= EntityWaitFrameLimit;
+		bool activeSupported = (HostBridge.TryGetAbiVersion() ?? 0) >= 50;
+		bool hasFullLoadInFlight = inFlight is { FullLoad: true };
+		int inFlightState = (int)(inFlight?.State ?? 0u);
+		bool guestEntitiesReady = AreGuestEntitiesReadyForMount(
+			active, ready, activeSupported, hasFullLoadInFlight, inFlightState, waitFrames: 0, waitLimit: 1);
+		bool entitiesComplete = guestEntitiesReady || _entityWaitFrames >= EntityWaitFrameLimit;
 
 		if (!entitiesComplete)
 		{
@@ -1731,7 +1775,7 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
-		if (_entityWaitFrames >= EntityWaitFrameLimit && !ready && inFlight is not { State: >= 5 })
+		if (_entityWaitFrames >= EntityWaitFrameLimit && !guestEntitiesReady)
 		{
 			GD.PrintErr($"[game-world] the guest never reported its entities ready for " +
 				$"{start.World}/{start.Level} after {_entityWaitFrames} frame(s) " +
@@ -1909,6 +1953,11 @@ public partial class GameWorld : Node3D
 			_entities = null;
 		}
 
+		// Discard any pre-teardown or in-flight entity walk and clear guest word-diff state so
+		// entities captured from the outgoing region cannot feed into the incoming region.
+		HostEntityWalk.Discard();
+		HostBridge.ResetEntityWalkState();
+
 		// Alongside the entity feed, and for its reason: this holds one node per LIVE guest
 		// effect keyed on a guest pointer, and the guest reuses those addresses. Left standing
 		// across a level change it would match the next region's effects against this region's
@@ -1999,7 +2048,7 @@ public partial class GameWorld : Node3D
 		// finalizer pass right after the delete queue flushes ensures the outgoing region's
 		// Texture2D, Texture2DArray, ArrayMesh and ShaderMaterial RefCounted wrappers release
 		// their VRAM before the incoming region mounts and streams.
-		Callable.From(CompactLargeObjectHeap).CallDeferred();
+		Callable.From(CompactImmediateOnTeardown).CallDeferred();
 
 		// A teardown can land while a build is in flight — the guest changing its mind mid-load.
 		// The next StartBuild re-asserts it, so clearing here cannot let the guest through early

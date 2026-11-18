@@ -229,13 +229,20 @@ public partial class Engine_PostFxHalos : Node
 		// rendering, but what is published here is shared: the distance fade is taken from the
 		// nearest view's eye, and a sky halo hangs off the window camera's.
 		Camera3D? camera = GetViewport()?.GetCamera3D();
-		Vector3 eye = camera?.GlobalPosition ?? Vector3.Zero;
+		Vector3 eye = camera is not null && GodotObject.IsInstanceValid(camera) && camera.IsInsideTree()
+			? camera.GlobalPosition
+			: Vector3.Zero;
 		int eyes = 0;
 		foreach (Camera3D view in Refii.Core.Engine_Views.Cameras(camera))
 		{
 			if (eyes == _eyes.Length)
 			{
 				break;
+			}
+
+			if (!GodotObject.IsInstanceValid(view) || !view.IsInsideTree())
+			{
+				continue;
 			}
 
 			_eyes[eyes++] = view.GlobalPosition;
@@ -245,7 +252,7 @@ public partial class Engine_PostFxHalos : Node
 		foreach (Halo halo in _live)
 		{
 			Light3D light = halo.Light;
-			if (!light.IsVisibleInTree())
+			if (!GodotObject.IsInstanceValid(light) || !light.IsInsideTree() || !light.IsVisibleInTree())
 			{
 				continue;
 			}

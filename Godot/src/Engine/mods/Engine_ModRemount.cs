@@ -289,6 +289,8 @@ public static class ModRemount
 
 		if (models.Count != 0)
 		{
+			Refii.Level.Engine_PropStreamer.ClearCache();
+			Refii.Models.Engine_MdlMaterial.ClearSharedCache();
 			report.Relaunch.Add(("models",
 				"a mesh already placed in the world or on a character is not rebuilt; relaunch to see it", models));
 		}

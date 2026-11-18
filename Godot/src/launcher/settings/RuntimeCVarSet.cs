@@ -349,7 +349,7 @@ public static class RuntimeCVarsGodot
 
             ..RuntimeCVarsAndroid.LohCompaction,
 
-            new("loh_compaction_defer_seconds", DisplayCategory, RuntimeCVarType.Int, "0",
+            new("loh_compaction_defer_seconds", DisplayCategory, RuntimeCVarType.Int, "30",
                 "Memory: the compaction of the app's large memory blocks after a load (always on the "
                 + "desktop, android_loh_compaction on Android) waits instead of holding the loading "
                 + "screen: it runs once the pause menu is open, at the next loading screen, or after "

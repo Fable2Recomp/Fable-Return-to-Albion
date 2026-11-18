@@ -54,7 +54,8 @@ public partial class Engine_FxMeshTwins : Node
     private readonly List<uint> _gone = new();
     private readonly Dictionary<uint, Mesh?> _meshes = new();
     private readonly HashSet<uint> _loading = new();
-    private readonly ConcurrentQueue<(uint Hash, Mesh? Mesh)> _loaded = new();
+    private readonly ConcurrentQueue<(long Generation, uint Hash, Mesh? Mesh)> _loaded = new();
+    private static long _regionGeneration;
     private long _frames;
     private ulong _lastHostFrame = ulong.MaxValue;
 
@@ -75,10 +76,48 @@ public partial class Engine_FxMeshTwins : Node
 
     public override void _ExitTree()
     {
+        ClearInstanceCaches(freeNodes: false);
         if (Instance == this)
         {
             Instance = null;
         }
+    }
+
+    /// <summary>Drops all cached FX twin meshes and live particles across region swaps.</summary>
+    public static void ClearRegionCaches()
+    {
+        System.Threading.Interlocked.Increment(ref _regionGeneration);
+        FeedLive = false;
+        if (Instance is { } inst && GodotObject.IsInstanceValid(inst))
+        {
+            inst.ClearInstanceCaches(freeNodes: true);
+        }
+    }
+
+    private void ClearInstanceCaches(bool freeNodes)
+    {
+        if (freeNodes)
+        {
+            foreach (Particle particle in _particles.Values)
+            {
+                if (GodotObject.IsInstanceValid(particle.Node))
+                {
+                    particle.Node.GetParent()?.RemoveChild(particle.Node);
+                    particle.Node.QueueFree();
+                }
+            }
+        }
+
+        _particles.Clear();
+        _moving.Clear();
+        _settled.Clear();
+        _gone.Clear();
+        _meshes.Clear();
+        _loading.Clear();
+        while (_loaded.TryDequeue(out _))
+        {
+        }
+        Drawn = 0;
     }
 
     /// <summary>Follows the effects' mesh twins. Main thread, before the displacement pump.</summary>
@@ -92,9 +131,14 @@ public partial class Engine_FxMeshTwins : Node
         _lastHostFrame = hostFrame;
 
         bool meshArrived = false;
-        while (_loaded.TryDequeue(out (uint Hash, Mesh? Mesh) done))
+        long currentGen = System.Threading.Interlocked.Read(ref _regionGeneration);
+        while (_loaded.TryDequeue(out (long Generation, uint Hash, Mesh? Mesh) done))
         {
             _loading.Remove(done.Hash);
+            if (done.Generation != currentGen)
+            {
+                continue;
+            }
             _meshes[done.Hash] = done.Mesh;
             meshArrived = true;
         }
@@ -373,18 +417,23 @@ public partial class Engine_FxMeshTwins : Node
             return null;
         }
         _loading.Add(hash);
+        long gen = System.Threading.Interlocked.Read(ref _regionGeneration);
         System.Threading.Tasks.Task.Run(() =>
         {
             Mesh? loaded = null;
             try
             {
-                loaded = ResourceLoader.Load<Mesh>(Engine_BnkMeshLoader.PathPrefix + path, "Mesh");
+                byte[]? bytes = Engine_BnkMeshLoader.ReadBytes(path);
+                if (bytes is not null)
+                {
+                    loaded = Engine_MdlMesh.TryCreateMesh(bytes, path, out _, out _);
+                }
             }
             catch (Exception)
             {
                 loaded = null;
             }
-            _loaded.Enqueue((hash, loaded is not null && loaded.GetSurfaceCount() > 0 ? loaded : null));
+            _loaded.Enqueue((gen, hash, loaded is not null && loaded.GetSurfaceCount() > 0 ? loaded : null));
         });
         return null;
     }

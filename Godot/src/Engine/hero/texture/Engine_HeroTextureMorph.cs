@@ -387,150 +387,322 @@ public static partial class Engine_HeroTextureMorph
             (composite.Overlay ? overlays : byOriginal)[composite.Original] = composite;
         }
 
-        for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+        var surfacePlans = new List<(
+            int SurfaceIndex,
+            ShaderMaterial BaseMaterial,
+            List<(int Slot, PreparedComposite Prep)> SlotReplacements,
+            Engine_TexLibrary.PreparedOrm? OrmPrep,
+            bool NeedsMainThreadOrmFallback)>();
+        var disposableImages = new List<Image>();
+
+        try
         {
-            if (mesh.SurfaceGetMaterial(s) is not ShaderMaterial material ||
-                !material.HasMeta(Refii.Models.Engine_MdlMaterial.TextureNamesMeta))
+            for (int s = 0; s < mesh.GetSurfaceCount(); s++)
             {
-                continue;
-            }
-
-            string[] names = material.GetMeta(
-                Refii.Models.Engine_MdlMaterial.TextureNamesMeta).AsStringArray();
-            ShaderMaterial? own = null;
-
-            Refii.Host.HostBridge.GuestTextureLayer[]? over = null;
-            if (names.Length > DiffuseSlot && names[DiffuseSlot].Length != 0 &&
-                overlays.TryGetValue(
-                    Engine_TexPathIndex.PathHash(names[DiffuseSlot]),
-                    out Refii.Host.HostBridge.GuestTextureComposite stated))
-            {
-                over = stated.Layers;
-            }
-
-            bool packedSourceChanged = false;
-            var slotReplacements = new List<(int Slot, Texture2D Texture)>(3);
-            Texture2D? morphedSpecTex = null;
-            Texture2D? morphedNormTex = null;
-            for (int slot = 0;
-                 slot < names.Length && slot < Refii.Models.Engine_MdlMaterial.TextureParameters.Length;
-                 slot++)
-            {
-                if (names[slot].Length == 0)
+                if (mesh.SurfaceGetMaterial(s) is not ShaderMaterial material ||
+                    !material.HasMeta(Refii.Models.Engine_MdlMaterial.TextureNamesMeta))
                 {
                     continue;
                 }
 
-                uint original = Engine_TexPathIndex.PathHash(names[slot]);
-                byOriginal.TryGetValue(
-                    original, out Refii.Host.HostBridge.GuestTextureComposite composite);
-                if (slot < everyMap.Length && everyMap[slot] is { } swapped)
+                string[] names = material.GetMeta(
+                    Refii.Models.Engine_MdlMaterial.TextureNamesMeta).AsStringArray();
+
+                Refii.Host.HostBridge.GuestTextureLayer[]? over = null;
+                if (names.Length > DiffuseSlot && names[DiffuseSlot].Length != 0 &&
+                    overlays.TryGetValue(
+                        Engine_TexPathIndex.PathHash(names[DiffuseSlot]),
+                        out Refii.Host.HostBridge.GuestTextureComposite stated))
                 {
-                    composite = new Refii.Host.HostBridge.GuestTextureComposite(original, swapped);
+                    over = stated.Layers;
                 }
 
-                // An overlay is drawn as a whole material: its diffuse, spec and bump each land
-                // on the matching map, under the diffuse's coverage.
-                Refii.Host.HostBridge.GuestTextureLayer[]? slotOver = over;
-                OverlayMap map = slot switch
+                bool packedSourceChanged = false;
+                var slotReplacements = new List<(int Slot, PreparedComposite Prep)>(3);
+                PreparedComposite? morphedSpecPrep = null;
+                PreparedComposite? morphedNormPrep = null;
+                for (int slot = 0;
+                     slot < names.Length && slot < Refii.Models.Engine_MdlMaterial.TextureParameters.Length;
+                     slot++)
                 {
-                    NormalSlot => OverlayMap.Normal,
-                    SpecularSlot => OverlayMap.Specular,
-                    _ => OverlayMap.Diffuse,
-                };
+                    if (names[slot].Length == 0)
+                    {
+                        continue;
+                    }
 
-                var layers = slot == DiffuseSlot && everyMap[DiffuseSlot] is null
-                    ? SkinLayers(names[slot], composite.Layers, tan) : composite.Layers;
-                if (Composite(original, layers, slotOver, map)
-                    is not Texture2D composited)
+                    uint original = Engine_TexPathIndex.PathHash(names[slot]);
+                    byOriginal.TryGetValue(
+                        original, out Refii.Host.HostBridge.GuestTextureComposite composite);
+                    if (slot < everyMap.Length && everyMap[slot] is { } swapped)
+                    {
+                        composite = new Refii.Host.HostBridge.GuestTextureComposite(original, swapped);
+                    }
+
+                    // An overlay is drawn as a whole material: its diffuse, spec and bump each land
+                    // on the matching map, under the diffuse's coverage.
+                    Refii.Host.HostBridge.GuestTextureLayer[]? slotOver = over;
+                    OverlayMap map = slot switch
+                    {
+                        NormalSlot => OverlayMap.Normal,
+                        SpecularSlot => OverlayMap.Specular,
+                        _ => OverlayMap.Diffuse,
+                    };
+
+                    var layers = slot == DiffuseSlot && everyMap[DiffuseSlot] is null
+                        ? SkinLayers(names[slot], composite.Layers, tan) : composite.Layers;
+                    if (CompositePrepared(original, layers, slotOver, map)
+                        is not { } preparedComposite)
+                    {
+                        continue;
+                    }
+
+                    slotReplacements.Add((slot, preparedComposite));
+                    if (slot == SpecularSlot)
+                    {
+                        morphedSpecPrep = preparedComposite;
+                    }
+                    else if (slot == NormalSlot)
+                    {
+                        morphedNormPrep = preparedComposite;
+                    }
+
+                    packedSourceChanged |= slot == NormalSlot || slot == SpecularSlot;
+                }
+
+                if (slotReplacements.Count == 0)
                 {
                     continue;
                 }
 
-                slotReplacements.Add((slot, composited));
-                if (slot == SpecularSlot)
+                Engine_TexLibrary.PreparedOrm? ormPrep = null;
+                bool needsMainThreadOrmFallback = false;
+                if (packedSourceChanged && Engine_TexSettings.OrmEnabled)
                 {
-                    morphedSpecTex = composited;
-                }
-                else if (slot == NormalSlot)
-                {
-                    morphedNormTex = composited;
+                    if (material.HasMeta(Refii.Models.Engine_MdlMaterial.OrmParamsMeta))
+                    {
+                        Vector3 ormParams = material.GetMeta(
+                            Refii.Models.Engine_MdlMaterial.OrmParamsMeta).AsVector3();
+                        if (ormParams.X > 0.5f)
+                        {
+                            float specPowerMin = ormParams.Y;
+                            float specPowerMax = ormParams.Z;
+
+                            Texture2D? identitySpec = morphedSpecPrep is not null
+                                ? morphedSpecPrep.Ready
+                                : (names.Length > SpecularSlot && names[SpecularSlot].Length != 0
+                                    ? Engine_TexLibrary.TryPeekLiveTexture(names[SpecularSlot], TexSemantic.Specular)
+                                    : null);
+                            Texture2D? identityNorm = morphedNormPrep is not null
+                                ? morphedNormPrep.Ready
+                                : (names.Length > NormalSlot && names[NormalSlot].Length != 0
+                                    ? Engine_TexLibrary.TryPeekLiveTexture(names[NormalSlot], TexSemantic.Normal)
+                                    : null);
+
+                            if (Engine_TexLibrary.TryGetReadyComposedOrmByIdentity(
+                                    identitySpec,
+                                    identityNorm,
+                                    specPowerMin,
+                                    specPowerMax,
+                                    Engine_TexSettings.OrmAoStrength,
+                                    Engine_TexSettings.OrmMetallicStrength,
+                                    Engine_TexSettings.OrmHeight,
+                                    out Engine_TexLibrary.PreparedOrm? cachedOrm))
+                            {
+                                ormPrep = cachedOrm;
+                            }
+                            else
+                            {
+                                Image? specImg = null;
+                                if (morphedSpecPrep is not null)
+                                {
+                                    specImg = morphedSpecPrep.CpuImage;
+                                    if (specImg is null && morphedSpecPrep.Ready is not null)
+                                    {
+                                        specImg = Engine_TexLibrary.TryGetOrmSourceCpuImageByPath(
+                                            string.Empty, TexSemantic.Specular, Refii.Models.Engine_BnkMeshLoader.ReadBytes,
+                                            out bool disposeMorphedSpec, morphedSpecPrep.Ready);
+                                        if (disposeMorphedSpec && specImg is not null)
+                                        {
+                                            disposableImages.Add(specImg);
+                                        }
+                                        if (specImg is null)
+                                        {
+                                            needsMainThreadOrmFallback = true;
+                                        }
+                                    }
+                                }
+                                else if (names.Length > SpecularSlot && names[SpecularSlot].Length != 0)
+                                {
+                                    specImg = Engine_TexLibrary.TryGetOrmSourceCpuImageByPath(
+                                        names[SpecularSlot], TexSemantic.Specular, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out bool disposeSpec);
+                                    if (disposeSpec && specImg is not null)
+                                    {
+                                        disposableImages.Add(specImg);
+                                    }
+                                }
+
+                                Image? normImg = null;
+                                if (!needsMainThreadOrmFallback)
+                                {
+                                    if (morphedNormPrep is not null)
+                                    {
+                                        normImg = morphedNormPrep.CpuImage;
+                                        if (normImg is null && morphedNormPrep.Ready is not null)
+                                        {
+                                            normImg = Engine_TexLibrary.TryGetOrmSourceCpuImageByPath(
+                                                string.Empty, TexSemantic.Normal, Refii.Models.Engine_BnkMeshLoader.ReadBytes,
+                                                out bool disposeMorphedNorm, morphedNormPrep.Ready);
+                                            if (disposeMorphedNorm && normImg is not null)
+                                            {
+                                                disposableImages.Add(normImg);
+                                            }
+                                            if (normImg is null)
+                                            {
+                                                needsMainThreadOrmFallback = true;
+                                            }
+                                        }
+                                    }
+                                    else if (names.Length > NormalSlot && names[NormalSlot].Length != 0)
+                                    {
+                                        normImg = Engine_TexLibrary.TryGetOrmSourceCpuImageByPath(
+                                            names[NormalSlot], TexSemantic.Normal, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out bool disposeNorm);
+                                        if (disposeNorm && normImg is not null)
+                                        {
+                                            disposableImages.Add(normImg);
+                                        }
+                                    }
+                                }
+
+                                if (!needsMainThreadOrmFallback && (specImg is not null || normImg is not null))
+                                {
+                                    ormPrep = Engine_TexLibrary.PrepareComposedOrm(
+                                        specImg,
+                                        normImg,
+                                        identitySpec,
+                                        identityNorm,
+                                        specPowerMin,
+                                        specPowerMax,
+                                        Engine_TexSettings.OrmAoStrength,
+                                        Engine_TexSettings.OrmMetallicStrength,
+                                        Engine_TexSettings.OrmHeight);
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        needsMainThreadOrmFallback = true;
+                    }
                 }
 
-                packedSourceChanged |= slot == NormalSlot || slot == SpecularSlot;
+                surfacePlans.Add((s, material, slotReplacements, ormPrep, needsMainThreadOrmFallback));
             }
 
-            if (slotReplacements.Count == 0)
+            if (surfacePlans.Count == 0)
             {
-                continue;
+                return;
             }
 
-            bool hasOrm = false;
-            float specPowerMin = 0f;
-            float specPowerMax = 0f;
-            Texture2D? baseSpecTex = null;
-            Texture2D? baseNormTex = null;
-            own = Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () =>
+            long estimatedBytes = 0;
+            for (int i = 0; i < surfacePlans.Count; i++)
             {
-                ShaderMaterial copy;
-                lock (DuplicateGate)
+                var plan = surfacePlans[i];
+                estimatedBytes += 4096L;
+                for (int j = 0; j < plan.SlotReplacements.Count; j++)
                 {
-                    copy = material.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta)
-                        ? Refii.Models.Engine_ClassicMaterial.InstanceCopy(material)
-                        : Refii.Models.Engine_MaterialCopy.Shallow(material);
+                    estimatedBytes += plan.SlotReplacements[j].Prep.EstimatedBytes;
                 }
-
-                for (int i = 0; i < slotReplacements.Count; i++)
+                if (plan.OrmPrep is not null)
                 {
-                    (int replacedSlot, Texture2D composited) = slotReplacements[i];
-                    Refii.Models.Engine_ClassicMaterial.SetOnPasses(copy,
-                        Refii.Models.Engine_ClassicMaterial.TextureParameter(copy, replacedSlot), composited);
+                    estimatedBytes += plan.OrmPrep.EstimatedBytes;
                 }
+            }
 
-                if (packedSourceChanged && Engine_TexSettings.OrmEnabled &&
-                    copy.GetShaderParameter("has_orm").AsBool())
+            Refii.Core.Engine_ServerSyncs.RunGpuUpload(estimatedBytes, () =>
+            {
+                for (int i = 0; i < surfacePlans.Count; i++)
                 {
-                    hasOrm = true;
-                    specPowerMin = copy.GetShaderParameter("spec_power_min").AsSingle();
-                    specPowerMax = copy.GetShaderParameter("spec_power_max").AsSingle();
-                    baseSpecTex = morphedSpecTex ?? copy.GetShaderParameter("specular_tex").As<Texture2D>();
-                    baseNormTex = morphedNormTex ?? copy.GetShaderParameter("normal_tex").As<Texture2D>();
-                }
+                    var plan = surfacePlans[i];
+                    ShaderMaterial copy;
+                    lock (DuplicateGate)
+                    {
+                        copy = plan.BaseMaterial.HasMeta(Refii.Models.Engine_ClassicMaterial.ClassicMeta)
+                            ? Refii.Models.Engine_ClassicMaterial.InstanceCopy(plan.BaseMaterial)
+                            : Refii.Models.Engine_MaterialCopy.Shallow(plan.BaseMaterial);
+                    }
 
-                return copy;
+                    Texture2D? morphedSpecTex = null;
+                    Texture2D? morphedNormTex = null;
+                    for (int j = 0; j < plan.SlotReplacements.Count; j++)
+                    {
+                        (int replacedSlot, PreparedComposite prep) = plan.SlotReplacements[j];
+                        if (prep.CommitOnMainThread() is not Texture2D composited)
+                        {
+                            continue;
+                        }
+
+                        Refii.Models.Engine_ClassicMaterial.SetOnPasses(copy,
+                            Refii.Models.Engine_ClassicMaterial.TextureParameter(copy, replacedSlot), composited);
+                        if (replacedSlot == SpecularSlot)
+                        {
+                            morphedSpecTex = composited;
+                        }
+                        else if (replacedSlot == NormalSlot)
+                        {
+                            morphedNormTex = composited;
+                        }
+                    }
+
+                    ImageTexture? orm = null;
+                    bool hasHeight = false;
+                    if (plan.OrmPrep is not null)
+                    {
+                        orm = plan.OrmPrep.CommitOnMainThread();
+                        hasHeight = plan.OrmPrep.HasHeight;
+                    }
+                    else if (plan.NeedsMainThreadOrmFallback && copy.GetShaderParameter("has_orm").AsBool())
+                    {
+                        float specPowerMin = copy.GetShaderParameter("spec_power_min").AsSingle();
+                        float specPowerMax = copy.GetShaderParameter("spec_power_max").AsSingle();
+                        Texture2D? baseSpecTex = morphedSpecTex ?? copy.GetShaderParameter("specular_tex").As<Texture2D>();
+                        Texture2D? baseNormTex = morphedNormTex ?? copy.GetShaderParameter("normal_tex").As<Texture2D>();
+                        orm = Engine_TexLibrary.ComposedOrm(
+                            baseSpecTex,
+                            baseNormTex,
+                            specPowerMin,
+                            specPowerMax,
+                            Engine_TexSettings.OrmAoStrength,
+                            Engine_TexSettings.OrmMetallicStrength,
+                            Engine_TexSettings.OrmHeight,
+                            out hasHeight);
+                    }
+
+                    if (orm is not null)
+                    {
+                        copy.SetShaderParameter("orm_tex", orm);
+                        copy.SetShaderParameter("has_height", hasHeight);
+                    }
+
+                    mesh.SurfaceSetMaterial(plan.SurfaceIndex, copy);
+                }
             });
-
-            // THE ORM FOLLOWS THE MAPS IT WAS PACKED FROM. Roughness and metallic come from the
-            // specular, occlusion and height from the normal (Engine_TexOrm); a material whose
-            // composite replaced either would otherwise draw with the unmorphed pack beside the
-            // morphed map — the rule Engine_MdlMaterial already applies to an overridden source.
-            ImageTexture? orm = null;
-            bool hasHeight = false;
-            if (hasOrm)
+        }
+        finally
+        {
+            for (int i = 0; i < surfacePlans.Count; i++)
             {
-                orm = Engine_TexLibrary.ComposedOrm(
-                    baseSpecTex,
-                    baseNormTex,
-                    specPowerMin,
-                    specPowerMax,
-                    Engine_TexSettings.OrmAoStrength,
-                    Engine_TexSettings.OrmMetallicStrength,
-                    Engine_TexSettings.OrmHeight,
-                    out hasHeight);
+                var plan = surfacePlans[i];
+                for (int j = 0; j < plan.SlotReplacements.Count; j++)
+                {
+                    plan.SlotReplacements[j].Prep.Dispose();
+                }
+                plan.OrmPrep?.Dispose();
             }
 
-            int surfaceIdx = s;
-            ShaderMaterial finalMat = own;
-            Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () =>
+            for (int i = 0; i < disposableImages.Count; i++)
             {
-                if (orm is not null)
-                {
-                    finalMat.SetShaderParameter("orm_tex", orm);
-                    finalMat.SetShaderParameter("has_height", hasHeight);
-                }
-
-                mesh.SurfaceSetMaterial(surfaceIdx, finalMat);
-            });
+                disposableImages[i].Dispose();
+            }
         }
     }
 
@@ -588,6 +760,156 @@ public static partial class Engine_HeroTextureMorph
     /// <param name="overlays">Guest overlays whose diffuse alpha masks colour or normal contributions.</param>
     /// <param name="map">Which map of an overlay lands here: its diffuse, or its spec or bump under the diffuse's coverage.</param>
     /// <returns>A borrowed texture, or null when no valid composite is needed. Retirement never disposes this borrow.</returns>
+    /// <summary>
+    /// Prepared CPU-side composite texture from <see cref="CompositePrepared"/> so all morphed
+    /// textures across a character mesh commit inside one main-thread <c>RunGpuUpload</c>.
+    /// </summary>
+    internal sealed class PreparedComposite : IDisposable
+    {
+        public Texture2D? Ready { get; private set; }
+        public Image? CpuImage { get; private set; }
+        public long EstimatedBytes => Ready is null && CpuImage is not null && !CpuImage.IsEmpty()
+            ? Math.Max(4096L, CpuImage.GetDataSize())
+            : 0L;
+
+        private readonly string? _cacheKey;
+        private readonly long _epoch;
+        private readonly string? _stored;
+        private bool _disposed;
+
+        internal PreparedComposite(Texture2D? ready)
+        {
+            Ready = ready;
+        }
+
+        internal PreparedComposite(string cacheKey, long epoch, Image cpuImage, string? stored)
+        {
+            _cacheKey = cacheKey;
+            _epoch = epoch;
+            CpuImage = cpuImage;
+            _stored = stored;
+        }
+
+        public Texture2D? CommitOnMainThread()
+        {
+            if (Ready is not null || CpuImage is null || CpuImage.IsEmpty() || _cacheKey is null)
+            {
+                return Ready;
+            }
+
+            lock (MorphLock)
+            {
+                if (_epoch == _textureEpoch)
+                {
+                    if (Composited.TryGetValue(_cacheKey, out ImageTexture? cached))
+                    {
+                        Ready = cached;
+                        CpuImage.Dispose();
+                        CpuImage = null;
+                        return Ready;
+                    }
+
+                    if (Revive(_cacheKey) is { } alive)
+                    {
+                        Ready = alive;
+                        CpuImage.Dispose();
+                        CpuImage = null;
+                        return Ready;
+                    }
+                }
+            }
+
+            ImageTexture texture = StoredUpload(CpuImage, _stored)
+                ?? Refii.Textures.Engine_TextureUpload.CreateTextureOnMainThread(CpuImage, world: true);
+            Engine_TexLibrary.RegisterCpuImage(texture, CpuImage);
+            Ready = Publish(_cacheKey, _epoch, texture);
+            CpuImage = null;
+            return Ready;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            CpuImage?.Dispose();
+            CpuImage = null;
+        }
+    }
+
+    private static PreparedComposite? CompositePrepared(
+        uint original,
+        Refii.Host.HostBridge.GuestTextureLayer[]? layers,
+        Refii.Host.HostBridge.GuestTextureLayer[]? overlays,
+        OverlayMap map)
+    {
+        layers ??= Array.Empty<Refii.Host.HostBridge.GuestTextureLayer>();
+        overlays ??= Array.Empty<Refii.Host.HostBridge.GuestTextureLayer>();
+
+        bool layered = layers.Length > 1 ||
+            (layers.Length == 1 && (layers[0].Texture != original || layers[0].HasTint));
+
+        bool overlaid = false;
+        foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
+        {
+            if (overlay.Weight > Engine_HeroMorph.WeightFloor &&
+                OverlaySource(overlay, map) != 0)
+            {
+                overlaid = true;
+            }
+        }
+
+        if (!layered && !overlaid)
+        {
+            return null;
+        }
+
+        var key = new System.Text.StringBuilder(map switch
+        {
+            OverlayMap.Normal => "N",
+            OverlayMap.Specular => "S",
+            _ => "L",
+        });
+        key.Append(original.ToString("x8"));
+        foreach (Refii.Host.HostBridge.GuestTextureLayer layer in layers)
+        {
+            AppendKey(key, layer);
+        }
+
+        key.Append('+');
+        foreach (Refii.Host.HostBridge.GuestTextureLayer overlay in overlays)
+        {
+            AppendKey(key, overlay);
+        }
+
+        string cacheKey = key.ToString();
+        long epoch;
+        lock (MorphLock)
+        {
+            epoch = _textureEpoch;
+            if (Composited.TryGetValue(cacheKey, out ImageTexture? cached))
+            {
+                return new PreparedComposite(cached);
+            }
+
+            if (Revive(cacheKey) is { } alive)
+            {
+                return new PreparedComposite(alive);
+            }
+        }
+
+        if (TryStoredComposite(cacheKey, original, layers, overlays, out string? stored) is { } kept)
+        {
+            System.Threading.Interlocked.Increment(ref _compositesFromDisk);
+            return new PreparedComposite(Publish(cacheKey, epoch, kept));
+        }
+
+        return BuildCompositePrepared(original, layers, overlays, map, cacheKey, epoch, stored);
+    }
+
     public static Texture2D? Composite(
         uint original,
         Refii.Host.HostBridge.GuestTextureLayer[]? layers,
@@ -658,14 +980,33 @@ public static partial class Engine_HeroTextureMorph
             return theirs as Texture2D;
         }
 
+        Texture2D? Commit(PreparedComposite? prepared)
+        {
+            if (prepared is null)
+            {
+                return null;
+            }
+
+            using (prepared)
+            {
+                if (prepared.Ready is not null || prepared.EstimatedBytes == 0)
+                {
+                    return prepared.Ready;
+                }
+
+                return Refii.Core.Engine_ServerSyncs.RunGpuUpload(
+                    prepared.EstimatedBytes, () => prepared.CommitOnMainThread());
+            }
+        }
+
         if (mine is null)
         {
-            return BuildComposite(original, layers, overlays, map, cacheKey, epoch);
+            return Commit(BuildCompositeWithDisk(original, layers, overlays, map, cacheKey, epoch));
         }
 
         try
         {
-            ImageTexture? built = BuildComposite(original, layers, overlays, map, cacheKey, epoch);
+            Texture2D? built = Commit(BuildCompositeWithDisk(original, layers, overlays, map, cacheKey, epoch));
             mine.Result = built;
             mine.Answered = true;
             return built;
@@ -676,7 +1017,7 @@ public static partial class Engine_HeroTextureMorph
         }
     }
 
-    private static ImageTexture? BuildComposite(
+    private static PreparedComposite? BuildCompositeWithDisk(
         uint original,
         Refii.Host.HostBridge.GuestTextureLayer[] layers,
         Refii.Host.HostBridge.GuestTextureLayer[] overlays,
@@ -687,9 +1028,21 @@ public static partial class Engine_HeroTextureMorph
         if (TryStoredComposite(cacheKey, original, layers, overlays, out string? stored) is { } kept)
         {
             System.Threading.Interlocked.Increment(ref _compositesFromDisk);
-            return Publish(cacheKey, epoch, kept);
+            return new PreparedComposite(Publish(cacheKey, epoch, kept));
         }
 
+        return BuildCompositePrepared(original, layers, overlays, map, cacheKey, epoch, stored);
+    }
+
+    private static PreparedComposite? BuildCompositePrepared(
+        uint original,
+        Refii.Host.HostBridge.GuestTextureLayer[] layers,
+        Refii.Host.HostBridge.GuestTextureLayer[] overlays,
+        OverlayMap map,
+        string cacheKey,
+        long epoch,
+        string? stored)
+    {
         string? basePath = Engine_TexPathIndex.Resolve(layers.Length != 0 ? layers[0].Texture : original);
         DecodedTexture? source = basePath is null ? null : Decode(basePath, epoch);
         if (source is null || !source.Ok)
@@ -730,7 +1083,7 @@ public static partial class Engine_HeroTextureMorph
 
         try
         {
-            return BlendAndUpload(output, width, height, original, layers, decoded, overlays, map, cacheKey, epoch, stored);
+            return BlendAndPrepare(output, width, height, original, layers, decoded, overlays, map, cacheKey, epoch, stored);
         }
         finally
         {
@@ -741,7 +1094,7 @@ public static partial class Engine_HeroTextureMorph
         }
     }
 
-    private static ImageTexture BlendAndUpload(
+    private static PreparedComposite BlendAndPrepare(
         byte[] output,
         int width,
         int height,
@@ -812,7 +1165,35 @@ public static partial class Engine_HeroTextureMorph
 
         string? keep = complete ? KeepAs(stored, cacheKey, original, layers, overlays) : null;
         System.Threading.Interlocked.Increment(ref _compositesBuilt);
-        return Publish(cacheKey, epoch, ToTexture(output, width, height, normalSlot, keep));
+        Image image = Image.CreateFromData(
+            width, height, false, Image.Format.Rgba8, new ReadOnlySpan<byte>(output, 0, width * height * 4));
+        image.GenerateMipmaps(normalSlot);
+        Engine_TexImage.CompressBlocks(image, normalSlot);
+        return new PreparedComposite(cacheKey, epoch, image, keep);
+    }
+
+    private static ImageTexture BlendAndUpload(
+        byte[] output,
+        int width,
+        int height,
+        uint original,
+        Refii.Host.HostBridge.GuestTextureLayer[] layers,
+        DecodedTexture?[] decoded,
+        Refii.Host.HostBridge.GuestTextureLayer[] overlays,
+        OverlayMap map,
+        string cacheKey,
+        long epoch,
+        string? stored)
+    {
+        using PreparedComposite prep = BlendAndPrepare(
+            output, width, height, original, layers, decoded, overlays, map, cacheKey, epoch, stored);
+        if (prep.Ready is ImageTexture readyImg)
+        {
+            return readyImg;
+        }
+
+        return (ImageTexture)Refii.Core.Engine_ServerSyncs.RunGpuUpload(
+            prep.EstimatedBytes, () => prep.CommitOnMainThread())!;
     }
 
     private static ImageTexture Publish(string cacheKey, long epoch, ImageTexture texture)

@@ -185,13 +185,13 @@ public static class GameChildProcess
 	private const string RendererSettingsPath = "user://renderer.cfg";
 
 	/// <summary>Maximum staging buffer size in megabytes for upload pacing on unified memory GPUs.</summary>
-	public const int DefaultStagingBufferMaxSizeMb = 128;
+	public const int DefaultStagingBufferMaxSizeMb = 64;
 
 	/// <summary>Total D3D12 CBV/SRV/UAV descriptor heap capacity.</summary>
-	public const int DefaultD3D12MaxResourceDescriptors = 262144;
+	public const int DefaultD3D12MaxResourceDescriptors = 65536;
 
 	/// <summary>Per-frame D3D12 CBV/SRV/UAV descriptor ring budget.</summary>
-	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 131072;
+	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 32768;
 
 	/// <summary>
 	/// Shader-visible D3D12 sampler heap limit. Must never exceed Direct3D 12's architectural ceiling
@@ -335,6 +335,8 @@ public static class GameChildProcess
 			var archives = System.IO.Directory.GetFiles(dir, $"prev_{stem}_*{ext}")
 				.Select(static p => new System.IO.FileInfo(p))
 				.OrderByDescending(static f => f.LastWriteTimeUtc)
+				.ThenByDescending(f => string.Equals(f.FullName, dest, System.StringComparison.OrdinalIgnoreCase))
+				.ThenByDescending(static f => f.Name, System.StringComparer.OrdinalIgnoreCase)
 				.Skip(keepArchives);
 			foreach (System.IO.FileInfo old in archives)
 			{

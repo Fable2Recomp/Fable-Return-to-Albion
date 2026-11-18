@@ -5,6 +5,7 @@ namespace Refii.Level;
 
 public partial class Engine_PropStreamer
 {
+    private static bool PreferLowPrefetchConcurrency => Refii.Core.Engine_Platform.IsAndroid;
     /// <summary>
     /// Queues a streamed building prop for its occluders under `occlusion_culling`
     /// (Engine_BuildingOccluders); anything else, or the setting off, does nothing.

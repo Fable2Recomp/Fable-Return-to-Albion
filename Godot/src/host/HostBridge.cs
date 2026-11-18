@@ -2128,6 +2128,15 @@ public static partial class HostBridge
 	private static readonly object _entityWalkGate = new();
 	private static uint[]? _unknownPairs;
 
+	/// <summary>Resets cached per-region entity walk diffing state during region teardown.</summary>
+	public static void ResetEntityWalkState()
+	{
+		lock (_entityWalkGate)
+		{
+			_statedWords?.Clear();
+		}
+	}
+
 	/// <summary>The most bones a character rig is read at. Fable's rigs are well under this.</summary>
 	public const int MaxBones = 256;
 

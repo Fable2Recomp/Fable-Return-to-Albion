@@ -15,9 +15,14 @@ public static partial class Engine_MdlMaterial
     /// <see cref="FactEmission"/>, <see cref="FactOrm"/>, <see cref="FactPremultiplied"/>,
     /// <see cref="FactGrassBend"/>, kept per pass. Meta rather than a parameter
     /// read: an unset parameter's read is a round trip to the render thread. Set only under
-    /// `shader_variant = "lite"`, and copied with the material into a translucent second pass.
+    /// <c>shader_variant = "lite"</c>, and copied with the material into a translucent second pass.
     /// </summary>
-    private static readonly StringName LiteFactsMeta = "lite_variant_facts";
+    private static StringName LiteFactsMeta => LiteFactsMetaHolder.Name;
+
+    private static class LiteFactsMetaHolder
+    {
+        public static readonly StringName Name = "lite_variant_facts";
+    }
 
     private const int FactNormal = 8, FactEmission = 16, FactOrm = 32, FactPremultiplied = 64, FactGrassBend = 128;
 

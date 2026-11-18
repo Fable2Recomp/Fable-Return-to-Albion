@@ -303,7 +303,7 @@ public static partial class Engine_LevelProps
         lights = new List<Refii.Lighting.Engine_LevelLights.ResolvedLightInstance>();
 
         if (!TryCollectRegionBlocks(
-            level, read, null, null, createSilverKeyNodes: false,
+            level, read, null, null, createSilverKeyNodes: false, preloadedSupplemental: null,
             out gdbPath, out GdbView view, out _, out _,
             out List<GdbPlacement> placements, out List<GdbView> supplementalViews,
             out lightHosts, out Dictionary<string, PropBlockBuild> blocks,
@@ -351,6 +351,7 @@ public static partial class Engine_LevelProps
         Refii.Lighting.LightmapContainer? bakes,
         Refii.Entities.EntityInspectData? inspect,
         bool createSilverKeyNodes,
+        IReadOnlyList<GdbView>? preloadedSupplemental,
         out string gdbPath,
         out GdbView view,
         out List<SaveEntity> saveEntities,
@@ -426,7 +427,9 @@ public static partial class Engine_LevelProps
         GD.Print($"[layers] {level}: {layers}");
 
         placements = Engine_GdbPlacements.Parse(view, saveMap);
-        supplementalViews = LoadSupplementalViews(read);
+        supplementalViews = preloadedSupplemental is { Count: > 0 }
+            ? new List<GdbView>(preloadedSupplemental)
+            : LoadSupplementalViews(read);
         AugmentPlacementModelHashes(level, placements, supplementalViews, stats);
         AppendSupplementalPlacements(supplementalViews, saveMap, placements, stats, editorHierarchy);
         editorHierarchy?.IndexPlacements(placements);
@@ -719,10 +722,21 @@ public static partial class Engine_LevelProps
         Refii.Lighting.LightingFrame? lighting,
         Refii.Lighting.LightmapContainer? bakes,
         Refii.Entities.EntityInspectData? inspect,
+        out PropBuildStats stats) =>
+        Build(level, read, probes, lighting, bakes, inspect, null, out stats);
+
+    public static Node3D? Build(
+        LevelEntry level,
+        Func<string, byte[]?> read,
+        Refii.Lighting.LightProbeField? probes,
+        Refii.Lighting.LightingFrame? lighting,
+        Refii.Lighting.LightmapContainer? bakes,
+        Refii.Entities.EntityInspectData? inspect,
+        IReadOnlyList<GdbView>? preloadedSupplemental,
         out PropBuildStats stats)
     {
         if (!TryCollectRegionBlocks(
-            level, read, bakes, inspect, createSilverKeyNodes: true,
+            level, read, bakes, inspect, createSilverKeyNodes: true, preloadedSupplemental,
             out string gdbPath, out GdbView view, out List<SaveEntity> saveEntities,
             out EditorPropHierarchy? editorHierarchy, out List<GdbPlacement> placements,
             out List<GdbView> supplementalViews, out HashSet<uint> lightHosts,
@@ -733,7 +747,10 @@ public static partial class Engine_LevelProps
             return null;
         }
 
-        ReportVertexBakeFit(bakes, blocks, order);
+        if (OS.GetEnvironment("REFII_VERIFY_BAKE_FIT") == "1")
+        {
+            ReportVertexBakeFit(bakes, blocks, order);
+        }
 
         var bakeKeys = new HashSet<ulong>();
         if (bakes is not null)
@@ -2725,6 +2742,11 @@ public static partial class Engine_LevelProps
 
     public static List<GdbView> LoadSupplementalViews(Func<string, byte[]?> read)
     {
+        if (Refii.Gdb.Engine_GameGdb.MatchesActiveResolver(read))
+        {
+            return Refii.Gdb.Engine_GameGdb.GetSupplementalViews();
+        }
+
         var views = new List<GdbView>();
         foreach (string path in SupplementalGdbPaths)
         {

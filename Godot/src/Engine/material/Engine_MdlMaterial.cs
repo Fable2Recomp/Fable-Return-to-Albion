@@ -9,7 +9,12 @@ namespace Refii.Models;
 public static partial class Engine_MdlMaterial
 {
     /// <summary>Set on a material that sways in the wind (`wind_amplitude` > 0): a local flag, unlike the parameter.</summary>
-    public static readonly StringName WindMetaName = "sways_in_wind";
+    public static StringName WindMetaName => WindMetaHolder.Name;
+
+    private static class WindMetaHolder
+    {
+        public static readonly StringName Name = "sways_in_wind";
+    }
 
     /// <summary>
     /// The wind's direction in world XZ, as a UNIT vector. Set by the level from its theme.
@@ -430,6 +435,67 @@ public static partial class Engine_MdlMaterial
     }
 
     /// <summary>
+    /// Retains shared materials across desktop region swaps up to <paramref name="maxEntries"/>
+    /// (falling back to a full clear under Classic or non-positive limits).
+    /// </summary>
+    public static void TrimSharedCache(int maxEntries = 2048)
+    {
+        if (Engine_ClassicMaterial.Active || maxEntries <= 0)
+        {
+            ClearSharedCache();
+            return;
+        }
+
+        int excess = _shared.Count - maxEntries;
+        if (excess <= 0)
+        {
+            return;
+        }
+
+        foreach (string key in _shared.Keys)
+        {
+            if (_shared.TryRemove(key, out _))
+            {
+                if (--excess <= 0)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Builds the cache key for <see cref="TryCreateShared"/>, including quantized
+    /// <see cref="WindDirection"/> for materials that respond to regional wind.
+    /// </summary>
+    internal static string BuildSharedKey(
+        MdlMaterial material, Refii.Models.MdlInfo info, bool authoredNormals, bool tangentBasis = true)
+    {
+        bool usesWind = info.SwaysInWind || info.MovementMode != 0;
+        string windPart = usesWind
+            ? string.Concat(
+                "|",
+                MathF.Round(WindDirection.X, 3).ToString("R"),
+                ",",
+                MathF.Round(WindDirection.Y, 3).ToString("R"))
+            : string.Empty;
+
+        return string.Concat(
+            material.Diffuse, "|", material.Specular, "|", material.Normal, "|",
+            material.EnvironmentMap, "|", material.SelfIllumination, "|",
+            material.SpecularPowerMin.ToString("R"), "|",
+            material.SpecularPowerMax.ToString("R"), "|",
+            material.SelfIlluminationScale.ToString("R"), "|",
+            info.MovementMode.ToString(), "|",
+            info.WindAmplitude.ToString("R"), "|",
+            IsVegetationDrawPath(info) ? "v" : "-",
+            authoredNormals ? "n" : "-",
+            tangentBasis ? "t" : "-",
+            Refii.AndroidRuntime.AndroidTranslucentPass.KeyPart(info),
+            windPart);
+    }
+
+    /// <summary>
     /// The finished material for one surface — the record's textures plus the wind and vegetation
     /// the MESH states — shared by every surface that states the same thing.
     /// </summary>
@@ -458,18 +524,7 @@ public static partial class Engine_MdlMaterial
 
         // Built once per surface at BUILD time, not per frame; the string is the cheap part of a
         // call that otherwise decodes textures.
-        string key = string.Concat(
-            material.Diffuse, "|", material.Specular, "|", material.Normal, "|",
-            material.EnvironmentMap, "|", material.SelfIllumination, "|",
-            material.SpecularPowerMin.ToString("R"), "|",
-            material.SpecularPowerMax.ToString("R"), "|",
-            material.SelfIlluminationScale.ToString("R"), "|",
-            info.MovementMode.ToString(), "|",
-            info.WindAmplitude.ToString("R"), "|",
-            IsVegetationDrawPath(info) ? "v" : "-",
-            authoredNormals ? "n" : "-",
-            tangentBasis ? "t" : "-",
-            Refii.AndroidRuntime.AndroidTranslucentPass.KeyPart(info));
+        string key = BuildSharedKey(material, info, authoredNormals, tangentBasis);
 
         if (_shared.TryGetValue(key, out Material? hit))
         {
@@ -524,286 +579,308 @@ public static partial class Engine_MdlMaterial
             return null;
         }
 
-        Texture2D? albedo = TryLoad(
-            material.Diffuse, TexSemantic.Albedo, out bool albedoHasAlpha, out bool albedoOverridden);
-        Texture2D? normal = TryLoad(
-            material.Normal, TexSemantic.Normal, out _, out bool normalOverridden);
-        Texture2D? emissive = TryLoad(
-            material.SelfIllumination, TexSemantic.SelfIllumination, out _, out bool emissiveOverridden);
+        PrepareSlot(material.Diffuse, TexSemantic.Albedo, out Texture2D? albedoOverride,
+            out Engine_TexLibrary.PreparedTexture? albedoPrep, out bool albedoHasAlpha, out bool albedoOverridden);
+        PrepareSlot(material.Normal, TexSemantic.Normal, out Texture2D? normalOverride,
+            out Engine_TexLibrary.PreparedTexture? normalPrep, out _, out bool normalOverridden);
+        PrepareSlot(material.SelfIllumination, TexSemantic.SelfIllumination, out Texture2D? emissiveOverride,
+            out Engine_TexLibrary.PreparedTexture? emissivePrep, out _, out bool emissiveOverridden);
+        PrepareSlot(material.Specular, TexSemantic.Specular, out Texture2D? specularOverride,
+            out Engine_TexLibrary.PreparedTexture? specularPrep, out _, out bool specularOverridden);
 
-        Texture2D? specular = TryLoad(
-            material.Specular, TexSemantic.Specular, out _, out bool specularOverridden);
-
-        overridden =
-            albedoOverridden || normalOverridden || emissiveOverridden || specularOverridden;
-
-        // A named albedo that did not load makes an incomplete material, and it is not shared:
-        // shared, every surface of that record would keep the shader's default albedo (white)
-        // for the session. Unshared, the next surface that asks builds it again and gets the
-        // texture once it loads.
-        if (albedo is null && material.Diffuse.Length != 0)
+        Engine_TexLibrary.PreparedOrm? ormPrep = null;
+        try
         {
-            Interlocked.Increment(ref MaterialsMissingAlbedo);
-            overridden = true;
-        }
+            overridden =
+                albedoOverridden || normalOverridden || emissiveOverridden || specularOverridden;
 
-        // The environment cube. 526 of the 8,931 shipped material records name one and none of
-        // them were rendering it, because the decoder could not read a cube .tex at all until
-        // Engine_TexCube landed.
-        Cubemap? envmap = Engine_TexLibrary.GetCubemap(
-            material.EnvironmentMap, Engine_BnkMeshLoader.ReadBytes);
+            bool hasAlbedo = albedoOverride is not null || albedoPrep?.Ready is not null || (albedoPrep?.EstimatedBytes ?? 0) > 0;
+            bool hasNormal = normalOverride is not null || normalPrep?.Ready is not null || (normalPrep?.EstimatedBytes ?? 0) > 0;
+            bool hasEmissive = emissiveOverride is not null || emissivePrep?.Ready is not null || (emissivePrep?.EstimatedBytes ?? 0) > 0;
+            bool hasSpecular = specularOverride is not null || specularPrep?.Ready is not null || (specularPrep?.EstimatedBytes ?? 0) > 0;
 
-        // A record that names no texture at all is still drawn by the title, on its loader's
-        // default textures (Engine_ClassicMaterial.DefaultDiffuse); only the modern look has
-        // nothing to build from.
-        if (albedo is null && normal is null && emissive is null && specular is null &&
-            envmap is null && !Engine_ClassicMaterial.Active)
-        {
-            return null;
-        }
-
-        // THE CLASSIC RENDERER: the title's own shader for this record, when the player has the
-        // remaster off and the launcher has translated the shader bank. It is a separate material
-        // over the same textures; when its pair is not available the modern material stands in.
-        if (Engine_ClassicMaterial.Active)
-        {
-            Material? classic = Engine_ClassicMaterial.TryCreate(
-                material, info, albedoHasAlpha, albedo, normal, emissive, specular, envmap);
-            if (classic is not null)
+            // A named albedo that did not load makes an incomplete material, and it is not shared:
+            // shared, every surface of that record would keep the shader's default albedo (white)
+            // for the session. Unshared, the next surface that asks builds it again and gets the
+            // texture once it loads.
+            if (!hasAlbedo && material.Diffuse.Length != 0)
             {
-                Interlocked.Increment(ref _built);
-                return classic;
+                Interlocked.Increment(ref MaterialsMissingAlbedo);
+                overridden = true;
             }
-        }
 
-        Shader? shader = Shared();
-        if (shader is null)
-        {
-            GD.Print($"[material] retail shader missing at {ShaderPath}");
-            return null;
-        }
+            // The environment cube. 526 of the 8,931 shipped material records name one and none of
+            // them were rendering it, because the decoder could not read a cube .tex at all until
+            // Engine_TexCube landed.
+            Cubemap? envmap = Engine_TexLibrary.GetCubemap(
+                material.EnvironmentMap, Engine_BnkMeshLoader.ReadBytes);
 
-        // Counted from a WORKER. The world build runs off the main thread and a level change runs
-        // two of them at once, so these are interlocked rather than incremented.
-        Interlocked.Increment(ref _built);
-
-        // A solid surface shows one side; a card cut out by its alpha is seen from both; a
-        // translucent diffuse (the title's texture flag 0x80: glass, panes, hair) draws as the
-        // title draws it, TWICE: an opaque pass alpha-tested GREATER 254 that writes depth, then
-        // the blended pass over it (`sub_82B31D80`, `sub_822251D8`; see Engine_ClassicMaterial).
-        // Blended alone, the surface wrote no depth, and every transparent layer drawn after it
-        // painted over it: the child hero's boots (mhero_child_legs_01, flags 0xF0, alpha 255
-        // over 96% of the map) showed the cobble blend straight through them.
-        bool translucent = albedo is not null &&
-            Refii.Textures.Engine_TexLibrary.IsTranslucent(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader);
-        // A phone may draw a character's opaque pass alone, cut at 128 (AndroidTranslucentPass).
-        bool onePass = Refii.AndroidRuntime.AndroidTranslucentPass.SinglePass(translucent, info);
-
-        // THE TEXTURE STATES THE CUTOUT, not its format. A standard surface is alpha tested only
-        // when the diffuse header carries 0x20 (texture-set +152 = ALPHATESTENABLE), GREATER 128
-        // for a cutout-only texture and 254 otherwise (`sub_822251D8` 0x82225290). Guessing from
-        // the pixel format left alpha 64..128 that the title cuts, and punched holes in BC3
-        // diffuses the title draws solid. Trees and scatter keep their own coverage rule.
-        bool vegetation = info is not null && IsVegetationDrawPath(info);
-        int diffuseFlags = albedo is not null && !vegetation
-            ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader)
-            : 0;
-        bool cutout = vegetation ? albedoHasAlpha : (diffuseFlags & 0x20) != 0;
-        Shader? chosen = cutout || translucent ? shader : SharedCulled();
-        Shader? blended = translucent && !onePass ? LoadShared(Engine_ShaderFamily.StandardTranslucentPath) : null;
-
-        // The packed ORM, when the player has asked for it, or an authored PBR ORM map exists.
-        // The specular map feeds roughness and metallic; the NORMAL map feeds AO and height;
-        // diffuse/normal can also pair with an authored <stem>_orm.png loose file.
-        ImageTexture? orm = null;
-        bool ormHeight = false;
-        bool isPbr = false;
-        if (specular is not null || normal is not null || !string.IsNullOrWhiteSpace(material.Diffuse))
-        {
-            if (specularOverridden || normalOverridden)
+            // A record that names no texture at all is still drawn by the title, on its loader's
+            // default textures (Engine_ClassicMaterial.DefaultDiffuse); only the modern look has
+            // nothing to build from.
+            if (!hasAlbedo && !hasNormal && !hasEmissive && !hasSpecular &&
+                envmap is null && !Engine_ClassicMaterial.Active)
             {
-                // A morphed source (the hero) — the path-keyed cache would pack the UNMORPHED
-                // banks' bytes and hand back roughness and AO that disagree with the maps bound
-                // beside them, so the ORM is built from the very textures this material carries.
-                orm = Engine_TexLibrary.BuildOrmFromTextures(
-                    specular, normal,
-                    material.SpecularPowerMin, material.SpecularPowerMax, out ormHeight);
+                return null;
             }
-            else
+
+            // THE CLASSIC RENDERER: commit prepared textures once on main thread, then build classic material.
+            if (Engine_ClassicMaterial.Active)
             {
-                orm = Engine_TexLibrary.GetOrm(
-                    material.Diffuse,
-                    material.Specular,
-                    material.Normal,
-                    material.SpecularPowerMin,
-                    material.SpecularPowerMax,
-                    Engine_BnkMeshLoader.ReadBytes,
-                    out ormHeight,
-                    out isPbr);
+                long classicBytes =
+                    (albedoPrep?.EstimatedBytes ?? 0) +
+                    (normalPrep?.EstimatedBytes ?? 0) +
+                    (emissivePrep?.EstimatedBytes ?? 0) +
+                    (specularPrep?.EstimatedBytes ?? 0);
+                Texture2D? cAlbedo = albedoOverride ?? albedoPrep?.Ready;
+                Texture2D? cNormal = normalOverride ?? normalPrep?.Ready;
+                Texture2D? cEmissive = emissiveOverride ?? emissivePrep?.Ready;
+                Texture2D? cSpecular = specularOverride ?? specularPrep?.Ready;
+                if (classicBytes > 0)
+                {
+                    Refii.Core.Engine_ServerSyncs.RunGpuUpload(classicBytes, () =>
+                    {
+                        cAlbedo ??= albedoPrep?.CommitOnMainThread();
+                        cNormal ??= normalPrep?.CommitOnMainThread();
+                        cEmissive ??= emissivePrep?.CommitOnMainThread();
+                        cSpecular ??= specularPrep?.CommitOnMainThread();
+                    });
+                }
+
+                Material? classic = Engine_ClassicMaterial.TryCreate(
+                    material, info, albedoHasAlpha, cAlbedo, cNormal, cEmissive, cSpecular, envmap);
+                if (classic is not null)
+                {
+                    Interlocked.Increment(ref _built);
+                    return classic;
+                }
             }
-        }
 
-        // The exponent range the material states, not a constant. It is per material rather than
-        // per texture set: the guest reads one scalar block and then N texture-set records under
-        // it, so every record shares the pair, and Engine_MdlEngine copies it down.
-        // SP1 OR SP2, BY THE SPECULAR TEXTURE (`sub_82AA04A0` 0x82AA04F4): only a specular map
-        // whose header carries 0x80 draws the SP2 pair, whose exponent spans the material's range
-        // by the map's alpha. Every other surface draws SP1, a fixed cos^4 (blob 0343 1637-1643
-        // squares saturate(V.R) twice and never reads the range).
-        bool rangedExponent = !string.IsNullOrEmpty(material.Specular) &&
-            (Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadTextureHeader) & 0x80) != 0;
-
-        Shader? twoSided = applySharedPostSteps && info is not null &&
-            (info.SwaysInWind || info.MovementMode != 0 || IsVegetationDrawPath(info))
-                ? shader
-                : null;
-        Shader? treeShader = applySharedPostSteps && info is { MovementMode: 2 } ? SharedTree() : null;
-        Shader? windShader = applySharedPostSteps && info is { SwaysInWind: true, MovementMode: 1 } ? SharedWind() : null;
-        if (Engine_ShaderVariant.Lite)
-        {
-            WarmLiteShaders();
-        }
-
-        ShaderMaterial result = Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () =>
-        {
-            var mat = new ShaderMaterial { Shader = chosen ?? shader };
-            if (cutout || translucent || twoSided is not null)
+            Shader? shader = Shared();
+            if (shader is null)
             {
-                mat.RenderPriority = CutoutRenderPriority;
+                GD.Print($"[material] retail shader missing at {ShaderPath}");
+                return null;
             }
-            mat.SetMeta(TextureNamesMeta, new[]
+
+            Interlocked.Increment(ref _built);
+
+            bool translucent = hasAlbedo &&
+                Refii.Textures.Engine_TexLibrary.IsTranslucent(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader);
+            bool onePass = Refii.AndroidRuntime.AndroidTranslucentPass.SinglePass(translucent, info);
+
+            bool vegetation = info is not null && IsVegetationDrawPath(info);
+            int diffuseFlags = hasAlbedo && !vegetation
+                ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader)
+                : 0;
+            bool cutout = vegetation ? albedoHasAlpha : (diffuseFlags & 0x20) != 0;
+            Shader? chosen = cutout || translucent ? shader : SharedCulled();
+            Shader? blended = translucent && !onePass ? LoadShared(Engine_ShaderFamily.StandardTranslucentPath) : null;
+
+            bool needsOverriddenOrm = false;
+            if (hasSpecular || hasNormal || !string.IsNullOrWhiteSpace(material.Diffuse))
             {
-                material.Diffuse, material.Normal, material.Specular, material.SelfIllumination,
+                if (specularOverridden || normalOverridden)
+                {
+                    needsOverriddenOrm = true;
+                }
+                else
+                {
+                    ormPrep = Engine_TexLibrary.PrepareOrm(
+                        material.Diffuse,
+                        material.Specular,
+                        material.Normal,
+                        material.SpecularPowerMin,
+                        material.SpecularPowerMax,
+                        Engine_BnkMeshLoader.ReadBytes);
+                }
+            }
+
+            bool rangedExponent = !string.IsNullOrEmpty(material.Specular) &&
+                (Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Specular, Engine_BnkMeshLoader.ReadTextureHeader) & 0x80) != 0;
+
+            Shader? twoSided = applySharedPostSteps && info is not null &&
+                (info.SwaysInWind || info.MovementMode != 0 || IsVegetationDrawPath(info))
+                    ? shader
+                    : null;
+            Shader? treeShader = applySharedPostSteps && info is { MovementMode: 2 } ? SharedTree() : null;
+            Shader? windShader = applySharedPostSteps && info is { SwaysInWind: true, MovementMode: 1 } ? SharedWind() : null;
+            if (Engine_ShaderVariant.Lite)
+            {
+                WarmLiteShaders();
+            }
+
+            long totalUploadBytes =
+                4096L +
+                (albedoPrep?.EstimatedBytes ?? 0) +
+                (normalPrep?.EstimatedBytes ?? 0) +
+                (emissivePrep?.EstimatedBytes ?? 0) +
+                (specularPrep?.EstimatedBytes ?? 0) +
+                (ormPrep?.EstimatedBytes ?? 0);
+
+            Texture2D? albedo = null;
+            Texture2D? normal = null;
+            Texture2D? emissive = null;
+            Texture2D? specular = null;
+
+            ShaderMaterial result = Refii.Core.Engine_ServerSyncs.RunGpuUpload(totalUploadBytes, () =>
+            {
+                albedo = albedoOverride ?? albedoPrep?.CommitOnMainThread();
+                normal = normalOverride ?? normalPrep?.CommitOnMainThread();
+                emissive = emissiveOverride ?? emissivePrep?.CommitOnMainThread();
+                specular = specularOverride ?? specularPrep?.CommitOnMainThread();
+
+                ImageTexture? orm = null;
+                bool ormHeight = false;
+                bool isPbr = false;
+                if (needsOverriddenOrm)
+                {
+                    orm = Engine_TexLibrary.BuildOrmFromTextures(
+                        specular, normal,
+                        material.SpecularPowerMin, material.SpecularPowerMax, out ormHeight);
+                }
+                else if (ormPrep is not null)
+                {
+                    orm = ormPrep.CommitOnMainThread();
+                    ormHeight = ormPrep.HasHeight;
+                    isPbr = ormPrep.IsAuthored;
+                }
+
+                var mat = new ShaderMaterial { Shader = chosen ?? shader };
+                if (cutout || translucent || twoSided is not null)
+                {
+                    mat.RenderPriority = CutoutRenderPriority;
+                }
+                mat.SetMeta(TextureNamesMeta, new[]
+                {
+                    material.Diffuse, material.Normal, material.Specular, material.SelfIllumination,
+                });
+                float specMin = rangedExponent ? material.SpecularPowerMin : FixedSpecularPower;
+                float specMax = rangedExponent ? material.SpecularPowerMax : FixedSpecularPower;
+                mat.SetMeta(OrmParamsMeta, new Vector3(orm is not null ? 1f : 0f, specMin, specMax));
+                if (albedo is not null)
+                {
+                    mat.SetShaderParameter("albedo_tex", albedo);
+                    if (cutout || translucent)
+                    {
+                        mat.SetShaderParameter("alpha_scissor_on", true);
+                    }
+                    if (translucent)
+                    {
+                        mat.SetShaderParameter("alpha_scissor_threshold", onePass ? CutoutAlpha : OpaquePassAlpha);
+                    }
+                    else if (cutout)
+                    {
+                        mat.SetShaderParameter("alpha_scissor_threshold",
+                            vegetation
+                                ? VegetationCutoutAlpha
+                                : (diffuseFlags & 0xA0) == 0x20 ? CutoutAlpha : OpaquePassAlpha);
+                    }
+                }
+
+                if (normal is not null)
+                {
+                    mat.SetShaderParameter("normal_tex", normal);
+                    mat.SetShaderParameter("has_normal", true);
+                    Interlocked.Increment(ref _withNormal);
+                }
+
+                if (emissive is not null)
+                {
+                    mat.SetShaderParameter("emission_tex", emissive);
+                    mat.SetShaderParameter("has_emission", true);
+                    Interlocked.Increment(ref _withEmission);
+                }
+
+                if (specular is not null)
+                {
+                    mat.SetShaderParameter("specular_tex", specular);
+                    mat.SetShaderParameter("has_specular", true);
+                    Interlocked.Increment(ref _withSpecular);
+                }
+
+                if (envmap is not null)
+                {
+                    mat.SetShaderParameter("envmap_tex", envmap);
+                    mat.SetShaderParameter("has_envmap", true);
+                    Interlocked.Increment(ref _withEnvmap);
+                }
+
+                // The lite variant's facts, before the duplicate below so the blended pass carries them too.
+                CaptureLiteFacts(mat, specular, envmap, normal, emissive);
+
+                if (orm is not null)
+                {
+                    mat.SetShaderParameter("orm_tex", orm);
+                    mat.SetShaderParameter("has_orm", true);
+                    mat.SetShaderParameter("is_pbr", isPbr);
+                    SetFacts(mat, isPbr ? FactOrm | FactPbr : FactOrm, true);
+
+                    // Whether a height was actually SOLVED into the alpha. The heightless sentinel
+                    // is opaque white — half a texel of permanent positive relief if the shader ever
+                    // read it — so parallax stays off unless this says the channel is real.
+                    mat.SetShaderParameter("has_height", ormHeight);
+                    Interlocked.Increment(ref _withOrm);
+                }
+                else
+                {
+                    mat.SetShaderParameter("is_pbr", false);
+                }
+
+                mat.SetShaderParameter("spec_power_min", specMin);
+                mat.SetShaderParameter("spec_power_max", specMax);
+                mat.SetShaderParameter("self_illum_scale", material.SelfIlluminationScale);
+
+                if (translucent && blended is not null)
+                {
+                    var second = Refii.Models.Engine_MaterialCopy.Shallow(mat);
+                    second.Shader = blended;
+                    second.RenderPriority = 0;
+                    second.SetShaderParameter("alpha_scissor_on", false);
+                    mat.NextPass = second;
+                }
+
+                if (applySharedPostSteps && info is not null)
+                {
+                    ApplyWind(mat, info, windShader);
+                    ApplyVegetation(mat, info, authoredNormals);
+
+                    if (twoSided is not null)
+                    {
+                        mat.Shader = info.MovementMode == 2
+                            ? treeShader ?? twoSided
+                            : mat.HasMeta(WindMetaName) ? windShader ?? twoSided : twoSided;
+                    }
+
+                    ApplyShaderVariant(mat, info);
+
+                    if (!tangentBasis)
+                    {
+                        mat.SetShaderParameter("has_normal", false);
+                        SetFacts(mat, FactNormal, false);
+                    }
+
+                    ApplySpecialisation(mat);
+                }
+
+                return mat;
             });
-            if (albedo is not null)
-            {
-                mat.SetShaderParameter("albedo_tex", albedo);
-                if (cutout || translucent)
-                {
-                    mat.SetShaderParameter("alpha_scissor_on", true);
-                }
-                if (translucent)
-                {
-                    mat.SetShaderParameter("alpha_scissor_threshold", onePass ? CutoutAlpha : OpaquePassAlpha);
-                }
-                else if (cutout)
-                {
-                    mat.SetShaderParameter("alpha_scissor_threshold",
-                        vegetation
-                            ? VegetationCutoutAlpha
-                            : (diffuseFlags & 0xA0) == 0x20 ? CutoutAlpha : OpaquePassAlpha);
-                }
-            }
 
-            if (normal is not null)
-            {
-                mat.SetShaderParameter("normal_tex", normal);
-                mat.SetShaderParameter("has_normal", true);
-                Interlocked.Increment(ref _withNormal);
-            }
+            RequestEnhanced(material.Diffuse, TexSemantic.Albedo, albedo);
+            RequestEnhanced(material.Normal, TexSemantic.Normal, normal);
+            RequestEnhanced(material.SelfIllumination, TexSemantic.SelfIllumination, emissive);
+            RequestEnhanced(material.Specular, TexSemantic.Specular, specular);
 
-            if (emissive is not null)
-            {
-                mat.SetShaderParameter("emission_tex", emissive);
-                mat.SetShaderParameter("has_emission", true);
-                Interlocked.Increment(ref _withEmission);
-            }
-
-            if (specular is not null)
-            {
-                mat.SetShaderParameter("specular_tex", specular);
-                mat.SetShaderParameter("has_specular", true);
-                Interlocked.Increment(ref _withSpecular);
-            }
-
-            if (envmap is not null)
-            {
-                mat.SetShaderParameter("envmap_tex", envmap);
-                mat.SetShaderParameter("has_envmap", true);
-                Interlocked.Increment(ref _withEnvmap);
-            }
-
-            // The lite variant's facts, before the duplicate below so the blended pass carries them too.
-            CaptureLiteFacts(mat, specular, envmap, normal, emissive);
-
-            if (orm is not null)
-            {
-                mat.SetShaderParameter("orm_tex", orm);
-                mat.SetShaderParameter("has_orm", true);
-                mat.SetShaderParameter("is_pbr", isPbr);
-                SetFacts(mat, isPbr ? FactOrm | FactPbr : FactOrm, true);
-
-                // Whether a height was actually SOLVED into the alpha. The heightless sentinel
-                // is opaque white — half a texel of permanent positive relief if the shader ever
-                // read it — so parallax stays off unless this says the channel is real.
-                mat.SetShaderParameter("has_height", ormHeight);
-                Interlocked.Increment(ref _withOrm);
-            }
-            else
-            {
-                mat.SetShaderParameter("is_pbr", false);
-            }
-
-            mat.SetShaderParameter("spec_power_min", rangedExponent ? material.SpecularPowerMin : FixedSpecularPower);
-            mat.SetShaderParameter("spec_power_max", rangedExponent ? material.SpecularPowerMax : FixedSpecularPower);
-            mat.SetShaderParameter("self_illum_scale", material.SelfIlluminationScale);
-
-            if (translucent && blended is not null)
-            {
-                var second = Refii.Models.Engine_MaterialCopy.Shallow(mat);
-                second.Shader = blended;
-                second.RenderPriority = 0;
-                second.SetShaderParameter("alpha_scissor_on", false);
-                mat.NextPass = second;
-            }
-
-            if (applySharedPostSteps && info is not null)
-            {
-                ApplyWind(mat, info, windShader);
-                ApplyVegetation(mat, info, authoredNormals);
-
-                // Vegetation keeps both sides whatever its alpha: leaves and blades are single cards. A
-                // surface ApplyWind gave an amplitude keeps the wind shader; it is the one that sways.
-                if (twoSided is not null)
-                {
-                    // A tree takes the title's tree wind on every surface; a swaying plant its WIND1 bend.
-                    mat.Shader = info.MovementMode == 2
-                        ? treeShader ?? twoSided
-                        : mat.HasMeta(WindMetaName) ? windShader ?? twoSided : twoSided;
-                }
-
-                ApplyShaderVariant(mat, info);
-
-                // A SURFACE WHOSE TANGENTS ARE ALL ZERO TAKES NO NORMAL MAP. 1,687 shipped rigid buffers
-                // bind one over a zero TEXCOORD1 (`VertexAudit`). The guest's basis is then T = B = 0 and
-                // `normalize(T*nx + B*ny + N*nz)` is N exactly, so the map does nothing there; Godot
-                // instead decodes a zero tangent to an arbitrary axis and bends the normal along it.
-                if (!tangentBasis)
-                {
-                    mat.SetShaderParameter("has_normal", false);
-                    SetFacts(mat, FactNormal, false);
-                }
-
-                ApplySpecialisation(mat);
-            }
-
-            return mat;
-        });
-
-        // The §6 second pass, and it touches nothing built above.
-        //
-        // NO CALLBACK AND NO REFERENCE TO THIS MATERIAL. An enhancement replaces the image inside
-        // the Texture2D the library already handed over, so this material — and every other one
-        // naming the same texture — updates because it is holding that same object. The earlier
-        // version of this registered four weak references to the material per surface just to be
-        // able to re-assign the samplers, which a region's worth of materials made into thousands
-        // of live callbacks that a level change then had to outlive.
-        RequestEnhanced(material.Diffuse, TexSemantic.Albedo, albedo);
-        RequestEnhanced(material.Normal, TexSemantic.Normal, normal);
-        RequestEnhanced(material.SelfIllumination, TexSemantic.SelfIllumination, emissive);
-        RequestEnhanced(material.Specular, TexSemantic.Specular, specular);
-
-        return result;
+            return result;
+        }
+        finally
+        {
+            albedoPrep?.Dispose();
+            normalPrep?.Dispose();
+            emissivePrep?.Dispose();
+            specularPrep?.Dispose();
+            ormPrep?.Dispose();
+        }
     }
 
     /// <summary>
@@ -829,6 +906,13 @@ public static partial class Engine_MdlMaterial
     /// </summary>
     public const string TextureNamesMeta = "mdl_texture_names";
 
+    /// <summary>
+    /// Cached ORM state (<c>(hasOrm ? 1 : 0, specPowerMin, specPowerMax)</c>) stamped on built
+    /// materials so <c>Engine_HeroTextureMorph</c> can prepare morphed ORMs on worker threads
+    /// without stalling on main-thread shader parameter reads.
+    /// </summary>
+    public const string OrmParamsMeta = "mdl_orm_params";
+
     public static readonly string[] TextureParameters =
     {
         "albedo_tex", "normal_tex", "specular_tex", "emission_tex",
@@ -846,6 +930,36 @@ public static partial class Engine_MdlMaterial
 
     [ThreadStatic]
     private static Func<string, TexSemantic, Texture2D?>? _textureOverride;
+
+    private static void PrepareSlot(
+        string name,
+        TexSemantic semantic,
+        out Texture2D? overrideTex,
+        out Engine_TexLibrary.PreparedTexture? prepared,
+        out bool hasAlpha,
+        out bool overridden)
+    {
+        overrideTex = null;
+        prepared = null;
+        hasAlpha = false;
+        overridden = false;
+
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        if (TextureOverride is not null &&
+            TextureOverride(name, semantic) is Texture2D replacement)
+        {
+            overridden = true;
+            overrideTex = replacement;
+            return;
+        }
+
+        prepared = Engine_TexLibrary.PrepareGet(name, semantic, Engine_BnkMeshLoader.ReadBytes);
+        hasAlpha = prepared.HasAlpha;
+    }
 
     private static Texture2D? TryLoad(string name, TexSemantic semantic, out bool hasAlpha) =>
         TryLoad(name, semantic, out hasAlpha, out _);

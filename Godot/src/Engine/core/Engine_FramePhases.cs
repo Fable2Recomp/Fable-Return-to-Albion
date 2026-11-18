@@ -479,7 +479,7 @@ public static class Engine_FramePhases
 	/// </summary>
 	public static void ArmDrawTrace(string stage, int frames = 1)
 	{
-		if (Engine_AppRoot.IsTestHost || frames <= 0)
+		if (!TraceAllDraws || Engine_AppRoot.IsTestHost || frames <= 0)
 		{
 			return;
 		}
@@ -827,7 +827,7 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 		}
 		using (Engine_FramePhases.Measure("gpu_upload_pump_end"))
 		{
-			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 8.0 : 6.0);
+			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 12.0 : 6.0, waitForWorkers: false);
 		}
 		Engine_FramePhases.MarkFrameEnd();
 		CallDeferred(DeferredMark);

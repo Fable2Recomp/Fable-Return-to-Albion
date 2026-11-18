@@ -231,4 +231,57 @@ public sealed class HostStatedWordsTests
 		AssertThat(Walk()).IsTrue();
 		AssertThat(Walk()).IsFalse();
 	}
+
+	/// <summary>
+	/// Clearing <see cref="HostStatedWords"/> on region teardown resets diff history so identical
+	/// entity slots in the incoming region report Changed == true cleanly.
+	/// </summary>
+	[TestCase]
+	public void ClearResetsPreviouslyUnchangedRowsForRegionSwap()
+	{
+		var slots = new HostStatedWords(16);
+		var row = new uint[HostStatedWords.Stride];
+		row[8] = 0x20000u;
+		row[0] = 42u;
+
+		bool Walk()
+		{
+			row.CopyTo(slots.Words, 0);
+			slots.BeginWalk(1);
+			bool changed = slots.Changed(0);
+			slots.EndWalk(1);
+			return changed;
+		}
+
+		AssertThat(Walk()).IsTrue();
+		AssertThat(Walk()).IsFalse();
+		slots.Clear();
+		AssertThat(Walk()).IsTrue();
+		AssertThat(Walk()).IsFalse();
+	}
+
+	/// <summary>
+	/// Discarding <see cref="HostEntityWalk"/> drops pre-teardown or in-flight entity snapshots so
+	/// outgoing entities never feed into the incoming region.
+	/// </summary>
+	[TestCase]
+	public void DiscardDropsPendingEntityWalkAcrossRegionSwap()
+	{
+		try
+		{
+			var outgoing = new HostEntityWalk.Walk(
+				new List<HostBridge.GuestEntity>(), 0u, Array.Empty<HostBridge.UnknownPlacement>());
+			HostEntityWalk.InjectPendingForTest(outgoing);
+			HostEntityWalk.Discard();
+			AssertThat(HostEntityWalk.TryTake(out _)).IsFalse();
+
+			HostEntityWalk.InjectPendingForTest(outgoing);
+			AssertThat(HostEntityWalk.TryTake(out _)).IsTrue();
+			AssertThat(HostEntityWalk.TryTake(out _)).IsFalse();
+		}
+		finally
+		{
+			HostEntityWalk.Discard();
+		}
+	}
 }

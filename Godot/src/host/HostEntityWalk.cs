@@ -50,51 +50,124 @@ public static class HostEntityWalk
 	/// <summary>The worker's last walk, milliseconds: the native walk and the rows' decode.</summary>
 	public static double LastWalkMs;
 
+	private static readonly object Gate = new();
 	private static Thread? _thread;
 	private static readonly AutoResetEvent _kick = new(false);
 	private static readonly ManualResetEventSlim _done = new(true);
 	private static Walk _result;
+	private static ulong _generation;
+	private static ulong _kickedGen;
+	private static ulong _resultGen;
+	private static bool _inFlight;
 
 	/// <summary>Two lists, filled alternately: the one the main thread took last is never the one being filled.</summary>
 	private static readonly List<HostBridge.GuestEntity>[] _lists = { new(), new() };
 	private static int _fill;
 
-	/// <summary>Main thread only: a walk was kicked and not yet taken.</summary>
+	/// <summary>A completed walk is waiting to be consumed.</summary>
 	private static bool _pending;
 
 	/// <summary>Starts a walk for this frame. Main thread only.</summary>
 	public static void Kick()
 	{
-		if (!Enabled || _pending || HostBridge.TryGetAbiVersion() is null)
+		if (!Enabled || Refii.Game.GameEntities.Current is null || HostBridge.TryGetAbiVersion() is null)
 		{
 			return;
 		}
 
-		if (_thread is null)
+		lock (Gate)
 		{
-			_thread = new Thread(Loop)
+			if (_pending || _inFlight)
 			{
-				Name = "refii entity walk",
-				IsBackground = true,
-			};
-			_thread.Start();
+				return;
+			}
+
+			if (_thread is null)
+			{
+				_thread = new Thread(Loop)
+				{
+					Name = "refii entity walk",
+					IsBackground = true,
+				};
+				_thread.Start();
+			}
+
+			_inFlight = true;
+			_kickedGen = _generation;
+			_done.Reset();
+			_kick.Set();
+		}
+	}
+
+	/// <summary>
+	/// Drops any pending or in-flight walk so snapshots from a torn-down region cannot leak
+	/// into the incoming region. Safe to call from any thread (main thread at teardown/start-build).
+	/// </summary>
+	public static void Discard()
+	{
+		bool waitForWorker;
+		lock (Gate)
+		{
+			++_generation;
+			_pending = false;
+			_result = default;
+			waitForWorker = _inFlight;
 		}
 
-		_pending = true;
-		_done.Reset();
-		_kick.Set();
+		if (waitForWorker)
+		{
+			_done.Wait();
+			lock (Gate)
+			{
+				_pending = false;
+				_result = default;
+			}
+		}
+	}
+
+	internal static void InjectPendingForTest(Walk walk)
+	{
+		lock (Gate)
+		{
+			_result = walk;
+			_resultGen = _generation;
+			_pending = true;
+		}
 	}
 
 	/// <summary>
 	/// The walk kicked this frame, waiting for it if it has not finished. False when none was
-	/// kicked, in which case the caller walks synchronously.
+	/// kicked (or it was discarded), in which case the caller walks synchronously.
 	/// </summary>
 	public static bool TryTake(out Walk walk)
 	{
-		if (!_pending)
+		ulong expectedGen;
+		lock (Gate)
 		{
-			walk = default;
-			return false;
+			if (_pending)
+			{
+				if (_resultGen != _generation)
+				{
+					_pending = false;
+					_result = default;
+					walk = default;
+					return false;
+				}
+
+				walk = _result;
+				_result = default;
+				_pending = false;
+				++Taken;
+				return true;
+			}
+
+			if (!_inFlight || _kickedGen != _generation)
+			{
+				walk = default;
+				return false;
+			}
+
+			expectedGen = _kickedGen;
 		}
 
 		if (!_done.IsSet)
@@ -103,10 +176,22 @@ public static class HostEntityWalk
 			_done.Wait();
 		}
 
-		walk = _result;
-		_pending = false;
-		++Taken;
-		return true;
+		lock (Gate)
+		{
+			if (!_pending || _resultGen != _generation || _resultGen != expectedGen)
+			{
+				_pending = false;
+				_result = default;
+				walk = default;
+				return false;
+			}
+
+			walk = _result;
+			_result = default;
+			_pending = false;
+			++Taken;
+			return true;
+		}
 	}
 
 	private static void Loop()
@@ -114,32 +199,59 @@ public static class HostEntityWalk
 		while (true)
 		{
 			_kick.WaitOne();
-			long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
-			List<HostBridge.GuestEntity> into = _lists[_fill];
-			_fill ^= 1;
-
-			// Read live, not from the published stamp: both reads bracket the walk on this thread.
-			uint before = HostBridge.SimClock() is { } a ? a.Tick : 0u;
-			long walkFrom = System.Diagnostics.Stopwatch.GetTimestamp();
-			List<HostBridge.GuestEntity> entities =
-				HostBridge.GetEntities(into, out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
-			LastWalkMs = System.Diagnostics.Stopwatch.GetElapsedTime(walkFrom).TotalMilliseconds;
-			uint after = HostBridge.SimClock() is { } b ? b.Tick : 0u;
-
-			if (before != 0u && after != 0u && after > before)
+			List<HostBridge.GuestEntity> into;
+			ulong gen;
+			lock (Gate)
 			{
-				++TornWalks;
-				long span = after - before;
-				if (span > WalkTickSpanWorst)
-				{
-					WalkTickSpanWorst = span;
-				}
+				into = _lists[_fill];
+				_fill ^= 1;
+				gen = _kickedGen;
 			}
 
-			_result = new Walk(entities, unknown, unknownVtables);
-			Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.EntityWalkBytes,
-				System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
-			_done.Set();
+			try
+			{
+				long allocFrom = System.GC.GetAllocatedBytesForCurrentThread();
+
+				// Read live, not from the published stamp: both reads bracket the walk on this thread.
+				uint before = HostBridge.SimClock() is { } a ? a.Tick : 0u;
+				long walkFrom = System.Diagnostics.Stopwatch.GetTimestamp();
+				List<HostBridge.GuestEntity> entities =
+					HostBridge.GetEntities(into, out uint unknown, out HostBridge.UnknownPlacement[] unknownVtables);
+				LastWalkMs = System.Diagnostics.Stopwatch.GetElapsedTime(walkFrom).TotalMilliseconds;
+				uint after = HostBridge.SimClock() is { } b ? b.Tick : 0u;
+
+				if (before != 0u && after != 0u && after > before)
+				{
+					++TornWalks;
+					long span = after - before;
+					if (span > WalkTickSpanWorst)
+					{
+						WalkTickSpanWorst = span;
+					}
+				}
+
+				Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.EntityWalkBytes,
+					System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
+
+				var built = new Walk(entities, unknown, unknownVtables);
+				lock (Gate)
+				{
+					if (gen == _generation)
+					{
+						_result = built;
+						_resultGen = gen;
+						_pending = true;
+					}
+				}
+			}
+			finally
+			{
+				lock (Gate)
+				{
+					_inFlight = false;
+					_done.Set();
+				}
+			}
 		}
 	}
 }
