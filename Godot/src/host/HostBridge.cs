@@ -3901,6 +3901,91 @@ public static partial class HostBridge
 	}
 
 	/// <summary>
+	/// Unpacks the packed 64-bit <c>out_watchdog</c> word returned by <c>RefiiHostSetTimeBaseMode</c>:
+	/// bits [31:0] hold watchdog lapses, bits [62:32] hold unconsumed HF steps (<c>pending + in_flight</c>),
+	/// and bit [63] indicates whether an HF step is currently executing on the guest thread.
+	/// </summary>
+	/// <param name="watchdog">Raw packed 64-bit watchdog telemetry word.</param>
+	/// <param name="lapses">Watchdog lapse count.</param>
+	/// <param name="unconsumedSteps">Authoritative queued plus in-flight HF step count.</param>
+	/// <param name="stepInFlight">True when a released HF step has not yet finished its pass.</param>
+	public static void UnpackTimeBaseWatchdog(
+		ulong watchdog,
+		out ulong lapses,
+		out ulong unconsumedSteps,
+		out bool stepInFlight)
+	{
+		lapses = watchdog & 0xFFFFFFFFUL;
+		unconsumedSteps = (watchdog >> 32) & 0x7FFFFFFFUL;
+		stepInFlight = (watchdog & (1UL << 63)) != 0UL;
+	}
+
+	private static bool TryQueryTimeBaseMode(int queryMode, out int activeMode, out ulong watchdog)
+	{
+		if (TryGetAbiVersion() is not null)
+		{
+			try
+			{
+				activeMode = RefiiHostSetTimeBaseMode(queryMode, out _, out _, out watchdog);
+				return true;
+			}
+			catch (System.DllNotFoundException)
+			{
+			}
+			catch (System.EntryPointNotFoundException)
+			{
+			}
+		}
+
+		activeMode = 0;
+		watchdog = 0UL;
+		return false;
+	}
+
+	/// <summary>
+	/// Reads the native driven time-base's authoritative unconsumed high-frequency step depth
+	/// (<c>pending + in_flight</c>) without allocating or boxing on the hot per-frame pacing path.
+	/// </summary>
+	/// <param name="unconsumedSteps">Current queued plus in-flight HF steps when Driven mode is active.</param>
+	/// <returns>True when native Driven time-base telemetry is active and readable; otherwise false.</returns>
+	public static bool TryGetUnconsumedTimeBaseSteps(out ulong unconsumedSteps)
+	{
+		if (TryQueryTimeBaseMode(-1, out int mode, out ulong watchdog) && mode == (int)TimeBaseMode.Driven)
+		{
+			UnpackTimeBaseWatchdog(watchdog, out _, out unconsumedSteps, out _);
+			return true;
+		}
+
+		unconsumedSteps = 0UL;
+		return false;
+	}
+
+	/// <summary>
+	/// Enters the host per-frame guest-memory read window (<c>mode == -2</c>), preventing the
+	/// native driven time base from popping queued multi-step grants during <c>_Process</c>, and
+	/// reports whether an HF step is already executing on the guest thread.
+	/// </summary>
+	/// <param name="stepInFlight">True when a released HF step has not yet completed its pass.</param>
+	/// <returns>True when native Driven time-base telemetry is active and readable; otherwise false.</returns>
+	public static bool TryBeginTimeBaseReadWindow(out bool stepInFlight)
+	{
+		if (TryQueryTimeBaseMode(-2, out int mode, out ulong watchdog) && mode == (int)TimeBaseMode.Driven)
+		{
+			UnpackTimeBaseWatchdog(watchdog, out _, out _, out stepInFlight);
+			return true;
+		}
+
+		stepInFlight = false;
+		return false;
+	}
+
+	/// <summary>
+	/// Exits the host per-frame guest-memory read window (<c>mode == -3</c>) so any queued HF
+	/// steps held back across <c>_Process</c> can resume releasing cleanly.
+	/// </summary>
+	public static void EndTimeBaseReadWindow() => _ = TryQueryTimeBaseMode(-3, out _, out _);
+
+	/// <summary>
 	/// Grants the guest one or more high-frequency steps of time. Driven mode only.
 	/// </summary>
 	/// <remarks>
@@ -3977,6 +4062,46 @@ public static partial class HostBridge
 	}
 
 	/// <summary>
+	/// The most recent simulation clock snapshot read during <see cref="SampleGuestFrame"/>,
+	/// avoiding redundant P/Invoke crossings in the same frame-start pass.
+	/// </summary>
+	public static (double Seconds, uint Tick)? LastSampledSimClock { get; private set; }
+
+	/// <summary>
+	/// Maximum duration (in microseconds) a guest-frame sample may be deferred while an in-flight
+	/// HF step completes before falling back to a live read.
+	/// </summary>
+	public const ulong MaxInFlightSampleDeferUsec = 40_000UL;
+
+	private static ulong _lastQuiescentSampleUsec;
+
+	/// <summary>
+	/// Returns true when <see cref="SampleGuestFrame"/> should defer reading guest RAM for this
+	/// host frame because a guest HF step is actively mutating placements mid-step in game,
+	/// preserving the last quiescent snapshot until the step finishes.
+	/// </summary>
+	/// <param name="isInGame">True when the guest has an active in-game world.</param>
+	/// <param name="stepInFlight">True when bit 63 indicates an HF step is currently executing.</param>
+	/// <param name="publishedGuestFrame">Current published <see cref="Engine_GuestFrame.Frame"/>.</param>
+	/// <param name="nowUsec">Current host monotonic timestamp in microseconds.</param>
+	/// <param name="lastQuiescentSampleUsec">Timestamp of the last quiescent guest sample.</param>
+	/// <param name="maxDeferUsec">Safety ceiling in microseconds before sampling anyway.</param>
+	/// <returns>True if sampling should be deferred so readers interpolate smoothly on existing state.</returns>
+	public static bool ShouldDeferInFlightGuestSample(
+		bool isInGame,
+		bool stepInFlight,
+		uint publishedGuestFrame,
+		ulong nowUsec,
+		ulong lastQuiescentSampleUsec,
+		ulong maxDeferUsec = MaxInFlightSampleDeferUsec) =>
+		isInGame &&
+		stepInFlight &&
+		publishedGuestFrame != 0u &&
+		lastQuiescentSampleUsec != 0UL &&
+		nowUsec >= lastQuiescentSampleUsec &&
+		(nowUsec - lastQuiescentSampleUsec) < maxDeferUsec;
+
+	/// <summary>
 	/// Samples the guest's render-frame counter into <see cref="Engine_GuestFrame"/>. Once per
 	/// host frame, first thing. Without the export (an older native) the frame is synthesised
 	/// from the game tick: the tick's change, then a second frame half a tick later, which is
@@ -3984,8 +4109,24 @@ public static partial class HostBridge
 	/// </summary>
 	public static void SampleGuestFrame()
 	{
+		bool hasAbi = TryGetAbiVersion() is not null;
+		ulong nowUsec = (ulong)((System.Diagnostics.Stopwatch.GetTimestamp() * 1_000_000.0) /
+			System.Diagnostics.Stopwatch.Frequency);
+		_ = TryBeginTimeBaseReadWindow(out bool stepInFlight);
+		bool inGame = hasAbi && IsInGame;
+
+		if (ShouldDeferInFlightGuestSample(inGame, stepInFlight, Engine_GuestFrame.Frame, nowUsec, _lastQuiescentSampleUsec))
+		{
+			// An HF step is mid-mutation on the guest thread: keep the last quiescent tick/pose
+			// pair and re-publish Changed = false so timelines advance smoothly at display rate.
+			Engine_GuestFrame.Publish(Engine_GuestFrame.Frame);
+			return;
+		}
+
+		_lastQuiescentSampleUsec = inGame ? nowUsec : 0UL;
+
 		uint frame = 0u;
-		if (!_guestFrameExportMissing && TryGetAbiVersion() is not null)
+		if (!_guestFrameExportMissing && hasAbi)
 		{
 			try
 			{
@@ -4000,7 +4141,9 @@ public static partial class HostBridge
 		// THE FRAME'S STAMP, read in the same instant as the frame counter: every sample this
 		// frame reads is stamped from this one pair (Engine_TickClock.FrameStamp), never from a
 		// read taken later while the guest may already be in its next step.
-		uint tick = SimClock() is { } clock ? clock.Tick : 0u;
+		(double Seconds, uint Tick)? simClock = SimClock();
+		LastSampledSimClock = simClock;
+		uint tick = simClock is { } clock ? clock.Tick : 0u;
 		Engine_TickClock.PublishGuestGameTick(tick);
 		if (!_guestFrameExportMissing)
 		{
@@ -4021,7 +4164,7 @@ public static partial class HostBridge
 		// zero, which Publish treats as "no guest state to wait for". Latching the base while
 		// `byte_83496A5E` is clear gives the second front end exactly the first one's contract:
 		// zero until the first HF pass of the next game, counting from there.
-		if (!IsInGame)
+		if (!inGame)
 		{
 			_guestFrameBase = frame;
 		}

@@ -267,10 +267,12 @@ public static class Engine_EntityAppearance
     /// One tint onto a cloth; returns whether the cloth now holds one of ours.
     /// </summary>
     /// <remarks>
-    /// NIL ONLY TO TAKE OURS BACK. Writing nil is `set_instance_shader_parameter`'s default path,
-    /// which asks the server for the default first (a render-thread sync, Engine_InstanceParams)
-    /// and leaves the cloth exactly where a cloth never written stands. Only this method writes a
-    /// cloth's tint, so one it never tinted is already there and is left alone.
+    /// NEUTRAL WHITE, NEVER NIL. Writing <c>default(Variant)</c> (nil) into
+    /// <c>set_instance_shader_parameter</c> forces Godot's separate render thread to sync
+    /// synchronously back to the main thread for the shader's default lookup (measured up to
+    /// 28 ms per stall in Bowerstone Market). Both modern (<c>entity_tint</c>) and classic
+    /// (<c>ps_g_StandardMaterialTintColour</c>) shaders initialize their tint uniforms to
+    /// <c>vec4(1.0)</c>, so writing <see cref="Vector4.One"/> resets the cloth with zero sync.
     /// </remarks>
     private static bool MirrorTint(GeometryInstance3D cloth, StringName parameter, Vector4? tint, bool held)
     {
@@ -282,7 +284,7 @@ public static class Engine_EntityAppearance
 
         if (held)
         {
-            Refii.Core.Engine_InstanceParams.Set(cloth, parameter, default(Variant));
+            cloth.SetInstanceShaderParameter(parameter, Vector4.One);
         }
         return false;
     }

@@ -34,31 +34,6 @@ public partial class GameSession : Node
 	/// <summary>High-frequency steps granted to the guest — the host's own simulation position.</summary>
 	private long _granted;
 
-	/// <summary>The guest's 30 Hz HF frame counter and our granted count when the loop was closed, so the two
-	/// are compared at identical 30 Hz resolution as DIFFERENCES.</summary>
-	private uint _guestHfBase;
-	private uint _guestTickBase;
-	private long _grantedBase;
-
-	/// <summary>
-	/// How far the host may lead the guest, in game ticks (2.0 game ticks = 4 HF steps, matching native
-	/// <c>kMaxLeadSteps = 4</c> in <c>rex_bridge_host.cpp</c> where steps are released strictly one at a time
-	/// upon each completed guest HF pass so <c>sub_82276D10</c> never sees <c>owed &gt; 1</c>).
-	/// </summary>
-	private const double MaxLeadGameTicks = 2.0;
-
-	/// <summary>Maximum host lead in 30 Hz HF steps before backpressure withholds further grants.</summary>
-	private const long MaxLeadHfSteps = 4;
-
-	/// <summary>
-	/// A lead beyond this, in either direction, is a broken base rather than a real lead.
-	/// </summary>
-	/// <remarks>
-	/// Above any genuine stall (a second of the guest doing nothing is 15 ticks), tight enough
-	/// that a base taken against the wrong world is caught on the first frame.
-	/// </remarks>
-	private const double ReBaseGameTicks = 64.0;
-
 	public bool IsDriving => _driving;
 
 	/// <summary>
@@ -508,17 +483,13 @@ public partial class GameSession : Node
 		// Godot's pacing is the guest's clock: the guest's loop takes at most one step per
 		// frame and never banks multi-step catch-up bursts (matching 0x82276FA4 in sub_82276D10).
 		//
-		// Closed loop: grant on completion, not on wall time. If the host already leads by more
-		// than `MaxLeadGameTicks` the grant is withheld and the time is dropped rather than
-		// banked (banking guarantees a burst when the guest recovers); the whole game slows
-		// together.
+		// Closed loop: backpressure reads the native driven time-base's authoritative unconsumed
+		// HF step depth (`pending + in_flight`) right here at grant time rather than subtracting
+		// drifting cumulative counters against a start-of-frame `Engine_GuestFrame` latch.
 		//
-		// The counter must count executed ticks. `SimTick` (`dword_83319650`) self-gates on the
-		// front GameFlow command matching (0x821D46E8), is reset to 1 on world teardown
-		// (0x8235075C) and is restored from saves. `game+0xFC` is incremented once per game tick
-		// at 0x821C9044 with no gate.
+		// `guestTick` (`game+0xFC`, incremented once per game tick at 0x821C9044 with no gate) is
+		// used for counter-pair drift monitoring and stall detection (`GuestStalled`).
 		uint guestTick = HostBridge.SimClock() is { } clock ? clock.Tick : 0u;
-		bool withholdGrant = false;
 
 		// `dword_83319650` is gated (`821d46e8` branches past its own increment) and has a
 		// second increment path (`823d9904`); `guestTick` is the ungated once-per-game-tick
@@ -543,63 +514,27 @@ public partial class GameSession : Node
 					Refii.Core.Engine_TickClock.RefreshHz = hz;
 				}
 			}
+		}
 
-			uint guestHf = Refii.Core.Engine_GuestFrame.Frame;
-			double lead;
-			if (guestHf != 0u)
-			{
-				if (_guestHfBase == 0u)
-				{
-					_guestHfBase = guestHf;
-					_grantedBase = _granted;
-				}
-
-				long hostHfSteps = _granted - _grantedBase;
-				long guestHfSteps = (long)guestHf - _guestHfBase;
-				long leadHfSteps = hostHfSteps - guestHfSteps;
-				if (leadHfSteps > (long)(ReBaseGameTicks * 2.0) || leadHfSteps < -(long)(ReBaseGameTicks * 2.0))
-				{
-					_guestHfBase = guestHf;
-					_grantedBase = _granted;
-					leadHfSteps = 0;
-				}
-
-				lead = leadHfSteps * 0.5;
-				withholdGrant = leadHfSteps >= MaxLeadHfSteps;
-			}
-			else
-			{
-				if (_guestTickBase == 0u)
-				{
-					_guestTickBase = guestTick;
-					_grantedBase = _granted;
-				}
-
-				double hostGameTicks = (_granted - _grantedBase) * 0.5;
-				double guestGameTicks = (double)guestTick - _guestTickBase;
-				lead = hostGameTicks - guestGameTicks;
-				if (lead > ReBaseGameTicks || lead < -ReBaseGameTicks)
-				{
-					_guestTickBase = guestTick;
-					_grantedBase = _granted;
-					lead = 0.0;
-				}
-
-				withholdGrant = lead >= MaxLeadGameTicks;
-			}
-
+		ulong unconsumedSteps = guestTick != 0u && HostBridge.TryGetUnconsumedTimeBaseSteps(out ulong liveUnconsumed)
+			? liveUnconsumed
+			: 0UL;
+		int steps = _guestPacer.Advance(delta, unconsumedSteps, out double lead, out bool withholdGrant);
+		if (guestTick != 0u)
+		{
 			Refii.Core.Engine_TickClock.HostGrantLead = lead;
 			Refii.Core.Engine_TickClock.HostGrantWithheld = withholdGrant;
 		}
-
-		double wallNowSeconds = System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
-		int steps = _guestPacer.Advance(delta, wallNowSeconds, withholdGrant);
 
 		Refii.Core.Engine_FramePhases.Lap("session.clock", ref lap);
 		if (steps > 0)
 		{
 			HostBridge.AdvanceTimeBase((uint)steps);
 			_granted += steps;
+		}
+		else
+		{
+			HostBridge.EndTimeBaseReadWindow();
 		}
 
 		// The same accumulator is the draw clock: `_guestPacer.Phase` is how far this frame
@@ -724,7 +659,6 @@ public partial class GameSession : Node
 		if (!HostBridge.Step())
 		{
 			_driving = false;
-			_guestTickBase = 0u;
 			string reason = HostBridge.HostedStatus;
 			GD.Print($"[game] guest stopped after {_steps:N0} steps: {reason}");
 

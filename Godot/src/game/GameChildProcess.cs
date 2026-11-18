@@ -26,6 +26,9 @@ public static class GameChildProcess
 	/// <summary>Set by the launcher on the child it spawns; never set by hand.</summary>
 	private const string Marker = "REFII_GAME_CHILD";
 
+	/// <summary>Set by the launcher when spawning the child with <c>--render-thread separate</c>.</summary>
+	public const string SeparateRenderThreadEnvironmentVariable = Refii.Textures.Engine_TextureUpload.SeparateRenderThreadEnvironmentVariable;
+
 	/// <summary>True when this process was spawned by the launcher to BE the game.</summary>
 	public static bool IsChild => OS.GetEnvironment(Marker) == "1";
 
@@ -86,7 +89,8 @@ public static class GameChildProcess
 
 		// `render_thread` is a Godot start-up option, not a runtime setting: the renderer's
 		// thread model is fixed before the game's own code runs, so it rides the command line.
-		if (ShouldUseSeparateRenderThread(config, driver))
+		bool separateRenderThread = ShouldUseSeparateRenderThread(config, driver);
+		if (separateRenderThread)
 		{
 			arguments.Add("--render-thread");
 			arguments.Add("separate");
@@ -114,6 +118,12 @@ public static class GameChildProcess
 			[Refii.Core.Engine_Title.EnvironmentVariable] = title.Key,
 			[Refii.Core.Engine_Title.PayloadEnvironmentVariable] = title.ModuleName,
 		};
+		if (separateRenderThread)
+		{
+			// Godot strips `--render-thread separate` before `OS.GetCmdlineArgs()` reaches C#;
+			// forwarding an explicit environment marker keeps Engine_TextureUpload accurate.
+			environment[SeparateRenderThreadEnvironmentVariable] = "1";
+		}
 
 		// Gen0 budget (32 MB). A gen1 pause is proportional to what survives it, so a smaller
 		// budget trades frequency for shorter pauses. Read by the CLR at start-up, so it rides

@@ -6435,6 +6435,27 @@ public partial class GameEntities : Node3D
     /// transform. It is cleared only by the Havok rigid-body component's init, so a physics-owned
     /// body is drawn where physics put it.
     /// </remarks>
+    /// <summary>
+    /// Resolves the game-tick stamp for an observed entity placement so a moved placement read
+    /// slightly ahead of <paramref name="frameTick"/> advances the body's stamp by one tick
+    /// (<c>[frameTick, frameTick + 1]</c>) instead of overwriting the current tick in place and
+    /// doubling velocity, matching <see cref="Refii.Animations.Engine_ClipPlayhead.Observe"/>.
+    /// </summary>
+    /// <param name="frameTick">The game tick latched at frame start.</param>
+    /// <param name="newestTick">The timeline's newest observed stamp.</param>
+    /// <param name="bodyEmpty">True when the timeline has not yet been seeded.</param>
+    /// <param name="moved">True when the placement changed relative to the timeline's newest sample.</param>
+    /// <returns>The resolved monotonic tick stamp within <c>[frameTick, frameTick + 1]</c>.</returns>
+    public static double ResolvePlacementStamp(uint frameTick, double newestTick, bool bodyEmpty, bool moved)
+    {
+        if (!bodyEmpty && moved && frameTick <= newestTick)
+        {
+            return System.Math.Clamp(newestTick + 1.0, frameTick, frameTick + 1.0);
+        }
+
+        return frameTick;
+    }
+
     private Transform3D Drawn(HostBridge.GuestEntity entity, Transform3D stated)
     {
         // Rigged characters (NPCs, creatures, heroes) have their Havok rigid-body component
@@ -6486,7 +6507,8 @@ public partial class GameEntities : Node3D
         // that draws it rather than by the stamp (Engine_ArrivalFit); the observation rule is the same.
         if (moved || (_tickCompletedThisWalk && tick - body.NewestTick >= 4.0))
         {
-            body.Observe(tick, stated);
+            double stamp = ResolvePlacementStamp(tick, body.NewestTick, body.Empty, moved);
+            body.Observe(stamp, stated);
         }
         if (moved)
         {

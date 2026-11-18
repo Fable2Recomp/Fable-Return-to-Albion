@@ -2911,6 +2911,11 @@ public partial class GameDebugServer : Node
 				var lights = new List<Light3D>();
 				Refii.Lighting.Engine_LevelLights.SnapshotLights(lights);
 				int shadowLights = lights.Count(l => l.ShadowEnabled);
+				Refii.Host.HostBridge.UnpackTimeBaseWatchdog(
+					_timeBase?.Watchdog ?? 0UL,
+					out ulong timeBaseWatchdogLapses,
+					out ulong timeBasePendingSteps,
+					out bool timeBaseStepInFlight);
 
 				return Ok(new Dictionary<string, object?>
 				{
@@ -3150,8 +3155,9 @@ public partial class GameDebugServer : Node
 						// one. `timeBasePending` not draining means the same thing earlier.
 						["timeBaseCapped"] = (_timeBase?.Capped ?? 0UL) & 0xFFFFFFFFUL,
 						["timeBaseDropped"] = (_timeBase?.Capped ?? 0UL) >> 32,
-						["timeBaseWatchdog"] = (_timeBase?.Watchdog ?? 0UL) & 0xFFFFFFFFUL,
-						["timeBasePending"] = (_timeBase?.Watchdog ?? 0UL) >> 32,
+						["timeBaseWatchdog"] = timeBaseWatchdogLapses,
+						["timeBasePending"] = timeBasePendingSteps,
+						["timeBaseStepInFlight"] = timeBaseStepInFlight,
 						["clockStatedLive"] = Refii.Core.Engine_TickClock.StatedLive,
 						// The guest's own clock, `game+0x110`, stored at 0x82276F18. `statedHz` is its measured
 						// advance: 15 while the guest keeps up, lower under load, because the loop advances one

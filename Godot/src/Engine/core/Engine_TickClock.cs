@@ -73,51 +73,29 @@ public static class Engine_TickClock
 	public static void ResetPlaybackRateWorst() => PlaybackRateWorst = 0.0;
 
 	/// <summary>
-	/// The frame duration the slack is sized against, in ticks: a high percentile of the recent
-	/// frames, not the peak.
+	/// Smoothed frame duration in game ticks, updated with a zero-allocation EMA for diagnostics.
 	/// </summary>
-	/// <remarks>
-	/// Not a peak-hold: moving the latency re-times everything drawn, so a rare hitch must not
-	/// set the operating point. One pause in <see cref="FrameWindow"/> frames sits above the
-	/// percentile and moves nothing (its own frame may starve); a sustained slowdown moves it.
-	/// Sustained starvation is handled by <see cref="_slackMarginTicks"/>.
-	/// </remarks>
 	public static double FrameTicks { get; private set; } = 0.5;
 
-	/// <summary>Frames the percentile is taken over — about a second of them.</summary>
-	private const int FrameWindow = 64;
-
-	/// <summary>Which percentile of the window sizes the slack.</summary>
-	private const double FramePercentile = 0.90;
-
-	private static readonly double[] _frameRing = new double[FrameWindow];
-	private static readonly double[] _frameSorted = new double[FrameWindow];
-	private static int _frameRingCount;
-	private static int _frameRingAt;
+	private static bool _frameTicksSeeded;
 
 	/// <summary>Draw points that passed a live timeline's newest sample and held — the latency was too short.</summary>
 	public static long Starved;
 
 	/// <summary>
-	/// Slack over the frame time, in ticks, steered by what the timelines report: a starvation
-	/// rate over one sample in 500 raises it, a rate under one in 5,000 lets it settle back.
-	/// The walk is taken once per guest frame and a sample lands up to two host frames after
-	/// its tick, so no fixed constant fits every frame rate.
+	/// Legacy diagnostic slack field retained for telemetry compatibility.
 	/// </summary>
 	private static double _slackMarginTicks = 0.35;
 
 	/// <summary>Timeline samples drawn; with <see cref="Starved"/> the starvation rate.</summary>
 	public static long Sampled;
 
-	private static long _rateStarved;
-	private static long _rateSampled;
-	private static int _rateFrames;
 	private const double MinLatencyTicks = GuestLatencyTicks + 0.25;
 	/// <summary>A slow frame needs its whole duration of slack, so the cap sits well above one tick.</summary>
 	private const double MaxLatencyTicks = 4.0;
 	private static double _frameStartUsec = double.NaN;
 
-	/// <summary>Once per frame, first thing: updates the frame-time window, aligns and disciplines the clock, and slews the latency.</summary>
+	/// <summary>Once per frame, first thing: updates the frame-time EMA, aligns and disciplines the clock, and measures playback rate.</summary>
 	public static void BeginFrame(double nowUsec)
 	{
 		bool first = double.IsNaN(_frameStartUsec);
@@ -131,41 +109,12 @@ public static class Engine_TickClock
 			// about how long frames take.
 			if (frame > 0.0 && frame < 4.0)
 			{
-				_frameRing[_frameRingAt] = frame;
-				_frameRingAt = (_frameRingAt + 1) % FrameWindow;
-				if (_frameRingCount < FrameWindow)
-				{
-					++_frameRingCount;
-				}
-
-				System.Array.Copy(_frameRing, _frameSorted, _frameRingCount);
-				System.Array.Sort(_frameSorted, 0, _frameRingCount);
-				int at = (int)(FramePercentile * (_frameRingCount - 1));
-				FrameTicks = _frameSorted[at];
+				FrameTicks = _frameTicksSeeded ? FrameTicks + ((frame - FrameTicks) * 0.1) : frame;
+				_frameTicksSeeded = true;
 			}
 		}
 
 		_frameStartUsec = nowUsec;
-		if (++_rateFrames >= 60)
-		{
-			_rateFrames = 0;
-			long sampled = Sampled - _rateSampled;
-			long starved = Starved - _rateStarved;
-			_rateSampled = Sampled;
-			_rateStarved = Starved;
-			if (sampled > 1000)
-			{
-				double rate = (double)starved / sampled;
-				if (rate > 0.002)
-				{
-					_slackMarginTicks = System.Math.Min(_slackMarginTicks + 0.1, 1.5);
-				}
-				else if (rate < 0.0002)
-				{
-					_slackMarginTicks = System.Math.Max(_slackMarginTicks - 0.02, 0.1);
-				}
-			}
-		}
 
 		// Tie the host's own count to the guest's tick numbering before anything draws against
 		// it; without this the playhead is in the wrong units and everything slides.
@@ -193,10 +142,25 @@ public static class Engine_TickClock
 			DrawLatencyTicks += latencyMoved;
 		}
 
-		// What the world actually ran at, measured at the draw point rather than summed from
-		// its terms: how far the draw point moved against how far real time moved. Catches
-		// anything that pins, steps or reverses the playhead.
-		double drawNow = HostClockLive
+		if (Engine_StatedPause.Latched)
+		{
+			_prevDrawTick = double.NaN;
+			_rateDrawnTicks = 0.0;
+			_rateRealTicks = 0.0;
+			PlayheadVsNewest = double.NaN;
+			_ = latencyMoved;
+			return;
+		}
+
+		// What the world actually ran at, measured directly at the shared draw point
+		// (Engine_DrawnFrame.DrawTick) when active on this frame, falling back to the internal
+		// clock when drawn-frame consumers are inactive (e.g. standalone clock tests).
+		double drawnFrameTick = Refii.Entities.Engine_DrawnFrame.NowUsec == (ulong)nowUsec
+			? Refii.Entities.Engine_DrawnFrame.DrawTick
+			: double.NaN;
+		double drawNow = !double.IsNaN(drawnFrameTick)
+			? drawnFrameTick
+			: HostClockLive
 			? _hostTicks + _hostTickOffset - DrawLatencyTicks
 			: StatedLive
 			? _statedAnchorTicks +
@@ -227,7 +191,7 @@ public static class Engine_TickClock
 		}
 
 		_prevDrawTick = drawNow;
-		PlayheadVsNewest = double.IsNaN(drawNow) ? double.NaN : drawNow - _highestTick;
+		PlayheadVsNewest = double.IsNaN(drawNow) || _highestTick == 0u ? double.NaN : drawNow - _highestTick;
 		_ = latencyMoved;
 	}
 
@@ -456,7 +420,22 @@ public static class Engine_TickClock
 	/// <summary>Publishes the frame's game tick. Zero (no world) leaves the last one standing.</summary>
 	public static void PublishGuestGameTick(uint tick)
 	{
-		if (tick == 0u || tick == GuestGameTick)
+		if (tick == 0u)
+		{
+			return;
+		}
+
+		if (tick + 64u < _highestTick)
+		{
+			ResetOnCounterRestart();
+		}
+
+		if (tick > _highestTick)
+		{
+			_highestTick = tick;
+		}
+
+		if (tick == GuestGameTick)
 		{
 			return;
 		}
@@ -580,6 +559,8 @@ public static class Engine_TickClock
 	/// <summary>How fast the alignment follows — slow, so the per-tick sawtooth averages out.</summary>
 	private const double HostOffsetFollow = 0.01;
 
+	private static bool _heldByStatedPause;
+
 	/// <summary>
 	/// The host's own position on the simulation timeline, in GAME ticks: the steps it has
 	/// granted plus the accumulator's remainder toward the next.
@@ -624,7 +605,25 @@ public static class Engine_TickClock
 			return;
 		}
 
+		// While the guest states a pause (pause menu, dialog), `_hostTicks` continues granting 30 Hz
+		// GUI steps while `GuestGameTick` holds steady; freezing alignment during the hold and
+		// cleanly adopting the post-pause offset on release prevents bogus `HostOffsetSnaps`.
+		if (Engine_StatedPause.Latched)
+		{
+			_heldByStatedPause = _hostOffsetSeeded;
+			return;
+		}
+
 		double target = _highestTick - _hostTicks;
+
+		if (_heldByStatedPause)
+		{
+			_heldByStatedPause = false;
+			_hostTickOffset = target;
+			_hostOffsetSeeded = true;
+			HostClockLive = true;
+			return;
+		}
 
 		if (!_hostOffsetSeeded || System.Math.Abs(target - _hostTickOffset) > HostOffsetSnapTicks)
 		{
@@ -799,6 +798,63 @@ public static class Engine_TickClock
 	/// <summary>How many times the guest's counter went backwards and the fit restarted.</summary>
 	public static int Restarts { get; private set; }
 
+	private static void ResetOnCounterRestart()
+	{
+		_originUsec = double.NaN;
+		_highestTick = 0u;
+		_periodUsec = TickUsec;
+		_prevDrawTick = double.NaN;
+		_phaseSeeded = false;
+		_hostOffsetSeeded = false;
+		_heldByStatedPause = false;
+		System.Array.Clear(_fitUsed);
+		++Restarts;
+	}
+
+	/// <summary>
+	/// Resets static clock state cleanly for deterministic unit and feature tests.
+	/// </summary>
+	public static void ResetForTests()
+	{
+		ResetOnCounterRestart();
+		Restarts = 0;
+		Samples = 0;
+		Starved = 0;
+		Sampled = 0;
+		GuestGameTick = 0u;
+		FrameStamp = double.NaN;
+		_stampFrame = 0u;
+		_stampFrameTick = 0u;
+		_tickParity = -1;
+		_parityDisagreements = 0;
+		_hostTicks = double.NaN;
+		_hostTickOffset = 0.0;
+		HostClockLive = false;
+		HostOffsetSnaps = 0;
+		HostOffsetSnapWorst = 0.0;
+		HostGrantLead = 0.0;
+		HostGrantWithheld = false;
+		StampLostTicks = 0;
+		StampAheadTicks = 0;
+		_prevStampTick = 0u;
+		_prevGameTick = 0u;
+		_frameStartUsec = double.NaN;
+		_frameTicksSeeded = false;
+		FrameTicks = 0.5;
+		PlaybackRate = 1.0;
+		PlaybackRateWorst = 0.0;
+		_rateDrawnTicks = 0.0;
+		_rateRealTicks = 0.0;
+		PlayheadVsNewest = double.NaN;
+		DrawLatencyTicks = 1.0;
+		Pin = 0.0;
+		StatedLive = false;
+		_statedAnchorTicks = double.NaN;
+		_statedAnchorUsec = double.NaN;
+		_statedSeenSeconds = double.NaN;
+		Pair.Reset();
+	}
+
 	/// <summary>Folds one stated sample into the fit.</summary>
 	public static void Observe(uint tick, double nowUsec)
 	{
@@ -807,14 +863,7 @@ public static class Engine_TickClock
 		// cannot recover from a poisoned origin on its own, because nothing later is smaller.
 		if (tick + 64u < _highestTick)
 		{
-			_originUsec = double.NaN;
-			_highestTick = 0u;
-			_periodUsec = TickUsec;
-			_prevDrawTick = double.NaN;
-			_phaseSeeded = false;
-			_hostOffsetSeeded = false;
-			System.Array.Clear(_fitUsed);
-			++Restarts;
+			ResetOnCounterRestart();
 		}
 
 		if (tick > _highestTick)
@@ -950,30 +999,6 @@ public static class Engine_TickClock
 
 		double budget = (elapsedUsec / _periodUsec) * PhaseTolerance;
 		_originUsec -= System.Math.Clamp(error, -budget, budget) * _periodUsec;
-	}
-
-	/// <summary>
-	/// The point on the guest's timeline a frame at <paramref name="nowUsec"/> draws, in ticks
-	/// and fractions of one. NaN until the fit has a sample.
-	/// </summary>
-	public static double DrawTick(double nowUsec)
-	{
-		++Sampled;
-
-		if (HostClockLive)
-		{
-			return _hostTicks + _hostTickOffset - DrawLatencyTicks;
-		}
-
-		if (StatedLive)
-		{
-			return _statedAnchorTicks +
-				((nowUsec - _statedAnchorUsec) / 1e6 * GameTicksPerSecond) - DrawLatencyTicks;
-		}
-
-		return double.IsNaN(_originUsec)
-			? double.NaN
-			: ((nowUsec - _originUsec) / _periodUsec) - DrawLatencyTicks;
 	}
 
 	/// <summary>

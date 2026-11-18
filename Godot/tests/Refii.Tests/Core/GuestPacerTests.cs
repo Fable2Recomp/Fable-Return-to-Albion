@@ -3,6 +3,8 @@ namespace Refii.Tests.Core;
 using System;
 using GdUnit4;
 using Refii.Core;
+using Refii.Game;
+using Refii.Host;
 using static GdUnit4.Assertions;
 
 /// <summary>
@@ -172,5 +174,105 @@ public sealed class GuestPacerTests
 
 		AssertThat(pacer.Advance(0.004, 0.200, withholdGrant: false)).IsEqual(1);
 		AssertThat(pacer.Advance(0.004, 0.204, withholdGrant: false)).IsEqual(0);
+	}
+
+	/// <summary>
+	/// Verifies closed-loop backpressure evaluation from live native unconsumed HF steps and
+	/// ensures fluctuating FPS between 90 FPS and sub-30 FPS (18–26 FPS) with 1–3 unconsumed
+	/// steps never withholds grants or drops real time.
+	/// </summary>
+	[TestCase]
+	public void EvaluateBackpressureAndFluctuatingSub30Fps_NeverDropsTimeUnderThreeUnconsumedSteps()
+	{
+		for (ulong depth = 0; depth < Engine_GuestPacer.MaxUnconsumedHfSteps; ++depth)
+		{
+			Engine_GuestPacer.EvaluateBackpressure(depth, out double lead, out bool withhold);
+			AssertThat(withhold).IsFalse();
+			AssertThat(lead).IsEqual(depth * 0.5);
+		}
+
+		Engine_GuestPacer.EvaluateBackpressure(Engine_GuestPacer.MaxUnconsumedHfSteps, out double capLead, out bool capWithhold);
+		AssertThat(capWithhold).IsTrue();
+		AssertThat(capLead).IsEqual(2.0);
+
+		var pacer = new Engine_GuestPacer();
+		// Alternating Bowerstone-like cadence: 90 FPS -> 26 FPS -> 18 FPS -> 42 FPS -> 120 FPS
+		double[] framePattern = { 1.0 / 90.0, 1.0 / 26.0, 1.0 / 18.0, 1.0 / 42.0, 1.0 / 120.0 };
+		double totalSeconds = 0.0;
+		int totalSteps = 0;
+
+		for (int i = 0; i < 400; ++i)
+		{
+			double dt = framePattern[i % framePattern.Length];
+			ulong simulatedUnconsumed = (ulong)(i % 3); // 0..2 unconsumed HF steps (< MaxUnconsumedHfSteps)
+			totalSeconds += dt;
+			totalSteps += pacer.Advance(dt, simulatedUnconsumed, out _, out bool withheld);
+			AssertThat(withheld).IsFalse();
+		}
+
+		double expectedSteps = totalSeconds * Engine_GuestPacer.StepsPerSecond;
+		AssertThat(Math.Abs((totalSteps + (pacer.AccumulatedSeconds * Engine_GuestPacer.StepsPerSecond)) - expectedSteps) < 1e-6).IsTrue();
+		AssertThat(Math.Abs((totalSteps / totalSeconds) - Engine_GuestPacer.StepsPerSecond) < 0.25).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies that <see cref="HostBridge.UnpackTimeBaseWatchdog"/> extracts lapse count,
+	/// unconsumed step count, and the bit-63 in-flight step flag without leaking bit 63
+	/// into <c>unconsumedSteps</c>.
+	/// </summary>
+	[TestCase]
+	public void UnpackTimeBaseWatchdog_ExtractsLapsesUnconsumedAndInFlightBit63()
+	{
+		const ulong lapses = 0x12345678UL;
+		const ulong unconsumed = 3UL;
+
+		ulong packedIdle = lapses | (unconsumed << 32);
+		HostBridge.UnpackTimeBaseWatchdog(packedIdle, out ulong gotLapsesIdle, out ulong gotUnconsumedIdle, out bool inFlightIdle);
+		AssertThat(gotLapsesIdle).IsEqual(lapses);
+		AssertThat(gotUnconsumedIdle).IsEqual(unconsumed);
+		AssertThat(inFlightIdle).IsFalse();
+
+		ulong packedInFlight = packedIdle | (1UL << 63);
+		HostBridge.UnpackTimeBaseWatchdog(packedInFlight, out ulong gotLapsesFlight, out ulong gotUnconsumedFlight, out bool inFlightActive);
+		AssertThat(gotLapsesFlight).IsEqual(lapses);
+		AssertThat(gotUnconsumedFlight).IsEqual(unconsumed);
+		AssertThat(inFlightActive).IsTrue();
+	}
+
+	/// <summary>
+	/// Verifies that <see cref="HostBridge.ShouldDeferInFlightGuestSample"/> defers guest RAM
+	/// sampling only while in-game, after frame 0, while a step is in flight, and strictly
+	/// inside the bounded <see cref="HostBridge.MaxInFlightSampleDeferUsec"/> window.
+	/// </summary>
+	[TestCase]
+	public void ShouldDeferInFlightGuestSample_DefersWithin40MsOnlyWhileInGameAndInFlight()
+	{
+		const ulong t0 = 1_000_000UL;
+		const ulong limit = HostBridge.MaxInFlightSampleDeferUsec;
+
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, true, 12u, t0 + 5_000UL, t0)).IsTrue();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, true, 12u, t0 + limit - 1UL, t0)).IsTrue();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(false, true, 12u, t0 + 5_000UL, t0)).IsFalse();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, true, 0u, t0 + 5_000UL, t0)).IsFalse();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, false, 12u, t0 + 5_000UL, t0)).IsFalse();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, true, 12u, t0 + 5_000UL, 0UL)).IsFalse();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, true, 12u, t0 + limit, t0)).IsFalse();
+		AssertThat(HostBridge.ShouldDeferInFlightGuestSample(true, true, 12u, t0 + limit + 10_000UL, t0)).IsFalse();
+	}
+
+	/// <summary>
+	/// Verifies that <see cref="GameEntities.ResolvePlacementStamp"/> preserves normal advancing
+	/// stamps and unmoved ticks, while advancing an already-moved sample whose host tick has not
+	/// incremented yet to <c>frameTick + 1.0</c> instead of overwriting the prior tick.
+	/// </summary>
+	[TestCase]
+	public void ResolvePlacementStamp_AdvancesEarlyMovedSampleWithoutOverwritingCurrentTick()
+	{
+		AssertThat(GameEntities.ResolvePlacementStamp(10u, 9.0, bodyEmpty: false, moved: true)).IsEqual(10.0);
+		AssertThat(GameEntities.ResolvePlacementStamp(10u, 9.0, bodyEmpty: false, moved: false)).IsEqual(10.0);
+		AssertThat(GameEntities.ResolvePlacementStamp(10u, 10.0, bodyEmpty: false, moved: false)).IsEqual(10.0);
+		AssertThat(GameEntities.ResolvePlacementStamp(10u, 10.0, bodyEmpty: true, moved: true)).IsEqual(10.0);
+		AssertThat(GameEntities.ResolvePlacementStamp(10u, 10.0, bodyEmpty: false, moved: true)).IsEqual(11.0);
+		AssertThat(GameEntities.ResolvePlacementStamp(10u, 11.0, bodyEmpty: false, moved: true)).IsEqual(11.0);
 	}
 }

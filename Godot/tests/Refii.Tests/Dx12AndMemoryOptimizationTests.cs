@@ -571,6 +571,29 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(Engine_TextureUpload.HasSeparateRenderThreadArgs(new[] { "--rendering-driver", "d3d12", "--render-thread", "separate" })).IsTrue();
 		AssertThat(Engine_TextureUpload.HasSeparateRenderThreadArgs(new[] { "--rendering-driver", "d3d12" })).IsFalse();
 
+		// Godot strips `--render-thread separate` before `OS.GetCmdlineArgs()`; raw process argv or
+		// launcher env marker must still resolve separate-render-thread mode accurately.
+		AssertThat(Engine_TextureUpload.ResolveIsSeparateRenderThread(
+			envMarker: null,
+			processArgs: new[] { "refii.exe", "--render-thread", "separate", "--rendering-driver", "d3d12" },
+			godotCmdlineArgs: System.Array.Empty<string>(),
+			projectThreadModel: 1)).IsTrue();
+		AssertThat(Engine_TextureUpload.ResolveIsSeparateRenderThread(
+			envMarker: "1",
+			processArgs: System.Array.Empty<string>(),
+			godotCmdlineArgs: System.Array.Empty<string>(),
+			projectThreadModel: 1)).IsTrue();
+		AssertThat(Engine_TextureUpload.ResolveIsSeparateRenderThread(
+			envMarker: null,
+			processArgs: new[] { "refii.exe", "--rendering-driver", "d3d12" },
+			godotCmdlineArgs: System.Array.Empty<string>(),
+			projectThreadModel: 1)).IsFalse();
+
+		// In-place `texture.Update` skips synchronous RD backing verification even on single-thread mode.
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingOnSetImage(updatedInPlace: true, verifyOnCallerThread: true)).IsFalse();
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingOnSetImage(updatedInPlace: false, verifyOnCallerThread: true)).IsTrue();
+		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingOnSetImage(updatedInPlace: false, verifyOnCallerThread: false)).IsFalse();
+
 		// D3D12 verifies RD backing synchronously only on single-threaded mode or already on the render thread.
 		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingSynchronously(isD3D12: true, isSeparateRenderThread: false, isOnRenderThread: false)).IsTrue();
 		AssertThat(Engine_TextureUpload.ShouldVerifyRdBackingSynchronously(isD3D12: true, isSeparateRenderThread: true, isOnRenderThread: false)).IsFalse();
@@ -1701,5 +1724,49 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(full.HasFor(chestEntity)).IsEqual(lean.HasFor(chestEntity));
 		AssertThat(full.HasFor(readableEntity)).IsEqual(lean.HasFor(readableEntity));
 		AssertThat(full.HasFor(sceneryEntity)).IsEqual(lean.HasFor(sceneryEntity));
+	}
+
+	/// <summary>
+	/// Extracts a contiguous slice of source text between two anchor markers for focused
+	/// invariant checks.
+	/// </summary>
+	private static string ExtractSourceSlice(string source, string startMarker, string endMarker)
+	{
+		int start = source.IndexOf(startMarker, StringComparison.Ordinal);
+		AssertThat(start >= 0).IsTrue();
+		int end = source.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
+		AssertThat(end > start).IsTrue();
+		return source.Substring(start, end - start);
+	}
+
+	/// <summary>
+	/// Verifies the Round 2 main-thread render-sync eliminations: cloth untints write neutral
+	/// <c>Vector4.One</c> instead of <c>default(Variant)</c>, <see cref="Refii.Entities.Engine_ViewTwin.Create"/>
+	/// watches the source body's instance parameters, and both half-res viewport layers pre-warm
+	/// <c>_layerRd</c> inside <c>Resize()</c>.
+	/// </summary>
+	[TestCase]
+	public void EntityTintTwinAndLayerPrewarm_AvoidMainThreadRenderSyncStalls()
+	{
+		string godotRoot = FindRepoRoot();
+
+		string appearanceSource = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "entities", "Engine_EntityAppearance.cs"));
+		string mirrorTintSlice = ExtractSourceSlice(appearanceSource, "private static bool MirrorTint(", "public static void Apply(");
+		AssertThat(mirrorTintSlice.Contains("cloth.SetInstanceShaderParameter(parameter, Vector4.One);", StringComparison.Ordinal)).IsTrue();
+		AssertThat(mirrorTintSlice.Contains("default(Variant)", StringComparison.Ordinal)).IsFalse();
+
+		string twinSource = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "entities", "Engine_ViewTwin.cs"));
+		string twinCreateSlice = ExtractSourceSlice(twinSource, "public static Engine_ViewTwin? Create(", "public static bool[] Subtree(");
+		AssertThat(twinCreateSlice.Contains("Engine_InstanceParams.Watch(body);", StringComparison.Ordinal)).IsTrue();
+
+		string highlightSource = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "entities", "Engine_EntityHighlightLayer.cs"));
+		string highlightResizeSlice = ExtractSourceSlice(highlightSource, "private void Resize()", "public override void _Process(");
+		AssertThat(highlightResizeSlice.Contains("_layerRd = ViewportTexRid();", StringComparison.Ordinal)).IsTrue();
+		AssertThat(highlightResizeSlice.Contains("_publishedTex[_view] = _layerRd;", StringComparison.Ordinal)).IsTrue();
+
+		string additiveSource = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "fx", "Engine_FxAdditiveLayer.cs"));
+		string additiveResizeSlice = ExtractSourceSlice(additiveSource, "private void Resize()", "public override void _Process(");
+		AssertThat(additiveResizeSlice.Contains("_layerRd = ViewportTexRid();", StringComparison.Ordinal)).IsTrue();
+		AssertThat(additiveResizeSlice.Contains("_publishedTex[_view] = _layerRd;", StringComparison.Ordinal)).IsTrue();
 	}
 }

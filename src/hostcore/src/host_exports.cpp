@@ -1507,7 +1507,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGuestFrame(void) {
 REFII_HOST_ABI_EXPORT int RefiiHostSetTimeBaseMode(int mode, uint64_t* out_capped,
                                                    uint64_t* out_granted,
                                                    uint64_t* out_watchdog) {
-    if (mode >= 0) {
+    if (mode >= 0 || mode == -2 || mode == -3) {
         refii_bridge_rex_set_time_base_mode(mode);
     }
 

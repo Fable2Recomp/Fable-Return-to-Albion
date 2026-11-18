@@ -18,11 +18,13 @@ namespace Refii.Host;
 /// </remarks>
 public static class HostEntityWalk
 {
-	/// <summary>One walk's result.</summary>
+	/// <summary>One walk's result and the simulation ticks bracketing it on the worker thread.</summary>
 	public readonly record struct Walk(
 		List<HostBridge.GuestEntity> Entities,
 		uint Unknown,
-		HostBridge.UnknownPlacement[] UnknownVtables);
+		HostBridge.UnknownPlacement[] UnknownVtables,
+		uint BeforeTick = 0u,
+		uint AfterTick = 0u);
 
 	/// <summary>Debug lever: false leaves the feed to walk synchronously.</summary>
 	public static bool Enabled = true;
@@ -233,7 +235,7 @@ public static class HostEntityWalk
 				Refii.Core.Engine_GcFrames.Note(ref Refii.Core.Engine_GcFrames.EntityWalkBytes,
 					System.GC.GetAllocatedBytesForCurrentThread() - allocFrom);
 
-				var built = new Walk(entities, unknown, unknownVtables);
+				var built = new Walk(entities, unknown, unknownVtables, before, after);
 				lock (Gate)
 				{
 					if (gen == _generation)

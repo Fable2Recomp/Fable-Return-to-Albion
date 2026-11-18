@@ -374,10 +374,11 @@ public partial class Engine_FxAdditiveLayer : Node
         if (size == _size) return;
         _size = size;
         _viewport.Size = size;
-        _layerRdSize = default;
+        _layerRd = ViewportTexRid();
+        _layerRdSize = _layerRd.IsValid ? size : default;
         lock (Gate)
         {
-            _publishedTex[_view] = default;
+            _publishedTex[_view] = _layerRd;
             _publishedSize[_view] = size;
             _publishedActive[_view] = false;
             ++_publishedGen[_view];

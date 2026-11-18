@@ -30,8 +30,33 @@ public static class Engine_DrawAdvance
 	/// <summary>The guest's world against real time, 1.0 at full pace; for the debug channel.</summary>
 	public static double Pace { get; private set; } = 1.0;
 
+	private const int WindowSize = 16;
+	private static readonly double[] _winSeconds = new double[WindowSize];
+	private static readonly double[] _winMoved = new double[WindowSize];
+	private static int _winCount;
+	private static int _winAt;
+	private static double _sumSeconds;
+	private static double _sumMoved;
+
 	private static ulong _paceUsec;
 	private static double _paceDrawTick = double.NaN;
+
+	private static void ClearWindow()
+	{
+		_winCount = 0;
+		_winAt = 0;
+		_sumSeconds = 0.0;
+		_sumMoved = 0.0;
+	}
+
+	/// <summary>Resets all pace measurement state cleanly for deterministic automated tests.</summary>
+	public static void ResetForTests()
+	{
+		Pace = 1.0;
+		_paceUsec = 0UL;
+		_paceDrawTick = double.NaN;
+		ClearWindow();
+	}
 
 	/// <summary>
 	/// The ticks a playhead advances for <paramref name="seconds"/> of drawn time. The pace is
@@ -45,6 +70,7 @@ public static class Engine_DrawAdvance
 		{
 			_paceUsec = 0UL;
 			_paceDrawTick = double.NaN;
+			ClearWindow();
 			return 0.0;
 		}
 
@@ -72,17 +98,38 @@ public static class Engine_DrawAdvance
 		_paceDrawTick = drawTick;
 		if (lastUsec == 0UL || nowUsec <= lastUsec || double.IsNaN(drawTick) || double.IsNaN(lastTick))
 		{
+			ClearWindow();
 			return;
 		}
 
 		double seconds = (nowUsec - lastUsec) * 1e-6;
 		double moved = drawTick - lastTick;
-		if (seconds > 0.25 || moved < 0.0 || moved > MaxTicks)
+		if (seconds > 0.25 || moved < -0.5 || moved > MaxTicks)
 		{
+			ClearWindow();
 			return;
 		}
 
-		double instant = System.Math.Clamp(moved / (seconds * Engine_TickClock.GameTicksPerSecond), 0.0, 2.0);
-		Pace += (instant - Pace) * (1.0 - System.Math.Exp(-seconds / PaceSeconds));
+		if (_winCount == WindowSize)
+		{
+			_sumSeconds -= _winSeconds[_winAt];
+			_sumMoved -= _winMoved[_winAt];
+		}
+		else
+		{
+			++_winCount;
+		}
+
+		_winSeconds[_winAt] = seconds;
+		_winMoved[_winAt] = moved;
+		_sumSeconds += seconds;
+		_sumMoved += moved;
+		_winAt = (_winAt + 1) % WindowSize;
+
+		if (_sumSeconds > 1e-9)
+		{
+			double instant = System.Math.Clamp(_sumMoved / (_sumSeconds * Engine_TickClock.GameTicksPerSecond), 0.0, 2.0);
+			Pace += (instant - Pace) * (1.0 - System.Math.Exp(-seconds / PaceSeconds));
+		}
 	}
 }

@@ -125,6 +125,7 @@ public sealed class Engine_ViewTwin
 		};
 		skeleton.AddChild(twin);
 		twin.Skeleton = twin.GetPathTo(skeleton);
+		Refii.Core.Engine_InstanceParams.Watch(body);
 		var made = new Engine_ViewTwin(body, twin, source, skin, Sorted(roots), collapsed, anchor);
 		made.SyncBinds();
 		return made;
