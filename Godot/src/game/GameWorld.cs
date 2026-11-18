@@ -1475,16 +1475,18 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
-		// THE UNLOAD EDGE, TAKEN FROM THE COMMAND AND NOT FROM THE READY BYTE.
+		// THE UNLOAD EDGE IS STATE 3: the tick that leaves state 2 is the one that tears down.
 		//
-		// `game+0x105` looks like the signal for this and is the wrong one. The entity teardown
-		// runs in STATE 2 (`sub_823D6798` -> `sub_8231CB90` -> `sub_82364698`, which destroys
-		// every entity flagged 0x08 in `entity+0x90` and drains the delete list), but the ready
-		// byte is not cleared until STATE 3, after the blocking load has already returned. That
-		// leaves a window covering state 2 and all of state 3 where the byte still reads 1 and
-		// the entities it implies are already freed — so a scene freed on its falling edge is a
-		// scene that spent the whole load drawing entities that no longer existed, and reading
-		// freed guest memory to place them.
+		// State 2 (`CmdLevelChange_Update` 0x823D5AA8, jump-table case 1) only waits for the
+		// screen fader the command started (`sub_82180F28` at 0x823D5BA4; 1.5 s from
+		// `flt_8209CBBC` at 0x82350CF0, for doors, teleporters and fast travel alike). When the
+		// fade is done, ONE tick shows the loading screen (0x823D5C30), destroys the entities
+		// (`sub_823D6798` at 0x823D5F9C) and stores state 3 (0x823D6054). So all through state 2
+		// the old region is alive and fading out under the guest's fader. Freeing it at state 2
+		// played that whole fade over an empty frame, which read as a stall after every fast
+		// travel and door.
+		//
+		// `game+0x105` is no use here: it is not cleared until state 3's blocking load returns.
 		//
 		// FULLLOAD DECIDES WHETHER THERE IS ANYTHING TO TAKE DOWN AT ALL. With `cmd+0x32` clear
 		// the guest tears nothing down — state 3 takes the player-manager branch instead of the
@@ -1497,10 +1499,10 @@ public partial class GameWorld : Node3D
 		//
 		// Testing the state alone tears down the region we have just built. The command stays in
 		// the queue until state 9 retires it, so the frame after mounting the destination still
-		// sees "a full load at state >= 2" and frees it again — a full rebuild of a region that
+		// sees "a full load at state >= 3" and frees it again — a full rebuild of a region that
 		// was already correct, repeating for as long as the command lives. The destination is
 		// right there on the command; compare it.
-		if (_loaded && inFlight is { } change && change.FullLoad && change.State >= 2)
+		if (_loaded && inFlight is { } change && change.FullLoad && change.State >= 3)
 		{
 			string destination = $"{change.World}/{change.Level}";
 			if (!destination.Equals(_standing, System.StringComparison.OrdinalIgnoreCase))

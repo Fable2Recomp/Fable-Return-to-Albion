@@ -10695,6 +10695,7 @@
 0x8233D6E8 = { name = "rex_lhInGameState_Init" }
 0x8233D6F0 = { name = "rex_lhInGameState_Shutdown" }
 0x8233D6F8 = { name = "rex_lhInGameState_Run" }
+0x82354A70 = { name = "rex_lhFrontEndState_LoadAudioBanks" }
 0x82355BE0 = { name = "rex_lhFrontEndGame_VtableSlot6" }
 0x82355FC0 = { name = "rex_lhFrontEndGame_ScalarDtor" }
 0x82356180 = { name = "rex_lhFrontEndState_Ctor" }
