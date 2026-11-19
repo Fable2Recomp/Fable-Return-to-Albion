@@ -582,13 +582,27 @@ public static class Engine_TexData
 			{
 				levelWidth = nextWidth;
 				levelHeight = nextHeight;
-				int want = LevelBytes(levelWidth, levelHeight);
-				if (mip.BodySize < want)
+				int want = LevelBytes(levelWidth, levelHeight) * (format == TexSurfaceFormat.Bc3 ? 2 : 1);
+				if (format == TexSurfaceFormat.Bc4 && mip.BodySize >= want * 2)
 				{
-					break;
+					int blocks = want / BlockBytes;
+					var plane0 = new byte[want];
+					for (int b = 0; b < blocks; ++b)
+					{
+						Buffer.BlockCopy(d, mip.BodyOffset + (b * 16), plane0, b * BlockBytes, BlockBytes);
+					}
+					Engine_Xbox360Tiling.SwapWords16(plane0);
+					data = plane0;
 				}
+				else
+				{
+					if (mip.BodySize < want)
+					{
+						break;
+					}
 
-				data = Slice(d, mip.BodyOffset, want);
+					data = DecodeRawMip(d, mip.BodyOffset, want, levelWidth, levelHeight, format);
+				}
 			}
 			else
 			{
@@ -760,7 +774,7 @@ public static class Engine_TexData
 						Width = fallbackWidth,
 						Height = fallbackHeight,
 						Format = TexSurfaceFormat.Bc1,
-						Data = Slice(d, mip.BodyOffset, (int)bc1),
+						Data = DecodeRawMip(d, mip.BodyOffset, (int)bc1, fallbackWidth, fallbackHeight, TexSurfaceFormat.Bc1),
 					};
 					return true;
 				}
@@ -772,7 +786,7 @@ public static class Engine_TexData
 						Width = fallbackWidth,
 						Height = fallbackHeight,
 						Format = TexSurfaceFormat.Bc3,
-						Data = Slice(d, mip.BodyOffset, (int)bc3),
+						Data = DecodeRawMip(d, mip.BodyOffset, (int)bc3, fallbackWidth, fallbackHeight, TexSurfaceFormat.Bc3),
 					};
 					return true;
 				}
@@ -785,6 +799,22 @@ public static class Engine_TexData
 		}
 
 		return false;
+	}
+
+	private static byte[] DecodeRawMip(
+		byte[] source, int offset, int length, int width, int height, TexSurfaceFormat format)
+	{
+		byte[] raw = Slice(source, offset, length);
+		Engine_Xbox360Tiling.SwapWords16(raw);
+		int blocksWide = Math.Max(1, (width + 3) / 4);
+		if (blocksWide >= 32)
+		{
+			int blocksHigh = Math.Max(1, (height + 3) / 4);
+			int stride = format == TexSurfaceFormat.Bc3 ? 16 : BlockBytes;
+			raw = Engine_Xbox360Tiling.Untile(raw, blocksWide, blocksHigh, stride);
+		}
+
+		return raw;
 	}
 
 	private static byte[] Slice(byte[] source, int offset, int length)

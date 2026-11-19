@@ -244,6 +244,15 @@ public static class RuntimeCVarsGodot
                 + "distance each one's game data states. 1 is the 360's own distances: most "
                 + "townsfolk 25-64 m, and their shadows stop there too. 2 doubles them. You and "
                 + "your co-op partner are always drawn. Read at launch."),
+            new("corpse_lifetime_seconds", DisplayCategory, RuntimeCVarType.Int, "45",
+                "How long fallen physical enemy and creature corpses (skeletons, humans, monsters, "
+                + "animals) remain on the ground before fading out, in seconds. 0 restores the "
+                + "original game's quick despawn; exploding bugs and vanishing spirits are "
+                + "unaffected. No upper cap. Hot-reloadable."),
+            new("corpse_max_count", DisplayCategory, RuntimeCVarType.Int, "0",
+                "Maximum number of retained fallen corpses active in the current region before "
+                + "the oldest distant corpse fades out early. 0 chooses an automatic cap scaled to "
+                + "corpse lifetime and platform; -1 allows unlimited corpses."),
             new("prop_fade_fraction", DisplayCategory, RuntimeCVarType.Double, "0.15",
                 "The last share of a placement's draw distance over which it fades out rather "
                 + "than popping. The 360 faded rocks over 0.03 and cut undergrowth hard; 0.15 "
@@ -349,7 +358,7 @@ public static class RuntimeCVarsGodot
 
             ..RuntimeCVarsAndroid.LohCompaction,
 
-            new("loh_compaction_defer_seconds", DisplayCategory, RuntimeCVarType.Int, "0",
+            new("loh_compaction_defer_seconds", DisplayCategory, RuntimeCVarType.Int, "30",
                 "Memory: the compaction of the app's large memory blocks after a load (always on the "
                 + "desktop, android_loh_compaction on Android) waits instead of holding the loading "
                 + "screen: it runs once the pause menu is open, at the next loading screen, or after "
@@ -739,7 +748,7 @@ public static class RuntimeCVarsGodot
                 + "The original composited that layer scaled by its framebuffer brightness; "
                 + "1.0 adds it as scene radiance. Raise it if fire and the quest trail read "
                 + "too faint in daylight; the debug channel's `fxlayer` command changes it live."),
-            new("fx_weapon_augment_always_active", Category, RuntimeCVarType.Bool, "true",
+            new("fx_weapon_augment_always_active", "Gameplay", RuntimeCVarType.Bool, "true",
                 "Keep weapon augmentation particle effects (sparkles, elemental glows) active and playing continuously "
                 + "while moving (walking and running) rather than stopping like the original 2008 release. Default is on.",
                 OwnerTitle: Refii.Core.Engine_Title.Fable2.Folder),
@@ -770,6 +779,9 @@ public static class RuntimeCVarsGodot
             new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
                 "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
                 "turns twice as far."),
+            new("mouse_zoom_sensitivity", ControlsCategory, RuntimeCVarType.Bool, "true",
+                "Scale mouse aiming sensitivity with zoomed field of view so zoomed sights move at " +
+                "the same screen speed as normal aiming."),
             new("mouse_input", ControlsCategory, RuntimeCVarType.Bool, "true",
                 "Allow the mouse to control the camera, menus and actions. Off completely disables " +
                 "mouse look, clicks and pointer navigation, keeping the cursor free and input on the " +

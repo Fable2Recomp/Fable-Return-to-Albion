@@ -64,8 +64,10 @@ public partial class Engine_EntityHighlightLayer : Node
     private static Engine_EntityHighlightLayer? _current;
     private static readonly Rid[] _publishedTex = new Rid[Views];
     private static readonly Vector2I[] _publishedSize = new Vector2I[Views];
+    private static readonly ulong[] _publishedGen = new ulong[Views];
     private static readonly Rid[] _resolvedTex = new Rid[Views];
     private static readonly Vector2I[] _resolvedSize = new Vector2I[Views];
+    private static readonly ulong[] _resolvedGen = new ulong[Views];
     private static readonly Rid[] _resolvedRd = new Rid[Views];
 
     /// <summary>Per view: the post chain found the published texture is no longer a device
@@ -145,16 +147,25 @@ public partial class Engine_EntityHighlightLayer : Node
     /// frame. Render-thread safe: plain values under a lock.
     /// </summary>
     public static bool TrySnapshot(out Rid layer, out float scale, Target[] targets) =>
-        TrySnapshot(0, out layer, out scale, targets);
+        TrySnapshot(0, null, out layer, out scale, targets);
 
     /// <summary>
     /// <paramref name="view"/>'s layer for that view's post chain: 0 the window or player one's
     /// view, 1 player two's. Render-thread safe.
     /// </summary>
-    public static bool TrySnapshot(int view, out Rid layer, out float scale, Target[] targets)
+    public static bool TrySnapshot(int view, out Rid layer, out float scale, Target[] targets) =>
+        TrySnapshot(view, null, out layer, out scale, targets);
+
+    /// <summary>
+    /// <paramref name="view"/>'s layer for that view's post chain, validating cached
+    /// device texture lifetimes against <paramref name="rd"/> and publication generations.
+    /// </summary>
+    public static bool TrySnapshot(
+        int view, RenderingDevice? rd, out Rid layer, out float scale, Target[] targets)
     {
         Rid texRid;
         Vector2I size;
+        ulong gen;
         lock (Gate)
         {
             if (view < 0 || view >= Views || !_publishedActive[view])
@@ -167,12 +178,28 @@ public partial class Engine_EntityHighlightLayer : Node
 
             texRid = _publishedTex[view];
             size = _publishedSize[view];
+            gen = _publishedGen[view];
             scale = _publishedScale[view];
+            if (!texRid.IsValid || size.X <= 0 || size.Y <= 0)
+            {
+                layer = default;
+                scale = 1f;
+                System.Array.Clear(targets, 0, Slots);
+                return false;
+            }
+
             System.Array.Copy(_published[view], targets, Slots);
         }
 
         layer = Refii.Core.Engine_RdHealth.ResolveRdOnRenderThread(
-            texRid, size, ref _resolvedTex[view], ref _resolvedSize[view], ref _resolvedRd[view]);
+            texRid,
+            size,
+            gen,
+            ref _resolvedTex[view],
+            ref _resolvedSize[view],
+            ref _resolvedGen[view],
+            ref _resolvedRd[view],
+            rd);
         if (!layer.IsValid)
         {
             System.Array.Clear(targets, 0, Slots);
@@ -309,6 +336,7 @@ public partial class Engine_EntityHighlightLayer : Node
             _publishedTex[1] = default;
             _publishedSize[1] = default;
             _publishedActive[1] = false;
+            ++_publishedGen[1];
         }
     }
 
@@ -317,7 +345,8 @@ public partial class Engine_EntityHighlightLayer : Node
 
     /// <summary>
     /// Render thread: <paramref name="view"/>'s published texture is no longer a device texture.
-    /// Invalidate the cached viewport texture and render-thread resolution so the next publish refreshes.
+    /// Invalidate the published publication generation so the next publish refreshes on the main thread
+    /// without mutating render-thread cache fields from another thread.
     /// </summary>
     public static void MarkStale(int view)
     {
@@ -325,8 +354,9 @@ public partial class Engine_EntityHighlightLayer : Node
         lock (Gate)
         {
             _stale[view] = true;
-            _resolvedTex[view] = default;
-            _resolvedRd[view] = default;
+            _publishedTex[view] = default;
+            _publishedActive[view] = false;
+            ++_publishedGen[view];
         }
     }
 
@@ -347,6 +377,7 @@ public partial class Engine_EntityHighlightLayer : Node
             _publishedTex[_view] = default;
             _publishedSize[_view] = default;
             _publishedActive[_view] = false;
+            ++_publishedGen[_view];
         }
     }
 
@@ -364,6 +395,15 @@ public partial class Engine_EntityHighlightLayer : Node
         if (size == _size) return;
         _size = size;
         _viewport.Size = size;
+        _layerRd = ViewportTexRid();
+        _layerRdSize = _layerRd.IsValid ? size : default;
+        lock (Gate)
+        {
+            _publishedTex[_view] = _layerRd;
+            _publishedSize[_view] = size;
+            _publishedActive[_view] = false;
+            ++_publishedGen[_view];
+        }
     }
 
     public override void _Process(double delta)
@@ -401,6 +441,7 @@ public partial class Engine_EntityHighlightLayer : Node
 
         Rid vpTex = default;
         Vector2I vpSize = default;
+        bool refreshed = false;
         if (active)
         {
             _camera.GlobalTransform = main.GlobalTransform;
@@ -423,6 +464,7 @@ public partial class Engine_EntityHighlightLayer : Node
             {
                 _layerRd = ViewportTexRid();
                 _layerRdSize = vpSize;
+                refreshed = _layerRd.IsValid;
             }
             vpTex = _layerRd;
             _usable = vpTex.IsValid;
@@ -435,6 +477,10 @@ public partial class Engine_EntityHighlightLayer : Node
             _publishedScale[_view] = scale;
             System.Array.Copy(_targets, _published[_view], Slots);
             _publishedActive[_view] = active && vpTex.IsValid;
+            if (refreshed)
+            {
+                ++_publishedGen[_view];
+            }
         }
 
         Engine_MobileHighlight.Follow(this, _viewport, main, _targets, active, scale, _view == 1);

@@ -242,6 +242,11 @@ public static class Engine_MdlFoliage
 
             buffer.SubMeshes.AddRange(subMeshes);
             info.MeshBuffers.Add(buffer);
+
+            if (!hasClassTag && mi + 1 < info.MeshCount && !r.Skip(2))
+            {
+                return;
+            }
         }
     }
 

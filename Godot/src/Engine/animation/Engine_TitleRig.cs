@@ -132,10 +132,138 @@ public class Engine_TitleRig
 	// ---------------------------------------------------------------- attachments
 
 	/// <summary>
-	/// Attachment of a dummy no part's <c>.mdl.gmd</c> names, by the dummy's name: the rig bone in
-	/// <paramref name="boneNames"/> the title mounts it on, or -1 when it mounts none.
+	/// Attachment of a focal dummy (<c>Focal_Eye</c> or <c>Character.Focal.*</c>) when no part
+	/// <c>.mdl.gmd</c> binds it to a live rig bone: resolves through <see cref="RoleName"/> and
+	/// <see cref="BoneName(string)"/> so both named rigs (Fable 2) and hashed rigs (Fable 3) share
+	/// one implementation.
 	/// </summary>
-	public virtual int FocalBone(IReadOnlyList<string> boneNames, string dummy) => -1;
+	public virtual int FocalBone(IReadOnlyList<string> boneNames, string dummy) =>
+		FocalBone(boneNames, dummy, isPosed: null);
+
+	/// <summary>
+	/// Resolves a focal dummy to a bone index in <paramref name="boneNames"/>, preferring posed
+	/// bones when <paramref name="isPosed"/> is supplied.
+	/// </summary>
+	public virtual int FocalBone(IReadOnlyList<string> boneNames, string dummy, Func<int, bool>? isPosed)
+	{
+		if (boneNames is null || boneNames.Count == 0 || string.IsNullOrEmpty(dummy))
+		{
+			return -1;
+		}
+
+		if (string.Equals(dummy, "Focal_Eye", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(dummy, "Focal_Eye_DummyObject", StringComparison.OrdinalIgnoreCase))
+		{
+			return ResolveFocalRole(boneNames, RigRole.Head, "Head", isPosed);
+		}
+
+		const string Focal = "Character.Focal.";
+		if (!dummy.StartsWith(Focal, StringComparison.OrdinalIgnoreCase))
+		{
+			return -1;
+		}
+
+		string sub = dummy.Substring(Focal.Length);
+		if (sub.StartsWith("Mouth", StringComparison.OrdinalIgnoreCase) ||
+			sub.StartsWith("Head", StringComparison.OrdinalIgnoreCase))
+		{
+			return ResolveFocalRole(boneNames, RigRole.Head, "Head", isPosed);
+		}
+
+		if (sub.StartsWith("Chest", StringComparison.OrdinalIgnoreCase) ||
+			sub.StartsWith("Torso", StringComparison.OrdinalIgnoreCase))
+		{
+			return ResolveFocalRole(boneNames, RigRole.Chest, "Chest", isPosed);
+		}
+
+		if (sub.StartsWith("Eye.L", StringComparison.OrdinalIgnoreCase) ||
+			sub.StartsWith("Eye_L", StringComparison.OrdinalIgnoreCase))
+		{
+			int eye = ResolveRoleOnly(boneNames, RigRole.LeftEye, isPosed);
+			return eye >= 0 ? eye : ResolveFocalRole(boneNames, RigRole.Head, "Head", isPosed);
+		}
+
+		if (sub.StartsWith("Eye.R", StringComparison.OrdinalIgnoreCase) ||
+			sub.StartsWith("Eye_R", StringComparison.OrdinalIgnoreCase))
+		{
+			int eye = ResolveRoleOnly(boneNames, RigRole.RightEye, isPosed);
+			return eye >= 0 ? eye : ResolveFocalRole(boneNames, RigRole.Head, "Head", isPosed);
+		}
+
+		if (sub.StartsWith("Eye", StringComparison.OrdinalIgnoreCase))
+		{
+			return ResolveFocalRole(boneNames, RigRole.Head, "Head", isPosed);
+		}
+
+		return -1;
+	}
+
+	private int ResolveRoleOnly(IReadOnlyList<string> boneNames, RigRole role, Func<int, bool>? isPosed)
+	{
+		int bone = Bone(boneNames, role);
+		if (bone >= 0 && (isPosed is null || isPosed(bone)))
+		{
+			return bone;
+		}
+
+		return -1;
+	}
+
+	private int ResolveFocalRole(IReadOnlyList<string> boneNames, RigRole role, string fallbackName, Func<int, bool>? isPosed)
+	{
+		int roleBone = Bone(boneNames, role);
+		if (roleBone >= 0 && (isPosed is null || isPosed(roleBone)))
+		{
+			return roleBone;
+		}
+
+		int named = Find(boneNames, fallbackName);
+		if (named >= 0 && (isPosed is null || isPosed(named)))
+		{
+			return named;
+		}
+
+		return roleBone >= 0 ? roleBone : named;
+	}
+
+	/// <summary>
+	/// Returns true when an entity transitions from a composite character (<paramref name="prevModelHash"/>
+	/// == 0) to a single crumbled-bones model (<paramref name="newModelHash"/> != 0) whose skeleton
+	/// consists of multiple independent disarticulated roots or matches a crumble path convention.
+	/// </summary>
+	public virtual bool IsDisarticulatedCrumble(
+		uint prevModelHash, uint newModelHash, string? modelPath, ReadOnlySpan<int> parents)
+	{
+		if (prevModelHash != 0u || newModelHash == 0u || parents.Length < 4)
+		{
+			return false;
+		}
+
+		if (!string.IsNullOrEmpty(modelPath) &&
+			(modelPath.Contains("crumble", StringComparison.OrdinalIgnoreCase) ||
+			 modelPath.Contains("skeleton_pieces", StringComparison.OrdinalIgnoreCase)))
+		{
+			return true;
+		}
+
+		// A crumbled bone-pile rig attaches its bones directly under root (-1 or 0), whereas
+		// articulated humanoid skeletons chain limbs through a single Hip -> Spine hierarchy.
+		int independentPieces = 0;
+		bool rootIsZero = parents[0] < 0;
+		for (int i = 0; i < parents.Length; ++i)
+		{
+			int p = parents[i];
+			if (p < 0 || (rootIsZero && p == 0))
+			{
+				if (++independentPieces >= 6)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
 
 	// ---------------------------------------------------------------- the guest's pick
 

@@ -615,6 +615,25 @@ public sealed class Engine_EntityAttachments
 	}
 
 	/// <summary>
+	/// Converts a model-space focal chain transform into <paramref name="boneGlobalRest"/>-local space
+	/// when the dummy lies within plausible proximity of that rest bone, or returns Identity when the
+	/// transform is degenerate or outside local socket range.
+	/// </summary>
+	public static Transform3D ComputeFocalMount(Transform3D modelSpaceChain, Transform3D boneGlobalRest)
+	{
+		if (!modelSpaceChain.Origin.IsFinite() ||
+			!boneGlobalRest.Origin.IsFinite() ||
+			Mathf.Abs(boneGlobalRest.Basis.Determinant()) <= 1e-6f ||
+			modelSpaceChain.Origin.DistanceTo(boneGlobalRest.Origin) >= 0.75f)
+		{
+			return Transform3D.Identity;
+		}
+
+		Transform3D local = boneGlobalRest.AffineInverse() * modelSpaceChain;
+		return local.Origin.IsFinite() ? local : Transform3D.Identity;
+	}
+
+	/// <summary>
 	/// A dummy no part's <c>.mdl.gmd</c> names, on the rig bone the title mounts it on
 	/// (<see cref="Refii.Animations.Engine_TitleRig.FocalBone"/>); false when it mounts none.
 	/// </summary>
@@ -626,7 +645,7 @@ public sealed class Engine_EntityAttachments
 			return false;
 		}
 
-		bone = Refii.Core.Engine_TitleGame.Active.Rig.FocalBone(rig.BoneNames, dummy);
+		bone = Refii.Core.Engine_TitleGame.Active.Rig.FocalBone(rig.BoneNames, dummy, rig.IsPosedPredicate);
 		return bone >= 0;
 	}
 
@@ -763,6 +782,15 @@ public sealed class Engine_EntityAttachments
 				node = gmd.Parents[node];
 			}
 
+			if (record.Bone < 0 && rig is not null && TryResolveFocalBone(record.Dummy, rig, out int focalBone))
+			{
+				record.Bone = focalBone;
+				record.FocalFallback = true;
+				record.Mount = ComputeFocalMount(chain, rig.Node.GetBoneGlobalRest(focalBone));
+				record.DummyFound = true;
+				return;
+			}
+
 			record.Mount = chain;
 			record.DummyFound = true;
 			return;
@@ -783,9 +811,9 @@ public sealed class Engine_EntityAttachments
 			}
 		}
 
-		if (record.Bone < 0 && TryResolveFocalBone(record.Dummy, rig, out int focalBone))
+		if (record.Bone < 0 && TryResolveFocalBone(record.Dummy, rig, out int focalFallback))
 		{
-			record.Bone = focalBone;
+			record.Bone = focalFallback;
 			record.Mount = Transform3D.Identity;
 			record.DummyFound = true;
 			record.FocalFallback = true;
@@ -836,7 +864,24 @@ public sealed class Engine_EntityAttachments
 				node = gmd.Parents[node];
 			}
 
+			if (bone < 0 && rig is not null && TryResolveFocalBone(helper, rig, out int focalBone))
+			{
+				Transform3D boneRest = rig.Node.GetBoneGlobalRest(focalBone);
+				bone = focalBone;
+				mount = ComputeFocalMount(chain, boneRest);
+				rest = boneRest * mount;
+				return true;
+			}
+
 			mount = chain;
+			return true;
+		}
+
+		if (rig is not null && TryResolveFocalBone(helper, rig, out int fallbackBone))
+		{
+			bone = fallbackBone;
+			mount = Transform3D.Identity;
+			rest = rig.Node.GetBoneGlobalRest(fallbackBone);
 			return true;
 		}
 

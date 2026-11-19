@@ -309,6 +309,7 @@ public sealed partial class Engine_FxSystem
     private readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _scratch = new();
     private uint _rng = 0x1234567u;
     private bool _loop = true;
+    private bool _emitting = true;
     private float _intensity = 1f;
 
     /// <summary>
@@ -335,7 +336,55 @@ public sealed partial class Engine_FxSystem
 
     public int ResolvedCount { get; private set; }
     public bool IsEmpty => _instances.Count == 0;
+    public bool HasDetachedParticles => _detachedParticles;
     public void SetLoop(bool loop) => _loop = loop;
+    public void SetEmitting(bool emitting) => _emitting = emitting;
+
+    /// <summary>
+    /// Returns whether an active particle should expire on this step, ensuring infinite-loop
+    /// (<c>LoopCount == -1</c>) emitters drain cleanly once <paramref name="emitting"/> turns false.
+    /// </summary>
+    public static bool ShouldParticleExpire(
+        bool emitting,
+        int loopCount,
+        bool useLife,
+        float emitterLifetimeFrames,
+        float particleAge,
+        float particleLife,
+        float loopEndFrames,
+        int loopIter)
+    {
+        if (loopCount != -1)
+        {
+            return particleAge >= particleLife;
+        }
+
+        bool lifeExpired = useLife && emitterLifetimeFrames <= (loopIter + 1) * particleAge;
+        if (emitting)
+        {
+            return lifeExpired;
+        }
+
+        float drainEnd = particleLife > 0f
+            ? particleLife
+            : (loopEndFrames > 0f
+                ? loopEndFrames
+                : (useLife && emitterLifetimeFrames > 0f ? emitterLifetimeFrames : 1f));
+        return particleAge >= drainEnd || lifeExpired;
+    }
+
+    /// <summary>
+    /// Computes an individual particle's lifespan in authored frames (30 Hz):
+    /// infinitely looping systems (<paramref name="loopCount"/> == -1) use the emitter lifetime when
+    /// <paramref name="useLife"/> is set, whereas non-looping systems use the visual system's
+    /// <paramref name="systemLifeFrames"/> (<c>LastStartFrames</c>) with fallback to the emitter
+    /// lifetime only if the system has no positive frame span.
+    /// </summary>
+    public static float ComputeParticleLife(
+        bool useLife, float emitterLifetimeFrames, int loopCount, float systemLifeFrames) =>
+        loopCount == -1
+            ? (useLife ? emitterLifetimeFrames : -1f)
+            : (systemLifeFrames > 0f ? systemLifeFrames : (useLife ? emitterLifetimeFrames : -1f));
 
     /// <summary>
     /// The instance intensity new particles are born with — the guest's <c>handle+52</c>,
@@ -854,20 +903,19 @@ public sealed partial class Engine_FxSystem
 
     public static long BuiltButEmpty;
 
+    public static (string BlendMode, bool SatMask, float SoftDepth) ResolveVisualRenderState(FxVisual vis) => (
+        vis.Displacement ? "disp" : BlendModeFor(vis.SrcBlend, vis.DstBlend, vis.BlendOp),
+        vis.SaturationMask,
+        vis.SoftDepthContrast > 0f ? vis.SoftDepthContrast : 0f);
+
     private void BuildVisuals(FxSystemDef sysd, float sc, float[] rotW, List<VisualRuntime> outv)
     {
         if (sysd.Visuals.Count == 0) return;
-        FxVisual first = sysd.Visuals[0];
-        string blendMode = first.Displacement ? "disp" : BlendModeFor(first.SrcBlend, first.DstBlend, first.BlendOp);
-        bool satMask = first.SaturationMask;
-        float softDepth = first.SoftDepthContrast > 0f ? first.SoftDepthContrast : 0f;
         foreach (FxVisual vis in sysd.Visuals)
         {
             VisualRuntime? v = BuildVisual(vis, sc, rotW);
             if (v is null) continue;
-            v.BlendMode = blendMode;
-            v.SatMask = satMask;
-            v.SoftDepth = softDepth;
+            (v.BlendMode, v.SatMask, v.SoftDepth) = ResolveVisualRenderState(vis);
             outv.Add(v);
         }
     }
@@ -1462,7 +1510,7 @@ public sealed partial class Engine_FxSystem
         bool hasP14 = !d.Generic[14].IsEmpty;
         bool hasVec0 = !d.Vec0.IsEmpty;
         StepParticle(inst, rt, pt, hasAttr, hasP14, hasVec0);
-        pt.Life = d.UseLife ? d.LifetimeFrames : (rt.LoopCount == -1 ? -1f : rt.LifeFrames);
+        pt.Life = ComputeParticleLife(d.UseLife, d.LifetimeFrames, rt.LoopCount, rt.LifeFrames);
 
         InitParticleVisual(rt, pt, inst.Step, inst.AuthoredStep);
         pt.HistCount = 0;
@@ -1698,7 +1746,7 @@ public sealed partial class Engine_FxSystem
         while (rt.Particles.Count < n)
         {
             ParticleState pt = RentParticle();
-            pt.Life = d.UseLife ? d.LifetimeFrames : (rt.LoopCount == -1 ? -1f : rt.LifeFrames);
+            pt.Life = ComputeParticleLife(d.UseLife, d.LifetimeFrames, rt.LoopCount, rt.LifeFrames);
             InitParticleVisual(rt, pt, inst.Step);
             rt.Particles.Add(pt);
             TotalSpawned++;
@@ -1828,8 +1876,7 @@ public sealed partial class Engine_FxSystem
             rt.Age += step;
             int f = (int)rt.Age;
 
-            bool windowOpen = !d.UseLife || rt.Age <= d.LifetimeFrames;
-            bool infLoop = rt.LoopCount == -1;
+            bool windowOpen = _emitting && (!d.UseLife || rt.Age <= d.LifetimeFrames || (rt.FirstFrame && d.InitialNum > 0f));
             bool useLife = d.UseLife;
             float lifeFrames = d.LifetimeFrames;
             int nvis = rt.Visuals.Count;
@@ -1838,7 +1885,8 @@ public sealed partial class Engine_FxSystem
             for (int i = 0; i < particles.Length; i++)
             {
                 ParticleState p = particles[i];
-                bool dead = !infLoop ? p.Age >= p.Life : (useLife && lifeFrames <= (p.LoopIter + 1) * p.Age);
+                bool dead = ShouldParticleExpire(
+                    _emitting, rt.LoopCount, useLife, lifeFrames, p.Age, p.Life, rt.LoopEnd, p.LoopIter);
                 if (dead)
                 {
                     ReturnParticle(p);
@@ -1857,13 +1905,25 @@ public sealed partial class Engine_FxSystem
             rt.Particles.RemoveRange(kept, particles.Length - kept);
             if (rt.Beam)
             {
-                BeamTick(inst, rt);
-                rt.FirstFrame = false;
-                foreach (ParticleState pt in rt.Particles)
+                if (windowOpen)
                 {
-                    while (pt.Seg < nvis && pt.Age >= rt.Visuals[pt.Seg].DelayFrames) pt.Seg++;
-                    pt.KeyAge = pt.Age;
-                    pt.Age += step;
+                    BeamTick(inst, rt);
+                    rt.FirstFrame = false;
+                    foreach (ParticleState pt in rt.Particles)
+                    {
+                        while (pt.Seg < nvis && pt.Age >= rt.Visuals[pt.Seg].DelayFrames) pt.Seg++;
+                        pt.KeyAge = pt.Age;
+                        pt.Age += step;
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < rt.Particles.Count; i++)
+                    {
+                        ReturnParticle(rt.Particles[i]);
+                    }
+                    rt.Particles.Clear();
+                    rt.FirstFrame = false;
                 }
 
                 continue;
@@ -1913,8 +1973,16 @@ public sealed partial class Engine_FxSystem
             {
                 if (rt.LoopCount != 0 && rt.LoopEnd <= pt.Age)
                 {
-                    if (rt.LoopCount < 0 || pt.LoopIter < rt.LoopCount) { pt.Age = rt.LoopStart; pt.Seg = 1; pt.LoopIter++; }
-                    else pt.LoopIter = 0;
+                    if ((rt.LoopCount < 0 && _emitting) || (rt.LoopCount > 0 && pt.LoopIter < rt.LoopCount))
+                    {
+                        pt.Age = rt.LoopStart;
+                        pt.Seg = 1;
+                        pt.LoopIter++;
+                    }
+                    else
+                    {
+                        pt.LoopIter = 0;
+                    }
                 }
 
                 bool crossed = false;
@@ -1989,7 +2057,7 @@ public sealed partial class Engine_FxSystem
             if (summarize) summary.Store(rt);
         }
 
-        if (_loop && inst.Time > 1.5f)
+        if (_loop && _emitting && inst.Time > 1.5f)
         {
             int alive = 0;
             foreach (EmitterRuntime rt in inst.Emitters) alive += rt.Particles.Count;
@@ -2289,7 +2357,7 @@ public sealed partial class Engine_FxSystem
             {
                 if (index-- != 0) continue;
                 FxEmitter? d = light.Def;
-                if (d is null) return default;
+                if (d is null || (d.UseLife && light.Age > d.LifetimeFrames)) return default;
                 FxLightState now = LightState(d, light.Age, light.Phase, light.WorldPos, ref light.NowCurves);
                 if (!light.HasPrev)
                 {
@@ -2317,6 +2385,11 @@ public sealed partial class Engine_FxSystem
 
     private static FxLightState LightState(FxEmitter d, float age, float phase, float[] worldPos, ref LightCurves c)
     {
+        if (d.UseLife && age > d.LifetimeFrames)
+        {
+            return default;
+        }
+
         int f = (int)age;
         if (!c.Valid || c.Frame != f || c.Phase != phase)
         {

@@ -1079,3 +1079,48 @@ REX_EXTERN(rex_lhRenderView_UpdatePrewarm) {
                 "LOD walk did not run", view, stated);
   }
 }
+
+// ============================================================================================
+// THE FRONT END'S AUDIO PRELOAD, QUEUED AT ONCE. `rex_lhFrontEndState_LoadAudioBanks` (TU1
+// 0x823191F8, unpatched 0x82354A70) is the body of the "Front end audio loading" thread the
+// front end starts at init (0x82319268 via 0x823192E0). For every bank `audio.lua` registered
+// with its preload flag (+12) and no handle yet (+8) it calls `lhGameData_LoadNamedBankEntry`,
+// then `SleepEx(400, 1)` (0x82319244-0x8231924C).
+//
+// The load only queues the bank: `lhGameData_LoadNamedBankEntry` passes 1 as the last argument
+// (`li r6, 1` at 0x822F4830) down to `sub_82C04280`, which waits on its sync event only when it
+// is 0. So the sleeps are pacing for the 360's disc and nothing else. Leaving the front end
+// polls `Sleep(100)` until this thread sets +192 (0x8231A1B0-0x8231A1FC), so a save picked
+// before the last sleep had run sat on the save cards for the rest of them: 4.4 s measured.
+//
+// The walk is the guest's, the same entries in the same order; only the sleeps are gone.
+// ============================================================================================
+REX_EXTERN(rex_lhFrontEndState_LoadAudioBanks) {
+  REX_FUNC_PROLOGUE();
+  const auto load32 = [base](uint32_t at) {
+    uint32_t raw;
+    std::memcpy(&raw, base + at, sizeof(raw));
+    return __builtin_bswap32(raw);
+  };
+
+  const uint32_t state = ctx.r3.u32;
+  const uint32_t list_begin = refii::guest::Address(0x834975CCu);
+  const uint32_t list_end = refii::guest::Address(0x834975D0u);
+
+  const PPCContext saved = ctx;
+  uint32_t queued = 0;
+  for (uint32_t entry = load32(list_begin); entry != load32(list_end); entry += 16u) {
+    if (base[entry + 12u] == 0u || load32(entry + 8u) != 0u) {
+      continue;
+    }
+    ctx = saved;
+    ctx.r3.u32 = load32(state + 136u);
+    ctx.r4.u32 = entry;
+    rex_lhGameData_LoadNamedBankEntry(ctx, base);
+    ++queued;
+  }
+  ctx = saved;
+
+  REXLOG_INFO("Refii front-end audio: {} preload bank(s) queued at once (the guest paced them "
+              "400 ms apart)", queued);
+}

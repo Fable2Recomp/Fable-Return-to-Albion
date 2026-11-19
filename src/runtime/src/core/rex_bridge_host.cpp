@@ -89,9 +89,26 @@ refii::TracedMutex g_time_mutex{"guest clock grant"};
 std::atomic<uint64_t> g_last_grant_real{0};
 std::atomic<uint64_t> g_last_seen_real{0};
 std::atomic<bool> g_time_base_frozen{false};
+std::atomic<uint64_t> g_frozen_real_ticks{0};
+std::atomic<uint64_t> g_freeze_start_real{0};
 std::atomic<bool> g_step_in_flight{false};
 std::atomic<uint64_t> g_step_release_real{0};
 std::atomic<uint64_t> g_last_hf_step_real{0};
+std::atomic<bool> g_host_read_active{false};
+std::atomic<uint64_t> g_host_read_start_real{0};
+
+/// Real clock ticks excluding intentional host freeze intervals (pause, load cover), so
+/// `g_virtual_ticks` and `effective_real` stay on the same continuous timeline across holds.
+uint64_t EffectiveReal(uint64_t real) {
+  uint64_t frozen = g_frozen_real_ticks.load(std::memory_order_relaxed);
+  if (g_time_base_frozen.load(std::memory_order_relaxed)) {
+    const uint64_t start = g_freeze_start_real.load(std::memory_order_relaxed);
+    if (start != 0u && real > start) {
+      frozen += (real - start);
+    }
+  }
+  return real > frozen ? (real - frozen) : 0u;
+}
 
 /// Clock reads that answered without taking the lock, and those that had to. Every guest
 /// `mftb` lands here and the guest loop spins on it (`SwitchToThread` then re-read at
@@ -124,16 +141,6 @@ constexpr uint64_t kGuestHfStepsPerSecond = 30u;
 /// 8-step rule.
 constexpr uint64_t kGrantWatchdogSteps = 8u;
 
-/// Whether the watchdog is due: silence for `kGrantWatchdogSteps`, or a stated step blocked.
-bool WatchdogDue(uint64_t real, uint64_t seen_grant, uint64_t step) {
-  if (g_time_base_frozen.load(std::memory_order_relaxed)) {
-    return false;
-  }
-
-  return (real > seen_grant && (real - seen_grant) > (kGrantWatchdogSteps * step)) ||
-         refii::pace::StepBlocked(real, step);
-}
-
 /// How far the virtual clock may lead real time, in HF steps — bounded to four steps so a
 /// low-FPS host frame (15-29 FPS) can drain its exact 2..4 single-step grants sequentially
 /// within the frame window without allowing unbounded fast-forward bursts.
@@ -142,6 +149,18 @@ constexpr uint64_t kMaxLeadSteps = 4u;
 /// The most deferred steps the queue may hold; the excess is dropped and counted in
 /// `g_dropped_steps`, so a guest that cannot keep up does not lag permanently.
 constexpr uint64_t kMaxPendingSteps = 8u;
+
+/// Whether the watchdog is due: silence for `kGrantWatchdogSteps`, or a stated step blocked
+/// beyond `kMaxLeadSteps` step periods (`StepBlocked` measures raw wall ticks).
+bool WatchdogDue(uint64_t effective_real, uint64_t raw_real, uint64_t seen_grant, uint64_t step) {
+  if (g_time_base_frozen.load(std::memory_order_relaxed)) {
+    return false;
+  }
+
+  return (effective_real > seen_grant &&
+          (effective_real - seen_grant) > (kGrantWatchdogSteps * step)) ||
+         refii::pace::StepBlocked(raw_real, kMaxLeadSteps * step);
+}
 
 uint64_t HfStepTicks() {
   const uint64_t frequency = ::rex::chrono::Clock::guest_tick_frequency();
@@ -152,21 +171,102 @@ uint64_t HfStepTicks() {
 /// When the HF loop is inactive (boot logos, frontend menus, loading screens), expires after one
 /// 30 Hz step period; when active, allows up to two step periods before falling back so transitioning
 /// out of gameplay never leaves `g_step_in_flight` wedged.
-bool StepInFlightAt(uint64_t real, uint64_t step) {
+bool StepInFlightAt(uint64_t effective_real, uint64_t step) {
   if (!g_step_in_flight.load(std::memory_order_relaxed)) {
     return false;
   }
 
   const uint64_t released = g_step_release_real.load(std::memory_order_relaxed);
   const uint64_t last_hf = g_last_hf_step_real.load(std::memory_order_relaxed);
-  const bool hf_active = last_hf != 0u && real >= last_hf && (real - last_hf) <= (4u * step);
+  const bool hf_active =
+      last_hf != 0u && effective_real >= last_hf && (effective_real - last_hf) <= (4u * step);
   const uint64_t expiry = hf_active ? (2u * step) : step;
-  return real < released || (real - released) < expiry;
+  return effective_real < released || (effective_real - released) < expiry;
+}
+
+/// True while the host main thread is in its per-frame `_Process` read pass (`mode == -2`
+/// until `mode == -3` or `refii_bridge_rex_advance_time_base`), auto-expiring after half an
+/// HF step (`~16.7 ms`) so a stalled frame or exception never wedges deferred step release.
+bool HostReadActiveAt(uint64_t effective_real, uint64_t step) {
+  if (!g_host_read_active.load(std::memory_order_relaxed)) {
+    return false;
+  }
+
+  const uint64_t started = g_host_read_start_real.load(std::memory_order_relaxed);
+  const uint64_t expiry = step / 2u;
+  return expiry != 0u && (effective_real < started || (effective_real - started) < expiry);
+}
+
+/// Releases at most one deferred HF step if none is currently in flight, the host read window is
+/// inactive, and `g_virtual_ticks` remains within `kMaxLeadSteps` of `effective_real`. Caller must
+/// hold `g_time_mutex`.
+bool TryReleaseStepLocked(uint64_t effective_real, uint64_t step, uint64_t* ticks,
+                          uint64_t* pending) {
+  if (*pending == 0u || StepInFlightAt(effective_real, step) ||
+      HostReadActiveAt(effective_real, step)) {
+    return false;
+  }
+
+  const uint64_t ceiling = effective_real + (kMaxLeadSteps * step);
+  if (*ticks + step > ceiling) {
+    return false;
+  }
+
+  *ticks += step;
+  --(*pending);
+  g_step_release_real.store(effective_real, std::memory_order_relaxed);
+  g_step_in_flight.store(true, std::memory_order_relaxed);
+  return true;
+}
+
+/// Attempts to release one queued HF step from `g_pending_steps` into `g_virtual_ticks`.
+/// Caller must hold `g_time_mutex`.
+void ReleaseQueuedStepLocked(uint64_t effective_real, uint64_t step,
+                             uint64_t* out_ticks = nullptr) {
+  if (g_time_base_frozen.load(std::memory_order_relaxed)) {
+    return;
+  }
+
+  uint64_t pending = g_pending_steps.load(std::memory_order_relaxed);
+  uint64_t ticks =
+      out_ticks != nullptr ? *out_ticks : g_virtual_ticks.load(std::memory_order_relaxed);
+  if (pending == 0u || ticks == 0u) {
+    return;
+  }
+
+  if (TryReleaseStepLocked(effective_real, step, &ticks, &pending)) {
+    g_pending_steps.store(pending, std::memory_order_relaxed);
+    g_virtual_ticks.store(ticks, std::memory_order_relaxed);
+    if (out_ticks != nullptr) {
+      *out_ticks = ticks;
+    }
+  }
 }
 
 }  // namespace
 
 extern "C" void refii_bridge_rex_set_time_base_mode(int mode) {
+  if (mode == -2) {
+    const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
+    std::lock_guard lock(g_time_mutex);
+    g_host_read_start_real.store(EffectiveReal(real), std::memory_order_relaxed);
+    g_host_read_active.store(true, std::memory_order_relaxed);
+    return;
+  }
+
+  if (mode == -3) {
+    const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
+    const uint64_t step = HfStepTicks();
+    std::lock_guard lock(g_time_mutex);
+    g_host_read_active.store(false, std::memory_order_relaxed);
+    if (g_time_base_mode.load(std::memory_order_relaxed) ==
+            static_cast<int>(TimeBaseMode::Driven) &&
+        step != 0u) {
+      ReleaseQueuedStepLocked(EffectiveReal(real), step);
+    }
+    return;
+  }
+
   if (mode < 0 || mode > 2) {
     return;
   }
@@ -184,9 +284,13 @@ extern "C" void refii_bridge_rex_set_time_base_mode(int mode) {
   g_last_grant_real.store(0u, std::memory_order_relaxed);
   g_last_seen_real.store(0u, std::memory_order_relaxed);
   g_time_base_frozen.store(false, std::memory_order_relaxed);
+  g_frozen_real_ticks.store(0u, std::memory_order_relaxed);
+  g_freeze_start_real.store(0u, std::memory_order_relaxed);
   g_step_in_flight.store(false, std::memory_order_relaxed);
   g_step_release_real.store(0u, std::memory_order_relaxed);
   g_last_hf_step_real.store(0u, std::memory_order_relaxed);
+  g_host_read_active.store(false, std::memory_order_relaxed);
+  g_host_read_start_real.store(0u, std::memory_order_relaxed);
   g_in_lapse = false;
   g_time_base_mode.store(mode, std::memory_order_relaxed);
 }
@@ -217,11 +321,15 @@ extern "C" void refii_bridge_rex_time_base_stats(uint64_t* out_capped, uint64_t*
   }
 
   if (out_watchdog != nullptr) {
-    // The deferral backlog rides in the high half: a backlog that does not drain means the
-    // guest cannot consume the rate it is being granted, which is a different problem from a
-    // watchdog lapse and must not look like one.
-    *out_watchdog = g_watchdog_lapses.load(std::memory_order_relaxed) |
-                    (g_pending_steps.load(std::memory_order_relaxed) << 32);
+    // Bits [31:0]: watchdog lapses; bits [62:32]: unconsumed HF step depth (`pending + in_flight`);
+    // bit [63]: whether an HF step is currently in flight on the guest thread.
+    const uint64_t effective_real = EffectiveReal(::rex::chrono::Clock::QueryGuestTickCount());
+    const uint64_t step = HfStepTicks();
+    const uint64_t in_flight = (step != 0u && StepInFlightAt(effective_real, step)) ? 1u : 0u;
+    const uint64_t unconsumed =
+        (g_pending_steps.load(std::memory_order_relaxed) + in_flight) & 0x7FFFFFFFULL;
+    *out_watchdog = (g_watchdog_lapses.load(std::memory_order_relaxed) & 0xFFFFFFFFULL) |
+                    (unconsumed << 32) | (in_flight << 63);
   }
 }
 
@@ -240,40 +348,26 @@ extern "C" void refii_bridge_rex_advance_time_base(uint32_t steps) {
   const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
 
   std::lock_guard lock(g_time_mutex);
+  g_host_read_active.store(false, std::memory_order_relaxed);
+  const uint64_t effective_real = EffectiveReal(real);
   uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
   if (ticks == 0u) {
-    ticks = real;
-    g_last_seen_real.store(real, std::memory_order_relaxed);
+    ticks = effective_real;
+    g_last_seen_real.store(effective_real, std::memory_order_relaxed);
   }
 
-  // When recovering from a watchdog lapse (`g_in_lapse`), `WatchdogDue` has already advanced
-  // `g_virtual_ticks` at real wall-clock rate during the host stall. Re-anchor at `real` and
-  // clear any stale pending backlog instead of stacking this recovery grant into the future.
+  // Exiting a watchdog lapse resumes normal grant queuing without jumping `g_virtual_ticks`
+  // or discarding queued/newly granted steps.
   if (g_in_lapse) {
-    ticks = std::max(ticks, real);
-    g_pending_steps.store(0u, std::memory_order_relaxed);
-    g_virtual_ticks.store(ticks, std::memory_order_relaxed);
-    g_last_grant_real.store(real, std::memory_order_relaxed);
-    g_last_seen_real.store(real, std::memory_order_relaxed);
-    g_step_in_flight.store(false, std::memory_order_relaxed);
-    g_step_release_real.store(0u, std::memory_order_relaxed);
+    g_last_seen_real.store(effective_real, std::memory_order_relaxed);
     g_in_lapse = false;
-    g_granted_steps.fetch_add(steps, std::memory_order_relaxed);
-    return;
   }
 
   // Release at most ONE step now, and only if no previous step is still in flight; any
   // remaining steps stay in `g_pending_steps` and release one-by-one as each 30 Hz HF pass
   // completes (`refii_bridge_rex_note_guest_step`), so `0x82276FA4` never sees `owed > 1`.
   uint64_t pending = g_pending_steps.load(std::memory_order_relaxed) + steps;
-  const uint64_t ceiling = real + (kMaxLeadSteps * step);
-
-  if (pending > 0u && !StepInFlightAt(real, step) && ticks + step <= ceiling) {
-    ticks += step;
-    --pending;
-    g_step_release_real.store(real, std::memory_order_relaxed);
-    g_step_in_flight.store(true, std::memory_order_relaxed);
-  }
+  (void)TryReleaseStepLocked(effective_real, step, &ticks, &pending);
 
   if (pending > kMaxPendingSteps) {
     g_dropped_steps.fetch_add(pending - kMaxPendingSteps, std::memory_order_relaxed);
@@ -282,14 +376,14 @@ extern "C" void refii_bridge_rex_advance_time_base(uint32_t steps) {
 
   g_pending_steps.store(pending, std::memory_order_relaxed);
   g_virtual_ticks.store(ticks, std::memory_order_relaxed);
-  g_last_grant_real.store(real, std::memory_order_relaxed);
-  g_in_lapse = false;
+  g_last_grant_real.store(effective_real, std::memory_order_relaxed);
   g_granted_steps.fetch_add(steps, std::memory_order_relaxed);
 }
 
 extern "C" void refii_bridge_rex_note_guest_step(void) {
   const uint64_t real = ::rex::chrono::Clock::QueryGuestTickCount();
-  g_last_hf_step_real.store(real, std::memory_order_relaxed);
+  const uint64_t effective_real = EffectiveReal(real);
+  g_last_hf_step_real.store(effective_real, std::memory_order_relaxed);
 
   if (g_time_base_mode.load(std::memory_order_relaxed) !=
       static_cast<int>(TimeBaseMode::Driven)) {
@@ -305,22 +399,7 @@ extern "C" void refii_bridge_rex_note_guest_step(void) {
 
   std::lock_guard lock(g_time_mutex);
   g_step_in_flight.store(false, std::memory_order_relaxed);
-
-  uint64_t pending = g_pending_steps.load(std::memory_order_relaxed);
-  if (pending == 0u || g_time_base_frozen.load(std::memory_order_relaxed)) {
-    return;
-  }
-
-  uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
-  const uint64_t ceiling = real + (kMaxLeadSteps * step);
-  if (ticks != 0u && ticks + step <= ceiling) {
-    ticks += step;
-    --pending;
-    g_pending_steps.store(pending, std::memory_order_relaxed);
-    g_virtual_ticks.store(ticks, std::memory_order_relaxed);
-    g_step_release_real.store(real, std::memory_order_relaxed);
-    g_step_in_flight.store(true, std::memory_order_relaxed);
-  }
+  ReleaseQueuedStepLocked(EffectiveReal(::rex::chrono::Clock::QueryGuestTickCount()), step);
 }
 
 extern "C" void refii_bridge_rex_set_time_base_frozen(int frozen) {
@@ -337,12 +416,20 @@ extern "C" void refii_bridge_rex_set_time_base_frozen(int frozen) {
 
   g_step_in_flight.store(false, std::memory_order_relaxed);
   g_step_release_real.store(0u, std::memory_order_relaxed);
+  g_host_read_active.store(false, std::memory_order_relaxed);
+  g_host_read_start_real.store(0u, std::memory_order_relaxed);
   if (want) {
+    g_freeze_start_real.store(real, std::memory_order_relaxed);
     g_pending_steps.store(0u, std::memory_order_relaxed);
     g_in_lapse = false;
   } else {
-    g_last_grant_real.store(real, std::memory_order_relaxed);
-    g_last_seen_real.store(real, std::memory_order_relaxed);
+    const uint64_t start = g_freeze_start_real.exchange(0u, std::memory_order_relaxed);
+    if (start != 0u && real > start) {
+      g_frozen_real_ticks.fetch_add(real - start, std::memory_order_relaxed);
+    }
+    const uint64_t effective_real = EffectiveReal(real);
+    g_last_grant_real.store(effective_real, std::memory_order_relaxed);
+    g_last_seen_real.store(effective_real, std::memory_order_relaxed);
     g_in_lapse = false;
   }
 }
@@ -415,13 +502,17 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   // is the current virtual tick. Reading `g_virtual_ticks` unlocked is safe: writers store a
   // complete value under the lock, so a racing reader sees the old tick or the new one.
   {
+    const uint64_t effective_real = EffectiveReal(real);
     const uint64_t seen_grant = g_last_grant_real.load(std::memory_order_relaxed);
     const uint64_t current = g_virtual_ticks.load(std::memory_order_relaxed);
-    const bool watchdog_due = WatchdogDue(real, seen_grant, step);
+    const bool watchdog_due = WatchdogDue(effective_real, real, seen_grant, step);
     const bool drain_ready = g_pending_steps.load(std::memory_order_relaxed) != 0u &&
-                             !StepInFlightAt(real, step);
+                             !StepInFlightAt(effective_real, step) &&
+                             !HostReadActiveAt(effective_real, step);
     if (current != 0u && !watchdog_due && !drain_ready) {
-      g_last_seen_real.store(real, std::memory_order_relaxed);
+      if (!g_time_base_frozen.load(std::memory_order_relaxed)) {
+        g_last_seen_real.store(effective_real, std::memory_order_relaxed);
+      }
 #if !defined(__ANDROID__)
       // Diagnostics only, and a cache line every guest thread's clock read would write: not
       // on Android, where the guest is CPU-bound (the read share then reports zero).
@@ -435,36 +526,28 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
   g_locked_reads.fetch_add(1u, std::memory_order_relaxed);
 #endif
   std::lock_guard lock(g_time_mutex);
+  const uint64_t lock_raw = ::rex::chrono::Clock::QueryGuestTickCount();
+  const uint64_t effective_real = EffectiveReal(lock_raw);
   uint64_t ticks = g_virtual_ticks.load(std::memory_order_relaxed);
   if (ticks == 0u) {
-    ticks = real;
-    g_last_grant_real.store(real, std::memory_order_relaxed);
-    g_last_seen_real.store(real, std::memory_order_relaxed);
+    ticks = effective_real;
+    g_last_grant_real.store(effective_real, std::memory_order_relaxed);
+    g_last_seen_real.store(effective_real, std::memory_order_relaxed);
     g_virtual_ticks.store(ticks, std::memory_order_relaxed);
     return ticks;
   }
 
-  // Release deferred grants only once any in-flight step has finished, so mid-step internal
-  // `mftb` calls never advance `g_virtual_ticks` before `0x82276FA4` observes the single step.
-  uint64_t pending = g_pending_steps.load(std::memory_order_relaxed);
-  if (pending > 0u && !StepInFlightAt(real, step)) {
-    const uint64_t ceiling = real + (kMaxLeadSteps * step);
-    if (ticks + step <= ceiling) {
-      ticks += step;
-      --pending;
-      g_pending_steps.store(pending, std::memory_order_relaxed);
-      g_virtual_ticks.store(ticks, std::memory_order_relaxed);
-      g_step_release_real.store(real, std::memory_order_relaxed);
-      g_step_in_flight.store(true, std::memory_order_relaxed);
-    }
-  }
+  // Release deferred grants only once any in-flight step has finished and the host read window is
+  // inactive, so mid-step internal `mftb` calls never advance `g_virtual_ticks` before
+  // `0x82276FA4` observes the single step.
+  ReleaseQueuedStepLocked(effective_real, step, &ticks);
 
   // Watchdog: with no grant for `kGrantWatchdogSteps`, time resumes at the real rate so guest
   // threads on timed waits are not frozen while the host is not stepping.
   const uint64_t last_grant = g_last_grant_real.load(std::memory_order_relaxed);
-  if (WatchdogDue(real, last_grant, step)) {
+  if (WatchdogDue(effective_real, lock_raw, last_grant, step)) {
     const uint64_t seen = g_last_seen_real.load(std::memory_order_relaxed);
-    if (real > seen) {
+    if (effective_real > seen) {
       // THE CLOCK NEVER RUNS BACKWARDS. Releasing grants lets it lead real time by up to
       // `kMaxLeadSteps`; capping a lapse at `real` used to pull such a clock BACK by that lead,
       // up to 66 ms, the moment the host stalled for `kGrantWatchdogSteps`. The guest's own
@@ -472,7 +555,7 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
       // 17 ms step backwards into a negative owed-step count and spun counting it down for
       // billions of steps, never reaching the next logo. A clock already ahead holds until real
       // time catches up.
-      ticks = std::max(ticks, std::min(ticks + (real - seen), real));
+      ticks = std::max(ticks, std::min(ticks + (effective_real - seen), effective_real));
 
       g_virtual_ticks.store(ticks, std::memory_order_relaxed);
     }
@@ -485,7 +568,7 @@ extern "C" uint64_t refii_bridge_rex_query_guest_tick_count(void) {
     g_in_lapse = false;
   }
 
-  g_last_seen_real.store(real, std::memory_order_relaxed);
+  g_last_seen_real.store(effective_real, std::memory_order_relaxed);
   return ticks;
 }
 

@@ -33,50 +33,6 @@ public sealed class Fable2Rig : Engine_TitleRig
 		_ => null,
 	};
 
-	/// <summary>
-	/// <c>Character.Focal.Mouth|Head</c> on the head, <c>Chest|Torso</c> on the chest,
-	/// <c>Eye.L|Eye.R</c> on that eye or else the head.
-	/// </summary>
-	public override int FocalBone(IReadOnlyList<string> boneNames, string dummy)
-	{
-		const string Focal = "Character.Focal.";
-		if (string.IsNullOrEmpty(dummy) || !dummy.StartsWith(Focal, StringComparison.OrdinalIgnoreCase))
-		{
-			return -1;
-		}
-
-		string sub = dummy.Substring(Focal.Length);
-		if (sub.StartsWith("Mouth", StringComparison.OrdinalIgnoreCase) ||
-			sub.StartsWith("Head", StringComparison.OrdinalIgnoreCase))
-		{
-			return First(boneNames, "Shadow_Head", "Head");
-		}
-
-		if (sub.StartsWith("Chest", StringComparison.OrdinalIgnoreCase) ||
-			sub.StartsWith("Torso", StringComparison.OrdinalIgnoreCase))
-		{
-			return First(boneNames, "Shadow_Chest", "Chest");
-		}
-
-		if (sub.StartsWith("Eye.L", StringComparison.OrdinalIgnoreCase))
-		{
-			return First(boneNames, "Shadow_L_Eye", "Shadow_Head");
-		}
-
-		if (sub.StartsWith("Eye.R", StringComparison.OrdinalIgnoreCase))
-		{
-			return First(boneNames, "Shadow_R_Eye", "Shadow_Head");
-		}
-
-		return -1;
-	}
-
-	private static int First(IReadOnlyList<string> boneNames, string name, string otherwise)
-	{
-		int bone = Find(boneNames, name);
-		return bone >= 0 ? bone : Find(boneNames, otherwise);
-	}
-
 	/// <summary>`sub_82211660`: the top alone at 0.98333, the partner alone at 0.016667.</summary>
 	public override float CrossfadeTopAlone => 0.98333f;
 

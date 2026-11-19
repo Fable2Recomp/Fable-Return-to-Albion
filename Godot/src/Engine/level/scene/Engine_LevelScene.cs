@@ -634,6 +634,11 @@ public static class Engine_LevelScene
             phaseStart = now;
         }
 
+        bool useGameGdbCache = source is not null && Refii.Gdb.Engine_GameGdb.MatchesActiveResolver(source);
+        IReadOnlyList<Refii.Gdb.GdbView>? cachedSupplemental = useGameGdbCache
+            ? Refii.Gdb.Engine_GameGdb.GetSupplementalViews()
+            : null;
+
         LevelReads? reads = null;
         if (source is not null)
         {
@@ -931,8 +936,19 @@ public static class Engine_LevelScene
             cachedGrids.Add((landscape, grid));
         }
 
-        AddWater(level, stated, source, findByName, root, cachedGrids);
-        Mark("water");
+        System.Threading.Tasks.Task<Node3D?>? waterTask =
+            OS.GetThreadCallerId() != OS.GetMainThreadId() && DisplayServer.GetName() != "headless"
+                ? System.Threading.Tasks.Task.Run(() => BuildWaterContainer(level, stated, source, findByName, cachedGrids))
+                : null;
+        if (waterTask is null)
+        {
+            AttachWaterContainer(root, BuildWaterContainer(level, stated, source, findByName, cachedGrids));
+            Mark("water");
+        }
+        else
+        {
+            Mark("water-kick");
+        }
 
         bool hasMist = AddMist(level, stated, source, root);
         Mark("mist");
@@ -972,6 +988,7 @@ public static class Engine_LevelScene
         LightingFrame? lightingFrame = null;
         SkyTheme? resolvedSkyTheme = null;
         SkyFrame? resolvedSkyFrame = null;
+        WaterTheme? pendingWaterTheme = null;
         if (source is not null)
         {
             List<byte[]> lightingGdbs =
@@ -1012,121 +1029,19 @@ public static class Engine_LevelScene
                 if (Engine_ThemeTimeline.TryExtractWaterBlended(
                         lightingGdbs, lightingTod, out WaterTheme waterTheme))
                 {
-                    ApplyWaterTheme(root, waterTheme);
-                }
-            }
-        }
-
-        Mark("sky+lighting");
-
-        Refii.Entities.EntityInspectData? inspect = null;
-        if (source is not null)
-        {
-            inspect = Refii.Entities.Engine_EntityInspect.Build(level, p => source(p));
-        }
-
-        Mark("inspect");
-
-        if (source is not null)
-        {
-            Node3D? props = Engine_LevelProps.Build(
-                level, p => source(p), probeField, lightingFrame, bakedLightmaps, inspect,
-                out PropBuildStats propStats);
-
-            if (props is not null)
-            {
-                root.AddChild(props);
-                SetOwnerRecursive(props, root);
-            }
-
-            GD.Print($"[props] {level}: {propStats}");
-            Mark("props");
-
-            Node3D? entities = Refii.Entities.Engine_LevelEntities.Build(
-                level, p => source(p), probeField, lightingFrame, inspect,
-                out Refii.Entities.EntityPlaceStats entityStats);
-
-            if (entities is not null)
-            {
-                root.AddChild(entities);
-                SetOwnerRecursive(entities, root);
-            }
-
-            GD.Print($"[entities] {level}: {entityStats}");
-            Mark("entities");
-
-            if (inspect is not null)
-            {
-                Node3D? markers = Refii.Entities.Engine_EntityInspect.BuildMarkers(inspect);
-                if (markers is not null)
-                {
-                    root.AddChild(markers);
-                    markers.Owner = root;
-                    foreach (Node child in markers.GetChildren())
+                    if (waterTask is not null)
                     {
-                        child.Owner = root;
+                        pendingWaterTheme = waterTheme;
                     }
-
-                    GD.Print(
-                        $"[inspect] {level}: {markers.GetChildCount()} " +
-                        "container marker(s) without a placed prop");
-                }
-            }
-
-            if (Engine.IsEditorHint() || ForceEditorMode)
-            {
-                var spawnedHashes = new HashSet<uint>();
-                LevelRecordMetadata.CollectRecordHashes(props, spawnedHashes, includeCulled: true);
-                LevelRecordMetadata.CollectRecordHashes(entities, spawnedHashes, includeCulled: true);
-
-                Node3D? levelMarkers = Engine_LevelMarkers.Build(
-                    level, p => source(p), spawnedHashes, out MarkerBuildStats markerStats);
-                if (levelMarkers is not null)
-                {
-                    root.AddChild(levelMarkers);
-                    SetOwnerRecursive(levelMarkers, root);
-                    LevelRecordMetadata.CollectRecordHashes(levelMarkers, spawnedHashes, includeCulled: true);
-                    GD.Print($"[markers] {level}: {markerStats}");
-                }
-
-                if (!string.IsNullOrEmpty(bakedGdbPath))
-                {
-                    MeshInstance3D? navGraph = Engine_KynapseGraph.Build(level, p => source(p), bakedGdbPath);
-                    if (navGraph is not null)
+                    else
                     {
-                        root.AddChild(navGraph);
-                        SetOwnerRecursive(navGraph, root);
+                        ApplyWaterTheme(root, waterTheme);
                     }
-
-                    root.SetMeta(LevelRecordMetadata.LevelGdbPathMeta, bakedGdbPath);
-                    root.SetMeta(
-                        LevelRecordMetadata.LevelSavePathMeta,
-                        Engine_LevelGdb.SiblingWithExtension(bakedGdbPath, ".save"));
                 }
-
-                root.SetMeta(LevelRecordMetadata.LevelNameMeta, level.Name);
-                root.SetMeta(LevelRecordMetadata.ScenarioNameMeta, level.Scenario);
-                string[] scenarios = level.Scenarios.Length > 0
-                    ? level.Scenarios
-                    : !string.IsNullOrEmpty(level.Scenario)
-                        ? new[] { level.Scenario }
-                        : new[] { Engine_LevelManifest.DefaultScenario };
-                root.SetMeta(LevelRecordMetadata.AvailableScenariosMeta, scenarios);
-
-                var spawnedArray = new long[spawnedHashes.Count];
-                int idx = 0;
-                foreach (uint h in spawnedHashes)
-                {
-                    spawnedArray[idx++] = h;
-                }
-
-                root.SetMeta(LevelRecordMetadata.SpawnedRecordHashesMeta, spawnedArray);
-                Mark("editor-overlays");
             }
-        }
 
-        if (source is not null)
-        {
+            // Build sky, weather and wind BEFORE props/entities so PrefetchAhead binds materials
+            // with this region's wind vector instead of the outgoing region's.
             WorldEnvironment? sky = Engine_SkyEnvironment.Build(
                 level, p => source(p), out _, out WeatherTheme weather);
             if (sky is not null)
@@ -1179,7 +1094,6 @@ public static class Engine_LevelScene
                 dynamicPrecipitation.Owner = root;
             }
 
-            List<byte[]> gdbs = Engine_SkyEnvironment.BuildGdbChain(level, p => source(p));
             if (resolvedSkyTheme is not null && resolvedSkyFrame is not null)
             {
                 SkyTheme skyTheme = resolvedSkyTheme;
@@ -1198,9 +1112,9 @@ public static class Engine_LevelScene
 
                     if (sky is Engine_SkyEnvironmentNode skyNode)
                     {
-                        skyNode.LightingGdbs.AddRange(gdbs);
+                        skyNode.LightingGdbs.AddRange(lightingGdbs);
                         skyNode.Sun = sun;
-                        skyNode.Painted = LoadPaintedDaySets(level, stated, source, gdbs);
+                        skyNode.Painted = LoadPaintedDaySets(level, stated, source, lightingGdbs);
                         if (skyNode.Painted is { Any: true })
                         {
                             skyNode.Reevaluate();
@@ -1259,11 +1173,11 @@ public static class Engine_LevelScene
                 }
 
                 if (Engine_ThemeTimeline.TryExtractCloudsBlended(
-                        gdbs, frame.TimeOfDay, out CloudTheme cloudTheme))
+                        lightingGdbs, frame.TimeOfDay, out CloudTheme cloudTheme))
                 {
                     Node3D? clouds = Engine_Clouds.Build(
                         cloudTheme,
-                        gdbs,
+                        lightingGdbs,
                         frame.MainLightDirection,
                         frame.MainLightColour,
                         p => source(p),
@@ -1287,7 +1201,126 @@ public static class Engine_LevelScene
             }
         }
 
-        Mark("rest");
+        Mark("sky+lighting");
+
+        bool isEditor = Engine.IsEditorHint() || ForceEditorMode;
+        Refii.Entities.EntityInspectData? inspect = null;
+        if (source is not null)
+        {
+            inspect = Refii.Entities.Engine_EntityInspect.Build(
+                level, p => source(p), fullMetadata: isEditor, preloadedSupplemental: cachedSupplemental);
+        }
+
+        Mark("inspect");
+
+        if (source is not null)
+        {
+            Node3D? props = Engine_LevelProps.Build(
+                level, p => source(p), probeField, lightingFrame, bakedLightmaps, inspect,
+                cachedSupplemental, out PropBuildStats propStats);
+
+            if (props is not null)
+            {
+                root.AddChild(props);
+                SetOwnerRecursive(props, root);
+            }
+
+            GD.Print($"[props] {level}: {propStats}");
+            Mark("props");
+
+            Node3D? entities = Refii.Entities.Engine_LevelEntities.Build(
+                level, p => source(p), probeField, lightingFrame, inspect,
+                out Refii.Entities.EntityPlaceStats entityStats);
+
+            if (entities is not null)
+            {
+                root.AddChild(entities);
+                SetOwnerRecursive(entities, root);
+            }
+
+            GD.Print($"[entities] {level}: {entityStats}");
+            Mark("entities");
+
+            if (isEditor && inspect is not null)
+            {
+                Node3D? markers = Refii.Entities.Engine_EntityInspect.BuildMarkers(inspect);
+                if (markers is not null)
+                {
+                    root.AddChild(markers);
+                    markers.Owner = root;
+                    foreach (Node child in markers.GetChildren())
+                    {
+                        child.Owner = root;
+                    }
+
+                    GD.Print(
+                        $"[inspect] {level}: {markers.GetChildCount()} " +
+                        "container marker(s) without a placed prop");
+                }
+            }
+
+            if (isEditor)
+            {
+                var spawnedHashes = new HashSet<uint>();
+                LevelRecordMetadata.CollectRecordHashes(props, spawnedHashes, includeCulled: true);
+                LevelRecordMetadata.CollectRecordHashes(entities, spawnedHashes, includeCulled: true);
+
+                Node3D? levelMarkers = Engine_LevelMarkers.Build(
+                    level, p => source(p), spawnedHashes, out MarkerBuildStats markerStats);
+                if (levelMarkers is not null)
+                {
+                    root.AddChild(levelMarkers);
+                    SetOwnerRecursive(levelMarkers, root);
+                    LevelRecordMetadata.CollectRecordHashes(levelMarkers, spawnedHashes, includeCulled: true);
+                    GD.Print($"[markers] {level}: {markerStats}");
+                }
+
+                if (!string.IsNullOrEmpty(bakedGdbPath))
+                {
+                    MeshInstance3D? navGraph = Engine_KynapseGraph.Build(level, p => source(p), bakedGdbPath);
+                    if (navGraph is not null)
+                    {
+                        root.AddChild(navGraph);
+                        SetOwnerRecursive(navGraph, root);
+                    }
+
+                    root.SetMeta(LevelRecordMetadata.LevelGdbPathMeta, bakedGdbPath);
+                    root.SetMeta(
+                        LevelRecordMetadata.LevelSavePathMeta,
+                        Engine_LevelGdb.SiblingWithExtension(bakedGdbPath, ".save"));
+                }
+
+                root.SetMeta(LevelRecordMetadata.LevelNameMeta, level.Name);
+                root.SetMeta(LevelRecordMetadata.ScenarioNameMeta, level.Scenario);
+                string[] scenarios = level.Scenarios.Length > 0
+                    ? level.Scenarios
+                    : !string.IsNullOrEmpty(level.Scenario)
+                        ? new[] { level.Scenario }
+                        : new[] { Engine_LevelManifest.DefaultScenario };
+                root.SetMeta(LevelRecordMetadata.AvailableScenariosMeta, scenarios);
+
+                var spawnedArray = new long[spawnedHashes.Count];
+                int idx = 0;
+                foreach (uint h in spawnedHashes)
+                {
+                    spawnedArray[idx++] = h;
+                }
+
+                root.SetMeta(LevelRecordMetadata.SpawnedRecordHashesMeta, spawnedArray);
+                Mark("editor-overlays");
+            }
+        }
+
+        if (waterTask is not null)
+        {
+            AttachWaterContainer(root, waterTask.GetAwaiter().GetResult());
+            if (pendingWaterTheme is { } deferredWaterTheme)
+            {
+                ApplyWaterTheme(root, deferredWaterTheme);
+            }
+
+            Mark("water-wait");
+        }
 
         List<BuiltLandscape> landscapes =
             terrainTask is not null ? terrainTask.GetAwaiter().GetResult() : TerrainWork();
@@ -1323,7 +1356,7 @@ public static class Engine_LevelScene
             {
                 var chunk = new MeshInstance3D
                 {
-                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
+                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers | Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask,
                     Name = $"{name}{i}",
                     Mesh = chunks[i],
                 };
@@ -1936,9 +1969,34 @@ public static class Engine_LevelScene
         Node3D root,
         List<(StatedLandscape Landscape, GhfHeights? Grid)>? predecodedGrids = null)
     {
-        if (source is null)
+        AttachWaterContainer(root, BuildWaterContainer(level, stated, source, findByName, predecodedGrids));
+    }
+
+    private static void AttachWaterContainer(Node3D root, Node3D? container)
+    {
+        if (container is null)
         {
             return;
+        }
+
+        root.AddChild(container);
+        container.Owner = root;
+        foreach (Node child in container.GetChildren())
+        {
+            child.Owner = root;
+        }
+    }
+
+    private static Node3D? BuildWaterContainer(
+        LevelEntry level,
+        StatedWorld stated,
+        Func<string, byte[]?>? source,
+        Func<string, string?>? findByName,
+        List<(StatedLandscape Landscape, GhfHeights? Grid)>? predecodedGrids = null)
+    {
+        if (source is null)
+        {
+            return null;
         }
 
         var container = new Node3D { Name = WaterNodeName };
@@ -2091,8 +2149,8 @@ public static class Engine_LevelScene
 
         if (emitted == 0)
         {
-            container.QueueFree();
-            return;
+            container.Free();
+            return null;
         }
 
         if (oceanBody is not null && waterBounds is { } bounds && AllowsVistaOcean(level))
@@ -2104,17 +2162,10 @@ public static class Engine_LevelScene
             GD.Print($"[water] {level}: inland level ({level.LevelPath}) — vista ocean omitted");
         }
 
-        root.AddChild(container);
-        container.Owner = root;
-
-        foreach (Node child in container.GetChildren())
-        {
-            child.Owner = root;
-        }
-
         GD.Print(
             $"[water] {level}: {emitted} body(s), {tiles} tiles from {stated.Water.Count} stated file(s)" +
             (buried != 0 ? $"; {buried} body(s) entirely under the ground not built" : string.Empty));
+        return container;
     }
 
     /// <summary>Whether the level's vista draws an open ocean horizon: the title's rule; none without one.</summary>

@@ -996,7 +996,7 @@ public static class GdbPatchCompositor
     private static string ComputeCompositeStamp(IReadOnlyList<GdbPatchSource> modFiles, GdbMulti? baseMulti)
     {
         var sb = new StringBuilder();
-        sb.Append("base:").Append(baseMulti?.Views.Count ?? 0).Append('/').Append(baseMulti?.RecordCount ?? 0).Append(';');
+        sb.Append("decl-v2;base:").Append(baseMulti?.Views.Count ?? 0).Append('/').Append(baseMulti?.RecordCount ?? 0).Append(';');
         foreach (var (modName, diskPath, entryPath) in modFiles)
         {
             sb.Append(modName).Append(':').Append(entryPath).Append(':');

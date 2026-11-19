@@ -12,6 +12,11 @@ public partial class GameEntities
     /// statics `Engine_BnkMeshLoader._Load` reaches were audited for it (pr29 fixb item 8).</summary>
     private const int MaxInFlightLoadBuilds = 10;
 
+    private static int EffectiveMaxInFlightLoadBuilds =>
+        Refii.Core.Engine_Platform.IsAndroid
+            ? MaxInFlightLoadBuilds
+            : System.Math.Clamp(System.Environment.ProcessorCount - 2, 4, 12);
+
     /// <summary>
     /// `android_offscreen_rig_walks` (AndroidOffscreenRigs): a rig out of every view is walked on one
     /// walk in this many; 1, the default and the desktop's only value, walks every rig every walk.

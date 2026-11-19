@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 244;
+	public const int ExpectedAbiVersion = 245;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -1910,6 +1910,7 @@ public static partial class HostBridge
 		public const uint DrawableFlag = 1u;
 		public const uint SaturationFlag = 2u;
 		public const uint NoAlphaDepthFlag = 4u;
+		public const uint DeadCreatureFlag = 8u;
 
 		/// <summary>SetAsDrawable (+197). Clear: the guest releases the proxies — no draw, no shadow.</summary>
 		public bool Drawable => (Flags & DrawableFlag) != 0u;
@@ -1923,6 +1924,13 @@ public static partial class HostBridge
 		/// pass nothing (see Engine_EntityAppearance).
 		/// </summary>
 		public bool NoAlphaDepthWrites => (Flags & NoAlphaDepthFlag) != 0u;
+
+		/// <summary>Entity carries a <c>CECCreature</c> component whose <c>alive</c> byte (<c>+0x18</c>) is 0.</summary>
+		public bool IsDeadCreature => (Flags & DeadCreatureFlag) != 0u;
+
+		/// <summary>Appearance stripped of <see cref="DeadCreatureFlag"/> so shader/tint caches ignore liveness flips.</summary>
+		public EntityAppearance VisualOnly =>
+			(Flags & DeadCreatureFlag) == 0u ? this : this with { Flags = Flags & ~DeadCreatureFlag };
 
 		/// <summary>The opacity the guest blends by: `+116 * +112` (`sub_82572A58`).</summary>
 		public float Opacity => Alpha * CameraAlpha;
@@ -1947,7 +1955,7 @@ public static partial class HostBridge
 		/// field, and every entity the walk does not skip asks this several times.
 		/// </summary>
 		public bool IsConstructed =>
-			Alpha == 1f && CameraAlpha == 1f && Scale == 1f && Flags == DrawableFlag &&
+			Alpha == 1f && CameraAlpha == 1f && Scale == 1f && (Flags & ~DeadCreatureFlag) == DrawableFlag &&
 			TintLanes.X == 1f && TintLanes.Y == 1f && TintLanes.Z == 1f && TintLanes.W == 1f;
 	}
 
@@ -2127,6 +2135,15 @@ public static partial class HostBridge
 
 	private static readonly object _entityWalkGate = new();
 	private static uint[]? _unknownPairs;
+
+	/// <summary>Resets cached per-region entity walk diffing state during region teardown.</summary>
+	public static void ResetEntityWalkState()
+	{
+		lock (_entityWalkGate)
+		{
+			_statedWords?.Clear();
+		}
+	}
 
 	/// <summary>The most bones a character rig is read at. Fable's rigs are well under this.</summary>
 	public const int MaxBones = 256;
@@ -2840,6 +2857,9 @@ public static partial class HostBridge
 			Mathf.RadToDeg(2f * Mathf.Atan(0.75f * Mathf.Tan(HorizontalFov * 0.5f)));
 	}
 
+	[ThreadStatic]
+	private static float[]? _cameraScratch;
+
 	/// <summary>
 	/// The guest's camera, or null when it could not be read coherently. The snapshot is five
 	/// unsynchronised stores with no sequence counter, so the bridge reads it twice and requires
@@ -2847,7 +2867,7 @@ public static partial class HostBridge
 	/// </summary>
 	public static GuestCamera? GetCamera()
 	{
-		var values = new float[11];
+		float[] values = _cameraScratch ??= new float[11];
 		if (RefiiHostGetCamera(values) == 0)
 		{
 			return null;
@@ -3892,6 +3912,91 @@ public static partial class HostBridge
 	}
 
 	/// <summary>
+	/// Unpacks the packed 64-bit <c>out_watchdog</c> word returned by <c>RefiiHostSetTimeBaseMode</c>:
+	/// bits [31:0] hold watchdog lapses, bits [62:32] hold unconsumed HF steps (<c>pending + in_flight</c>),
+	/// and bit [63] indicates whether an HF step is currently executing on the guest thread.
+	/// </summary>
+	/// <param name="watchdog">Raw packed 64-bit watchdog telemetry word.</param>
+	/// <param name="lapses">Watchdog lapse count.</param>
+	/// <param name="unconsumedSteps">Authoritative queued plus in-flight HF step count.</param>
+	/// <param name="stepInFlight">True when a released HF step has not yet finished its pass.</param>
+	public static void UnpackTimeBaseWatchdog(
+		ulong watchdog,
+		out ulong lapses,
+		out ulong unconsumedSteps,
+		out bool stepInFlight)
+	{
+		lapses = watchdog & 0xFFFFFFFFUL;
+		unconsumedSteps = (watchdog >> 32) & 0x7FFFFFFFUL;
+		stepInFlight = (watchdog & (1UL << 63)) != 0UL;
+	}
+
+	private static bool TryQueryTimeBaseMode(int queryMode, out int activeMode, out ulong watchdog)
+	{
+		if (TryGetAbiVersion() is not null)
+		{
+			try
+			{
+				activeMode = RefiiHostSetTimeBaseMode(queryMode, out _, out _, out watchdog);
+				return true;
+			}
+			catch (System.DllNotFoundException)
+			{
+			}
+			catch (System.EntryPointNotFoundException)
+			{
+			}
+		}
+
+		activeMode = 0;
+		watchdog = 0UL;
+		return false;
+	}
+
+	/// <summary>
+	/// Reads the native driven time-base's authoritative unconsumed high-frequency step depth
+	/// (<c>pending + in_flight</c>) without allocating or boxing on the hot per-frame pacing path.
+	/// </summary>
+	/// <param name="unconsumedSteps">Current queued plus in-flight HF steps when Driven mode is active.</param>
+	/// <returns>True when native Driven time-base telemetry is active and readable; otherwise false.</returns>
+	public static bool TryGetUnconsumedTimeBaseSteps(out ulong unconsumedSteps)
+	{
+		if (TryQueryTimeBaseMode(-1, out int mode, out ulong watchdog) && mode == (int)TimeBaseMode.Driven)
+		{
+			UnpackTimeBaseWatchdog(watchdog, out _, out unconsumedSteps, out _);
+			return true;
+		}
+
+		unconsumedSteps = 0UL;
+		return false;
+	}
+
+	/// <summary>
+	/// Enters the host per-frame guest-memory read window (<c>mode == -2</c>), preventing the
+	/// native driven time base from popping queued multi-step grants during <c>_Process</c>, and
+	/// reports whether an HF step is already executing on the guest thread.
+	/// </summary>
+	/// <param name="stepInFlight">True when a released HF step has not yet completed its pass.</param>
+	/// <returns>True when native Driven time-base telemetry is active and readable; otherwise false.</returns>
+	public static bool TryBeginTimeBaseReadWindow(out bool stepInFlight)
+	{
+		if (TryQueryTimeBaseMode(-2, out int mode, out ulong watchdog) && mode == (int)TimeBaseMode.Driven)
+		{
+			UnpackTimeBaseWatchdog(watchdog, out _, out _, out stepInFlight);
+			return true;
+		}
+
+		stepInFlight = false;
+		return false;
+	}
+
+	/// <summary>
+	/// Exits the host per-frame guest-memory read window (<c>mode == -3</c>) so any queued HF
+	/// steps held back across <c>_Process</c> can resume releasing cleanly.
+	/// </summary>
+	public static void EndTimeBaseReadWindow() => _ = TryQueryTimeBaseMode(-3, out _, out _);
+
+	/// <summary>
 	/// Grants the guest one or more high-frequency steps of time. Driven mode only.
 	/// </summary>
 	/// <remarks>
@@ -3968,6 +4073,46 @@ public static partial class HostBridge
 	}
 
 	/// <summary>
+	/// The most recent simulation clock snapshot read during <see cref="SampleGuestFrame"/>,
+	/// avoiding redundant P/Invoke crossings in the same frame-start pass.
+	/// </summary>
+	public static (double Seconds, uint Tick)? LastSampledSimClock { get; private set; }
+
+	/// <summary>
+	/// Maximum duration (in microseconds) a guest-frame sample may be deferred while an in-flight
+	/// HF step completes before falling back to a live read.
+	/// </summary>
+	public const ulong MaxInFlightSampleDeferUsec = 40_000UL;
+
+	private static ulong _lastQuiescentSampleUsec;
+
+	/// <summary>
+	/// Returns true when <see cref="SampleGuestFrame"/> should defer reading guest RAM for this
+	/// host frame because a guest HF step is actively mutating placements mid-step in game,
+	/// preserving the last quiescent snapshot until the step finishes.
+	/// </summary>
+	/// <param name="isInGame">True when the guest has an active in-game world.</param>
+	/// <param name="stepInFlight">True when bit 63 indicates an HF step is currently executing.</param>
+	/// <param name="publishedGuestFrame">Current published <see cref="Engine_GuestFrame.Frame"/>.</param>
+	/// <param name="nowUsec">Current host monotonic timestamp in microseconds.</param>
+	/// <param name="lastQuiescentSampleUsec">Timestamp of the last quiescent guest sample.</param>
+	/// <param name="maxDeferUsec">Safety ceiling in microseconds before sampling anyway.</param>
+	/// <returns>True if sampling should be deferred so readers interpolate smoothly on existing state.</returns>
+	public static bool ShouldDeferInFlightGuestSample(
+		bool isInGame,
+		bool stepInFlight,
+		uint publishedGuestFrame,
+		ulong nowUsec,
+		ulong lastQuiescentSampleUsec,
+		ulong maxDeferUsec = MaxInFlightSampleDeferUsec) =>
+		isInGame &&
+		stepInFlight &&
+		publishedGuestFrame != 0u &&
+		lastQuiescentSampleUsec != 0UL &&
+		nowUsec >= lastQuiescentSampleUsec &&
+		(nowUsec - lastQuiescentSampleUsec) < maxDeferUsec;
+
+	/// <summary>
 	/// Samples the guest's render-frame counter into <see cref="Engine_GuestFrame"/>. Once per
 	/// host frame, first thing. Without the export (an older native) the frame is synthesised
 	/// from the game tick: the tick's change, then a second frame half a tick later, which is
@@ -3975,8 +4120,24 @@ public static partial class HostBridge
 	/// </summary>
 	public static void SampleGuestFrame()
 	{
+		bool hasAbi = TryGetAbiVersion() is not null;
+		ulong nowUsec = (ulong)((System.Diagnostics.Stopwatch.GetTimestamp() * 1_000_000.0) /
+			System.Diagnostics.Stopwatch.Frequency);
+		_ = TryBeginTimeBaseReadWindow(out bool stepInFlight);
+		bool inGame = hasAbi && IsInGame;
+
+		if (ShouldDeferInFlightGuestSample(inGame, stepInFlight, Engine_GuestFrame.Frame, nowUsec, _lastQuiescentSampleUsec))
+		{
+			// An HF step is mid-mutation on the guest thread: keep the last quiescent tick/pose
+			// pair and re-publish Changed = false so timelines advance smoothly at display rate.
+			Engine_GuestFrame.Publish(Engine_GuestFrame.Frame);
+			return;
+		}
+
+		_lastQuiescentSampleUsec = inGame ? nowUsec : 0UL;
+
 		uint frame = 0u;
-		if (!_guestFrameExportMissing && TryGetAbiVersion() is not null)
+		if (!_guestFrameExportMissing && hasAbi)
 		{
 			try
 			{
@@ -3991,7 +4152,9 @@ public static partial class HostBridge
 		// THE FRAME'S STAMP, read in the same instant as the frame counter: every sample this
 		// frame reads is stamped from this one pair (Engine_TickClock.FrameStamp), never from a
 		// read taken later while the guest may already be in its next step.
-		uint tick = SimClock() is { } clock ? clock.Tick : 0u;
+		(double Seconds, uint Tick)? simClock = SimClock();
+		LastSampledSimClock = simClock;
+		uint tick = simClock is { } clock ? clock.Tick : 0u;
 		Engine_TickClock.PublishGuestGameTick(tick);
 		if (!_guestFrameExportMissing)
 		{
@@ -4012,7 +4175,7 @@ public static partial class HostBridge
 		// zero, which Publish treats as "no guest state to wait for". Latching the base while
 		// `byte_83496A5E` is clear gives the second front end exactly the first one's contract:
 		// zero until the first HF pass of the next game, counting from there.
-		if (!IsInGame)
+		if (!inGame)
 		{
 			_guestFrameBase = frame;
 		}
@@ -4171,7 +4334,11 @@ public static partial class HostBridge
 
 		/// <summary>A spline setter stated points for this effect (flag 128): read them with
 		/// <see cref="GetFxSpline"/>.</summary>
-		bool SplineStated = false);
+		bool SplineStated = false,
+
+		/// <summary>A Type 5 <c>CParticleSplineNode</c> carries runtime world-space spline override
+		/// endpoints in <see cref="Rows"/>[0..count-1] with count in <see cref="Scale"/> (flag 32).</summary>
+		bool SplineOverride = false);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -4234,7 +4401,8 @@ public static partial class HostBridge
 				new Color(Bits(_activeFx[at + 22]), Bits(_activeFx[at + 23]), Bits(_activeFx[at + 24]), Bits(_activeFx[at + 25])),
 				_activeFx[at + 26],
 				(flags & 256u) != 0,
-				(flags & 128u) != 0));
+				(flags & 128u) != 0,
+				SplineOverride: isSplineOverride));
 		}
 
 		return effects;
@@ -5137,6 +5305,37 @@ public static partial class HostBridge
 		RefiiHostSetMouseLookDevice(mouse ? 1 : 0);
 	}
 
+	private static bool _lastHostAimActive;
+
+	/// <summary>
+	/// States or clears the host-authoritative ranged aim forward vector (unit vector in guest world
+	/// space). Redundant inactive writes are suppressed once cleared.
+	/// </summary>
+	public static void SetHostAim(bool active, Vector3 guestForward)
+	{
+		if (!active && !_lastHostAimActive)
+		{
+			return;
+		}
+
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			_lastHostAimActive = false;
+			return;
+		}
+
+		if (active && guestForward.IsFinite() && guestForward.LengthSquared() > 1e-8f)
+		{
+			RefiiHostSetHostAim(1, guestForward.X, guestForward.Y, guestForward.Z);
+			_lastHostAimActive = true;
+		}
+		else
+		{
+			RefiiHostSetHostAim(0, 0f, 0f, 0f);
+			_lastHostAimActive = false;
+		}
+	}
+
 	/// <summary>
 	/// Adds mouse-wheel notches made while the mouse is the camera's, rightward positive: a notch
 	/// down +1, up -1. Under a target lock a mod states switches by the wheel, each notch is one
@@ -5172,16 +5371,23 @@ public static partial class HostBridge
 	/// <param name="Flicks">Target switches the mouse handed to a target lock (flicks and wheel notches), run total.</param>
 	/// <param name="PitchLimit">For the aim mode: the camera's elevation bound, degrees.</param>
 	/// <param name="Aim">For the aim mode: the ranged aim object whose reticule turns with the view.</param>
+	/// <param name="HeadGuest">For the aim mode: hero head pivot in guest world space.</param>
+	/// <param name="Flags">Flag bits: bit 0 LookInverted, bit 1 HostAimApplied, bit 2 HasHead.</param>
 	public readonly record struct MouseLookState(
 		uint Sequence, uint Tick, double Posted, double Taken, double Absorbed,
 		double PostedPitch, double TakenPitch, double AbsorbedPitch, float Factor,
-		Vector3 Pivot, int Mode, uint Flicks, float PitchLimit, uint Aim)
+		Vector3 Pivot, int Mode, uint Flicks, float PitchLimit, uint Aim,
+		Vector3 HeadGuest = default, uint Flags = 0u)
 	{
 		/// <summary>The focus distance along the level line of sight (the orbit mode's pivot).</summary>
 		public float PivotMetres => Pivot.X;
+
+		public bool LookInverted => (Flags & 1u) != 0u;
+		public bool HostAimApplied => (Flags & 2u) != 0u;
+		public bool HasHead => (Flags & 4u) != 0u;
 	}
 
-	private const int MouseLookValues = 15;
+	private const int MouseLookValues = 19;
 
 	[ThreadStatic]
 	private static double[]? _mouseLookScratch;
@@ -5194,14 +5400,14 @@ public static partial class HostBridge
 			return null;
 		}
 
-		// Read every frame by the camera (twice) and the UI: one buffer per thread, not one per read.
+		// Read every frame by the camera and UI: one buffer per thread, overwritten completely by native.
 		double[] v = _mouseLookScratch ??= new double[MouseLookValues];
-		System.Array.Clear(v);
 		uint sequence = RefiiHostGetMouseLook(v, MouseLookValues);
 		return new MouseLookState(
 			sequence, (uint)v[0], v[1], v[2], v[3], v[4], v[5], v[6], (float)v[7],
 			new Vector3((float)v[8], (float)v[9], (float)v[10]), (int)v[11], (uint)v[12],
-			(float)v[13], (uint)v[14]);
+			(float)v[13], (uint)v[14], new Vector3((float)v[15], (float)v[16], (float)v[17]),
+			(uint)v[18]);
 	}
 
 	[ThreadStatic]
@@ -8012,6 +8218,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetMouseLookDevice(int mouse);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetHostAim(int active, float fwdX, float fwdY, float fwdZ);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostPostMouseWheel(int notches);

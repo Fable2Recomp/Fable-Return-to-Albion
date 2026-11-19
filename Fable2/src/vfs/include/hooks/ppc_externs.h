@@ -452,6 +452,7 @@ PPC_EXTERN_FUNC(__imp__rex_lhVFSConfig_LoadConfigByName);
 PPC_EXTERN_FUNC(__imp__rex_lhAnimationBank_OpenGlobal);
 PPC_EXTERN_FUNC(__imp__rex_lhGameData_LoadAudioDatabaseByName);
 PPC_EXTERN_FUNC(__imp__rex_lhGameData_LoadNamedBankEntry);
+PPC_EXTERN_FUNC(rex_lhGameData_LoadNamedBankEntry);
 PPC_EXTERN_FUNC(__imp__rex_lhGameData_RegisterResourceFilesByName);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_BeginGPUFrame);
 PPC_EXTERN_FUNC(__imp__rex_lhRenderer_EndGPUFrame);

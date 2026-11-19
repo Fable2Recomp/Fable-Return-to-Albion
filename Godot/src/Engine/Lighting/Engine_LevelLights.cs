@@ -1358,7 +1358,7 @@ public static class Engine_LevelLights
 	public static uint EntityLayersOf(uint record, bool includeDynamicCaster = true) =>
 		IsLampHost(record)
 			? LampHostLayerMask
-			: (includeDynamicCaster ? (1u | EntityCasterLayerMask) : 1u);
+			: (includeDynamicCaster ? (1u | EntityCasterLayerMask) : (1u | Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask));
 
 	/// <summary>Moves the prop nodes of <paramref name="hosts"/> onto <see cref="LampHostLayer"/>.</summary>
 	private static void MarkHosts(Node container, HashSet<uint> hosts)

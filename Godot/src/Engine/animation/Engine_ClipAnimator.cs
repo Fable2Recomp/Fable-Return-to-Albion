@@ -1821,15 +1821,15 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 					continue;
 				}
 
-				Quaternion topQ = hasTop ? _rotation[b].Normalized() : (hasPartner ? _layerRotation[b].Normalized() : _restRotation[b]);
-				Quaternion partQ = hasPartner ? _layerRotation[b].Normalized() : (hasTop ? _rotation[b].Normalized() : _restRotation[b]);
-				_rotation[b] = partQ.Slerp(topQ, topShare);
+				_rotation[b] = CrossfadePrimaryRotation(
+					hasTop, _rotation[b], hasPartner, _layerRotation[b], _restRotation[b], topShare);
 				_rotationWeight[b] = 1f;
 				if (_parents![b] >= 0)
 				{
-					Vector3 topP = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : (_layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : _restPosition[b]);
-					Vector3 partP = _layerPositionWeight[b] > 1e-5f ? _layerPosition[b] / _layerPositionWeight[b] : (_positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b]);
-					_position[b] = partP.Lerp(topP, topShare);
+					_position[b] = CrossfadePrimaryPosition(
+						_positionWeight[b], _position[b],
+						_layerPositionWeight[b], _layerPosition[b],
+						_restPosition[b], topShare);
 					_positionWeight[b] = 1f;
 				}
 			}
@@ -2881,6 +2881,36 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	/// </summary>
 	public static float ComputeShareStepRate(float currentShare, float targetShare, float blendSeconds) =>
 		Mathf.Max(Mathf.Abs(targetShare - currentShare) * 15f, 1f / Mathf.Max(blendSeconds, 0.133f));
+
+	/// <summary>
+	/// Crossfades one bone's primary rotation between partner and top records. A primary record
+	/// that omits a bone evaluates to the skeleton rest pose (guest <c>sub_822351B0</c>), so
+	/// bones keyed in locomotion and omitted in idle (such as back-sheath dummies) blend smoothly
+	/// across <paramref name="topShare"/> instead of snapping at the end of the crossfade.
+	/// </summary>
+	public static Quaternion CrossfadePrimaryRotation(
+		bool hasTop, Quaternion topRotation,
+		bool hasPartner, Quaternion partnerRotation,
+		Quaternion restRotation, float topShare)
+	{
+		Quaternion topQ = hasTop ? topRotation.Normalized() : restRotation;
+		Quaternion partQ = hasPartner ? partnerRotation.Normalized() : restRotation;
+		return partQ.Slerp(topQ, topShare);
+	}
+
+	/// <summary>
+	/// Crossfades one bone's primary local position between partner and top records, falling back
+	/// to <paramref name="restPosition"/> for any side that omits a position track.
+	/// </summary>
+	public static Vector3 CrossfadePrimaryPosition(
+		float topWeight, Vector3 topAccum,
+		float partnerWeight, Vector3 partnerAccum,
+		Vector3 restPosition, float topShare)
+	{
+		Vector3 topP = topWeight > 1e-5f ? topAccum / topWeight : restPosition;
+		Vector3 partP = partnerWeight > 1e-5f ? partnerAccum / partnerWeight : restPosition;
+		return partP.Lerp(topP, topShare);
+	}
 
 	private static void Accumulate(ref Quaternion sum, ref float sumWeight, Quaternion q, float weight)
 	{

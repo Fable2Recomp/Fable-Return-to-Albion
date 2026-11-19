@@ -161,57 +161,30 @@ public static class Engine_SkyEnvironment
         Buffer.BlockCopy(lut, 0, bytes, 0, bytes.Length);
         var image = Image.CreateFromData(
             Engine_SkyAtmosphere.LutWidth, 1, false, Image.Format.Rgbaf, bytes);
-        if (reuse is not null && reuse.GetWidth() == image.GetWidth() &&
-            reuse.GetHeight() == image.GetHeight())
+        if (reuse is not null && Refii.Textures.Engine_TextureUpload.CanUpdateInPlace(reuse, image))
         {
             // --render-thread separate warning: never call image.Dispose() immediately after
-            // texture.Update(image); route through Engine_TextureUpload so RD health and
-            // storage-layout invariants are enforced consistently, then retire deterministically.
+            // texture.Update(image); route through Engine_TextureUpload so RD health,
+            // storage-layout invariants, and delayed Image retirement stay DRY and consistent.
             Refii.Textures.Engine_TextureUpload.SetImage(reuse, image, allowD3D12Replace: false);
-            RetireLutImage(image);
+            Refii.Textures.Engine_TextureUpload.RetireTransientImage(image);
             return (state, reuse);
         }
 
         return (state, Refii.Textures.Engine_TextureUpload.CreateTexture(image));
     }
 
-    /// <summary>Frames an updated LUT image is held before its wrapper is disposed.</summary>
-    private const ulong LutImageHoldFrames = 2;
-
-    [ThreadStatic]
-    private static Queue<(Image Image, ulong After)>? _retiredLutImages;
-
-    /// <summary>
-    /// Disposes the images handed to <see cref="ImageTexture.Update"/> once the rendering server
-    /// has released them, never in the same tick.
-    /// </summary>
-    /// <remarks>
-    /// `texture_2d_update` takes a <c>Ref&lt;Image&gt;</c>; while that reference is live the
-    /// wrapper's GC handle is the STRONG one, and the server's release swaps it back to weak and
-    /// frees it. Disposing right after Update raced that swap: Dispose freed a handle the swap had
-    /// already freed, threw "Handle is not initialized" out of ApplyAtmosphere, and the tick's dome,
-    /// fog, water and clouds were never written (godot.log 2026-11-15, twice).
-    /// </remarks>
-    private static void RetireLutImage(Image image)
-    {
-        Queue<(Image Image, ulong After)> retired = _retiredLutImages ??= new Queue<(Image, ulong)>();
-        ulong now = Engine.GetProcessFrames();
-        while (retired.Count > 0 && retired.Peek().After <= now)
-        {
-            retired.Dequeue().Image.Dispose();
-        }
-
-        retired.Enqueue((image, now + LutImageHoldFrames));
-    }
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, ImageTexture> BoundDomeLuts = new();
 
     public static void ApplyDomeUniforms(
         ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
     {
-        // ONLY WHEN IT IS A DIFFERENT TEXTURE. A texture parameter queues the material's uniform
-        // set for a rebuild on the render thread; the continuous tick updates one texture in place.
-        if (material.GetShaderParameter(Param_in_scatter_lut).AsGodotObject() != lut)
+        // ONLY WHEN IT IS A DIFFERENT TEXTURE, tracked on the managed side so 15 Hz ticks
+        // never call `material.GetShaderParameter` (a synchronous render-thread round trip).
+        if (!BoundDomeLuts.TryGetValue(material, out ImageTexture? boundLut) || !ReferenceEquals(boundLut, lut))
         {
             material.SetShaderParameter(Param_in_scatter_lut, lut);
+            BoundDomeLuts.AddOrUpdate(material, lut);
         }
 
         material.SetShaderParameter(BetaRayleighName, new Vector3(

@@ -18,6 +18,8 @@ public static class Engine_GameGdb
 
 	private static GdbMulti? _multi;
 
+	private static List<GdbView>? _supplementalViews;
+
 	private static bool _built;
 
 	private static Func<string, byte[]?>? _baseResolver;
@@ -33,6 +35,7 @@ public static class Engine_GameGdb
 		{
 			_resolver = resolver;
 			_multi = null;
+			_supplementalViews = null;
 			_built = false;
 		}
 	}
@@ -54,7 +57,55 @@ public static class Engine_GameGdb
 		lock (BuildLock)
 		{
 			_multi = null;
+			_supplementalViews = null;
 			_built = false;
+		}
+	}
+
+	/// <summary>
+	/// Whether <paramref name="read"/> is the same asset reader currently bound via <see cref="SetResolver"/>.
+	/// </summary>
+	public static bool MatchesActiveResolver(Func<string, byte[]?>? read)
+	{
+		if (read is null)
+		{
+			return false;
+		}
+
+		lock (BuildLock)
+		{
+			return _resolver is not null && Equals(read, _resolver);
+		}
+	}
+
+	/// <summary>
+	/// Returns strongly referenced parsed views for <see cref="Refii.Level.Engine_LevelProps.SupplementalGdbPaths"/>
+	/// from the active resolver, parsing <c>globals.gdb</c> at most once per mount/invalidation.
+	/// </summary>
+	public static List<GdbView> GetSupplementalViews()
+	{
+		lock (BuildLock)
+		{
+			if (_resolver is null)
+			{
+				return new List<GdbView>();
+			}
+
+			if (_supplementalViews is null)
+			{
+				var parsed = new List<GdbView>();
+				foreach (string path in Refii.Level.Engine_LevelProps.SupplementalGdbPaths)
+				{
+					byte[]? bytes = _resolver(path) ?? _resolver("data/" + path);
+					if (bytes is not null && GdbView.TryParseShared(bytes, out GdbView view, out _))
+					{
+						parsed.Add(view);
+					}
+				}
+				_supplementalViews = parsed;
+			}
+
+			return new List<GdbView>(_supplementalViews);
 		}
 	}
 

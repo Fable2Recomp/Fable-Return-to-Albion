@@ -78,36 +78,31 @@ public static class Engine_DrawnFrame
 	/// <summary>
 	/// The guest's own simulation clock in seconds, as read this frame: `game+0x110`, written every
 	/// iteration at 0x82276F18. NaN before a world is up.
-	///
-	/// A game tick is not a fixed duration (one or two high-frequency steps, 33.333 or 66.667 ms),
-	/// and `GuestGameTick` increments by 1 either way, so a pair's width must come from this clock,
-	/// not the tick count.
 	/// </summary>
 	public static double GuestSeconds { get; private set; } = double.NaN;
 
+	/// <summary>
+	/// Stamps the frame instant and the guest's stated clock seconds for this frame.
+	/// </summary>
+	/// <param name="nowUsec">Frame timestamp in host microseconds.</param>
+	/// <param name="guestSeconds">Guest simulation clock seconds from <c>SimClock</c>, or NaN.</param>
 	public static void BeginFrame(ulong nowUsec, double guestSeconds)
 	{
 		_now = nowUsec;
 		GuestSeconds = guestSeconds;
-
-		// The latency margin moves once a frame, before any swap or draw this frame.
 		Playhead.BeginFrame(nowUsec);
 	}
 
-	/// <summary>
-	/// The interval a pair spans, in host microseconds, from the guest's own clock — or 0 when
-	/// it cannot be trusted (no world, a re-base, a step outside a quarter to eight ticks).
-	/// </summary>
-	public static double StatedIntervalUsec(double fromGuestSeconds)
+	/// <summary>Resets drawn-frame state and shared playhead counters cleanly for automated tests.</summary>
+	public static void ResetForTests()
 	{
-		if (double.IsNaN(GuestSeconds) || double.IsNaN(fromGuestSeconds))
-		{
-			return 0.0;
-		}
-
-		double usec = (GuestSeconds - fromGuestSeconds) * 1_000_000.0;
-		double nominal = Refii.Core.Engine_TickClock.TickUsec;
-		return usec > nominal * 0.25 && usec < nominal * 8.0 ? usec : 0.0;
+		_now = 0UL;
+		GuestSeconds = double.NaN;
+		_statedTick = 0u;
+		_heldByPause = false;
+		Frames = 0L;
+		System.Array.Clear(SwapIntervals);
+		Playhead.ResetForTests();
 	}
 
 	/// <summary>Frames the drawn pass has run; reported, to prove it runs every frame.</summary>

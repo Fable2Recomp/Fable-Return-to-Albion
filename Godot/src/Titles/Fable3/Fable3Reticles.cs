@@ -71,7 +71,10 @@ public static class Fable3Reticles
 		var colour = new Color(Values[3], Values[4], Values[5], Values[6]);
 		int counter = unchecked((int)Words[1]);
 		return slot == 1
-			? new Engine_HudReticule.Aim(new Vector3(Values[7], Values[8], Values[9]), Values[2], colour, Words[0], counter)
+			? new Engine_HudReticule.Aim(
+				new Vector3(Values[7], Values[8], Values[9]), Values[2], colour, Words[0], counter,
+				Screen: null, Object: Objects[player, slot], Tick: Refii.Core.Engine_TickClock.GuestGameTick,
+				StepComplete: Refii.Core.Engine_GuestFrame.Changed)
 			: new Engine_HudReticule.Aim(Vector3.Zero, Values[2], colour, Words[0], counter, new Vector2(Values[0], Values[1]));
 	}
 

@@ -215,6 +215,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         Engine_ClothBody? existing = Of(node);
         if (existing is not null && existing.Bound(mesh))
         {
+            existing.RefreshSkeleton(node);
             return existing;
         }
 
@@ -1045,11 +1046,26 @@ public partial class Engine_ClothBody : MeshInstance3D
 
     private bool _skeletonChecked;
 
+    /// <summary>
+    /// Refreshes the bound <see cref="Skeleton3D"/> and <see cref="Skin"/> immediately after the
+    /// parent entity re-rigs or clears its skeleton.
+    /// </summary>
+    public void RefreshSkeleton(MeshInstance3D parent)
+    {
+        _skeletonChecked = false;
+        EnsureSkeleton(parent);
+    }
+
     private void EnsureSkeleton(MeshInstance3D parent)
     {
         if (_skeleton is not null && IsInstanceValid(_skeleton))
         {
-            return;
+            using NodePath currentPath = parent.Skeleton;
+            Skeleton3D? current = currentPath.IsEmpty ? null : parent.GetNodeOrNull<Skeleton3D>(currentPath);
+            if (ReferenceEquals(current, _skeleton))
+            {
+                return;
+            }
         }
 
         if (_skeletonChecked && _skeleton is null && (Refii.Core.Engine_FramePhases.FrameIndex & 31) != 0)
@@ -1219,6 +1235,17 @@ public partial class Engine_ClothBody : MeshInstance3D
         PackAll();
         _patch?.Upload();
         ApplyBounds();
+    }
+
+    /// <summary>
+    /// Stops per-frame cloth simulation while retaining the final draped vertex state (e.g. on a
+    /// retained corpse whose skeleton is settled and waiting to fade out).
+    /// </summary>
+    public void Freeze()
+    {
+        Land();
+        _sleeping = true;
+        SetProcess(false);
     }
 
     private static int PopCount(UInt128 mask) =>

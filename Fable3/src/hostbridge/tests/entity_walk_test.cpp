@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "appearance_sublist.h"
 #include "entity_walk.h"
 
 // The walk names TU3's addresses (fable3_guest_build.h); this synthetic guest is TU3, so every
@@ -460,6 +461,10 @@ uint32_t WalkEntities(uint32_t em, uint32_t* out, uint32_t max_entities, NoteUnk
         appearance[7] = GuestByteAt(renderable + 0xE5u) != 0u && GuestWordAt(renderable + 0x120u) == 0u
                             ? kAppearanceDrawable
                             : 0u;
+        const uint32_t creature = Component(entity, 24u);
+        if (creature != 0u && GuestByteAt(creature + 0x18u) == 0u) {
+            appearance[7] |= refii::hostcore::kAppearanceDeadCreature;
+        }
         ++written;
     }
 
@@ -807,9 +812,100 @@ void CheckWords(uint32_t seed, World& world) {
     }
 }
 
+/// Active sub-component list check on CECGraphicAppearance (Fable 2 +0x10 and Fable 3 +0x0C).
+void CheckAppearanceSublist() {
+    using refii::hostcore::IsAppearanceSubcomponentActive;
+    using refii::hostcore::kFable2AppearanceSublistOffset;
+    using refii::hostcore::kFable3AppearanceSublistOffset;
+
+    SyntheticMemory m;
+    constexpr uint32_t kComp3 = 0x10020000u;
+    constexpr uint32_t kSentinel = 0x10021000u;
+    constexpr uint32_t kNodeA = 0x10021100u;
+    constexpr uint32_t kNodeB = 0x10021120u;
+    constexpr uint32_t kMorphNode = 0x1003000Cu;
+    constexpr uint32_t kEyesNode = 0x1004000Cu;
+    constexpr uint32_t kDetachedMorphNode = 0x1005000Cu;
+
+    // Empty sentinel returns false for any queried sub-component.
+    m.Put32(kComp3 + kFable2AppearanceSublistOffset, kSentinel);
+    m.Put32(kComp3 + kFable3AppearanceSublistOffset, kSentinel);
+    m.Put32(kSentinel + 0u, kSentinel);
+    m.Put32(kSentinel + 4u, kSentinel);
+    if (IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kMorphNode) ||
+        IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "empty appearance sublist should report sub-component inactive");
+        return;
+    }
+
+    // Link two active nodes: sentinel -> kNodeA(kMorphNode) -> kNodeB(kEyesNode) -> sentinel.
+    m.Put32(kSentinel + 0u, kNodeA);
+    m.Put32(kSentinel + 4u, kNodeB);
+    m.Put32(kNodeA + 0u, kNodeB);
+    m.Put32(kNodeA + 4u, kSentinel);
+    m.Put32(kNodeA + 8u, kMorphNode);
+    m.Put32(kNodeB + 0u, kSentinel);
+    m.Put32(kNodeB + 4u, kNodeA);
+    m.Put32(kNodeB + 8u, kEyesNode);
+
+    if (!IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kMorphNode) ||
+        !IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kEyesNode) ||
+        IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kDetachedMorphNode)) {
+        Fail(0u, "linked appearance sublist mismatch");
+        return;
+    }
+
+    // Unlink kNodeA (Hollow Man crumble): sentinel -> kNodeB -> sentinel.
+    m.Put32(kSentinel + 0u, kNodeB);
+    m.Put32(kNodeB + 4u, kSentinel);
+    if (IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kMorphNode) ||
+        IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "unlinked morph sub-component must report inactive");
+        return;
+    }
+
+    // Conservative fallback when comp3 or a torn link pointer is unreadable/null.
+    if (!IsAppearanceSubcomponentActive(m, 0u, kFable2AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "null renderable must fall back conservatively");
+        return;
+    }
+    m.Put32(kNodeB + 0u, 0xDEADu);
+    if (!IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "torn sublist link must fall back conservatively");
+        return;
+    }
+}
+
+/// CECCreature+0x18 alive-byte check used by both Fable 2 and Fable 3 native bridges.
+void CheckDeadCreatureFlag() {
+    using refii::hostcore::IsDeadCreature;
+
+    SyntheticMemory m;
+    constexpr uint32_t kCreature = 0x10060000u;
+
+    if (IsDeadCreature(m, 0u) || IsDeadCreature(m, 0x1234u)) {
+        Fail(0u, "implausible creature pointer must not be flagged dead");
+        return;
+    }
+
+    m.Put8(kCreature + 0x18u, 1u);
+    if (IsDeadCreature(m, kCreature)) {
+        Fail(0u, "living creature (alive==1) must not be flagged dead");
+        return;
+    }
+
+    m.Put8(kCreature + 0x18u, 0u);
+    if (!IsDeadCreature(m, kCreature)) {
+        Fail(0u, "dead creature (alive==0) must be flagged dead");
+        return;
+    }
+}
+
 }  // namespace
 
 int main() {
+    CheckAppearanceSublist();
+    CheckDeadCreatureFlag();
     uint32_t walked = 0u;
     for (uint32_t seed = 1u; seed <= 400u; ++seed) {
         World world(seed);

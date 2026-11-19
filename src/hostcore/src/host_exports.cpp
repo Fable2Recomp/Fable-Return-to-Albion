@@ -703,7 +703,11 @@ extern "C" {
 ///     RefiiHostGetHeroInventoryItems — the inventory snapshot with each record's item — and, for
 ///     the co-op kit, RefiiHostGetEntityWornDyes, RefiiHostGetEntityScars and
 ///     RefiiHostGetEntityGender.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 244; }
+/// 245 adds RefiiHostSetHostAim(active, fwd_x, fwd_y, fwd_z) for host-authoritative ranged aiming
+///     (guest world space) and appends [15..17] (head_x, head_y, head_z in guest world space) and
+///     [18] (flag bits: bit 0 LookInverted, bit 1 HostAimApplied, bit 2 HasHead) to
+///     RefiiHostGetMouseLook.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 245; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -793,7 +797,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostPlayerOwned(void) { return refii_bridge_
 /// drawn — 0 not at all, 1 orbit about the focus, 2 in place, 3 rigidly about the pivot with the
 /// ranged aim (yaw, then pitch about the level right axis); [12] the target switches the mouse
 /// handed to a lock, by flick or wheel notch (run total); [13] for mode 3 the camera's elevation bound in degrees; [14] the
-/// ranged aim object whose reticule turns with the view (mode 3), else 0. Returns the state's
+/// ranged aim object whose reticule turns with the view (mode 3), else 0; [15..17] hero head pivot
+/// in guest world space (x, y, z) when reported; [18] flag bits (bit 0 LookInverted, bit 1
+/// HostAimApplied, bit 2 HasHead). Returns the state's
 /// sequence — odd while an update is between taking and stating, so a read that straddles one can
 /// be told from a whole one.
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetMouseLook(double* out_values, uint32_t count) {
@@ -864,6 +870,14 @@ REFII_HOST_ABI_EXPORT void RefiiHostPostMouseWheel(int32_t notches) {
 /// the mouse as flicks between targets; a pad keeps the shipped camera.
 REFII_HOST_ABI_EXPORT void RefiiHostSetMouseLookDevice(int32_t mouse) {
     refii::vfs::MouseLookSetDevice(mouse != 0);
+}
+
+
+/// Sets or clears the host-authoritative ranged aim direction (unit vector in guest world space).
+/// While active, the guest's RangedCombatCamera adopts this forward direction directly instead of
+/// chasing an eased cursor inside a cone.
+REFII_HOST_ABI_EXPORT void RefiiHostSetHostAim(int32_t active, float fwd_x, float fwd_y, float fwd_z) {
+    refii::vfs::MouseLookSetHostAim(active != 0, fwd_x, fwd_y, fwd_z);
 }
 
 
@@ -1507,7 +1521,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetGuestFrame(void) {
 REFII_HOST_ABI_EXPORT int RefiiHostSetTimeBaseMode(int mode, uint64_t* out_capped,
                                                    uint64_t* out_granted,
                                                    uint64_t* out_watchdog) {
-    if (mode >= 0) {
+    if (mode >= 0 || mode == -2 || mode == -3) {
         refii_bridge_rex_set_time_base_mode(mode);
     }
 

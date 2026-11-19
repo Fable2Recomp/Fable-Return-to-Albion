@@ -173,8 +173,8 @@ public sealed class Engine_PairPlayhead
 
 	private const double LatenessPercentile = 0.90;
 
-	/// <summary>Lateness past this is a hitch (a load, a pause), not arrival jitter, and is not evidence.</summary>
-	private const double LatenessHitch = 0.5;
+	/// <summary>Lateness past this is a hitch (a load, a pause), not normal low-FPS arrival jitter, and is not evidence.</summary>
+	private const double LatenessHitch = 0.85;
 
 	/// <summary>The most the margin may add per unit of elapsed real time: 2% transient slow motion at worst.</summary>
 	private const double MarginRiseTolerance = 0.02;
@@ -182,11 +182,20 @@ public sealed class Engine_PairPlayhead
 	/// <summary>Removing margin buys only responsiveness, so it crawls: 0.2% of elapsed time.</summary>
 	private const double MarginFallTolerance = 0.002;
 
+	private const int PeriodWindow = 16;
+
 	private readonly double[] _lateness = new double[LatenessWindow];
 	private readonly double[] _latenessSorted = new double[LatenessWindow];
 	private int _latenessCount;
 	private int _latenessAt;
 	private double _marginFrameUsec;
+
+	private readonly double[] _swapDeltaUsec = new double[PeriodWindow];
+	private readonly int[] _swapSteps = new int[PeriodWindow];
+	private int _periodCount;
+	private int _periodAt;
+	private double _sumDeltaUsec;
+	private int _sumSteps;
 
 	/// <summary>The lateness the margin is steered toward, in intervals; 0 until swaps have been seen.</summary>
 	public double LatenessTicks
@@ -324,14 +333,36 @@ public sealed class Engine_PairPlayhead
 			steps = 1;
 		}
 
-		// Measured from the real arrival, not from the anchor: measuring the anchor against
-		// itself feeds the estimate its own output.
+		// Measured from a window ratio of total elapsed arrival time over total ticks (`sum(dt)/sum(steps)`),
+		// not per-swap `dt / steps`, avoiding frame-quantization sawtooth and multi-step ratio bias
+		// below 15 FPS.
 		if (_observedUsec > 0.0 && nowUsec > _observedUsec)
 		{
-			double measured = (nowUsec - _observedUsec) / steps;
-			if (measured > _nominalUsec * 0.25 && measured < _nominalUsec * 4.0)
+			double deltaUsec = nowUsec - _observedUsec;
+			double perStep = deltaUsec / steps;
+			if (perStep > _nominalUsec * 0.25 && perStep < _nominalUsec * 4.0)
 			{
-				_periodUsec += (measured - _periodUsec) * PeriodTrust;
+				if (_periodCount == PeriodWindow)
+				{
+					_sumDeltaUsec -= _swapDeltaUsec[_periodAt];
+					_sumSteps -= _swapSteps[_periodAt];
+				}
+				else
+				{
+					++_periodCount;
+				}
+
+				_swapDeltaUsec[_periodAt] = deltaUsec;
+				_swapSteps[_periodAt] = steps;
+				_sumDeltaUsec += deltaUsec;
+				_sumSteps += steps;
+				_periodAt = (_periodAt + 1) % PeriodWindow;
+
+				if (_sumSteps > 0)
+				{
+					double meanPeriod = _sumDeltaUsec / _sumSteps;
+					_periodUsec += (meanPeriod - _periodUsec) * PeriodTrust;
+				}
 			}
 		}
 
@@ -366,9 +397,29 @@ public sealed class Engine_PairPlayhead
 	{
 		_anchorUsec = 0.0;
 		_observedUsec = 0.0;
-		_ownPeriodUsec = _nominalUsec;
+		_periodUsec = _nominalUsec;
 		_latenessCount = 0;
 		_latenessAt = 0;
+		_periodCount = 0;
+		_periodAt = 0;
+		_sumDeltaUsec = 0.0;
+		_sumSteps = 0;
+		MarginTicks = 0.0;
+		_marginFrameUsec = 0.0;
+	}
+
+	/// <summary>Resets all state and diagnostic counters cleanly for automated tests.</summary>
+	public void ResetForTests()
+	{
+		Reset();
+		Extrapolated = 0;
+		Held = 0;
+		Restarts = 0;
+		LastSwapAlpha = 0.0;
+		StatedSwaps = 0;
+		WorstSwapError = 0.0;
+		Floored = 0;
+		WorstEarly = 0.0;
 	}
 
 	/// <summary>How far through the current pair this frame falls; 0 to <see cref="Ceiling"/>.</summary>

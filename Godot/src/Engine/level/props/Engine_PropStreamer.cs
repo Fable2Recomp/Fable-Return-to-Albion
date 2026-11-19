@@ -37,6 +37,8 @@ public partial class Engine_PropStreamer : Node3D
     public const string RecordsMeta = "record_hashes";
 
     private static readonly Dictionary<string, ArrayMesh> Cache = new();
+    private static readonly Dictionary<string, long> CacheAccess = new();
+    private static long _cacheAccessClock;
 
     private static readonly List<Engine_PropStreamer> Live = new();
 
@@ -127,7 +129,65 @@ public partial class Engine_PropStreamer : Node3D
         {
             _cacheGeneration++;
             Cache.Clear();
+            CacheAccess.Clear();
             Failed.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Drops wind-swaying meshes (whose material wind bends track region weather) and trims
+    /// remaining rigid prop meshes down to <paramref name="maxRigidMeshes"/> on an LRU basis so
+    /// desktop level swaps retain shared architecture/prop meshes and shadow casters in memory.
+    /// </summary>
+    public static void TrimCacheForRegionSwap(int maxRigidMeshes = 512)
+    {
+        if (Refii.Models.Engine_ClassicMaterial.Active || maxRigidMeshes <= 0)
+        {
+            ClearCache();
+            return;
+        }
+
+        lock (Cache)
+        {
+            _cacheGeneration++;
+            Failed.Clear();
+
+            var windOrInvalid = new List<string>();
+            foreach ((string path, ArrayMesh mesh) in Cache)
+            {
+                if (!GodotObject.IsInstanceValid(mesh) || SwaysInWind(mesh))
+                {
+                    windOrInvalid.Add(path);
+                }
+            }
+
+            for (int i = 0; i < windOrInvalid.Count; i++)
+            {
+                string key = windOrInvalid[i];
+                Cache.Remove(key);
+                CacheAccess.Remove(key);
+            }
+
+            if (Cache.Count <= maxRigidMeshes)
+            {
+                return;
+            }
+
+            var ordered = new List<(string Path, long Access)>(Cache.Count);
+            foreach (string path in Cache.Keys)
+            {
+                CacheAccess.TryGetValue(path, out long access);
+                ordered.Add((path, access));
+            }
+
+            ordered.Sort(static (a, b) => a.Access.CompareTo(b.Access));
+            int removeCount = ordered.Count - maxRigidMeshes;
+            for (int i = 0; i < removeCount; i++)
+            {
+                string key = ordered[i].Path;
+                Cache.Remove(key);
+                CacheAccess.Remove(key);
+            }
         }
     }
 
@@ -264,16 +324,28 @@ public partial class Engine_PropStreamer : Node3D
         }
 
         var paths = new List<string>(_pending.Count);
+        var hiddenPaths = new List<string>();
         foreach (GeometryInstance3D instance in _pending)
         {
+            string path = instance.GetMeta(ModelPathMeta).AsString();
+            if (TryPeek(path, out _, out _))
+            {
+                continue;
+            }
+
             if (instance.Visible)
             {
-                string path = instance.GetMeta(ModelPathMeta).AsString();
-                if (!TryPeek(path, out _, out _))
-                {
-                    paths.Add(path);
-                }
+                paths.Add(path);
             }
+            else
+            {
+                hiddenPaths.Add(path);
+            }
+        }
+
+        if (hiddenPaths.Count != 0)
+        {
+            paths.AddRange(hiddenPaths);
         }
 
         _prefetchStop = false;
@@ -625,6 +697,21 @@ public partial class Engine_PropStreamer : Node3D
         }
     }
 
+    /// <summary>
+    /// Resolves background worker concurrency for model prefetching: capped at 2 on Android,
+    /// scaled up to 8 on multi-core desktop CPUs to overlap CPU parsing/decompression with main-thread commits.
+    /// </summary>
+    public static int ResolvePrefetchWorkerCount(int processorCount, bool isAndroid, int itemCount)
+    {
+        if (itemCount <= 0)
+        {
+            return 0;
+        }
+
+        int maxWorkers = isAndroid ? 2 : Math.Clamp(processorCount / 2, 2, 6);
+        return Math.Min(maxWorkers, itemCount);
+    }
+
     public static PrefetchJob PrefetchModels(IReadOnlyList<string> paths, Func<bool>? stop = null)
     {
         var distinct = new List<string>(paths.Count);
@@ -647,8 +734,10 @@ public partial class Engine_PropStreamer : Node3D
 
         var job = new PrefetchJob(distinct.Count);
 
-        int workers = Math.Min(Math.Max(1, System.Environment.ProcessorCount - 1), 2);
-        workers = Math.Min(workers, distinct.Count);
+        int workers = ResolvePrefetchWorkerCount(
+            System.Environment.ProcessorCount,
+            PreferLowPrefetchConcurrency,
+            distinct.Count);
 
         int cursor = -1;
         var trackedWorkers = new Refii.Core.Engine_RegionWorkers();
@@ -720,33 +809,36 @@ public partial class Engine_PropStreamer : Node3D
     public static List<string> PendingModelPaths(Node container)
     {
         var paths = new List<string>();
+        var hiddenPaths = new List<string>();
         bool recursive = Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode;
-        CollectPaths(container, paths, recursive);
+        CollectPaths(container, paths, hiddenPaths, recursive);
+        if (hiddenPaths.Count != 0)
+        {
+            paths.AddRange(hiddenPaths);
+        }
         return paths;
 
-        static void CollectPaths(Node parent, List<string> result, bool recurse)
+        static void CollectPaths(Node parent, List<string> visible, List<string> hidden, bool recurse)
         {
             foreach (Node child in parent.GetChildren())
             {
                 if (child is MultiMeshInstance3D multi &&
-                    multi.Visible &&
                     multi.Multimesh is not null &&
                     multi.Multimesh.Mesh is null &&
                     multi.HasMeta(ModelPathMeta))
                 {
-                    result.Add(multi.GetMeta(ModelPathMeta).AsString());
+                    (multi.Visible ? visible : hidden).Add(multi.GetMeta(ModelPathMeta).AsString());
                 }
                 else if (child is MeshInstance3D single &&
-                    single.Visible &&
                     single.Mesh is null &&
                     single.HasMeta(ModelPathMeta))
                 {
-                    result.Add(single.GetMeta(ModelPathMeta).AsString());
+                    (single.Visible ? visible : hidden).Add(single.GetMeta(ModelPathMeta).AsString());
                 }
 
                 if (recurse && child.GetChildCount() > 0)
                 {
-                    CollectPaths(child, result, recurse: true);
+                    CollectPaths(child, visible, hidden, recurse: true);
                 }
             }
         }
@@ -780,7 +872,9 @@ public partial class Engine_PropStreamer : Node3D
         _watch.Restart();
 
         double budget = (Engine.IsEditorHint() || Engine_LevelScene.ForceEditorMode) ? 16.0 : MillisecondsPerFrame;
-        int maxStepsPerTick = budget > DefaultMsPerFrame ? 140 : 48;
+        int maxStepsPerTick = Refii.Core.Engine_ServerSyncs.LoadCoverActive
+            ? 1024
+            : (budget > DefaultMsPerFrame ? 140 : 48);
         int stepsThisTick = 0;
         bool poolDone = _prefetch is null || _prefetch.IsComplete;
         int untouched = 0;
@@ -835,13 +929,28 @@ public partial class Engine_PropStreamer : Node3D
                     // cannot deliver is decoded here.
                     ++_requeueRounds;
                     var again = new List<string>(_remaining.Count);
+                    var hiddenAgain = new List<string>();
                     for (int i = 0; i < _remaining.Count; ++i)
                     {
                         GeometryInstance3D pending = _remaining[i];
-                        if (GodotObject.IsInstanceValid(pending) && pending.Visible)
+                        if (!GodotObject.IsInstanceValid(pending))
+                        {
+                            continue;
+                        }
+
+                        if (pending.Visible)
                         {
                             again.Add(_remainingPaths[i]);
                         }
+                        else
+                        {
+                            hiddenAgain.Add(_remainingPaths[i]);
+                        }
+                    }
+
+                    if (hiddenAgain.Count != 0)
+                    {
+                        again.AddRange(hiddenAgain);
                     }
 
                     _prefetch = PrefetchModels(again, () => _prefetchStop);
@@ -979,7 +1088,7 @@ public partial class Engine_PropStreamer : Node3D
     private static double Ms(long from) =>
         (System.Diagnostics.Stopwatch.GetTimestamp() - from) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
-    private static bool TryPeek(string path, out ArrayMesh? mesh, out bool knownFailure)
+    internal static bool TryPeek(string path, out ArrayMesh? mesh, out bool knownFailure)
     {
         mesh = null;
         knownFailure = false;
@@ -987,6 +1096,7 @@ public partial class Engine_PropStreamer : Node3D
         {
             if (Cache.TryGetValue(path, out ArrayMesh? cached) && GodotObject.IsInstanceValid(cached))
             {
+                CacheAccess[path] = System.Threading.Interlocked.Increment(ref _cacheAccessClock);
                 mesh = cached;
                 return true;
             }
@@ -1667,6 +1777,7 @@ public partial class Engine_PropStreamer : Node3D
             if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
                 GodotObject.IsInstanceValid(cached))
             {
+                CacheAccess[virtualPath] = System.Threading.Interlocked.Increment(ref _cacheAccessClock);
                 present = true;
                 return cached;
             }
@@ -1700,6 +1811,7 @@ public partial class Engine_PropStreamer : Node3D
                 if (Cache.TryGetValue(virtualPath, out ArrayMesh? cached) &&
                     GodotObject.IsInstanceValid(cached))
                 {
+                    CacheAccess[virtualPath] = System.Threading.Interlocked.Increment(ref _cacheAccessClock);
                     present = true;
                     return cached;
                 }
@@ -1761,6 +1873,7 @@ public partial class Engine_PropStreamer : Node3D
                             Failed.Remove(virtualPath);
                             HeaderOnly.Remove(virtualPath);
                             Cache[virtualPath] = mesh;
+                            CacheAccess[virtualPath] = System.Threading.Interlocked.Increment(ref _cacheAccessClock);
                         }
                         else
                         {

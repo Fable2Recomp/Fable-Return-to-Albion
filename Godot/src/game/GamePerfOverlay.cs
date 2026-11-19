@@ -175,6 +175,8 @@ public partial class GamePerfOverlay : CanvasLayer
 		double drawCalls = Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
 		double primitives = Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame);
 		double vram = Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / 1048576.0;
+		double assetVram = (Performance.GetMonitor(Performance.Monitor.RenderTextureMemUsed) +
+			Performance.GetMonitor(Performance.Monitor.RenderBufferMemUsed)) / 1048576.0;
 
 		_text.Clear();
 		if (GameWhereabouts.Current is { } place)
@@ -191,7 +193,7 @@ public partial class GamePerfOverlay : CanvasLayer
 		_text.Append($"main  {processMs:0.0} ms   entities {entitiesMs:0.0}   waiting on render {waitMs:0.0}\n");
 		_text.Append($"render cpu {renderCpu:0.0} ms   gpu {renderGpu:0.0} ms   ");
 		_text.Append(Bound(processMs, renderCpu, renderGpu)).Append('\n');
-		_text.Append($"draws {drawCalls:0}   prims {primitives / 1e6:0.0} M   vram {vram / 1024.0:0.00} GB\n");
+		_text.Append($"draws {drawCalls:0}   prims {primitives / 1e6:0.0} M   vram {vram / 1024.0:0.00} GB (assets {assetVram / 1024.0:0.00})\n");
 		_text.Append($"gc gen2 {System.GC.CollectionCount(2)}   pause {System.GC.GetTotalPauseDuration().TotalMilliseconds / 1000.0:0.0} s total");
 
 		if (Engine_GpuPasses.Available &&

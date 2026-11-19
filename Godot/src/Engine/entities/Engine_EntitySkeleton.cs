@@ -328,8 +328,63 @@ public sealed class Engine_EntitySkeleton
 	/// <summary><see cref="Refii.Animations.Engine_TitleRig.ReachIncludesGuestRest"/>, read at construction.</summary>
 	private readonly bool _reachIncludesGuestRest = Refii.Core.Engine_TitleGame.Active.Rig.ReachIncludesGuestRest;
 
-	/// <summary>Poses refused because a bone lay outside any reach the rig can have.</summary>
+	/// <summary>Poses refused because a bone carried non-finite data, non-unit rotation, or overflow coordinates.</summary>
 	public static int ImplausiblePoses;
+
+	/// <summary>Safety ceiling on raw bone coordinates matching <c>MaxFxReach</c> (no 4 m bone reach cap).</summary>
+	public const float MaxBoneCoordinate = 10_000f;
+
+	/// <summary>True while a host-driven disarticulated/crumble simulation owns this rig's bones.</summary>
+	public bool IsDisarticulated { get; set; }
+
+	private System.Func<int, bool>? _isPosedPredicate;
+
+	/// <summary>Cached predicate matching <see cref="IsPosed"/> for zero-allocation attachment queries.</summary>
+	public System.Func<int, bool> IsPosedPredicate => _isPosedPredicate ??= IsPosed;
+
+	/// <summary>Model parent indices for every bone in this rig.</summary>
+	public int[] Parents => _rig.Parents;
+
+	/// <summary>
+	/// Copies each bone's model-space global rest transform into <paramref name="destination"/>.
+	/// </summary>
+	public void CopyRestGlobals(System.Span<Transform3D> destination)
+	{
+		int count = System.Math.Min(_rig.BoneCount, destination.Length);
+		for (int m = 0; m < count; ++m)
+		{
+			destination[m] = _skeleton.GetBoneGlobalRest(m);
+		}
+	}
+
+	/// <summary>
+	/// Validates a single bone transform against corruption/overflow faults without enforcing an
+	/// arbitrary 4 m rest-reach cap so crumbled and ragdolled skeletons scatter freely.
+	/// </summary>
+	public static bool IsPlausibleBone(
+		Vector3 translation, Quaternion rotation, Vector3 scale, out string? reason)
+	{
+		if (!translation.IsFinite() || !rotation.IsFinite() || !scale.IsFinite())
+		{
+			reason = "not finite";
+			return false;
+		}
+
+		if (translation.Length() > MaxBoneCoordinate)
+		{
+			reason = "beyond world ceiling";
+			return false;
+		}
+
+		if (rotation.LengthSquared() is < 0.5f or > 2f)
+		{
+			reason = "rotation not unit";
+			return false;
+		}
+
+		reason = null;
+		return true;
+	}
 
 	private static int _refusalsLogged;
 	/// <summary>
@@ -415,38 +470,11 @@ public sealed class Engine_EntitySkeleton
 	/// <summary>
 	/// Whether a pose could be this rig's. The double-read tear detector in the bridge catches
 	/// a write that lands BETWEEN its two copies; garbage that reads identically twice is what
-	/// this catches: a bone beyond twice the rest reach, a non-finite lane, or a rotation far
-	/// from unit length is not a pose of this rig.
+	/// this catches: a non-finite lane, a non-unit rotation, or overflow coordinates beyond
+	/// <see cref="MaxBoneCoordinate"/>.
 	/// </summary>
 	private bool Plausible(in HostBridge.BonePose pose)
 	{
-		// Reach is measured from the body, not the skeleton origin. A ragdoll's bones are the Havok
-		// bodies times the inverse of the entity matrix (`sub_828C8E80` via `sub_8227D8A8`), and
-		// `sub_825963B8` steers that entity to (ragX, ragY, its own Z) @0x82596748..0x82596788, so a
-		// lifted body's height is in every bone at once. A rigid offset cancels here; a body flung
-		// apart does not.
-		Vector3 anchor = Vector3.Zero;
-		int anchorGuest = int.MaxValue;
-		for (int m = 0; m < _modelToGuest.Length; ++m)
-		{
-			int g = _modelToGuest[m];
-			if (g >= 0 && g < anchorGuest)
-			{
-				anchorGuest = g;
-			}
-		}
-
-		if (anchorGuest != int.MaxValue && pose.Translation(anchorGuest).IsFinite())
-		{
-			anchor = pose.Translation(anchorGuest);
-		}
-
-		// The bound is the rig's reach at rest, and the guest's own rest is a rest where the title's
-		// skeletons place bones the model file does not (Engine_TitleRig.ReachIncludesGuestRest).
-		float reach = _reachIncludesGuestRest
-			? Mathf.Max(_restReach, GuestRestReach)
-			: _restReach;
-		float limit = reach * 2f + 0.5f;
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -458,21 +486,7 @@ public sealed class Engine_EntitySkeleton
 			Vector3 t = pose.Translation(g);
 			Quaternion q = pose.Rotation(g);
 			Vector3 sc = pose.Scale(g);
-			string? why = null;
-			if (!t.IsFinite() || !q.IsFinite() || !sc.IsFinite())
-			{
-				why = "not finite";
-			}
-			else if ((t - anchor).Length() > limit)
-			{
-				why = "beyond reach";
-			}
-			else if (q.LengthSquared() is < 0.5f or > 2f)
-			{
-				why = "rotation not unit";
-			}
-
-			if (why is null)
+			if (IsPlausibleBone(t, q, sc, out string? why))
 			{
 				continue;
 			}
@@ -480,7 +494,7 @@ public sealed class Engine_EntitySkeleton
 			if (_refusalsLogged < 12)
 			{
 				++_refusalsLogged;
-				GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} from-anchor={(t - anchor).Length():0.000} limit={limit:0.000} reach={_restReach:0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
+				GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
 			}
 
 			return false;
@@ -574,7 +588,7 @@ public sealed class Engine_EntitySkeleton
 	/// </summary>
 	private void ProbeBonesOut(uint entity)
 	{
-		if (_bonesOutReported || (++_bonesOutTicks & 63) != 0)
+		if (IsDisarticulated || _bonesOutReported || (++_bonesOutTicks & 63) != 0)
 		{
 			return;
 		}
@@ -1213,26 +1227,29 @@ public sealed class Engine_EntitySkeleton
 		// calls the local->model converter `sub_821F57D0` with no condition on it and only
 		// then stamps 2, so an array a host reads outside the tick has been converted whatever
 		// the flag says. With nothing to weigh, the proven default is the one to take.
-		(int localVotes, int modelVotes, bool split) = LocalVotes(pose);
-		if (split)
+		if (!IsDisarticulated)
 		{
-			++MixedPosesHeld;
-			return;
-		}
-
-		if (localVotes > modelVotes)
-		{
-			++LocalPosesHeld;
-			if (++_localReads == LocalStuckFrames)
+			(int localVotes, int modelVotes, bool split) = LocalVotes(pose);
+			if (split)
 			{
-				++LocalStuckRigs;
-				if (_stuckLogged.Count < 128 && _stuckLogged.Add(_rig.Names[0]))
-				{
-					GD.Print($"[rig-stuck] entity 0x{entity:X8} '{_skeleton.Name}' rig '{_rig.Names[0]}' bones {_guestBones} has read LOCAL for {LocalStuckFrames} frames (space={pose.Space}, votes local {localVotes} model {modelVotes}, reach {_restReach:0.000})");
-				}
+				++MixedPosesHeld;
+				return;
 			}
 
-			return;
+			if (localVotes > modelVotes)
+			{
+				++LocalPosesHeld;
+				if (++_localReads == LocalStuckFrames)
+				{
+					++LocalStuckRigs;
+					if (_stuckLogged.Count < 128 && _stuckLogged.Add(_rig.Names[0]))
+					{
+						GD.Print($"[rig-stuck] entity 0x{entity:X8} '{_skeleton.Name}' rig '{_rig.Names[0]}' bones {_guestBones} has read LOCAL for {LocalStuckFrames} frames (space={pose.Space}, votes local {localVotes} model {modelVotes}, reach {_restReach:0.000})");
+					}
+				}
+
+				return;
+			}
 		}
 
 		_localReads = 0;
@@ -1814,6 +1831,133 @@ public sealed class Engine_EntitySkeleton
 		{
 			_shadowSynced = true;
 		}
+	}
+
+	/// <summary>
+	/// Captures every live bone's current world-space position and orientation keyed by bone name so
+	/// a replacement crumbled/disarticulated skeleton can seed cleanly from the live pose.
+	/// </summary>
+	public void CaptureWorldBones(
+		Transform3D entityWorld,
+		System.Collections.Generic.Dictionary<string, (Vector3 Pos, Quaternion Rot)> destination)
+	{
+		destination.Clear();
+		for (int m = 0; m < _rig.BoneCount; ++m)
+		{
+			Transform3D world = entityWorld * _skeleton.GetBoneGlobalPose(m);
+			if (world.Origin.IsFinite())
+			{
+				destination[_rig.Names[m]] = (world.Origin, world.Basis.Orthonormalized().GetRotationQuaternion());
+			}
+		}
+	}
+
+	/// <summary>
+	/// Samples the guest's current live bone translations into Godot world space aligned by model
+	/// bone index <c>m</c> (writing <c>NaN</c> for unmapped slots) for indoor floor tracking and
+	/// reassembly detection, with zero heap allocations.
+	/// </summary>
+	public bool TrySampleGuestWorldBones(
+		uint entity, Transform3D entityWorld, System.Span<Vector3> outWorldPositions, out int validCount)
+	{
+		validCount = 0;
+		if (HostBridge.GetEntityPose(entity) is not { } pose ||
+			pose.Torn ||
+			pose.BoneCount != _guestBones ||
+			(pose.Space != 1 && pose.Space != 2))
+		{
+			return false;
+		}
+
+		int limit = System.Math.Min(_modelToGuest.Length, outWorldPositions.Length);
+		Vector3 invalid = new(float.NaN, float.NaN, float.NaN);
+		for (int m = 0; m < limit; ++m)
+		{
+			outWorldPositions[m] = invalid;
+			int g = _modelToGuest[m];
+			if (g < 0)
+			{
+				continue;
+			}
+
+			Vector3 t = pose.Translation(g);
+			if (!t.IsFinite() || t.Length() > MaxBoneCoordinate)
+			{
+				continue;
+			}
+
+			Vector3 worldPos = entityWorld * Swizzle(t);
+			if (worldPos.IsFinite())
+			{
+				outWorldPositions[m] = worldPos;
+				++validCount;
+			}
+		}
+
+		return validCount > 0;
+	}
+
+	/// <summary>
+	/// Writes a host-computed array of model-space bone transforms directly into the skeleton and
+	/// its shadow proxy in O(N) parent order.
+	/// </summary>
+	public void ApplyModelSpacePoses(System.ReadOnlySpan<Transform3D> modelPoses)
+	{
+		int count = System.Math.Min(_rig.BoneCount, modelPoses.Length);
+		if (count <= 0)
+		{
+			return;
+		}
+
+		_blendedFrame = Refii.Core.Engine_ProcessFrame.Current;
+		_wroteSettled = false;
+
+		bool shadowNow = Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out Skeleton3D? shadow);
+		_globals ??= new Transform3D[_rig.BoneCount];
+		_inverses ??= new Transform3D[_rig.BoneCount];
+		if (_inverted is null)
+		{
+			_inverted = new bool[_rig.BoneCount];
+		}
+		else
+		{
+			System.Array.Clear(_inverted);
+		}
+
+		for (int m = 0; m < count; ++m)
+		{
+			Transform3D global = modelPoses[m];
+			if (!global.Origin.IsFinite())
+			{
+				global = Transform3D.Identity;
+			}
+
+			_globals[m] = global;
+		}
+
+		for (int m = 0; m < count; ++m)
+		{
+			int parent = _rig.Parents[m];
+			Transform3D local = _globals[m];
+			if (parent >= 0 && parent < count && parent != m)
+			{
+				if (!_inverted[parent])
+				{
+					_inverses[parent] = _globals[parent].AffineInverse();
+					_inverted[parent] = true;
+				}
+
+				local = _inverses[parent] * local;
+			}
+
+			_skeleton.SetBonePose(m, local);
+			if (shadowNow)
+			{
+				shadow!.SetBonePose(m, local);
+			}
+		}
+
+		_shadowSynced = shadowNow;
 	}
 
 	/// <summary>Where the pose blend's alpha lands: pinned to either end, or genuinely between.</summary>

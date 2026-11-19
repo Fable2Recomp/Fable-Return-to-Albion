@@ -362,7 +362,7 @@ public partial class GameWindow : Node
 		{
 			HostBridge.SampleGuestFrame();
 		}
-		if (Refii.Core.Engine_GuestFrame.Changed || GameEntities.FeedEveryFrame)
+		if (GameEntities.Current is not null && (Refii.Core.Engine_GuestFrame.Changed || GameEntities.FeedEveryFrame))
 		{
 			HostEntityWalk.Kick();
 		}
@@ -796,13 +796,23 @@ public partial class GameWindow : Node
 		}
 	}
 
+	internal const int UnfocusedMaxFps = 30;
+
+	public static int ResolveEffectiveMaxFps(int configuredMaxFps, bool focused, bool loadCoverHeld)
+	{
+		if (focused || loadCoverHeld)
+		{
+			return configuredMaxFps;
+		}
+
+		return configuredMaxFps > 0 ? System.Math.Min(configuredMaxFps, UnfocusedMaxFps) : UnfocusedMaxFps;
+	}
+
 	private void UpdateEffectiveMaxFps()
 	{
 		bool focused = GetWindow()?.HasFocus() ?? true;
-		int configured = _windowSettings.MaxFps;
-		int want = !focused
-			? (configured > 0 ? System.Math.Min(configured, 30) : 30)
-			: configured;
+		bool loadCoverHeld = GameWorld.CoverHeld || !Refii.Models.Engine_ShaderWarmup.Done;
+		int want = ResolveEffectiveMaxFps(_windowSettings.MaxFps, focused, loadCoverHeld);
 		if (Engine.MaxFps != want)
 		{
 			Engine.MaxFps = want;

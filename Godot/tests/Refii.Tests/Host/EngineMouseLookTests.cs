@@ -362,4 +362,28 @@ public class EngineMouseLookTests
         AssertThat(Same(after, carried)).IsTrue();
         AssertThat(anchorAfter.DistanceTo(drawnAnchor) < 1e-3f).IsTrue();
     }
+
+    [TestCase]
+    public void TestObservePostedUpdatesOutstandingWithoutMutatingGuestState()
+    {
+        var head = new Vector3(0.5f, 1.5f, -0.25f);
+        var look = new Engine_MouseLook();
+        var timeline = new Engine_TickTimeline(stillWhenUnchanged: true);
+        var stated = new Transform3D(Basis.Identity, new Vector3(0f, 2f, 4f));
+
+        look.Observe(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1f, head, Engine_MouseLook.ModeAim, 30f, 0u);
+        timeline.Reset(10.0, stated, 60f);
+        Transform3D line = timeline.Advance(1_000_000UL, 10.0);
+        Transform3D before = look.DrawAhead(line);
+
+        look.ObservePosted(4.0, -1.5);
+        Transform3D after = look.DrawAhead(line);
+
+        AssertThat(look.Mode).IsEqual(Engine_MouseLook.ModeAim);
+        AssertThat(look.PivotOffsets).IsEqualApprox(head, new Vector3(1e-4f, 1e-4f, 1e-4f));
+        AssertThat(look.Outstanding).IsEqual(4.0);
+        AssertThat(look.OutstandingPitch).IsEqual(-1.5);
+        AssertThat(Math.Abs((Heading(after) - Heading(before)) - 4.0) < 1e-2).IsTrue();
+        AssertThat(Math.Abs((Elevation(after) - Elevation(before)) + 1.5) < 1e-2).IsTrue();
+    }
 }

@@ -232,7 +232,7 @@ public class GraphicsPresetLowTests
         Dictionary<string, string> phone = LowLeanPhoneAt18();
         AssertThat(GraphicsPresets.Upgrade(phone)).IsTrue();
         AssertThat(phone[GraphicsPresets.Key]).IsEqual(GraphicsPresets.Low);
-        AssertThat(phone[GraphicsPresets.RevisionKey]).IsEqual("19");
+        AssertThat(phone[GraphicsPresets.RevisionKey]).IsEqual(GraphicsPresets.Revision.ToString());
         AssertThat(GraphicsPresets.Current(phone)).IsEqual(GraphicsPresets.Low);
         foreach ((string key, string value) in GraphicsPresets.LowValues)
         {

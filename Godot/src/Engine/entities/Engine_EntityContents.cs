@@ -97,7 +97,9 @@ public static class Engine_EntityContents
     public const uint RandomTableEntry = 0x951C5AA5;
 
     public static Dictionary<uint, EntityContentsInfo> Extract(
-        GdbMulti multi, IReadOnlyList<KeyValuePair<uint, string>> saveMap)
+        GdbMulti multi,
+        IReadOnlyList<KeyValuePair<uint, string>> saveMap,
+        bool includeItemDetails = true)
     {
         var result = new Dictionary<uint, EntityContentsInfo>();
 
@@ -115,7 +117,8 @@ public static class Engine_EntityContents
                 IsRef(chestHash))
             {
                 info.HasChestComponent = true;
-                if (multi.TryLookup(chestHash, out GdbCursor chest) &&
+                if (includeItemDetails &&
+                    multi.TryLookup(chestHash, out GdbCursor chest) &&
                     multi.TryFindInherited(
                         chest, SilverKeysNeeded, -1, out _, out uint keys,
                         out GdbFieldType keysType) &&
@@ -139,7 +142,8 @@ public static class Engine_EntityContents
                 info.IsDiveSpot = true;
             }
 
-            if (multi.TryFindInherited(
+            if (includeItemDetails &&
+                multi.TryFindInherited(
                     record, DogLeadToComponent, 6, out _, out uint dog, out _) &&
                 IsRef(dog))
             {
@@ -158,35 +162,38 @@ public static class Engine_EntityContents
             {
                 info.HasInventoryComponent = true;
 
-                if (multi.TryFindInherited(
-                        inventory, InitialItems, -1, out _, out uint itemsHash,
-                        out GdbFieldType itemsType) &&
-                    itemsType is GdbFieldType.Reference or GdbFieldType.ResourceReference &&
-                    IsRef(itemsHash))
+                if (includeItemDetails)
                 {
-                    ReadItemsList(multi, itemsHash, info.InitialItems);
-                }
-
-                if (multi.TryFindInherited(
-                        inventory, ItemRepopulationData, 6, out _, out uint repopHash, out _) &&
-                    IsRef(repopHash) && multi.TryLookup(repopHash, out GdbCursor repop))
-                {
-                    ReadBool(multi, repop, CanBeStolenFrom, v => info.CanBeStolenFrom = v);
-                    ReadBool(multi, repop, CanRespawnItemsOnce, v => info.CanRespawnItemsOnce = v);
-                    ReadBool(multi, repop, CanRespawnRepeatedly,
-                        v => info.CanRespawnItemsRepeatedly = v);
-                    if (TryReadFloat(multi, repop, ChanceOfRespawning, out float chance))
+                    if (multi.TryFindInherited(
+                            inventory, InitialItems, -1, out _, out uint itemsHash,
+                            out GdbFieldType itemsType) &&
+                        itemsType is GdbFieldType.Reference or GdbFieldType.ResourceReference &&
+                        IsRef(itemsHash))
                     {
-                        info.ChanceOfRespawning = chance;
+                        ReadItemsList(multi, itemsHash, info.InitialItems);
                     }
 
                     if (multi.TryFindInherited(
-                            repop, PotentialItems, -1, out _, out uint potHash,
-                            out GdbFieldType potType) &&
-                        potType is GdbFieldType.Reference or GdbFieldType.ResourceReference &&
-                        IsRef(potHash))
+                            inventory, ItemRepopulationData, 6, out _, out uint repopHash, out _) &&
+                        IsRef(repopHash) && multi.TryLookup(repopHash, out GdbCursor repop))
                     {
-                        ReadLootTable(multi, potHash, info.PotentialItems);
+                        ReadBool(multi, repop, CanBeStolenFrom, v => info.CanBeStolenFrom = v);
+                        ReadBool(multi, repop, CanRespawnItemsOnce, v => info.CanRespawnItemsOnce = v);
+                        ReadBool(multi, repop, CanRespawnRepeatedly,
+                            v => info.CanRespawnItemsRepeatedly = v);
+                        if (TryReadFloat(multi, repop, ChanceOfRespawning, out float chance))
+                        {
+                            info.ChanceOfRespawning = chance;
+                        }
+
+                        if (multi.TryFindInherited(
+                                repop, PotentialItems, -1, out _, out uint potHash,
+                                out GdbFieldType potType) &&
+                            potType is GdbFieldType.Reference or GdbFieldType.ResourceReference &&
+                            IsRef(potHash))
+                        {
+                            ReadLootTable(multi, potHash, info.PotentialItems);
+                        }
                     }
                 }
             }

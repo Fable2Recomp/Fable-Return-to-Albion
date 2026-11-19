@@ -149,6 +149,11 @@ public static class Engine_ShaderVariant
             return (Mode.Full, false, modernDirect);
         }
 
+        if (Refii.Core.Engine_AppRoot.IsTestHost && forced.Length == 0)
+        {
+            return (Mode.Full, false, false);
+        }
+
         bool surfaceWeather;
         bool cloudShadows;
         try
@@ -172,9 +177,12 @@ public static class Engine_ShaderVariant
             !Refii.Core.Engine_AppRoot.IsTestHost,
             Refii.Lighting.Engine_LightingFrame.ModernModel,
             ConfiguredDebugView());
-        GD.Print(refusal.Length == 0
-            ? $"[shader] variant {value}: lite surface shaders, {(modern ? "modern" : "fable")} model builds (relaunch to change)"
-            : $"[shader] variant {value} refused, drawing full: {refusal}");
+        if (!Refii.Core.Engine_AppRoot.IsTestHost)
+        {
+            GD.Print(refusal.Length == 0
+                ? $"[shader] variant {value}: lite surface shaders, {(modern ? "modern" : "fable")} model builds (relaunch to change)"
+                : $"[shader] variant {value} refused, drawing full: {refusal}");
+        }
         return (mode, modern, fallbackModernDirect);
     }
 

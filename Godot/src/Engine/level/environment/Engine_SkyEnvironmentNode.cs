@@ -166,7 +166,71 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         DetachEditorCompositor();
+        ClearNodeCaches();
     }
+
+    private Node? _frameParent;
+    private Camera3D? _frameCamera;
+    private Node3D? _waterNode;
+    private Node3D? _cloudsNode;
+    private Node3D? _celestialNode;
+    private Engine_DynamicPrecipitation? _precipitationNode;
+    private MeshInstance3D? _moonGlareMesh;
+    private MeshInstance3D? _sunGlareMesh;
+
+    private struct CloudLayerEntry
+    {
+        public MeshInstance3D Mesh;
+        public ShaderMaterial Material;
+        public float UvScaleX;
+        public float UvScaleY;
+        public int LayerIndex;
+        public bool IsClassic;
+    }
+
+    private CloudLayerEntry[] _cloudLayerCache = Array.Empty<CloudLayerEntry>();
+    private Node3D? _cloudCacheOwner;
+    private int _cloudCacheChildCount = -1;
+
+    private void ClearNodeCaches()
+    {
+        _frameParent = null;
+        _frameCamera = null;
+        _waterNode = null;
+        _cloudsNode = null;
+        _celestialNode = null;
+        _precipitationNode = null;
+        _moonGlareMesh = null;
+        _sunGlareMesh = null;
+        _cloudLayerCache = Array.Empty<CloudLayerEntry>();
+        _cloudCacheOwner = null;
+        _cloudCacheChildCount = -1;
+    }
+
+    private static T? ResolveChildCached<T>(Node? parent, ref T? cached, NodePath path) where T : Node
+    {
+        if (parent is null)
+        {
+            return null;
+        }
+
+        if (cached is not null && IsInstanceValid(cached) && ReferenceEquals(cached.GetParent(), parent))
+        {
+            return cached;
+        }
+
+        cached = parent.GetNodeOrNull<T>(path);
+        return cached;
+    }
+
+    private Node3D? ResolveWaterNode() =>
+        ResolveChildCached(_frameParent ?? GetParent(), ref _waterNode, Path_Water);
+
+    private Node3D? ResolveCloudsNode() =>
+        ResolveChildCached(_frameParent ?? GetParent(), ref _cloudsNode, Path_Clouds);
+
+    private Node3D? ResolveCelestialNode() =>
+        ResolveChildCached(_frameParent ?? GetParent(), ref _celestialNode, Path_Celestial);
 
     /// <summary>
     /// TWO JOBS SHARE THE FRAME, and they have opposite lifetimes.
@@ -182,9 +246,14 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     {
     	using var _framePhase = Refii.Core.Engine_FramePhases.Measure("skyenvironmentnode");
         long lap = System.Diagnostics.Stopwatch.GetTimestamp();
+        _frameParent = GetParent();
+        Camera3D? frameCamera = ResolveCamera();
+        _frameCamera = frameCamera;
+        try
+        {
         if (Current == this)
         {
-            Refii.Lighting.Engine_GiRefresh.Tick(Environment, GetViewport()?.GetCamera3D(), delta);
+            Refii.Lighting.Engine_GiRefresh.Tick(Environment, frameCamera, delta);
         }
 
         Refii.Core.Engine_FramePhases.Lap("sky.gi", ref lap);
@@ -194,7 +263,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         // (Engine_DrawAdvance.Seconds). The GI refresh budget and the painted blend are the host's
         // own transitions and stay on real time.
         float world = (float)Refii.Core.Engine_DrawAdvance.Seconds(delta);
-        Engine_WaterMaterial.AdvancePhases(GetParent()?.GetNodeOrNull<Node3D>(Path_Water), world);
+        Engine_WaterMaterial.AdvancePhases(ResolveWaterNode(), world);
         if (Current == this)
         {
             Refii.Models.Engine_SceneWind.Pump();
@@ -251,7 +320,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 _dynamicThunder.Advance(world, Engine_WeatherShelter.Exposure, _thunderSfx);
             }
             _dynamicSky.Tick(world, dynamicMaterial,
-                GetParent()?.GetNodeOrNull<Engine_DynamicPrecipitation>(Path_Precipitation),
+                ResolveChildCached(_frameParent, ref _precipitationNode, Path_Precipitation),
                 Environment);
             if (Current == this && !Engine.IsEditorHint())
             {
@@ -263,8 +332,8 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 if (_surfaceInteractions is { } interactions)
                 {
                     interactions.Ground = InteractionGround;
-                    interactions.GroundRoot = GetParent() as Node3D;
-                    interactions.QueueAdvance(ResolveCamera()?.GlobalPosition ?? Vector3.Zero, _dynamicSky.Weather,
+                    interactions.GroundRoot = _frameParent as Node3D;
+                    interactions.QueueAdvance(frameCamera?.GlobalPosition ?? Vector3.Zero, _dynamicSky.Weather,
                         _dynamicSky.SurfaceState, Engine_DynamicSurfaceWeather.Enabled,
                         _frame is { } contactFrame ? Engine_DynamicSky.Daylight(contactFrame) : 0f);
                 }
@@ -300,7 +369,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Engine_DynamicCloudShadows.Sync(this, ref _dynamicCloudShadowCaster,
             Engine_DynamicSky.Enabled ? Environment?.Sky?.SkyMaterial as ShaderMaterial : null,
             Engine_DynamicSky.LightingOverride && Engine_DynamicSky.CloudShadows,
-            ResolveCamera(), ResolveSun());
+            frameCamera, ResolveSun());
 
         Refii.Core.Engine_FramePhases.Lap("sky.anim", ref lap);
         if (Engine_PostFxParams.SunSourcesRequested)
@@ -311,6 +380,12 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         PublishPostFx();
         SyncEditorCompositor();
         Refii.Core.Engine_FramePhases.Lap("sky.postfx", ref lap);
+        }
+        finally
+        {
+            _frameCamera = null;
+            _frameParent = null;
+        }
     }
 
     /// <summary>
@@ -492,7 +567,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
         }
 
-        if (GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial) is { } celestial)
+        if (ResolveCelestialNode() is { } celestial)
         {
             Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
         }
@@ -643,7 +718,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         // which is the harder of the two failures to spot.
         Engine_SkyEnvironment.ApplyAtmosphereGlobals(frame, Theme, domeState, domeLut, report);
 
-        Node3D? water = GetParent()?.GetNodeOrNull<Node3D>(Path_Water);
+        Node3D? water = ResolveWaterNode();
         if (water is not null)
         {
             WaterTheme waterTheme = _waterStepStart is { } waterStart
@@ -672,7 +747,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             CloudTheme cloudTheme = _cloudStepEnd is { } cloudEnd && w > 0f
                 ? Engine_ThemeTimeline.BlendClouds(cloudStart, cloudEnd, w)
                 : cloudStart;
-            if (GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds) is { } clouds)
+            if (ResolveCloudsNode() is { } clouds)
             {
                 Engine_Clouds.Update(clouds, cloudTheme, frame.MainLightDirection, frame.MainLightColour);
             }
@@ -928,7 +1003,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         _atmosphereClock = 0f;
         _msDome = SinceMs(ref mark);
 
-        Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial);
+        Node3D? celestial = ResolveCelestialNode();
         if (celestial is not null)
         {
             Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
@@ -1040,7 +1115,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             if (!_reportedSunAgreement && sun.IsInsideTree())
             {
                 Vector3 travel = -sun.GlobalTransform.Basis.Column2;
-                Node3D? discOwner = GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial);
+                Node3D? discOwner = ResolveCelestialNode();
                 Node3D? disc = discOwner?.GetNodeOrNull<Node3D>(Path_SunDisc);
 
                 if (disc is not null)
@@ -1491,6 +1566,11 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private Camera3D? ResolveCamera()
     {
+        if (_frameCamera is { } cached && IsInstanceValid(cached))
+        {
+            return cached;
+        }
+
         Camera3D? camera = GetViewport()?.GetCamera3D();
 #if TOOLS
         if (camera is null && Engine.IsEditorHint())
@@ -1503,7 +1583,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
     private void AnimateSky(float delta)
     {
-        Node3D? clouds = GetParent()?.GetNodeOrNull<Node3D>(Path_Clouds);
+        Node3D? clouds = ResolveCloudsNode();
         CloudTheme? cloudTheme = _cloudTheme;
         if (clouds is not null && cloudTheme is not null)
         {
@@ -1511,7 +1591,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         SkyFrame? frame = _frame;
-        Node3D? celestial = GetParent()?.GetNodeOrNull<Node3D>(Path_Celestial);
+        Node3D? celestial = ResolveCelestialNode();
         if (celestial is null || frame is null)
         {
             return;
@@ -1525,7 +1605,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 
         // Written only when it changes (it is 1 under a clear sky): every material write
         // queues the material's update for the renderer, the same value or not.
-        if (celestial.GetNodeOrNull<MeshInstance3D>(Path_MoonGlare) is
+        if (ResolveChildCached(celestial, ref _moonGlareMesh, Path_MoonGlare) is
                 { MaterialOverride: ShaderMaterial moonGlare })
         {
             // The moon glare is a scene draw (celestial_overlay); the cloud term is its vis.
@@ -1539,7 +1619,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             }
         }
 
-        if (celestial.GetNodeOrNull<MeshInstance3D>(Path_SunGlare) is
+        if (ResolveChildCached(celestial, ref _sunGlareMesh, Path_SunGlare) is
                 { MaterialOverride: ShaderMaterial sunGlare })
         {
             Vector3 sunDir = Engine_SkyFrame.ToGodot(frame.SunDirection);
@@ -1559,10 +1639,10 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private ShaderMaterial? _sunGlareVisMaterial;
     private float _sunGlareVis;
 
-    private void AdvanceCloudLayers(Node3D clouds, CloudTheme theme, float delta)
+    private void RebuildCloudLayerCache(Node3D clouds, int count)
     {
-        // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
-        for (int i = 0, count = clouds.GetChildCount(); i < count; i++)
+        var entries = new List<CloudLayerEntry>(count);
+        for (int i = 0; i < count; i++)
         {
             Node child = clouds.GetChild(i);
             if (child is not MeshInstance3D mesh ||
@@ -1574,7 +1654,58 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             string name = Refii.Core.Engine_NodeNames.Of(child);
             if (!name.StartsWith("CloudLayer", System.StringComparison.Ordinal) ||
                 !int.TryParse(name.AsSpan("CloudLayer".Length), out int index) ||
-                index < 0 || index >= theme.Layers.Length)
+                index < 0 || index >= _cloudUvX.Length)
+            {
+                continue;
+            }
+
+            Vector4 current = material.GetShaderParameter(Param_uv_scale_offset).AsVector4();
+            entries.Add(new CloudLayerEntry
+            {
+                Mesh = mesh,
+                Material = material,
+                UvScaleX = current.X,
+                UvScaleY = current.Y,
+                LayerIndex = index,
+                IsClassic = material.HasMeta(Engine_ClassicClouds.ClassicCloudMeta),
+            });
+        }
+
+        _cloudLayerCache = entries.ToArray();
+        _cloudCacheOwner = clouds;
+        _cloudCacheChildCount = count;
+    }
+
+    private void AdvanceCloudLayers(Node3D clouds, CloudTheme theme, float delta)
+    {
+        int count = clouds.GetChildCount();
+        bool cacheValid = ReferenceEquals(clouds, _cloudCacheOwner) && _cloudCacheChildCount == count;
+        if (cacheValid)
+        {
+            for (int i = 0; i < _cloudLayerCache.Length; i++)
+            {
+                ref readonly CloudLayerEntry cached = ref _cloudLayerCache[i];
+                if (!IsInstanceValid(cached.Mesh) ||
+                    !IsInstanceValid(cached.Material) ||
+                    !ReferenceEquals(cached.Mesh.MaterialOverride, cached.Material))
+                {
+                    cacheValid = false;
+                    break;
+                }
+            }
+        }
+
+        if (!cacheValid)
+        {
+            RebuildCloudLayerCache(clouds, count);
+        }
+
+        bool stated = Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live;
+        for (int i = 0; i < _cloudLayerCache.Length; i++)
+        {
+            ref readonly CloudLayerEntry entry = ref _cloudLayerCache[i];
+            int index = entry.LayerIndex;
+            if (index < 0 || index >= theme.Layers.Length)
             {
                 continue;
             }
@@ -1582,7 +1713,6 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             CloudLayerTheme layer = theme.Layers[index];
             // Under classic, the guest's own blended velocities: CLOUDS_LAYERn_VELOCITY_X/Y at
             // theme 145/146 + 14n, which `sub_82267610` scales by 0.001 per second.
-            bool stated = Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live;
             float velocityX = stated ? Refii.Models.Engine_ClassicTheme.Param(145 + 14 * index) : layer.VelocityX;
             float velocityY = stated ? Refii.Models.Engine_ClassicTheme.Param(146 + 14 * index) : layer.VelocityY;
             _cloudUvX[index] = WrapUnit(
@@ -1592,12 +1722,11 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                 _cloudUvY[index] +
                 (velocityY * Engine_Clouds.VelocityScale * delta));
 
-            Vector4 current = material.GetShaderParameter(Param_uv_scale_offset).AsVector4();
-            material.SetShaderParameter(Param_uv_scale_offset, new Vector4(
-                current.X, current.Y, _cloudUvX[index], _cloudUvY[index]));
-            if (material.HasMeta(Engine_ClassicClouds.ClassicCloudMeta))
+            entry.Material.SetShaderParameter(Param_uv_scale_offset, new Vector4(
+                entry.UvScaleX, entry.UvScaleY, _cloudUvX[index], _cloudUvY[index]));
+            if (entry.IsClassic)
             {
-                Engine_ClassicClouds.SetScroll(material, _cloudUvX[index], _cloudUvY[index]);
+                Engine_ClassicClouds.SetScroll(entry.Material, _cloudUvX[index], _cloudUvY[index]);
             }
         }
     }

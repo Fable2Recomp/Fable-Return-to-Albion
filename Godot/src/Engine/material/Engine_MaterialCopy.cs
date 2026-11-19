@@ -60,6 +60,25 @@ public static class Engine_MaterialCopy
 	/// <summary>Copies made here, and Godot duplicates taken instead (for the metrics reply).</summary>
 	public static long Made, FellBack;
 
+	/// <summary>
+	/// Pre-populates the uniform list and per-uniform server defaults for <paramref name="shader"/>
+	/// during startup warmup so the first runtime <see cref="Shallow"/> copy avoids main-thread
+	/// render-server sync stalls.
+	/// </summary>
+	public static void WarmShader(Shader? shader)
+	{
+		if (shader is null)
+		{
+			return;
+		}
+
+		Uniform[] list = ListOf(shader);
+		foreach (Uniform uniform in list)
+		{
+			DefaultOf(shader, uniform);
+		}
+	}
+
 	/// <summary>Why a copy was left to Godot's own duplicate: the first uniform (or property) that decided it.</summary>
 	public enum Reason
 	{

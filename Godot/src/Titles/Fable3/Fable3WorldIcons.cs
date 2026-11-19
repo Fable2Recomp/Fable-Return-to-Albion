@@ -54,6 +54,7 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	private SubViewport _viewport = null!;
 	private Camera3D _canvasCamera = null!;
 	private Engine_HudWorldSprites _sprites = null!;
+	private readonly Refii.Core.Engine_CameraProjector _projector = new();
 	private readonly Engine_HudReticule[] _reticules = new Engine_HudReticule[2];
 	private Vector2 _fittedTo;
 	private bool _placed;
@@ -280,8 +281,9 @@ public partial class Fable3WorldIcons : SubViewportContainer
 		ChoicesUp = choices.Count > 0;
 		Camera3D? camera = GetWindow().GetCamera3D();
 		Vector2 window = GetViewportRect().Size;
+		bool hasProjector = _projector.Update(camera, window, Engine.GetProcessFrames());
 		PlaceMarkers(camera, window);
-		if (camera is not null && GodotObject.IsInstanceValid(camera) && !Fable3Elements.HudHidden && window.Y > 0f)
+		if (hasProjector && !Fable3Elements.HudHidden && window.Y > 0f)
 		{
 			float pixelsPerUnit = window.Y * PixelsPerUnit / CanvasHeight;
 			float piece = _sprites.PieceScale;
@@ -293,14 +295,14 @@ public partial class Fable3WorldIcons : SubViewportContainer
 				}
 
 				Vector3 world = GameWorld.GuestToGodot(choice.Anchor);
-				if (camera.IsPositionBehind(world))
+				if (!_projector.TryProject(world, out Vector2 pixel, out _))
 				{
 					continue;
 				}
 
 				float lift = ((square.Titled ? Engine_HudWorldSprites.TextSize : 0f) +
 					(Engine_HudWorldSprites.IconSize * square.Scale * 0.5f)) * piece;
-				Vector2 centre = camera.UnprojectPosition(world) - new Vector2(0f, lift * pixelsPerUnit);
+				Vector2 centre = pixel - new Vector2(0f, lift * pixelsPerUnit);
 				_rings.Add((centre, RingRadius * piece * pixelsPerUnit, choice.Progress, choice.Complete));
 			}
 		}
@@ -325,18 +327,17 @@ public partial class Fable3WorldIcons : SubViewportContainer
 	{
 		Camera3D? camera = GetWindow().GetCamera3D();
 		Vector2 size = GetViewportRect().Size;
-		if (camera is null || !GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree() || size.X <= 0f || size.Y <= 0f)
+		if (!_projector.Update(camera, size, Engine.GetProcessFrames()))
 		{
 			return null;
 		}
 
 		Vector3 world = GameWorld.GuestToGodot(guest);
-		if (camera.IsPositionBehind(world))
+		if (!_projector.TryProject(world, out Vector2 pixel, out _))
 		{
 			return null;
 		}
 
-		Vector2 pixel = camera.UnprojectPosition(world);
 		_placed = true;
 		float unitsPerPixel = CanvasHeight / PixelsPerUnit / size.Y;
 		var canvas = new Vector2((pixel.X - (size.X * 0.5f)) * unitsPerPixel, ((size.Y * 0.5f) - pixel.Y) * unitsPerPixel);

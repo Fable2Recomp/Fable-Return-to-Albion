@@ -479,7 +479,7 @@ public static class Engine_FramePhases
 	/// </summary>
 	public static void ArmDrawTrace(string stage, int frames = 1)
 	{
-		if (Engine_AppRoot.IsTestHost || frames <= 0)
+		if (!TraceAllDraws || Engine_AppRoot.IsTestHost || frames <= 0)
 		{
 			return;
 		}
@@ -786,25 +786,22 @@ public sealed partial class Engine_FrameStartNode : Godot.Node
 		// The guest's own clock first: it states its simulation time every iteration at
 		// `game+0x110` (0x82276F18). It cannot be fitted from sample arrivals because the guest
 		// does not catch up — more than one step behind, it takes one step and re-bases.
+		(double Seconds, uint Tick)? sampledClock = Refii.Host.HostBridge.LastSampledSimClock;
+		double guestSeconds = sampledClock is { } clock ? clock.Seconds : double.NaN;
 		if (Engine_TickClock.UseStatedClock)
 		{
-			Engine_TickClock.ObserveStatedClock(
-				Refii.Host.HostBridge.SimClock() is { } clock ? clock.Seconds : double.NaN, now);
+			Engine_TickClock.ObserveStatedClock(guestSeconds, now);
 		}
 
+		// Stamp the frame instant and advance the shared playhead before Engine_TickClock.BeginFrame
+		// so DrawTick is current for both frame readers and playback-rate measurement. Only swap
+		// when SampleGuestFrame observed a completed HF pass (never on an in-flight deferral).
+		Refii.Entities.Engine_DrawnFrame.BeginFrame((ulong)now, guestSeconds);
+		if (Engine_GuestFrame.Changed || Engine_GuestFrame.Frame == 0u)
+		{
+			Refii.Entities.Engine_DrawnFrame.NoteRestated();
+		}
 		Engine_TickClock.BeginFrame(now);
-
-		// One instant for every draw point in this frame — camera, entity transforms, pose
-		// blends, clip times (Engine_DrawnFrame.NowUsec). The stated clock is read every frame,
-		// not only under UseStatedClock: the width of each pair comes from the guest (see
-		// Engine_DrawnFrame.GuestSeconds).
-		Refii.Entities.Engine_DrawnFrame.BeginFrame((ulong)now,
-			Refii.Host.HostBridge.SimClock() is { } stated ? stated.Seconds : double.NaN);
-
-		// Advance the shared playhead on a new game tick here at frame start so DrawTick is
-		// already current for every reader (camera, entity walk, clip animators, UI, FX),
-		// whether or not the camera moved this tick.
-		Refii.Entities.Engine_DrawnFrame.NoteRestated();
 	}
 }
 
@@ -820,6 +817,7 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 
 	public override void _Process(double delta)
 	{
+		Refii.Host.HostBridge.EndTimeBaseReadWindow();
 		Engine_ServerSyncs.NotifyMainFrameTick();
 		using (Engine_FramePhases.Measure("cloth_land"))
 		{
@@ -827,7 +825,7 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 		}
 		using (Engine_FramePhases.Measure("gpu_upload_pump_end"))
 		{
-			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 8.0 : 6.0);
+			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 12.0 : 6.0, waitForWorkers: false);
 		}
 		Engine_FramePhases.MarkFrameEnd();
 		CallDeferred(DeferredMark);

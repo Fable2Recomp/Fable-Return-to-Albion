@@ -283,6 +283,14 @@ void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float taken_p
                                    float factor, float pivot_forward, float pivot_right,
                                    float pivot_up, float pitch_limit, int32_t mode,
                                    uint32_t aim);
+void refii_bridge_mouse_look_state_ex(uint32_t tick, float taken_yaw, float taken_pitch,
+                                      float held_pitch, float absorbed_yaw, float absorbed_pitch,
+                                      float factor, float pivot_forward, float pivot_right,
+                                      float pivot_up, float pitch_limit, int32_t mode,
+                                      uint32_t aim, float head_x, float head_y, float head_z,
+                                      uint32_t flags);
+// - read the host-authoritative aim forward direction (guest world space) when active (1), else 0;
+int32_t refii_bridge_mouse_look_host_aim(float* out_fwd_x, float* out_fwd_y, float* out_fwd_z);
 // - whether the mouse is the player's look device (the host's device switch): nonzero while the
 //   keyboard and mouse were touched last;
 int32_t refii_bridge_mouse_look_device(void);

@@ -19,6 +19,8 @@ public sealed class EntityInspectData
 
     public HashSet<uint> BoundToNodes { get; } = new();
 
+    public bool FullMetadata { get; init; } = true;
+
     public bool HasAny =>
         Contents.Count != 0 || Readables.Count != 0 || Properties.Count != 0;
 
@@ -32,7 +34,11 @@ public static class Engine_EntityInspect
 {
     public const string MarkersNodeName = "Containers";
 
-    public static EntityInspectData? Build(LevelEntry level, Func<string, byte[]?> read)
+    public static EntityInspectData? Build(
+        LevelEntry level,
+        Func<string, byte[]?> read,
+        bool fullMetadata = true,
+        IReadOnlyList<GdbView>? preloadedSupplemental = null)
     {
         byte[]? levelGdb = Engine_LevelGdb.TryRead(level, read, out string gdbPath);
         if (levelGdb is null ||
@@ -48,90 +54,127 @@ public static class Engine_EntityInspect
             return null;
         }
 
-        var blobs = new List<byte[]?> { levelGdb };
-        foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
+        GdbMulti multi;
+        if (preloadedSupplemental is { Count: > 0 })
         {
-            blobs.Add(read(path) ?? read("data/" + path));
+            var views = new List<GdbView>(1 + preloadedSupplemental.Count) { levelView };
+            views.AddRange(preloadedSupplemental);
+            multi = GdbMulti.Build(views);
         }
-
-        GdbMulti multi = GdbMulti.Build(blobs);
+        else if (Engine_GameGdb.MatchesActiveResolver(read))
+        {
+            List<GdbView> cached = Engine_GameGdb.GetSupplementalViews();
+            var views = new List<GdbView>(1 + cached.Count) { levelView };
+            views.AddRange(cached);
+            multi = GdbMulti.Build(views);
+        }
+        else
+        {
+            var views = new List<GdbView>(1 + Engine_LevelProps.SupplementalGdbPaths.Length) { levelView };
+            foreach (string path in Engine_LevelProps.SupplementalGdbPaths)
+            {
+                byte[]? bytes = read(path) ?? read("data/" + path);
+                if (bytes is not null && GdbView.TryParseShared(bytes, out GdbView supView, out _))
+                {
+                    views.Add(supView);
+                }
+            }
+            multi = GdbMulti.Build(views);
+        }
 
         var data = new EntityInspectData
         {
-            Contents = Engine_EntityContents.Extract(multi, saveMap),
+            Contents = Engine_EntityContents.Extract(multi, saveMap, includeItemDetails: fullMetadata),
             Readables = Engine_EntityReadables.Extract(multi, saveMap),
             Properties = Engine_PropertyDetails.Extract(multi, saveMap),
+            FullMetadata = fullMetadata,
         };
 
-        foreach (GdbPlacement placement in Engine_GdbPlacements.Parse(levelView, saveMap))
+        if (fullMetadata)
         {
-            if (placement.Hash != 0)
+            foreach (GdbPlacement placement in Engine_GdbPlacements.Parse(levelView, saveMap))
             {
-                data.Positions.TryAdd(
-                    placement.Hash,
-                    new Vector3(placement.X, placement.Z, placement.Y));
-            }
-        }
-
-        TextBank bank = Refii.Gdb.Engine_BnkTextBankLoader.Shared ?? TextBank.Load(read);
-        if (bank.Loaded)
-        {
-            foreach (EntityContentsInfo info in data.Contents.Values)
-            {
-                ResolveItemNames(bank, info.InitialItems);
-                ResolveItemNames(bank, info.PotentialItems);
-            }
-
-            foreach (ReadableInfo readable in data.Readables.Values)
-            {
-                foreach (uint tag in readable.TagHashes)
+                if (placement.Hash != 0)
                 {
-                    if (bank.TryLookup(tag, out string text))
+                    data.Positions.TryAdd(
+                        placement.Hash,
+                        new Vector3(placement.X, placement.Z, placement.Y));
+                }
+            }
+
+            TextBank bank = Refii.Gdb.Engine_BnkTextBankLoader.Shared ?? TextBank.Load(read);
+            if (bank.Loaded)
+            {
+                foreach (EntityContentsInfo info in data.Contents.Values)
+                {
+                    ResolveItemNames(bank, info.InitialItems);
+                    ResolveItemNames(bank, info.PotentialItems);
+                }
+
+                foreach (ReadableInfo readable in data.Readables.Values)
+                {
+                    foreach (uint tag in readable.TagHashes)
                     {
-                        readable.ResolvedTags.Add(tag);
-                        readable.Texts.Add(text);
+                        if (bank.TryLookup(tag, out string text))
+                        {
+                            readable.ResolvedTags.Add(tag);
+                            readable.Texts.Add(text);
+                        }
+                    }
+                }
+
+                foreach (PropertyInfo property in data.Properties.Values)
+                {
+                    if (property.BuildingNameTag != 0 &&
+                        bank.TryLookup(property.BuildingNameTag, out string name))
+                    {
+                        property.DisplayName = name;
+                    }
+
+                    if (property.BuildingAddressTag != 0 &&
+                        bank.TryLookup(property.BuildingAddressTag, out string address))
+                    {
+                        property.Address = address;
+                    }
+
+                    if (property.BuildingAnecdotesTag != 0 &&
+                        bank.TryLookup(property.BuildingAnecdotesTag, out string anecdotes))
+                    {
+                        property.Anecdotes = anecdotes;
+                    }
+
+                    if (property.BuildingBenefitsTag != 0 &&
+                        bank.TryLookup(property.BuildingBenefitsTag, out string benefits))
+                    {
+                        property.Benefits = benefits;
                     }
                 }
             }
 
-            foreach (PropertyInfo property in data.Properties.Values)
+            if (!Refii.Core.Engine_AppRoot.IsTestHost)
             {
-                if (property.BuildingNameTag != 0 &&
-                    bank.TryLookup(property.BuildingNameTag, out string name))
-                {
-                    property.DisplayName = name;
-                }
-
-                if (property.BuildingAddressTag != 0 &&
-                    bank.TryLookup(property.BuildingAddressTag, out string address))
-                {
-                    property.Address = address;
-                }
-
-                if (property.BuildingAnecdotesTag != 0 &&
-                    bank.TryLookup(property.BuildingAnecdotesTag, out string anecdotes))
-                {
-                    property.Anecdotes = anecdotes;
-                }
-
-                if (property.BuildingBenefitsTag != 0 &&
-                    bank.TryLookup(property.BuildingBenefitsTag, out string benefits))
-                {
-                    property.Benefits = benefits;
-                }
+                GD.Print(
+                    $"[inspect] {level}: containers={data.Contents.Count} " +
+                    $"readables={data.Readables.Count} properties={data.Properties.Count} " +
+                    $"babel={(bank.Loaded ? bank.TagCount.ToString() : "missing")}");
             }
         }
-
-        GD.Print(
-            $"[inspect] {level}: containers={data.Contents.Count} " +
-            $"readables={data.Readables.Count} properties={data.Properties.Count} " +
-            $"babel={(bank.Loaded ? bank.TagCount.ToString() : "missing")}");
+        else if (!Refii.Core.Engine_AppRoot.IsTestHost)
+        {
+            GD.Print(
+                $"[inspect] {level}: containers={data.Contents.Count} " +
+                $"readables={data.Readables.Count} properties={data.Properties.Count} (gameplay lean)");
+        }
 
         return data.HasAny ? data : null;
     }
 
     public static void Annotate(GodotObject node, uint hash, EntityInspectData data)
     {
+        if (!data.FullMetadata)
+        {
+            return;
+        }
         bool bound = false;
 
         if (data.Contents.TryGetValue(hash, out EntityContentsInfo? contents))

@@ -941,6 +941,7 @@ public partial class GameDebugServer : Node
 					? m.GetString() ?? string.Empty
 					: string.Empty;
 				var cvars = new List<Dictionary<string, object?>>();
+				var seenNames = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 				int count = Refii.Host.HostBridge.GetCvarCount();
 				for (int i = 0; i < count; ++i)
 				{
@@ -949,6 +950,7 @@ public partial class GameDebugServer : Node
 						continue;
 					}
 
+					seenNames.Add(info.Name);
 					if (match.Length != 0 &&
 						!info.Name.Contains(match, System.StringComparison.OrdinalIgnoreCase) &&
 						!info.Category.Contains(match, System.StringComparison.OrdinalIgnoreCase))
@@ -976,6 +978,11 @@ public partial class GameDebugServer : Node
 				foreach ((Refii.Launcher.Core.RuntimeCVarDefinition def, string val, bool modified) in
 					Refii.Core.Engine_RefiiConfig.GetGodotCvars())
 				{
+					if (seenNames.Contains(def.Name))
+					{
+						continue;
+					}
+
 					if (match.Length != 0 &&
 						!def.Name.Contains(match, System.StringComparison.OrdinalIgnoreCase) &&
 						!def.Category.Contains(match, System.StringComparison.OrdinalIgnoreCase))
@@ -1019,10 +1026,11 @@ public partial class GameDebugServer : Node
 					};
 				}
 
-				// The registry's own validator answers — lifecycle, range, allowed values;
-				// fall back to Godot's CVar table when the guest registry does not own it.
-				bool accepted = Refii.Host.HostBridge.SetCvar(name, value) ||
-					Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value);
+				// Update both registries when a CVar exists on both sides (e.g. fx_weapon_augment_always_active)
+				// so Godot config overrides and OnConfigChanged listeners stay in sync with the native runtime.
+				bool nativeAccepted = Refii.Host.HostBridge.SetCvar(name, value);
+				bool godotAccepted = Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value);
+				bool accepted = nativeAccepted || godotAccepted;
 				return Ok(new Dictionary<string, object?>
 				{
 					["name"] = name,
@@ -1707,7 +1715,7 @@ public partial class GameDebugServer : Node
 				{
 					["present"] = Refii.Fx.Engine_FxAdditiveLayer.Present,
 					["usable"] = layer?.Usable ?? false,
-					["activeThisFrame"] = Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(out _),
+					["activeThisFrame"] = Refii.Fx.Engine_FxAdditiveLayer.IsViewActive(0),
 					["size"] = layer is null ? "none" : $"{layer.Size.X}x{layer.Size.Y}",
 					["gain"] = Refii.Fx.Engine_FxAdditiveLayer.Gain,
 					["postfxEnabled"] = Refii.Lighting.Engine_PostFxParams.Enabled,
@@ -2911,6 +2919,11 @@ public partial class GameDebugServer : Node
 				var lights = new List<Light3D>();
 				Refii.Lighting.Engine_LevelLights.SnapshotLights(lights);
 				int shadowLights = lights.Count(l => l.ShadowEnabled);
+				Refii.Host.HostBridge.UnpackTimeBaseWatchdog(
+					_timeBase?.Watchdog ?? 0UL,
+					out ulong timeBaseWatchdogLapses,
+					out ulong timeBasePendingSteps,
+					out bool timeBaseStepInFlight);
 
 				return Ok(new Dictionary<string, object?>
 				{
@@ -3150,8 +3163,9 @@ public partial class GameDebugServer : Node
 						// one. `timeBasePending` not draining means the same thing earlier.
 						["timeBaseCapped"] = (_timeBase?.Capped ?? 0UL) & 0xFFFFFFFFUL,
 						["timeBaseDropped"] = (_timeBase?.Capped ?? 0UL) >> 32,
-						["timeBaseWatchdog"] = (_timeBase?.Watchdog ?? 0UL) & 0xFFFFFFFFUL,
-						["timeBasePending"] = (_timeBase?.Watchdog ?? 0UL) >> 32,
+						["timeBaseWatchdog"] = timeBaseWatchdogLapses,
+						["timeBasePending"] = timeBasePendingSteps,
+						["timeBaseStepInFlight"] = timeBaseStepInFlight,
 						["clockStatedLive"] = Refii.Core.Engine_TickClock.StatedLive,
 						// The guest's own clock, `game+0x110`, stored at 0x82276F18. `statedHz` is its measured
 						// advance: 15 while the guest keeps up, lower under load, because the loop advances one
@@ -3259,6 +3273,8 @@ public partial class GameDebugServer : Node
 						["mouseLookAbsorbed"] = Refii.Game.GameWorld.MouseLookAbsorbed,
 						["mouseLookAbsorbedPitch"] = Refii.Game.GameWorld.MouseLookAbsorbedPitch,
 						["mouseLookAim"] = $"0x{Refii.Game.GameWorld.MouseLookAim:X8}",
+						["hostAimActive"] = Refii.Game.GameWorld.HostAimActive,
+						["hostAimObject"] = $"0x{Refii.Game.GameWorld.HostAimObject:X8}",
 						["mouseLookTorn"] = Refii.Game.GameWorld.MouseLookTornReads,
 						["mouseLookDevice"] = Refii.Ui.Engine_UiInputMode.KeyboardMouse,
 						["mouseLookFlicks"] = Refii.Game.GameWorld.MouseLookFlicks,
@@ -3277,6 +3293,10 @@ public partial class GameDebugServer : Node
 						Performance.GetMonitor(Performance.Monitor.RenderTotalPrimitivesInFrame),
 					["videoMemMB"] =
 						Performance.GetMonitor(Performance.Monitor.RenderVideoMemUsed) / 1048576.0,
+					["textureMemMB"] =
+						Performance.GetMonitor(Performance.Monitor.RenderTextureMemUsed) / 1048576.0,
+					["bufferMemMB"] =
+						Performance.GetMonitor(Performance.Monitor.RenderBufferMemUsed) / 1048576.0,
 					["nodes"] = Performance.GetMonitor(Performance.Monitor.ObjectNodeCount),
 					["staticMemMB"] =
 						Performance.GetMonitor(Performance.Monitor.MemoryStatic) / 1048576.0,

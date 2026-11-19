@@ -1194,7 +1194,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // runs when nothing is targeted or every target is off screen, which is the guest
             // bailing on an empty list or an empty rect union at 0x82197ba8 / 0x82197bb4.
             if (Refii.Entities.Engine_EntityHighlightLayer.TrySnapshot(
-                    View, out Rid layer, out float scale, _highlightTargets) &&
+                    View, _rd, out Rid layer, out float scale, _highlightTargets) &&
                 HighlightLayerLive(layer) &&
                 EnsureGlow(layer) &&
                 HighlightTargets(camBasis, camOrigin, projection))
@@ -1210,7 +1210,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             // guest's bucket-5 surface (off_8331AA14) is added to the scene in the bloom
             // downscale (0162) and in the tonemap (0509) — one sum, consumed by both, which
             // adding it into the colour buffer once reproduces for the whole chain.
-            if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(View, out Rid additive) &&
+            if (Refii.Fx.Engine_FxAdditiveLayer.TrySnapshot(View, _rd, out Rid additive) &&
                 AdditiveLayerLive(additive))
             {
                 BeginBatch();

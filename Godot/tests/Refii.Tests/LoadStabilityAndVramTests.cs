@@ -67,20 +67,20 @@ public sealed class LoadStabilityAndVramTests
 		pacer.LoadCoverActive = true;
 		pacer.BeginMainFrameUploadBudget();
 
-		// 36 MB main-thread upload counts directly against the 48 MB load-cover frame cap.
-		pacer.RunGpuUpload(36L * mb, static () => { });
-		AssertThat(pacer.FrameUploadBytes).IsEqual(36L * mb);
+		// 70 MB main-thread upload counts directly against the 96 MB load-cover frame cap.
+		pacer.RunGpuUpload(70L * mb, static () => { });
+		AssertThat(pacer.FrameUploadBytes).IsEqual(70L * mb);
 
 		int executedWorkers = 0;
-		Task worker1 = Task.Run(() => pacer.RunGpuUpload(20L * mb, () => Interlocked.Increment(ref executedWorkers)));
-		Task worker2 = Task.Run(() => pacer.RunGpuUpload(20L * mb, () => Interlocked.Increment(ref executedWorkers)));
+		Task worker1 = Task.Run(() => pacer.RunGpuUpload(30L * mb, () => Interlocked.Increment(ref executedWorkers)));
+		Task worker2 = Task.Run(() => pacer.RunGpuUpload(30L * mb, () => Interlocked.Increment(ref executedWorkers)));
 
 		AssertThat(SpinWait.SpinUntil(() => pacer.PendingWorkerUploads == 2, 2000)).IsTrue();
 
-		// First pump executes one 20 MB worker upload (36 + 20 = 56 MB >= 48 MB cap) and defers the second.
+		// First pump executes one 30 MB worker upload (70 + 30 = 100 MB >= 96 MB cap) and defers the second.
 		pacer.PumpWorkerGpuUploads(50.0);
 		AssertThat(Volatile.Read(ref executedWorkers)).IsEqual(1);
-		AssertThat(pacer.FrameUploadBytes).IsEqual(56L * mb);
+		AssertThat(pacer.FrameUploadBytes).IsEqual(100L * mb);
 		AssertThat(pacer.PendingWorkerUploads).IsEqual(1);
 
 		// Next frame resets the staging counter and drains the remaining worker upload.
@@ -229,7 +229,7 @@ public sealed class LoadStabilityAndVramTests
 			{
 				workers[w] = Task.Run(() =>
 				{
-					pacer.RunGpuUpload(30L * mb, () => Interlocked.Increment(ref uploadedChunks));
+					pacer.RunGpuUpload(50L * mb, () => Interlocked.Increment(ref uploadedChunks));
 				});
 			}
 
@@ -286,21 +286,21 @@ public sealed class LoadStabilityAndVramTests
 	{
 		var emptyConfig = new Dictionary<string, string>();
 		string modernCfg = GameChildProcess.BuildRendererSettingsContent(emptyConfig, "modern");
-		AssertThat(modernCfg.Contains("rendering_device/staging_buffer/max_size_mb=128\n", StringComparison.Ordinal)).IsTrue();
-		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors=262144\n", StringComparison.Ordinal)).IsTrue();
+		AssertThat(modernCfg.Contains("rendering_device/staging_buffer/max_size_mb=64\n", StringComparison.Ordinal)).IsTrue();
+		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors=131072\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_sampler_descriptors=2048\n", StringComparison.Ordinal)).IsTrue();
-		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=131072\n", StringComparison.Ordinal)).IsTrue();
+		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=65536\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_sampler_descriptors_per_frame=2048\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_misc_descriptors_per_frame=4096\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("driver/depth_prepass/enable=false", StringComparison.Ordinal)).IsFalse();
 
 		string classicCfg = GameChildProcess.BuildRendererSettingsContent(emptyConfig, "classic");
-		AssertThat(classicCfg.Contains("rendering_device/staging_buffer/max_size_mb=128\n", StringComparison.Ordinal)).IsTrue();
+		AssertThat(classicCfg.Contains("rendering_device/staging_buffer/max_size_mb=64\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(classicCfg.Contains("driver/depth_prepass/enable=false\n", StringComparison.Ordinal)).IsTrue();
 
 		string projectGodot = File.ReadAllText(Path.Combine(GodotRoot(), "project.godot"));
-		AssertThat(projectGodot.Contains("rendering_device/staging_buffer/max_size_mb=128", StringComparison.Ordinal)).IsTrue();
-		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=131072", StringComparison.Ordinal)).IsTrue();
+		AssertThat(projectGodot.Contains("rendering_device/staging_buffer/max_size_mb=64", StringComparison.Ordinal)).IsTrue();
+		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=65536", StringComparison.Ordinal)).IsTrue();
 		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_sampler_descriptors=2048", StringComparison.Ordinal)).IsTrue();
 		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_sampler_descriptors_per_frame=2048", StringComparison.Ordinal)).IsTrue();
 		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_misc_descriptors_per_frame=4096", StringComparison.Ordinal)).IsTrue();

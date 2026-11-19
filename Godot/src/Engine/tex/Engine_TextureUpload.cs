@@ -21,6 +21,9 @@ public static class Engine_TextureUpload
     private static bool? _isD3D12Driver;
     private static bool? _isSeparateRenderThread;
 
+    /// <summary>Environment marker forwarded by the launcher when <c>--render-thread separate</c> is active.</summary>
+    public const string SeparateRenderThreadEnvironmentVariable = "REFII_SEPARATE_RENDER_THREAD";
+
     /// <summary>True when the active RenderingServer driver is Direct3D 12.</summary>
     public static bool IsD3D12Driver => _isD3D12Driver ??=
         !Refii.Core.Engine_RdHealth.IsTestHost &&
@@ -46,11 +49,46 @@ public static class Engine_TextureUpload
         return false;
     }
 
+    /// <summary>
+    /// Resolves whether Godot's separate render thread is active across the launcher environment
+    /// marker, raw OS process argv (since Godot strips <c>--render-thread</c> before
+    /// <c>OS.GetCmdlineArgs()</c>), Godot cmdline args, and <c>ProjectSettings</c>.
+    /// </summary>
+    /// <param name="envMarker">Value of <see cref="SeparateRenderThreadEnvironmentVariable"/>.</param>
+    /// <param name="processArgs">Raw process arguments from <c>Environment.GetCommandLineArgs()</c>.</param>
+    /// <param name="godotCmdlineArgs">Parsed user/engine arguments from <c>OS.GetCmdlineArgs()</c>.</param>
+    /// <param name="projectThreadModel">Configured <c>rendering/driver/threads/thread_model</c> value.</param>
+    /// <returns>True when separate-render-thread mode is enabled.</returns>
+    public static bool ResolveIsSeparateRenderThread(
+        string? envMarker,
+        System.Collections.Generic.IReadOnlyList<string>? processArgs,
+        System.Collections.Generic.IReadOnlyList<string>? godotCmdlineArgs,
+        int projectThreadModel) =>
+        string.Equals(envMarker, "1", StringComparison.Ordinal) ||
+        string.Equals(envMarker, "separate", StringComparison.OrdinalIgnoreCase) ||
+        HasSeparateRenderThreadArgs(processArgs) ||
+        HasSeparateRenderThreadArgs(godotCmdlineArgs) ||
+        projectThreadModel == 2;
+
+    /// <summary>
+    /// Controls whether <see cref="SetImage"/> verifies the RD texture backing after upload.
+    /// In-place <c>texture.Update</c> calls reuse an already validated backing texture and skip
+    /// redundant <c>TextureGetRdTexture</c> round-trips.
+    /// </summary>
+    /// <param name="updatedInPlace">True when <c>texture.Update</c> reused existing storage.</param>
+    /// <param name="verifyOnCallerThread">True when synchronous verification is enabled on this thread.</param>
+    /// <returns>True only when storage was freshly allocated/replaced and verification is wanted.</returns>
+    public static bool ShouldVerifyRdBackingOnSetImage(bool updatedInPlace, bool verifyOnCallerThread) =>
+        !updatedInPlace && verifyOnCallerThread;
+
     /// <summary>True when Godot is running with a dedicated separate render thread.</summary>
     public static bool IsSeparateRenderThread => _isSeparateRenderThread ??=
         !Refii.Core.Engine_RdHealth.IsTestHost &&
-        (HasSeparateRenderThreadArgs(OS.GetCmdlineArgs()) ||
-         ProjectSettings.GetSetting("rendering/driver/threads/thread_model", 1).AsInt32() == 2);
+        ResolveIsSeparateRenderThread(
+            System.Environment.GetEnvironmentVariable(SeparateRenderThreadEnvironmentVariable),
+            System.Environment.GetCommandLineArgs(),
+            OS.GetCmdlineArgs(),
+            ProjectSettings.GetSetting("rendering/driver/threads/thread_model", 1).AsInt32());
 
     /// <summary>
     /// Pure helper controlling synchronous <c>TextureGetRdTexture</c> verification: enabled on
@@ -132,29 +170,35 @@ public static class Engine_TextureUpload
 
         return Engine_ServerSyncs.RunGpuUpload(
             image.GetDataSize(),
-            () =>
-            {
-                if (Refii.Core.Engine_RdHealth.IsDeviceLost || image.IsEmpty())
-                {
-                    return new ImageTexture();
-                }
+            () => CreateTextureOnMainThread(image, world));
+    }
 
-                if (Prepares)
-                {
-                    return AndroidTextureUpload.CreateTexture(image, world);
-                }
+    /// <summary>
+    /// Creates an <see cref="ImageTexture"/> directly on the main thread inside an active
+    /// batched <see cref="Engine_ServerSyncs.RunGpuUpload"/> scope without double-counting bytes.
+    /// </summary>
+    internal static ImageTexture CreateTextureOnMainThread(Image image, bool world = false)
+    {
+        if (Refii.Core.Engine_RdHealth.IsDeviceLost || image is null || image.IsEmpty())
+        {
+            return new ImageTexture();
+        }
 
-                ImageTexture created = ImageTexture.CreateFromImage(image);
-                if (!Refii.Core.Engine_RdHealth.CheckTextureValid(
-                        created.GetRid(), "Engine_TextureUpload.CreateTexture", verifyRdBacking: VerifyRdBackingOnCallerThread))
-                {
-                    return created;
-                }
+        if (Prepares)
+        {
+            return AndroidTextureUpload.CreateTexture(image, world);
+        }
 
-                Layouts.AddOrUpdate(created, new UploadLayout(
-                    image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
-                return created;
-            });
+        ImageTexture created = ImageTexture.CreateFromImage(image);
+        if (!Refii.Core.Engine_RdHealth.CheckTextureValid(
+                created.GetRid(), "Engine_TextureUpload.CreateTexture", verifyRdBacking: VerifyRdBackingOnCallerThread))
+        {
+            return created;
+        }
+
+        Layouts.AddOrUpdate(created, new UploadLayout(
+            image.GetWidth(), image.GetHeight(), image.GetFormat(), image.HasMipmaps()));
+        return created;
     }
 
     /// <summary>
@@ -197,9 +241,11 @@ public static class Engine_TextureUpload
                 return;
             }
 
+            bool updatedInPlace = false;
             if (CanUpdateInPlace(texture, image))
             {
                 texture.Update(image);
+                updatedInPlace = true;
             }
             else if (!allowD3D12Replace && IsD3D12Driver && texture.GetWidth() > 0 && texture.GetHeight() > 0)
             {
@@ -213,8 +259,39 @@ public static class Engine_TextureUpload
             }
 
             _ = Refii.Core.Engine_RdHealth.CheckTextureValid(
-                texture.GetRid(), "Engine_TextureUpload.SetImage", verifyRdBacking: VerifyRdBackingOnCallerThread);
+                texture.GetRid(), "Engine_TextureUpload.SetImage",
+                verifyRdBacking: ShouldVerifyRdBackingOnSetImage(updatedInPlace, VerifyRdBackingOnCallerThread));
         });
+    }
+
+    /// <summary>Frames a transient <see cref="Image"/> passed to <c>texture.Update</c> is held before disposal.</summary>
+    private const ulong TransientImageHoldFrames = 2;
+
+    [ThreadStatic]
+    private static System.Collections.Generic.Queue<(Image Image, ulong After)>? _retiredTransientImages;
+
+    /// <summary>
+    /// Deterministically retires a transient <see cref="Image"/> wrapper two process frames after
+    /// <c>ImageTexture.Update</c> queues its <c>Ref&lt;Image&gt;</c> onto Godot's render thread, avoiding
+    /// both premature disposal races and GC finalizer churn.
+    /// </summary>
+    /// <param name="image">Transient CPU image whose upload has already been submitted.</param>
+    public static void RetireTransientImage(Image? image)
+    {
+        if (image is null || Refii.Core.Engine_RdHealth.IsTestHost)
+        {
+            return;
+        }
+
+        System.Collections.Generic.Queue<(Image Image, ulong After)> retired =
+            _retiredTransientImages ??= new System.Collections.Generic.Queue<(Image, ulong)>();
+        ulong now = Engine.GetProcessFrames();
+        while (retired.Count > 0 && retired.Peek().After <= now)
+        {
+            retired.Dequeue().Image.Dispose();
+        }
+
+        retired.Enqueue((image, now + TransientImageHoldFrames));
     }
 
     /// <summary>
@@ -244,6 +321,7 @@ public static class Engine_TextureUpload
         }
 
         SetImage(texture, image, allowD3D12Replace: false);
+        RetireTransientImage(image);
     }
 
     /// <summary>Uploads cube/array layers, leaving the source images intact.</summary>

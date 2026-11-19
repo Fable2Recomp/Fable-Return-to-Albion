@@ -39,6 +39,13 @@ public struct Engine_GuestPacer
 	/// </summary>
 	public const int MaxStepsPerFrame = 4;
 
+	/// <summary>
+	/// Maximum unconsumed 30 Hz high-frequency steps queued or in flight natively (4 HF steps = 2.0
+	/// game ticks, matching native <c>kMaxLeadSteps = 4</c> in <c>rex_bridge_host.cpp</c>) before
+	/// closed-loop backpressure withholds further grants.
+	/// </summary>
+	public const ulong MaxUnconsumedHfSteps = 4UL;
+
 	private double _accumulated;
 
 	/// <summary>Normalized sub-step draw phase in <c>[0, 1)</c> for <see cref="Engine_TickClock.PublishHostTicks"/>.</summary>
@@ -57,6 +64,35 @@ public struct Engine_GuestPacer
 	public void ClearAccumulated()
 	{
 		_accumulated = 0.0;
+	}
+
+	/// <summary>
+	/// Evaluates closed-loop grant backpressure directly from the native driven time-base's
+	/// authoritative unconsumed step count (<c>pending + in_flight</c>), preventing cumulative
+	/// counter drift or stale start-of-frame frame-counter latches from throttling sub-30 FPS play.
+	/// </summary>
+	/// <param name="unconsumedHfSteps">Current unconsumed HF steps queued or in flight in native runtime.</param>
+	/// <param name="leadGameTicks">Unconsumed lead expressed in 15 Hz game ticks for diagnostics.</param>
+	/// <param name="withholdGrant">True when unconsumed steps reach <see cref="MaxUnconsumedHfSteps"/>.</param>
+	public static void EvaluateBackpressure(ulong unconsumedHfSteps, out double leadGameTicks, out bool withholdGrant)
+	{
+		leadGameTicks = unconsumedHfSteps * 0.5;
+		withholdGrant = unconsumedHfSteps >= MaxUnconsumedHfSteps;
+	}
+
+	/// <summary>
+	/// Advances the pacer by one host frame of <paramref name="delta"/> seconds using the live
+	/// native unconsumed HF step depth to evaluate closed-loop backpressure cleanly.
+	/// </summary>
+	/// <param name="delta">Host frame delta in seconds.</param>
+	/// <param name="unconsumedHfSteps">Live native unconsumed HF step depth (<c>pending + in_flight</c>).</param>
+	/// <param name="leadGameTicks">Resulting lead in 15 Hz game ticks for diagnostics.</param>
+	/// <param name="withholdGrant">Whether backpressure withheld grants on this frame.</param>
+	/// <returns>Number of 30 Hz HF steps (<c>0..MaxStepsPerFrame</c>) to grant this frame.</returns>
+	public int Advance(double delta, ulong unconsumedHfSteps, out double leadGameTicks, out bool withholdGrant)
+	{
+		EvaluateBackpressure(unconsumedHfSteps, out leadGameTicks, out withholdGrant);
+		return Advance(delta, 0.0, withholdGrant);
 	}
 
 	/// <summary>

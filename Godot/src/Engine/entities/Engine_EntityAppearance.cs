@@ -267,10 +267,12 @@ public static class Engine_EntityAppearance
     /// One tint onto a cloth; returns whether the cloth now holds one of ours.
     /// </summary>
     /// <remarks>
-    /// NIL ONLY TO TAKE OURS BACK. Writing nil is `set_instance_shader_parameter`'s default path,
-    /// which asks the server for the default first (a render-thread sync, Engine_InstanceParams)
-    /// and leaves the cloth exactly where a cloth never written stands. Only this method writes a
-    /// cloth's tint, so one it never tinted is already there and is left alone.
+    /// NEUTRAL WHITE, NEVER NIL. Writing <c>default(Variant)</c> (nil) into
+    /// <c>set_instance_shader_parameter</c> forces Godot's separate render thread to sync
+    /// synchronously back to the main thread for the shader's default lookup (measured up to
+    /// 28 ms per stall in Bowerstone Market). Both modern (<c>entity_tint</c>) and classic
+    /// (<c>ps_g_StandardMaterialTintColour</c>) shaders initialize their tint uniforms to
+    /// <c>vec4(1.0)</c>, so writing <see cref="Vector4.One"/> resets the cloth with zero sync.
     /// </remarks>
     private static bool MirrorTint(GeometryInstance3D cloth, StringName parameter, Vector4? tint, bool held)
     {
@@ -282,39 +284,40 @@ public static class Engine_EntityAppearance
 
         if (held)
         {
-            Refii.Core.Engine_InstanceParams.Set(cloth, parameter, default(Variant));
+            cloth.SetInstanceShaderParameter(parameter, Vector4.One);
         }
         return false;
     }
 
     public static void Apply(MeshInstance3D node, in HostBridge.EntityAppearance look, bool principal)
     {
-        if (Applied.Count == 0 && look.IsConstructed)
+        HostBridge.EntityAppearance visual = look.VisualOnly;
+        if (Applied.Count == 0 && visual.IsConstructed)
         {
             return;
         }
 
         bool had = Applied.TryGetValue(node, out HostBridge.EntityAppearance was);
-        if (!had && look.IsConstructed)
+        if (!had && visual.IsConstructed)
         {
             return;
         }
 
-        bool drawn = look.Drawn(principal);
-        if (!look.IsConstructed)
+        bool drawn = visual.Drawn(principal);
+        if (!visual.IsConstructed)
         {
             ++StatedThisWalk;
             if (!drawn)
             {
                 ++HiddenThisWalk;
             }
-            else if (look.Opacity < OpaqueFrom)
+            else if (visual.Opacity < OpaqueFrom)
             {
                 ++FadedThisWalk;
             }
         }
 
-        if (had && was == look)
+        if (had && was == visual)
         {
             return;
         }
@@ -326,14 +329,14 @@ public static class Engine_EntityAppearance
             return;
         }
 
-        float opacity = Mathf.Clamp(look.Opacity, 0f, 1f);
+        float opacity = Mathf.Clamp(visual.Opacity, 0f, 1f);
         node.Transparency = drawn ? TransparencyFor(opacity) : 0f;
         node.Visible = drawn;
 
         // The tint's lanes in the guest's memory order are the shader's x, y, z (`sub_82573570`
         // packs its bytes 2, 1, 0, 3 into +80, +84, +88, +92, and `sub_82220CA8` stores +80..
         // to c49 in order), and `.w` is read by no shader. A corpse is {103,103,103,255}: grey.
-        if (!had || was.TintLanes != look.TintLanes)
+        if (!had || was.TintLanes != visual.TintLanes)
         {
             // THE MODERN TINT IS CAPPED AT THE XBOX'S SCENE CEILING. The title's scene target is
             // 7e3 (`"1280x720 2xMSAA Horizontal Split (PIXEL_FORMAT_A2B10G10R10F_EDRAM)"`), whose
@@ -344,16 +347,16 @@ public static class Engine_EntityAppearance
             // title can actually show and touches only the over-range ones (qo240, qo900 ghosts,
             // qo860/qo170/qo890 at 9..12). Classic clamps the export itself instead.
             var modern = new Vector4(
-                Mathf.Min(look.TintLanes.X, SceneCeilingTint),
-                Mathf.Min(look.TintLanes.Y, SceneCeilingTint),
-                Mathf.Min(look.TintLanes.Z, SceneCeilingTint), 1f);
+                Mathf.Min(visual.TintLanes.X, SceneCeilingTint),
+                Mathf.Min(visual.TintLanes.Y, SceneCeilingTint),
+                Mathf.Min(visual.TintLanes.Z, SceneCeilingTint), 1f);
             Refii.Core.Engine_InstanceParams.Set(node, TintParameter, modern);
             // The classic shaders read the same tint as the title's PS c49 (the instance's
             // +240, which this appearance setter fills).
             Vector4? classic = null;
             if (Refii.Models.Engine_ClassicMaterial.Active)
             {
-                classic = new Vector4(look.TintLanes.X, look.TintLanes.Y, look.TintLanes.Z, 1f);
+                classic = new Vector4(visual.TintLanes.X, visual.TintLanes.Y, visual.TintLanes.Z, 1f);
                 node.SetInstanceShaderParameter(ClassicTintParameter, classic.Value);
             }
             else if (Tints.TryGetValue(node, out (Vector4 Modern, Vector4? Classic) held))
@@ -365,19 +368,19 @@ public static class Engine_EntityAppearance
         }
 
         // Written only when it differs from what the node holds: a node never stated holds false.
-        if (look.NoAlphaDepthWrites != (had && was.NoAlphaDepthWrites))
+        if (visual.NoAlphaDepthWrites != (had && was.NoAlphaDepthWrites))
         {
-            Refii.Core.Engine_InstanceParams.Set(node, NoAlphaDepthParameter, look.NoAlphaDepthWrites);
+            Refii.Core.Engine_InstanceParams.Set(node, NoAlphaDepthParameter, visual.NoAlphaDepthWrites);
         }
 
-        if (look.IsConstructed)
+        if (visual.IsConstructed)
         {
             Applied.Remove(node);
             Tints.Remove(node);
         }
         else
         {
-            Applied[node] = look;
+            Applied[node] = visual;
         }
 
         MirrorToCloth(node);
@@ -385,7 +388,7 @@ public static class Engine_EntityAppearance
         // THE OVERLAY: SetSaturationMask (+196) marks the node's pixels for the post-process,
         // and a faded node writes the depth its blend tests against (entity_fade_depth). One
         // material carries whichever the look needs.
-        bool masked = drawn && look.SaturationMask;
+        bool masked = drawn && visual.SaturationMask;
         if (masked != Masked.Contains(node))
         {
             if (masked)

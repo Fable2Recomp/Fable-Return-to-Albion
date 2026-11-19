@@ -53,6 +53,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "appearance_sublist.h"
 #include "entity_walk.h"
 #include "host_abi.h"
 #include "host_core.h"
@@ -1050,8 +1051,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
     }
 
     uint32_t written = 0u;
+    const uint32_t renderable = Component(base, entity, 3u);
+    const GuestReader reader{base};
     const uint32_t morph = Component(base, entity, kMorphComponent);
-    if (morph != 0u) {
+    if (morph != 0u &&
+        refii::hostcore::IsAppearanceSubcomponentActive(
+            reader, renderable, refii::hostcore::kFable3AppearanceSublistOffset, morph + 0x0Cu)) {
         const uint32_t begin = Word(base, morph + 0x38u);
         const uint32_t end = Word(base, morph + 0x3Cu);
         const uint32_t capacity = Word(base, morph + 0x40u);
@@ -1084,7 +1089,9 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
     }
 
     const uint32_t eyes = Component(base, entity, kEyesComponent);
-    if (eyes != 0u && GuestByteAt(base, eyes + 0x60u) != 0u) {
+    if (eyes != 0u && GuestByteAt(base, eyes + 0x60u) != 0u &&
+        refii::hostcore::IsAppearanceSubcomponentActive(
+            reader, renderable, refii::hostcore::kFable3AppearanceSublistOffset, eyes + 0x0Cu)) {
         for (uint32_t offset : {0x18u, 0x28u}) {
             const uint32_t hash = Word(base, eyes + offset);
             if (hash != 0u && written < max_hashes) {
@@ -1108,6 +1115,11 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityDisplacementParts(uint32_t enti
     const uint8_t* base = GuestBase();
     const uint32_t morph = base == nullptr || !Plausible(entity) ? 0u : Component(base, entity, kMorphComponent);
     if (morph == 0u) {
+        return 0u;
+    }
+    const uint32_t renderable = Component(base, entity, 3u);
+    if (!refii::hostcore::IsAppearanceSubcomponentActive(
+            GuestReader{base}, renderable, refii::hostcore::kFable3AppearanceSublistOffset, morph + 0x0Cu)) {
         return 0u;
     }
 

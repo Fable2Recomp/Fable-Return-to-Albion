@@ -65,6 +65,25 @@ public partial class Engine_ShadowReach : Node
 		};
 	}
 
+	/// <summary>
+	/// Resolves the Godot <see cref="GeometryInstance3D.CastShadow"/> and optional
+	/// <see cref="Node3D.Visible"/> writes for an adopted instance. Cast-only proxies
+	/// (<see cref="GeometryInstance3D.ShadowCastingSetting.ShadowsOnly"/>) MUST keep
+	/// <c>ShadowsOnly</c> and toggle <c>Visible</c> instead of switching to <c>Off</c>,
+	/// because in Godot 4 changing <c>ShadowsOnly</c> to <c>Off</c> enables main-camera
+	/// color rendering and causes unlit/black coplanar Z-fighting against the real mesh.
+	/// </summary>
+	public static (GeometryInstance3D.ShadowCastingSetting CastShadow, bool? Visible) ResolveReachApplication(
+		GeometryInstance3D.ShadowCastingSetting granted, bool withinReach)
+	{
+		if (granted == GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
+		{
+			return (GeometryInstance3D.ShadowCastingSetting.ShadowsOnly, withinReach);
+		}
+
+		return (withinReach ? granted : GeometryInstance3D.ShadowCastingSetting.Off, null);
+	}
+
 	public static float ReadShadowReachScale()
 	{
 		try
@@ -135,7 +154,14 @@ public partial class Engine_ShadowReach : Node
 			return;
 		}
 
-		instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+		if (instance.CastShadow == GeometryInstance3D.ShadowCastingSetting.ShadowsOnly)
+		{
+			instance.Visible = true;
+		}
+		else
+		{
+			instance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+		}
 		_withdrawn.Add(instance.GetInstanceId());
 	}
 
@@ -269,8 +295,9 @@ public partial class Engine_ShadowReach : Node
 				entry.Applied != (GeometryInstance3D.ShadowCastingSetting)(-1)
 				? baseReach + HysteresisMetres
 				: baseReach;
+			bool withinReach = !Enabled || distance <= reachThreshold;
 			GeometryInstance3D.ShadowCastingSetting wanted =
-				!Enabled || distance <= reachThreshold
+				withinReach
 					? entry.Granted
 					: GeometryInstance3D.ShadowCastingSetting.Off;
 
@@ -281,7 +308,17 @@ public partial class Engine_ShadowReach : Node
 
 			if (entry.Applied != wanted)
 			{
-				entry.Node.CastShadow = wanted;
+				var (castShadow, visible) = ResolveReachApplication(entry.Granted, withinReach);
+				if (entry.Node.CastShadow != castShadow)
+				{
+					entry.Node.CastShadow = castShadow;
+				}
+
+				if (visible.HasValue && entry.Node.Visible != visible.Value)
+				{
+					entry.Node.Visible = visible.Value;
+				}
+
 				entry.Applied = wanted;
 			}
 		}

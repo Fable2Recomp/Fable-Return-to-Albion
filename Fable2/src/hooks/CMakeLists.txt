@@ -18,6 +18,8 @@ set(REFII_HOOK_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/coop_world_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/firearm_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/receive_items_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/exp_orb_hooks.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/exp_orb_hooks.cpp
 )
 
 # The shared runtime's include directory AHEAD of the SDK's: it carries the payload's

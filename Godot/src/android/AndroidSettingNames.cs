@@ -54,6 +54,8 @@ public static class AndroidSettingNames
 
         // The settings the graphics presets decide (Advanced).
         ["entity_draw_distance_scale"] = ("Character distance", "How far away people and creatures are still drawn, against the original game's distances."),
+        ["corpse_lifetime_seconds"] = ("Corpse persistence time", "How long fallen physical enemy and creature corpses remain visible before fading out, in seconds. 0 restores the original quick despawn."),
+        ["corpse_max_count"] = ("Max persistent corpses", "Maximum fallen corpses kept active in the region before the oldest distant corpse fades early. 0 picks an automatic limit."),
         ["tree_shadow_reach"] = ("Tree shadow distance", "How far away trees cast their shadows."),
         ["mesh_lod_pixels"] = ("Distant detail",
             "How soon models switch to their simpler versions as they get further away. Larger numbers switch sooner: plainer distance, faster."),

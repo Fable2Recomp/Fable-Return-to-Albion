@@ -11,6 +11,7 @@ namespace refii::vfs {
 
 void MouseLookPost(float yaw_degrees, float pitch_degrees);
 void MouseLookSetDevice(bool mouse);
+void MouseLookSetHostAim(bool active, float fwd_x, float fwd_y, float fwd_z);
 void MouseLookWheel(int32_t notches);
 uint32_t MouseLookState(double* out_values, uint32_t count);
 

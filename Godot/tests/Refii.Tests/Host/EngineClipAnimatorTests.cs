@@ -462,4 +462,47 @@ public class EngineClipAnimatorTests
 
         AssertThat(Refii.Core.Engine_ProcessFrame.Latched).IsFalse();
     }
+
+    [TestCase]
+    public void TestPrimaryCrossfadeBlendsMissingBoneSmoothlyAgainstRest()
+    {
+        Quaternion restRot = Quaternion.FromEuler(new Vector3(-1.3f, 0f, 0f)).Normalized();
+        Quaternion walkRot = Quaternion.FromEuler(new Vector3(-1.2f, 0.35f, -0.1f)).Normalized();
+        var restPos = new Vector3(-0.06f, 0.16f, 0.27f);
+        var walkPos = new Vector3(-0.03f, 0.15f, 0.22f);
+
+        // Walk -> Idle: partner keys the sheath bone, top omits it (evaluates to rest).
+        // Must interpolate continuously from walk to rest and land at rest at topShare = 1.
+        Quaternion walkToIdleStart = Engine_ClipAnimator.CrossfadePrimaryRotation(
+            hasTop: false, Quaternion.Identity, hasPartner: true, walkRot, restRot, 0f);
+        Quaternion walkToIdleMid = Engine_ClipAnimator.CrossfadePrimaryRotation(
+            hasTop: false, Quaternion.Identity, hasPartner: true, walkRot, restRot, 0.5f);
+        Quaternion walkToIdleEnd = Engine_ClipAnimator.CrossfadePrimaryRotation(
+            hasTop: false, Quaternion.Identity, hasPartner: true, walkRot, restRot, 1f);
+        AssertThat(walkToIdleStart.IsEqualApprox(walkRot)).IsTrue();
+        AssertThat(walkToIdleMid.IsEqualApprox(walkRot.Slerp(restRot, 0.5f))).IsTrue();
+        AssertThat(walkToIdleEnd.IsEqualApprox(restRot)).IsTrue();
+
+        Vector3 posStart = Engine_ClipAnimator.CrossfadePrimaryPosition(
+            0f, Vector3.Zero, 1f, walkPos, restPos, 0f);
+        Vector3 posMid = Engine_ClipAnimator.CrossfadePrimaryPosition(
+            0f, Vector3.Zero, 1f, walkPos, restPos, 0.5f);
+        Vector3 posEnd = Engine_ClipAnimator.CrossfadePrimaryPosition(
+            0f, Vector3.Zero, 1f, walkPos, restPos, 1f);
+        AssertThat(posStart.IsEqualApprox(walkPos)).IsTrue();
+        AssertThat(posMid.IsEqualApprox(walkPos.Lerp(restPos, 0.5f))).IsTrue();
+        AssertThat(posEnd.IsEqualApprox(restPos)).IsTrue();
+
+        // Idle -> Walk: partner omits the sheath bone (evaluates to rest), top keys it.
+        // Must start at rest at topShare = 0 instead of snapping to walkRot on frame 1.
+        Quaternion idleToWalkStart = Engine_ClipAnimator.CrossfadePrimaryRotation(
+            hasTop: true, walkRot, hasPartner: false, Quaternion.Identity, restRot, 0f);
+        Quaternion idleToWalkMid = Engine_ClipAnimator.CrossfadePrimaryRotation(
+            hasTop: true, walkRot, hasPartner: false, Quaternion.Identity, restRot, 0.5f);
+        Quaternion idleToWalkEnd = Engine_ClipAnimator.CrossfadePrimaryRotation(
+            hasTop: true, walkRot, hasPartner: false, Quaternion.Identity, restRot, 1f);
+        AssertThat(idleToWalkStart.IsEqualApprox(restRot)).IsTrue();
+        AssertThat(idleToWalkMid.IsEqualApprox(restRot.Slerp(walkRot, 0.5f))).IsTrue();
+        AssertThat(idleToWalkEnd.IsEqualApprox(walkRot)).IsTrue();
+    }
 }

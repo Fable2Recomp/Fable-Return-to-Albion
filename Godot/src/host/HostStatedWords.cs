@@ -145,4 +145,18 @@ public sealed class HostStatedWords
 
 		_seen = null;
 	}
+
+	/// <summary>
+	/// Drops all previously recorded entity states on region teardown so the next region's first walk
+	/// marks every entity as changed cleanly.
+	/// </summary>
+	public void Clear()
+	{
+		_previousCount = 0;
+		_cursor = 0;
+		_walksSincePrune = 0;
+		_seen = null;
+		_stated.Clear();
+		_look.Clear();
+	}
 }

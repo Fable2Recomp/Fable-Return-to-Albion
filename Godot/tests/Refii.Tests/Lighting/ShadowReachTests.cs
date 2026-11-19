@@ -4,6 +4,7 @@ using System;
 using System.Linq;
 using GdUnit4;
 using static GdUnit4.Assertions;
+using Godot;
 using Refii.Launcher.Core;
 using Refii.Lighting;
 
@@ -68,5 +69,29 @@ public class ShadowReachTests
         // Scale <= 0 disables reach limits (all objects cast to cascade max)
         AssertThat(float.IsPositiveInfinity(Engine_ShadowReach.CalculateShadowReach(0.3f, 0.0f))).IsTrue();
         AssertThat(float.IsPositiveInfinity(Engine_ShadowReach.CalculateShadowReach(1.0f, -1.0f))).IsTrue();
+    }
+
+    [TestCase]
+    public void TestResolveReachApplicationPreservesShadowsOnlyAndTogglesVisibility()
+    {
+        var suppressedProxy = Engine_ShadowReach.ResolveReachApplication(
+            GeometryInstance3D.ShadowCastingSetting.ShadowsOnly, withinReach: false);
+        AssertThat(suppressedProxy.CastShadow).IsEqual(GeometryInstance3D.ShadowCastingSetting.ShadowsOnly);
+        AssertThat(suppressedProxy.Visible.HasValue && !suppressedProxy.Visible.Value).IsTrue();
+
+        var activeProxy = Engine_ShadowReach.ResolveReachApplication(
+            GeometryInstance3D.ShadowCastingSetting.ShadowsOnly, withinReach: true);
+        AssertThat(activeProxy.CastShadow).IsEqual(GeometryInstance3D.ShadowCastingSetting.ShadowsOnly);
+        AssertThat(activeProxy.Visible.HasValue && activeProxy.Visible.Value).IsTrue();
+
+        var suppressedMesh = Engine_ShadowReach.ResolveReachApplication(
+            GeometryInstance3D.ShadowCastingSetting.On, withinReach: false);
+        AssertThat(suppressedMesh.CastShadow).IsEqual(GeometryInstance3D.ShadowCastingSetting.Off);
+        AssertThat(suppressedMesh.Visible.HasValue).IsFalse();
+
+        var activeMesh = Engine_ShadowReach.ResolveReachApplication(
+            GeometryInstance3D.ShadowCastingSetting.On, withinReach: true);
+        AssertThat(activeMesh.CastShadow).IsEqual(GeometryInstance3D.ShadowCastingSetting.On);
+        AssertThat(activeMesh.Visible.HasValue).IsFalse();
     }
 }

@@ -44,7 +44,8 @@ public readonly record struct NumericRange(
     double Max,
     double Step,
     string Suffix = "",
-    string? ZeroLabel = null);
+    string? ZeroLabel = null,
+    bool AllowGreater = false);
 
 /// <summary>Classification and presentation metadata for a runtime CVar in the launcher settings panel.</summary>
 public sealed record SettingPresentation(
@@ -499,6 +500,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Scenery Draw Distance",
                 "Multiplier on foliage, rocks, and distant scenery draw distances (1x = Xbox 360).",
                 new NumericRange(0.5, 3.0, 0.25, "x"), Order: 220),
+            ["corpse_lifetime_seconds"] = new(
+                SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Corpse Persistence Time",
+                "How long fallen enemy and creature corpses remain visible before fading out (0 = original game; no upper cap in config).",
+                new NumericRange(0, 3600, 5, "s", ZeroLabel: "Default", AllowGreater: true), Order: 225),
             ["fx_weapon_augment_always_active"] = new(
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Continuous Weapon Augment Glow",
                 "Keeps elemental weapon augment particles active while walking and running.",
@@ -555,6 +560,10 @@ public static class DesktopSettingMetadata
             ["texture_cache_enabled"] = new(
                 SettingsTab.Graphics, "Advanced Texture & Material Tuning", SettingTier.Advanced, "Disk Texture Cache",
                 Order: 680),
+            ["corpse_max_count"] = new(
+                SettingsTab.Graphics, "Advanced Graphics", SettingTier.Advanced, "Max Persistent Corpses",
+                "Maximum fallen corpses kept in the active region before the oldest distant corpse fades early (0 = Auto; -1 = Unlimited).",
+                new NumericRange(0, 256, 4, "", ZeroLabel: "Auto", AllowGreater: true), Order: 685),
             ["texture_cache_max_mb"] = new(
                 SettingsTab.Graphics, "Advanced Texture & Material Tuning", SettingTier.Advanced, "Texture Cache Disk Limit",
                 null, new NumericRange(0, 32768, 512, " MB", "Auto"), Order: 690),
@@ -657,6 +666,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Controls, "Mouse & Camera", SettingTier.Essential, "Mouse Look Sensitivity",
                 "Camera rotation speed with the mouse (1.0x = default).",
                 new NumericRange(0.1, 4.0, 0.05, "x"), Order: 10),
+            ["mouse_zoom_sensitivity"] = new(
+                SettingsTab.Controls, "Mouse & Camera", SettingTier.Essential, "Zoom-Scaled Aim Sensitivity",
+                "Scales mouse look speed proportionally to FOV when aiming down zoomed sights.",
+                Order: 15),
             ["mouse_input"] = new(
                 SettingsTab.Controls, "Mouse & Camera", SettingTier.Essential, "Enable Mouse Camera & Menu Input",
                 "Turn off to play purely on controller or keyboard without mouse capture.",

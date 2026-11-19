@@ -400,36 +400,134 @@ end
 
 -- Wrapped once per CameraManager table: run again after the camera scripts (the runtime calls it there).
 function Refii._wrap_camera()
-	if type(CameraManager) ~= "table" then return end
-	if type(CameraManager.GetSaveTable) == "function" and CameraManager.GetSaveTable ~= Refii._camera_save_wrapper then
-		local shipped = CameraManager.GetSaveTable
-		Refii._camera_save_wrapper = function(...)
-			local save = shipped(...)
-			local ok, copy = pcall(CameraSaveCopy, save)
-			return ok and copy or save
-		end
-		CameraManager.GetSaveTable = Refii._camera_save_wrapper
-	end
-	if type(CameraManager.FrameUpdate) ~= "function" or CameraManager.FrameUpdate == Refii._camera_wrapper then return end
-	local inner = CameraManager.FrameUpdate
-	local function ModeOf(camera)
-		if camera == nil or type(CameraManager.CameraSetList) ~= "table" then return -1 end
-		for _, set in ipairs(CameraManager.CameraSetList) do
-			if type(set) == "table" and set.OverridesCameraValidity and type(set.CameraModes) == "table" then
-				for mode, listed in pairs(set.CameraModes) do if listed == camera then return mode end end
+	if type(CameraManager) == "table" then
+		if type(CameraManager.GetSaveTable) == "function" and CameraManager.GetSaveTable ~= Refii._camera_save_wrapper then
+			local shipped = CameraManager.GetSaveTable
+			Refii._camera_save_wrapper = function(...)
+				local save = shipped(...)
+				local ok, copy = pcall(CameraSaveCopy, save)
+				return ok and copy or save
 			end
+			CameraManager.GetSaveTable = Refii._camera_save_wrapper
 		end
-		return -1
-	end
-	Refii._camera_wrapper = function(self, player, a, b, c)
-		if player ~= nil then pcall(Refii._camera_apply, player) end
-		local r1, r2, r3 = inner(self, player, a, b, c)
-		if player ~= nil and Refii._camera_stated ~= nil then
-			pcall(Refii._camera_stated, player, ModeOf(self.CurrentCamera))
+		if type(CameraManager.FrameUpdate) == "function" and CameraManager.FrameUpdate ~= Refii._camera_wrapper then
+			local inner = CameraManager.FrameUpdate
+			local function ModeOf(camera)
+				if camera == nil or type(CameraManager.CameraSetList) ~= "table" then return -1 end
+				for _, set in ipairs(CameraManager.CameraSetList) do
+					if type(set) == "table" and set.OverridesCameraValidity and type(set.CameraModes) == "table" then
+						for mode, listed in pairs(set.CameraModes) do if listed == camera then return mode end end
+					end
+				end
+				return -1
+			end
+			Refii._camera_wrapper = function(self, player, a, b, c)
+				if player ~= nil then pcall(Refii._camera_apply, player) end
+				local r1, r2, r3 = inner(self, player, a, b, c)
+				if player ~= nil and Refii._camera_stated ~= nil then
+					pcall(Refii._camera_stated, player, ModeOf(self.CurrentCamera))
+				end
+				return r1, r2, r3
+			end
+			CameraManager.FrameUpdate = Refii._camera_wrapper
 		end
-		return r1, r2, r3
 	end
-	CameraManager.FrameUpdate = Refii._camera_wrapper
+
+	if type(SACCamera) == "table" and type(SACCamera.CalculateXY) == "function" and
+			SACCamera.CalculateXY ~= Refii._sac_calculate_xy then
+		local shipped = SACCamera.CalculateXY
+		Refii._sac_calculate_xy = function(self, pos, cage, length, centre, ...)
+			if self ~= RefiiMouseLookCamera or pos == nil or centre == nil or self.CalculateMovement == nil then
+				return shipped(self, pos, cage, length, centre, ...)
+			end
+			local moved = self:CalculateMovement(centre)
+			local manual = self.PlayerIsManuallyRotatingCamera
+			self.PlayerIsManuallyRotatingCamera = true
+			local ok, result = pcall(shipped, self, pos + moved, cage, length, centre, ...)
+			self.PlayerIsManuallyRotatingCamera = manual
+			if not ok then error(result, 0) end
+			return result
+		end
+		SACCamera.CalculateXY = Refii._sac_calculate_xy
+	end
+
+	if type(RangedCombatCamera) == "table" and type(RangedCombatCamera.UpdateCurrentDirection) == "function" and
+			RangedCombatCamera.UpdateCurrentDirection ~= Refii._aim_update_current_direction then
+		local shipped = RangedCombatCamera.UpdateCurrentDirection
+		Refii._aim_update_current_direction = function(self, ...)
+			local hx, hy, hz = self.RefiiHostAimX, self.RefiiHostAimY, self.RefiiHostAimZ
+			self.RefiiHostAimX, self.RefiiHostAimY, self.RefiiHostAimZ = nil, nil, nil
+			local yaw, tilt = self.RefiiAimYaw, self.RefiiAimTilt
+			self.RefiiAimYaw, self.RefiiAimTilt = nil, nil
+			if self == RefiiMouseLookCamera and self.Player ~= nil then
+				local pivot = (Creature ~= nil and Creature.GetCollisionHeadPosition ~= nil and
+					Creature.GetCollisionHeadPosition(self.Player)) or nil
+				if pivot == nil and self.Player.GetPosition ~= nil then
+					pivot = self.Player:GetPosition() + CVector3(0, 0, 1.6)
+				end
+				if hx ~= nil and hy ~= nil and hz ~= nil and pivot ~= nil then
+					if self.GetTightness ~= nil then self:GetTightness() end
+					local len = math.sqrt(hx * hx + hy * hy + hz * hz)
+					if len >= 0.0001 then
+						local nx, ny, nz = hx / len, hy / len, hz / len
+						local limit = self.AngleLimit or (math.pi / 6)
+						local elev = math.asin(math.max(-1, math.min(1, nz)))
+						if elev > limit or elev < -limit then
+							local clamped = math.max(-limit, math.min(limit, elev))
+							local hlen = math.sqrt(nx * nx + ny * ny)
+							local c = math.cos(clamped)
+							if hlen > 0.0001 then
+								nx, ny = (nx / hlen) * c, (ny / hlen) * c
+							end
+							nz = math.sin(clamped)
+						end
+						local dir = CVector3(nx, ny, nz)
+						local oldD = self.CurrentDirection
+						if oldD ~= nil and self.CurrentPosition ~= nil then
+							local ox, oy, oz = oldD:GetX(), oldD:GetY(), oldD:GetZ()
+							local olen = math.sqrt(ox * ox + oy * oy + oz * oz)
+							local nhlen = math.sqrt(nx * nx + ny * ny)
+							if olen >= 0.0001 and nhlen >= 0.0001 then
+								ox, oy, oz = ox / olen, oy / olen, oz / olen
+								local ohlen = math.sqrt(ox * ox + oy * oy)
+								if ohlen >= 0.0001 then
+									local px, py, pz = pivot:GetX(), pivot:GetY(), pivot:GetZ()
+									local cx = self.CurrentPosition:GetX() - px
+									local cy = self.CurrentPosition:GetY() - py
+									local cz = self.CurrentPosition:GetZ() - pz
+									if cx * cx + cy * cy + cz * cz < 625 then
+										local ofx, ofy = ox / ohlen, oy / ohlen
+										local orx, ory = ofy, -ofx
+										local side = cx * orx + cy * ory
+										local behind = -(cx * ofx + cy * ofy) / math.max(ohlen, 0.1)
+										local height = cz + oz * behind
+										local nfx, nfy = nx / nhlen, ny / nhlen
+										local nrx, nry = nfy, -nfx
+										self.CurrentPosition = CVector3(
+											px - nx * behind + nrx * side,
+											py - ny * behind + nry * side,
+											pz - nz * behind + height)
+									end
+								end
+							end
+						end
+						self.CurrentDirection = dir
+						self.CurrentDesired = dir
+						self.RefiiAimPivot = pivot
+						self.RefiiHostAimApplied = true
+						return
+					end
+				end
+				if yaw ~= nil and tilt ~= nil and pivot ~= nil then
+					local r1, r2, r3 = shipped(self, ...)
+					self.RefiiAimPivot = pivot
+					return r1, r2, r3
+				end
+			end
+			return shipped(self, ...)
+		end
+		RangedCombatCamera.UpdateCurrentDirection = Refii._aim_update_current_direction
+	end
 end
 Refii._wrap_camera()
 function Refii.host_serial(serial) return serial end

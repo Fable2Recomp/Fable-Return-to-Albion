@@ -143,4 +143,29 @@ public class EngineTickTimelineTests
         AssertThat(timeline.Settled).IsTrue();
         AssertThat(timeline.Newest.Origin.IsEqualApprox(new Vector3(0.4f, 0f, -0.2f))).IsTrue();
     }
+
+    [TestCase]
+    public void TestClearResetsStateAndSameTickUnchangedObserveEarlyOuts()
+    {
+        var timeline = new Engine_TickTimeline(stillWhenUnchanged: true);
+        var x0 = new Transform3D(Basis.Identity, new Vector3(1f, 2f, 3f));
+        var x1 = new Transform3D(new Basis(Vector3.Up, 0.25f), new Vector3(2f, 2f, 3f));
+
+        timeline.Reset(10.0, x0, 50f);
+        timeline.Advance(1_000_000UL, 10.0);
+        timeline.Observe(11.0, x1, 50f);
+        Transform3D midFirst = timeline.Advance(1_016_666UL, 10.25);
+
+        // Identical (tick, sample, scalar) repeat must be ignored without throwing off interpolation.
+        timeline.Observe(11.0, x1, 50f);
+        Transform3D midSecond = timeline.Advance(1_016_666UL, 10.25);
+        AssertThat(midSecond.Origin.IsEqualApprox(midFirst.Origin)).IsTrue();
+
+        timeline.Clear();
+        var fresh = new Transform3D(Basis.Identity, new Vector3(-4f, 1f, 9f));
+        timeline.Observe(25.0, fresh, 75f);
+        AssertThat(timeline.Settled).IsTrue();
+        AssertThat(timeline.Newest.Origin.IsEqualApprox(fresh.Origin)).IsTrue();
+        AssertThat(timeline.NewestScalar).IsEqual(75f);
+    }
 }
