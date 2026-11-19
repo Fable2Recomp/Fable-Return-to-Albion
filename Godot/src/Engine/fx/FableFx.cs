@@ -194,6 +194,12 @@ public partial class FableFx : Node3D
 	public bool Loop { get; set; } = true;
 
 	[Export]
+	public bool Emitting { get; set; } = true;
+
+	/// <summary>When true (e.g. retired nodes draining remaining particles), effect lights stay hidden without culling particle decay.</summary>
+	public bool SuppressLights { get; set; }
+
+	[Export]
 	public bool Playing { get; set; } = true;
 
 	[Export]
@@ -663,9 +669,10 @@ public partial class FableFx : Node3D
 				_emitDispActive = false;
 				_emitGuest = true;
 			}
-			if (_lights.Count == 0 || culledByFade)
+			bool hideLights = culledByFade || SuppressLights;
+			if (_lights.Count == 0 || hideLights)
 			{
-				if (culledByFade)
+				if (hideLights)
 				{
 					for (int i = 0; i < _lights.Count; i++)
 					{
@@ -702,6 +709,7 @@ public partial class FableFx : Node3D
 		FrameWork.Lap(1, ref lapAt);
 
 		_system.SetLoop(Loop);
+		_system.SetEmitting(Emitting);
 		_system.SetIntensity(Intensity * RecipeIntensity);
 		_system.SetSizeScale(SizeScale * RecipeSize);
 		_system.SetTint(Tint.R * StatedColour.R, Tint.G * StatedColour.G, Tint.B * StatedColour.B);
@@ -737,7 +745,7 @@ public partial class FableFx : Node3D
 
 			float range = state.Range;
 			float energy = state.Energy;
-			if (!(range > 0f) || !float.IsFinite(range) || !float.IsFinite(energy))
+			if (SuppressLights || !(range > 0f) || !float.IsFinite(range) || !float.IsFinite(energy))
 			{
 				if (!cache.Applied || cache.Visible)
 				{
@@ -925,7 +933,6 @@ public partial class FableFx : Node3D
 		bool turned = !_emitted || cameraPos.DistanceSquaredTo(_emitPos) > 0.25f;
 		if (_system.LastSteps == 0 && !_system.LastRebased && !turned && (addMesh is null) == _emitAddNull && GuestDrawn == _emitGuest)
 		{
-			if (!fast) PublishStepAlpha();
 			if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
 			if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
 			if (fast) PublishStepAlphaFast();
@@ -1414,6 +1421,9 @@ public partial class FableFx : Node3D
 	public int DebugAlive => _system.AliveCount();
 
 	public int DebugSpawned => _system.TotalSpawned;
+
+	/// <summary>True when at least one emitter spawns detached world-space particles that must drain after stop.</summary>
+	public bool HasDetachedParticles => _system.HasDetachedParticles;
 
 	/// <summary>
 	/// Surfaces on the main mesh only: an "addone" batch commits to `_addMesh` and a "disp"

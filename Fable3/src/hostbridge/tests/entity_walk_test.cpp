@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "appearance_sublist.h"
 #include "entity_walk.h"
 
 // The walk names TU3's addresses (fable3_guest_build.h); this synthetic guest is TU3, so every
@@ -807,9 +808,74 @@ void CheckWords(uint32_t seed, World& world) {
     }
 }
 
+/// Active sub-component list check on CECGraphicAppearance (Fable 2 +0x10 and Fable 3 +0x0C).
+void CheckAppearanceSublist() {
+    using refii::hostcore::IsAppearanceSubcomponentActive;
+    using refii::hostcore::kFable2AppearanceSublistOffset;
+    using refii::hostcore::kFable3AppearanceSublistOffset;
+
+    SyntheticMemory m;
+    constexpr uint32_t kComp3 = 0x10020000u;
+    constexpr uint32_t kSentinel = 0x10021000u;
+    constexpr uint32_t kNodeA = 0x10021100u;
+    constexpr uint32_t kNodeB = 0x10021120u;
+    constexpr uint32_t kMorphNode = 0x1003000Cu;
+    constexpr uint32_t kEyesNode = 0x1004000Cu;
+    constexpr uint32_t kDetachedMorphNode = 0x1005000Cu;
+
+    // Empty sentinel returns false for any queried sub-component.
+    m.Put32(kComp3 + kFable2AppearanceSublistOffset, kSentinel);
+    m.Put32(kComp3 + kFable3AppearanceSublistOffset, kSentinel);
+    m.Put32(kSentinel + 0u, kSentinel);
+    m.Put32(kSentinel + 4u, kSentinel);
+    if (IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kMorphNode) ||
+        IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "empty appearance sublist should report sub-component inactive");
+        return;
+    }
+
+    // Link two active nodes: sentinel -> kNodeA(kMorphNode) -> kNodeB(kEyesNode) -> sentinel.
+    m.Put32(kSentinel + 0u, kNodeA);
+    m.Put32(kSentinel + 4u, kNodeB);
+    m.Put32(kNodeA + 0u, kNodeB);
+    m.Put32(kNodeA + 4u, kSentinel);
+    m.Put32(kNodeA + 8u, kMorphNode);
+    m.Put32(kNodeB + 0u, kSentinel);
+    m.Put32(kNodeB + 4u, kNodeA);
+    m.Put32(kNodeB + 8u, kEyesNode);
+
+    if (!IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kMorphNode) ||
+        !IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kEyesNode) ||
+        IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kDetachedMorphNode)) {
+        Fail(0u, "linked appearance sublist mismatch");
+        return;
+    }
+
+    // Unlink kNodeA (Hollow Man crumble): sentinel -> kNodeB -> sentinel.
+    m.Put32(kSentinel + 0u, kNodeB);
+    m.Put32(kNodeB + 4u, kSentinel);
+    if (IsAppearanceSubcomponentActive(m, kComp3, kFable2AppearanceSublistOffset, kMorphNode) ||
+        IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "unlinked morph sub-component must report inactive");
+        return;
+    }
+
+    // Conservative fallback when comp3 or a torn link pointer is unreadable/null.
+    if (!IsAppearanceSubcomponentActive(m, 0u, kFable2AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "null renderable must fall back conservatively");
+        return;
+    }
+    m.Put32(kNodeB + 0u, 0xDEADu);
+    if (!IsAppearanceSubcomponentActive(m, kComp3, kFable3AppearanceSublistOffset, kMorphNode)) {
+        Fail(0u, "torn sublist link must fall back conservatively");
+        return;
+    }
+}
+
 }  // namespace
 
 int main() {
+    CheckAppearanceSublist();
     uint32_t walked = 0u;
     for (uint32_t seed = 1u; seed <= 400u; ++seed) {
         World world(seed);

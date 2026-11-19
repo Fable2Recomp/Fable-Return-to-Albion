@@ -67,8 +67,9 @@ public partial class GameDevTabCvars : GameDevTab
 			return;
 		}
 
-		bool accepted = HostBridge.SetCvar(_name, _value.Text) ||
-			Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(_name, _value.Text);
+		bool nativeAccepted = HostBridge.SetCvar(_name, _value.Text);
+		bool godotAccepted = Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(_name, _value.Text);
+		bool accepted = nativeAccepted || godotAccepted;
 		_result.Text = accepted ? "accepted" : "REFUSED by the registry";
 		GD.Print($"[dev-menu] cvar {_name} = '{_value.Text}' — {(accepted ? "accepted" : "refused")}");
 		Refresh();

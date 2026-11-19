@@ -216,8 +216,8 @@ public sealed class Engine_DecorateCatalog
             patch.Names[mesh] = model.Replace('/', '\\').ToLowerInvariant();
             if (!patch.Entries.Any(e => e.Id == pair.Key))
             {
-                var cardEntry = new GdbPatchEntry(pair.Key, 1);
-                foreach (var field in pair.Value.View.RawFields(pair.Value.Record))
+                var cardEntry = new GdbPatchEntry(pair.Key, pair.Value.View.RecordSchemaFlags(pair.Value.Record));
+                foreach (var field in pair.Value.View.DeclaredFields(pair.Value.Record))
                     cardEntry.Properties.Add(new GdbPatchProperty(field.Hash, field.Type, field.Raw));
                 patch.Entries.Add(cardEntry);
             }
@@ -287,7 +287,7 @@ public sealed class Engine_DecorateCatalog
     }
 
     /// <summary>Raise when <see cref="Build"/> or the file below changes in a way the build stamp would not show.</summary>
-    private const int CacheFormat = 2;
+    private const int CacheFormat = 3;
 
     /// <summary>Everything <see cref="Build"/> reads, and the build of the code that reads it.</summary>
     internal static byte[] CacheKey(IReadOnlyList<byte[]?> blobs, IReadOnlyDictionary<uint, string> models, byte[]? shipped)

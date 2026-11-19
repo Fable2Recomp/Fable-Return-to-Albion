@@ -177,13 +177,13 @@
 #include "vfs_hooks_private.h"
 
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 
 #include "core/guest_build.h"
 #include "core/guest_state.h"
+#include "core/mouse_look_common.h"
 #include "core/payload_bridge_fable2.h"
 #include "core/refii_mod.h"
 #include "hooks/ppc_externs.h"
@@ -201,19 +201,22 @@ PPC_EXTERN_FUNC(rex_lua_toboolean);
 
 namespace {
 
+using refii::mouselook::AimTurn;
+using refii::mouselook::AlignPointAlongRay;
+using refii::mouselook::TargetLockFlickTracker;
+using refii::mouselook::WheelSwitchQueue;
+using refii::mouselook::kFlagHasHead;
+using refii::mouselook::kFlagHostAimApplied;
+using refii::mouselook::kFlagLookInverted;
+using refii::mouselook::kHeightDeadZone;
+using refii::mouselook::kModeAim;
+using refii::mouselook::kModeInPlace;
+using refii::mouselook::kModeNone;
+using refii::mouselook::kModeOrbit;
 using refii::vfs::LoadGuestU32;
 
 constexpr uint32_t kRotateCamera = 2u;
 constexpr uint32_t kZoomCamera = 4u;
-
-/// SACCamera:ProcessGameAction's height dead zone (`arg3 > 0.1 or arg3 < -0.1`).
-constexpr float kHeightDeadZone = 0.1f;
-
-/// How the host draws a turn not yet taken (core/mouse_look_state.cpp).
-constexpr int32_t kModeNone = 0;
-constexpr int32_t kModeOrbit = 1;
-constexpr int32_t kModeInPlace = 2;
-constexpr int32_t kModeAim = 3;
 
 constexpr int32_t kRegistryIndex = -10000;
 constexpr int32_t kGlobalsIndex = -10002;
@@ -224,11 +227,6 @@ constexpr const char* kDrivenCamera = "RefiiMouseLookCamera";
 /// EPlayerMode.PLAYER_MODE_TARGET_LOCK (scripts/miscellaneous/playermodeenum.lua).
 constexpr uint32_t kTargetLockMode = 4u;
 
-/// A flick that switches a lock's target: this much turn in one direction inside the window — 200
-/// degrees a second, about 4 cm a second at 800 DPI and the default 0.15 degrees a count, well
-/// above the drift of a hand holding the lock and below any deliberate flick.
-constexpr double kFlickDegrees = 40.0;
-constexpr double kFlickWindowSeconds = 0.2;
 constexpr int32_t kTypeNil = 0;
 constexpr int32_t kTypeNumber = 3;
 constexpr int32_t kTypeTable = 5;
@@ -333,6 +331,11 @@ bool TakesInput(uint8_t* base, uint32_t record) {
 float SensitivityFactor(uint8_t* base, uint32_t record) {
   const float sensitivity = refii::mods::LoadF32(base, record + 0x44u);
   return std::isfinite(sensitivity) ? 0.5f + std::fmin(std::fmax(sensitivity, 0.0f), 1.0f) : 1.0f;
+}
+
+/// Player component 33 CameraLookInverted byte (`+0x2A`).
+bool LookInverted(uint8_t* base, uint32_t record) {
+  return Plausible(record) && refii::vfs::LoadGuestU8(base, record + 0x2Au) != 0u;
 }
 
 /// The camera's Lua table, pushed the way `sub_825AEE78` pushes it, with a few field accessors.
@@ -596,6 +599,9 @@ struct Update {
   /// The ranged aim turned with the view, and its owner.
   uint32_t aim = 0u;
   uint32_t hero = 0u;
+  bool inverted = false;
+  bool host_aim = false;
+  float host_fwd[3] = {0.0f, 0.0f, 0.0f};
   double smooth_added = 0.0;
   double smoothed_dx = 0.0;
   double smoothed_dy = 0.0;
@@ -625,18 +631,7 @@ std::array<AimSeen, 4> g_aims{};
 uint32_t g_mouse_hero = 0u;
 uint32_t g_rigid_hero = 0u;
 
-/// A lock's flick in the making: the turn collected in one direction since the window opened.
-struct Flick {
-  uint32_t wrapper = 0u;
-  double sum = 0.0;
-  double window = 0.0;
-  std::chrono::steady_clock::time_point last{};
-  bool seen = false;
-  /// The push that handed a flick, in its direction (+1 / -1); 0 when none is spent.
-  int spent = 0;
-};
-
-Flick g_flick;
+TargetLockFlickTracker g_flick;
 
 /// The heroes whose lock a mod states switches by the wheel, and the game tick each was last
 /// stated on (refii_mod_wheel_switches_target).
@@ -664,13 +659,7 @@ bool WheelSwitches(uint8_t* base, uint32_t hero) {
   return false;
 }
 
-/// The wheel notch waiting on the lock's gate, by camera: 0 none, else its direction.
-struct WheelSwitch {
-  uint32_t wrapper = 0u;
-  int waiting = 0;
-};
-
-WheelSwitch g_wheel_switch;
+WheelSwitchQueue g_wheel_switch;
 
 /// Whether a ROTATE of |x| 1 sent now would switch target: the script's re-arm (pc 115..131) or
 /// its standing gate (pc 144). See the header.
@@ -689,67 +678,20 @@ bool ClearToSwitch(CameraScript& script, uint8_t* base) {
 /// Under a lock a mod states switches by the wheel: this update's notches (rightward positive)
 /// become at most one target switch, and at most one notch waits for the next (see the header).
 void SwitchByWheel(CameraScript& script, uint8_t* base, uint32_t wrapper, int32_t notches) {
-  if (g_wheel_switch.wrapper != wrapper) {
-    g_wheel_switch = WheelSwitch{};
-    g_wheel_switch.wrapper = wrapper;
-  }
-  const int direction = notches > 0 ? 1 : -1;
-  int count = (notches > 0 ? notches : -notches) + (g_wheel_switch.waiting != 0 ? 1 : 0);
-  const int first = g_wheel_switch.waiting != 0 ? g_wheel_switch.waiting : direction;
-  const int latest = notches != 0 ? direction : g_wheel_switch.waiting;
-  if (count > 0 && ClearToSwitch(script, base)) {
-    script.Send(wrapper, kRotateCamera, static_cast<float>(first), 0.0f);
+  int send_dir = 0;
+  if (g_wheel_switch.Step(wrapper, notches, ClearToSwitch(script, base), &send_dir)) {
+    script.Send(wrapper, kRotateCamera, static_cast<float>(send_dir), 0.0f);
     refii_bridge_mouse_look_flicked();
-    --count;
   }
-  g_wheel_switch.waiting = count > 0 ? latest : 0;
 }
 
 /// Under a target lock: the mouse's turn becomes at most one stick flick (see the header).
 void FlickTheLock(CameraScript& script, uint32_t wrapper, float yaw) {
-  const auto now = std::chrono::steady_clock::now();
-  const double since = g_flick.seen && g_flick.wrapper == wrapper
-                           ? std::chrono::duration<double>(now - g_flick.last).count()
-                           : 0.0;
-  if (g_flick.wrapper != wrapper) {
-    g_flick = Flick{};
-    g_flick.wrapper = wrapper;
+  const int direction = g_flick.Collect(wrapper, yaw);
+  if (direction != 0) {
+    script.Send(wrapper, kRotateCamera, static_cast<float>(direction), 0.0f);
+    refii_bridge_mouse_look_flicked();
   }
-  g_flick.last = now;
-  g_flick.seen = true;
-
-  const int direction = yaw > 0.0f ? 1 : (yaw < 0.0f ? -1 : 0);
-  if (direction == 0 || (g_flick.spent != 0 && g_flick.spent != direction)) {
-    g_flick.spent = 0;
-  }
-  if (direction == 0 || g_flick.spent != 0) {
-    g_flick.sum = 0.0;
-    g_flick.window = 0.0;
-    return;
-  }
-
-  // The turn this update carries came over `since`; past the window only its share inside the
-  // window counts, so a slow drag over long updates never adds up to a flick.
-  double share = yaw;
-  if (since > kFlickWindowSeconds) {
-    share *= kFlickWindowSeconds / since;
-  }
-  if ((g_flick.sum > 0.0) != (share > 0.0) || g_flick.window + since > kFlickWindowSeconds) {
-    g_flick.sum = 0.0;
-    g_flick.window = 0.0;
-  } else {
-    g_flick.window += since;
-  }
-  g_flick.sum += share;
-  if (std::fabs(g_flick.sum) < kFlickDegrees) {
-    return;
-  }
-
-  script.Send(wrapper, kRotateCamera, static_cast<float>(direction), 0.0f);
-  refii_bridge_mouse_look_flicked();
-  g_flick.spent = direction;
-  g_flick.sum = 0.0;
-  g_flick.window = 0.0;
 }
 
 void NoteAim(uint32_t aim, uint32_t hero, uint32_t tick) {
@@ -780,60 +722,42 @@ uint32_t AimOf(uint8_t* base, uint32_t hero) {
   return 0u;
 }
 
-/// THE AIM'S TURN, as the core camera chunk made it (RangedCombatCamera.UpdateCurrentDirection's
-/// wrapper): the yaw about the vertical through `pivot`, then the tilt about the level axis
-/// (rx, ry, 0) through it. The same arithmetic as that wrapper, so a point turned here and the
-/// camera turned there stay as they were to each other.
-struct AimTurn {
-  float pivot[3] = {0.0f, 0.0f, 0.0f};
-  double cy = 1.0, sy = 0.0, ct = 1.0, st = 0.0, rx = 0.0, ry = 0.0;
-
-  AimTurn(const float* at, double yaw_degrees, double tilt_degrees, double right_x, double right_y) {
-    constexpr double kRadians = 3.14159265358979323846 / 180.0;
-    for (int i = 0; i < 3; ++i) {
-      pivot[i] = at[i];
-    }
-    // Rightward is clockwise seen from above: a negative turn about +Z.
-    cy = std::cos(-yaw_degrees * kRadians);
-    sy = std::sin(-yaw_degrees * kRadians);
-    ct = std::cos(tilt_degrees * kRadians);
-    st = std::sin(tilt_degrees * kRadians);
-    rx = right_x;
-    ry = right_y;
+void TurnGuestPoint(const AimTurn& turn, uint8_t* base, uint32_t address) {
+  if (!Plausible(address)) {
+    return;
   }
-
-  /// The guest point at `address` (x y z floats; w untouched), turned in place.
-  void Apply(uint8_t* base, uint32_t address) const {
-    if (!Plausible(address)) {
-      return;
-    }
-    double v[3];
-    for (uint32_t i = 0; i < 3u; ++i) {
-      v[i] = refii::mods::LoadF32(base, address + i * 4u) - pivot[i];
-    }
-    if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) {
-      return;
-    }
-    const double ax = v[0] * cy - v[1] * sy;
-    const double ay = v[0] * sy + v[1] * cy;
-    const double az = v[2];
-    // Rodrigues about k = (rx, ry, 0): v cos t + (k x v) sin t + k (k . v)(1 - cos t).
-    const double dot = ax * rx + ay * ry;
-    const double kx = ry * az;
-    const double ky = -rx * az;
-    const double kz = rx * ay - ry * ax;
-    const double out[3] = {ax * ct + kx * st + rx * dot * (1.0 - ct),
-                           ay * ct + ky * st + ry * dot * (1.0 - ct), az * ct + kz * st};
-    for (uint32_t i = 0; i < 3u; ++i) {
-      refii::mods::StoreF32(base, address + i * 4u, static_cast<float>(out[i] + pivot[i]));
-    }
+  float pt[3];
+  for (uint32_t i = 0; i < 3u; ++i) {
+    pt[i] = refii::mods::LoadF32(base, address + i * 4u);
   }
-};
+  if (!turn.ApplyPoint(pt)) {
+    return;
+  }
+  for (uint32_t i = 0; i < 3u; ++i) {
+    refii::mods::StoreF32(base, address + i * 4u, pt[i]);
+  }
+}
+
+void AlignGuestPoint(uint8_t* base, uint32_t address, const float cam_pos[3], const float cam_fwd[3]) {
+  if (!Plausible(address)) {
+    return;
+  }
+  float pt[3];
+  for (uint32_t i = 0; i < 3u; ++i) {
+    pt[i] = refii::mods::LoadF32(base, address + i * 4u);
+  }
+  if (!AlignPointAlongRay(cam_pos, cam_fwd, pt)) {
+    return;
+  }
+  for (uint32_t i = 0; i < 3u; ++i) {
+    refii::mods::StoreF32(base, address + i * 4u, pt[i]);
+  }
+}
 
 /// THE MOUSE'S AIM TURN, before the update of the ranged-aim camera of a hero whose aim runs:
-/// hands the camera the whole turn (the core chunk applies it; see the header) when the device is
-/// the mouse, the cursor is free and no target is snapped. Otherwise the turn stays pending for
-/// the aim's own cursor move (rex_lhRangedAim_MoveCursor below).
+/// hands the camera the host's authoritative aim ray (or the whole delta on the entry tick) when
+/// the device is the mouse, the cursor is free and no target is snapped. Otherwise the turn stays
+/// pending for the aim's own cursor move (rex_lhRangedAim_MoveCursor below).
 void HandToTheAim(PPCContext& ctx, uint8_t* base, uint32_t wrapper, uint32_t hero, uint32_t aim,
                   Update& update) {
   if (refii_bridge_mouse_look_device() == 0 || !Plausible(wrapper)) {
@@ -845,6 +769,7 @@ void HandToTheAim(PPCContext& ctx, uint8_t* base, uint32_t wrapper, uint32_t her
   }
   g_rigid_hero = hero;
   const uint32_t record = RecordOf(base, hero);
+  update.inverted = LookInverted(base, record);
   if (TakesInput(base, record) && (!AimFree(base, aim) || AimSnapped(base, aim))) {
     return;
   }
@@ -867,53 +792,98 @@ void HandToTheAim(PPCContext& ctx, uint8_t* base, uint32_t wrapper, uint32_t her
   update.factor = SensitivityFactor(base, record);
   script.Publish(kDrivenCamera);
   update.published = script.state();
-  script.SetNumber("RefiiAimYaw", static_cast<double>(yaw) * update.factor);
-  script.SetNumber("RefiiAimTilt", static_cast<double>(pitch) * update.factor);
+
+  float hfx = 0.0f, hfy = 0.0f, hfz = 0.0f;
+  if (refii_bridge_mouse_look_host_aim(&hfx, &hfy, &hfz) != 0) {
+    update.host_aim = true;
+    update.host_fwd[0] = hfx;
+    update.host_fwd[1] = hfy;
+    update.host_fwd[2] = hfz;
+    script.SetNumber("RefiiHostAimX", hfx);
+    script.SetNumber("RefiiHostAimY", hfy);
+    script.SetNumber("RefiiHostAimZ", hfz);
+    script.SetNil("RefiiAimYaw");
+    script.SetNil("RefiiAimTilt");
+  } else {
+    script.SetNil("RefiiHostAimX");
+    script.SetNil("RefiiHostAimY");
+    script.SetNil("RefiiHostAimZ");
+    script.SetNumber("RefiiAimYaw", static_cast<double>(yaw) * update.factor);
+    script.SetNumber("RefiiAimTilt",
+                     static_cast<double>(update.inverted ? -pitch : pitch) * update.factor);
+  }
   update.mode = kModeAim;
 }
 
-/// After the ranged-aim camera's update: turns the aim's points as the camera's wrapper turned the
-/// camera, and states the account — the head as a point in the camera's level frame.
+/// After the ranged-aim camera's update: turns or ray-aligns the aim's points and states the account.
 void StateTheAim(PPCContext& ctx, uint8_t* base, uint32_t manager, Update& update) {
-  static const char* const kFields[] = {"RefiiAimYaw",    "RefiiAimTilt",   "RefiiAimTurned",
-                                        "RefiiAimTilted", "RefiiAimRightX", "RefiiAimRightY",
-                                        "RefiiAimPivot"};
+  static const char* const kFields[] = {"RefiiHostAimX",  "RefiiHostAimY",   "RefiiHostAimZ",
+                                        "RefiiHostAimApplied", "RefiiAimYaw", "RefiiAimTilt",
+                                        "RefiiAimTurned", "RefiiAimTilted",  "RefiiAimRightX",
+                                        "RefiiAimRightY", "RefiiAimPivot"};
   const bool current = update.wrapper == ActiveCamera(base, manager);
   float head[3] = {0.0f, 0.0f, 0.0f};
   float pivot[3] = {0.0f, 0.0f, 0.0f};
   float limit = 0.0f;
+  bool has_head = false;
+  bool host_applied = false;
   bool turned = false;
+  double yaw = 0.0, tilt = 0.0, rx = 0.0, ry = 0.0;
   {
     CameraScript script(ctx, base, current ? update.wrapper : 0u);
-    double yaw = 0.0, tilt = 0.0, rx = 0.0, ry = 0.0;
-    turned = script.open() && script.Number("RefiiAimTurned", &yaw) &&
-             script.Number("RefiiAimTilted", &tilt) && script.Number("RefiiAimRightX", &rx) &&
-             script.Number("RefiiAimRightY", &ry) && script.Vector("RefiiAimPivot", head) &&
-             std::isfinite(yaw) && std::isfinite(tilt);
     if (script.open()) {
+      has_head = script.Vector("RefiiAimPivot", head);
+      host_applied = has_head && script.Truth("RefiiHostAimApplied");
+      if (!host_applied && has_head) {
+        turned = script.Number("RefiiAimTurned", &yaw) && script.Number("RefiiAimTilted", &tilt) &&
+                 script.Number("RefiiAimRightX", &rx) && script.Number("RefiiAimRightY", &ry) &&
+                 std::isfinite(yaw) && std::isfinite(tilt);
+      }
       limit = static_cast<float>(script.NumberOr("AngleLimit", 0.0) * 180.0 / 3.14159265358979323846);
       for (const char* field : kFields) {
         script.SetNil(field);
       }
     }
-    if (turned) {
-      const AimTurn turn(head, yaw, tilt, rx, ry);
-      for (const uint32_t at : {0x70u, 0x80u, 0x90u}) {
-        turn.Apply(base, update.aim + at);
-      }
-      const uint32_t targeting = refii_mod_component(base, update.hero, kTargetingComponent);
-      const uint32_t stated = Plausible(targeting) ? LoadGuestU32(base, targeting + 0xCu) : 0u;
-      if (Plausible(stated)) {
-        turn.Apply(base, stated + 0x20u);
-        turn.Apply(base, stated + 0x30u);
-      }
-      update.absorbed = static_cast<float>(yaw);
-      update.absorbed_pitch = static_cast<float>(tilt);
-    }
   }
 
   const uint32_t live = Plausible(manager) ? RefreshLiveCamera(ctx, base, manager) : 0u;
-  if (turned && live != 0u) {
+  if (host_applied && current && live != 0u) {
+    const float cam_pos[3] = {
+        refii::mods::LoadF32(base, live + 0u),
+        refii::mods::LoadF32(base, live + 4u),
+        refii::mods::LoadF32(base, live + 8u),
+    };
+    const float cam_fwd[3] = {
+        refii::mods::LoadF32(base, live + 0x20u),
+        refii::mods::LoadF32(base, live + 0x24u),
+        refii::mods::LoadF32(base, live + 0x28u),
+    };
+    for (const uint32_t at : {0x70u, 0x80u, 0x90u}) {
+      AlignGuestPoint(base, update.aim + at, cam_pos, cam_fwd);
+    }
+    const uint32_t targeting = refii_mod_component(base, update.hero, kTargetingComponent);
+    const uint32_t stated = Plausible(targeting) ? LoadGuestU32(base, targeting + 0xCu) : 0u;
+    if (Plausible(stated)) {
+      AlignGuestPoint(base, stated + 0x20u, cam_pos, cam_fwd);
+      AlignGuestPoint(base, stated + 0x30u, cam_pos, cam_fwd);
+    }
+  } else if (turned) {
+    const AimTurn turn(head, yaw, tilt, rx, ry);
+    for (const uint32_t at : {0x70u, 0x80u, 0x90u}) {
+      TurnGuestPoint(turn, base, update.aim + at);
+    }
+    const uint32_t targeting = refii_mod_component(base, update.hero, kTargetingComponent);
+    const uint32_t stated = Plausible(targeting) ? LoadGuestU32(base, targeting + 0xCu) : 0u;
+    if (Plausible(stated)) {
+      TurnGuestPoint(turn, base, stated + 0x20u);
+      TurnGuestPoint(turn, base, stated + 0x30u);
+    }
+    update.absorbed = static_cast<float>(yaw);
+    update.absorbed_pitch = static_cast<float>(tilt);
+  }
+
+  bool ok = (host_applied || turned) && current && live != 0u;
+  if (ok) {
     // The head relative to the camera this update placed, along its level forward, its level right
     // (the heading's right, `(fy, -fx)`) and up.
     const float fx = refii::mods::LoadF32(base, live + 0x20u);
@@ -928,17 +898,21 @@ void StateTheAim(PPCContext& ctx, uint8_t* base, uint32_t manager, Update& updat
       pivot[1] = (ox * fy - oy * fx) / level;
       pivot[2] = oz;
     } else {
-      turned = false;
+      ok = false;
     }
   }
-  if (!turned || !current || live == 0u) {
+  if (!ok) {
     update.mode = kModeNone;
   }
 
-  refii_bridge_mouse_look_state(GameTick(base), update.taken, update.taken_pitch, 0.0f,
-                                update.absorbed, update.absorbed_pitch, update.factor, pivot[0],
-                                pivot[1], pivot[2], limit, update.mode,
-                                update.mode == kModeAim ? update.aim : 0u);
+  const uint32_t flags = (update.inverted ? kFlagLookInverted : 0u) |
+                         (host_applied ? kFlagHostAimApplied : 0u) |
+                         (has_head ? kFlagHasHead : 0u);
+  refii_bridge_mouse_look_state_ex(GameTick(base), update.taken, update.taken_pitch, 0.0f,
+                                   update.absorbed, update.absorbed_pitch, update.factor, pivot[0],
+                                   pivot[1], pivot[2], limit, update.mode,
+                                   update.mode == kModeAim ? update.aim : 0u, head[0], head[1],
+                                   head[2], flags);
 }
 
 /// SAC: the rotate through the camera's receiver, made whole — or, under a target lock, a flick or
@@ -946,7 +920,7 @@ void StateTheAim(PPCContext& ctx, uint8_t* base, uint32_t manager, Update& updat
 /// Sets the update's account.
 void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, uint32_t wrapper,
                          uint32_t hero, uint32_t record, float yaw, float pitch, int32_t wheel,
-                         const WheelSwitch& waiting, Update& update) {
+                         const WheelSwitchQueue& waiting, Update& update) {
   update.factor = SensitivityFactor(base, record);
   const bool locked = TargetLocked(ctx, base, record);
   double speed = 0.0;
@@ -968,7 +942,7 @@ void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, u
 
   if (locked && WheelSwitches(base, hero)) {
     // The lock holds still under the mouse's movement; the wheel switches.
-    g_flick = Flick{};
+    g_flick.Reset();
     g_wheel_switch = waiting;
     SwitchByWheel(script, base, wrapper, wheel);
     g_refused = wrapper;
@@ -976,8 +950,7 @@ void HandToStringAndCage(PPCContext& ctx, CameraScript& script, uint8_t* base, u
     FlickTheLock(script, wrapper, yaw);
     g_refused = wrapper;
   } else if (x != 0.0f) {
-    g_flick.spent = 0;
-    g_flick.sum = 0.0;
+    g_flick.ClearSpent();
     double before = 0.0;
     double after = 0.0;
     const bool had = script.Number("RotateRight", &before);
@@ -1055,8 +1028,8 @@ extern "C" void RefiiMouseLookBeforeCameraUpdate(PPCContext& ctx, uint8_t* base,
   // Every update takes the wheel, and the notch waiting on a lock's gate is kept only by an update
   // of a wheel-switched lock (HandToStringAndCage): a notch never waits for a lock that comes later.
   const int32_t wheel = refii_bridge_mouse_look_take_wheel();
-  const WheelSwitch waiting = g_wheel_switch;
-  g_wheel_switch = WheelSwitch{};
+  const WheelSwitchQueue waiting = g_wheel_switch;
+  g_wheel_switch.Reset();
   const uint32_t wrapper = ActiveCamera(base, manager);
   const uint32_t hero = HeroOf(base, wrapper);
   g_mouse_hero = hero;
@@ -1074,6 +1047,7 @@ extern "C" void RefiiMouseLookBeforeCameraUpdate(PPCContext& ctx, uint8_t* base,
   g_update.taken_pitch = pitch;
 
   const uint32_t record = RecordOf(base, hero);
+  g_update.inverted = LookInverted(base, record);
   if (!Plausible(wrapper) || !TakesInput(base, record)) {
     // No camera to turn, or the camera takes no input now: the turn is spent, not stored up.
     return;
@@ -1164,9 +1138,10 @@ extern "C" void RefiiMouseLookAfterCameraUpdate(PPCContext& ctx, uint8_t* base, 
     update.mode = kModeNone;
   }
 
-  refii_bridge_mouse_look_state(GameTick(base), update.taken, update.taken_pitch, update.held,
-                                update.absorbed, 0.0f, update.factor, pivot, 0.0f, 0.0f, 0.0f,
-                                update.mode, 0u);
+  const uint32_t flags = update.inverted ? kFlagLookInverted : 0u;
+  refii_bridge_mouse_look_state_ex(GameTick(base), update.taken, update.taken_pitch, update.held,
+                                   update.absorbed, 0.0f, update.factor, pivot, 0.0f, 0.0f, 0.0f,
+                                   update.mode, 0u, 0.0f, 0.0f, 0.0f, flags);
 }
 
 /// A mod's statement that `hero`'s target lock switches by the mouse wheel for this game tick (see
@@ -1207,6 +1182,15 @@ REX_EXTERN(rex_lhRangedAim_MoveCursor) {
   const bool mine = Plausible(hero) && hero == g_mouse_hero;
   const bool camera_takes = hero == g_rigid_hero && AimFree(base, aim) && !AimSnapped(base, aim);
   if (!mine || camera_takes) {
+    if (camera_takes && refii_bridge_mouse_look_device() != 0) {
+      const float sx = FloatOf(static_cast<uint32_t>(ctx.r4.u64 >> 32));
+      const float sy = FloatOf(static_cast<uint32_t>(ctx.r4.u64));
+      if (sx == 0.0f && sy == 0.0f) {
+        // Keep the guest cursor pinned at screen center so target search & raycasts fire dead-center.
+        refii::mods::StoreF32(base, aim + 0x20u, 0.0f);
+        refii::mods::StoreF32(base, aim + 0x24u, 0.0f);
+      }
+    }
     __imp__rex_lhRangedAim_MoveCursor(ctx, base);
     return;
   }
@@ -1214,7 +1198,9 @@ REX_EXTERN(rex_lhRangedAim_MoveCursor) {
   float yaw = 0.0f;
   float pitch = 0.0f;
   refii_bridge_mouse_look_take(&yaw, &pitch);
-  if ((yaw != 0.0f || pitch != 0.0f) && TakesInput(base, RecordOf(base, hero))) {
+  const uint32_t record33 = RecordOf(base, hero);
+  const bool inverted = LookInverted(base, record33);
+  if ((yaw != 0.0f || pitch != 0.0f) && TakesInput(base, record33)) {
     uint32_t record = 0u;
     {
       PPCContext work = refii::mods::Frame(ctx);
@@ -1233,15 +1219,17 @@ REX_EXTERN(rex_lhRangedAim_MoveCursor) {
     if (std::isfinite(gain_x) && std::isfinite(gain_y) && std::fabs(gain_x) > 1e-6 &&
         std::fabs(gain_y) > 1e-6) {
       constexpr double kRadians = 3.14159265358979323846 / 180.0;
+      const double signed_pitch = inverted ? -pitch : pitch;
       const float x = FloatOf(static_cast<uint32_t>(ctx.r4.u64 >> 32)) +
                       static_cast<float>(yaw * kRadians / gain_x);
       const float y = FloatOf(static_cast<uint32_t>(ctx.r4.u64)) +
-                      static_cast<float>(pitch * kRadians / gain_y);
+                      static_cast<float>(signed_pitch * kRadians / gain_y);
       ctx.r4.u64 = (static_cast<uint64_t>(BitsOf(x)) << 32) | BitsOf(y);
     }
   }
 
-  refii_bridge_mouse_look_state(tick, yaw, pitch, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-                                0.0f, kModeNone, 0u);
+  const uint32_t flags = inverted ? kFlagLookInverted : 0u;
+  refii_bridge_mouse_look_state_ex(tick, yaw, pitch, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                   0.0f, kModeNone, 0u, 0.0f, 0.0f, 0.0f, flags);
   __imp__rex_lhRangedAim_MoveCursor(ctx, base);
 }

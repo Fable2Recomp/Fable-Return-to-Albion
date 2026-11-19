@@ -198,10 +198,10 @@ public static class GameChildProcess
 	public const int DefaultStagingBufferMaxSizeMb = 64;
 
 	/// <summary>Total D3D12 CBV/SRV/UAV descriptor heap capacity.</summary>
-	public const int DefaultD3D12MaxResourceDescriptors = 65536;
+	public const int DefaultD3D12MaxResourceDescriptors = 131072;
 
 	/// <summary>Per-frame D3D12 CBV/SRV/UAV descriptor ring budget.</summary>
-	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 32768;
+	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 65536;
 
 	/// <summary>
 	/// Shader-visible D3D12 sampler heap limit. Must never exceed Direct3D 12's architectural ceiling

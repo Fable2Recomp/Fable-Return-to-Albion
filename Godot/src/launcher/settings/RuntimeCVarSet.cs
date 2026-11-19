@@ -733,7 +733,7 @@ public static class RuntimeCVarsGodot
                 + "The original composited that layer scaled by its framebuffer brightness; "
                 + "1.0 adds it as scene radiance. Raise it if fire and the quest trail read "
                 + "too faint in daylight; the debug channel's `fxlayer` command changes it live."),
-            new("fx_weapon_augment_always_active", Category, RuntimeCVarType.Bool, "true",
+            new("fx_weapon_augment_always_active", "Gameplay", RuntimeCVarType.Bool, "true",
                 "Keep weapon augmentation particle effects (sparkles, elemental glows) active and playing continuously "
                 + "while moving (walking and running) rather than stopping like the original 2008 release. Default is on.",
                 OwnerTitle: Refii.Core.Engine_Title.Fable2.Folder),
@@ -764,6 +764,9 @@ public static class RuntimeCVarsGodot
             new("mouse_sensitivity", ControlsCategory, RuntimeCVarType.Double, "1.0",
                 "How far the camera turns for a given mouse movement. 1.0 is the default; 2.0 " +
                 "turns twice as far."),
+            new("mouse_zoom_sensitivity", ControlsCategory, RuntimeCVarType.Bool, "true",
+                "Scale mouse aiming sensitivity with zoomed field of view so zoomed sights move at " +
+                "the same screen speed as normal aiming."),
             new("mouse_input", ControlsCategory, RuntimeCVarType.Bool, "true",
                 "Allow the mouse to control the camera, menus and actions. Off completely disables " +
                 "mouse look, clicks and pointer navigation, keeping the cursor free and input on the " +

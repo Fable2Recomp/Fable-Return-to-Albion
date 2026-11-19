@@ -70,8 +70,10 @@ public static class Engine_TexCache
 	/// enhanced texture is RGBA8, because Image.Compress had been failing silently — 1,485 of
 	/// 3,576 entries holding 2.90 GB of 3.13 GB. Serving those would mean the new encoder never
 	/// ran for anything already cached, so the version moves and v1 is simply not read.
+	/// 4 (2026-11-19): bare-chain raw mips (<c>compFlag == 7</c>) byte-swap Xbox 360 16-bit
+	/// words, slice full BC3 blocks, and de-interleave BC4 plane 0 from BC5 pairs.
 	/// </remarks>
-	public const int ConverterVersion = 3;
+	public const int ConverterVersion = 4;
 
 	/// <summary>Where converted textures live for <paramref name="title"/>: <c>&lt;app&gt;/cache/&lt;Title&gt;/textures</c>.</summary>
 	public static string CacheRootFor(Refii.Core.Engine_Title title) =>

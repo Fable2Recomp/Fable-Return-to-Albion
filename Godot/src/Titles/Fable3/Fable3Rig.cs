@@ -15,8 +15,9 @@ using Refii.Animations;
 /// control at +128, as Fable 2's `sub_8229CD30` does at +116; the overlay blend `sub_82206348`
 /// (0x8220679C..0x82206B3C) remembers the hip, blends, and rewrites those children as Fable 2's
 /// `sub_8220CB18` (0x8220CC08..) does. Both roles are named, so the shared compensation runs.</para>
-/// <para>NO FOCAL FALLBACK. Mounting an unnamed <c>Character.Focal.*</c> dummy on a bone is a host
-/// rule never shown in this binary; <see cref="Engine_TitleRig.FocalBone"/> stays -1.</para>
+/// <para>FOCAL ATTACHMENTS are inherited from <see cref="Engine_TitleRig.FocalBone"/> through
+/// <see cref="RoleName"/> and <see cref="BoneName"/>, mapping <c>Focal_Eye</c> and
+/// <c>Character.Focal.*</c> onto Fable 3's hashed skeleton bones.</para>
 /// </remarks>
 public sealed class Fable3Rig : Engine_TitleRig
 {

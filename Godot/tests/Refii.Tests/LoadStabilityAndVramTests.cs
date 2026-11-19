@@ -287,9 +287,9 @@ public sealed class LoadStabilityAndVramTests
 		var emptyConfig = new Dictionary<string, string>();
 		string modernCfg = GameChildProcess.BuildRendererSettingsContent(emptyConfig, "modern");
 		AssertThat(modernCfg.Contains("rendering_device/staging_buffer/max_size_mb=64\n", StringComparison.Ordinal)).IsTrue();
-		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors=65536\n", StringComparison.Ordinal)).IsTrue();
+		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors=131072\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_sampler_descriptors=2048\n", StringComparison.Ordinal)).IsTrue();
-		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=32768\n", StringComparison.Ordinal)).IsTrue();
+		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=65536\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_sampler_descriptors_per_frame=2048\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("rendering_device/d3d12/max_misc_descriptors_per_frame=4096\n", StringComparison.Ordinal)).IsTrue();
 		AssertThat(modernCfg.Contains("driver/depth_prepass/enable=false", StringComparison.Ordinal)).IsFalse();
@@ -300,7 +300,7 @@ public sealed class LoadStabilityAndVramTests
 
 		string projectGodot = File.ReadAllText(Path.Combine(GodotRoot(), "project.godot"));
 		AssertThat(projectGodot.Contains("rendering_device/staging_buffer/max_size_mb=64", StringComparison.Ordinal)).IsTrue();
-		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=32768", StringComparison.Ordinal)).IsTrue();
+		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_resource_descriptors_per_frame=65536", StringComparison.Ordinal)).IsTrue();
 		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_sampler_descriptors=2048", StringComparison.Ordinal)).IsTrue();
 		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_sampler_descriptors_per_frame=2048", StringComparison.Ordinal)).IsTrue();
 		AssertThat(projectGodot.Contains("rendering_device/d3d12/max_misc_descriptors_per_frame=4096", StringComparison.Ordinal)).IsTrue();

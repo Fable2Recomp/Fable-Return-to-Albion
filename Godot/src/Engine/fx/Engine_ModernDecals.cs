@@ -21,12 +21,18 @@ namespace Refii.Fx;
 /// </remarks>
 public partial class Engine_ModernDecals : Node3D
 {
+    /// <summary>Render layer 10: static world geometry that receives unowned ground/wall decals.</summary>
+    public const int StaticDecalReceiverLayer = 10;
+
+    /// <summary>Mask for <see cref="StaticDecalReceiverLayer"/>.</summary>
+    public const uint StaticDecalReceiverLayerMask = 1u << (StaticDecalReceiverLayer - 1);
+
     /// <summary>The title's distance fade: full to 44.8 m, gone at 64 m.</summary>
     private const float FadeBegin = 44.8f, FadeLength = 19.2f;
 
     private readonly Engine_DecalFeed _feed = new();
     private readonly (uint Serial, Godot.Decal? Node)[] _drawn = new (uint, Godot.Decal?)[Engine_DecalFeed.Slots];
-    private readonly Dictionary<uint, Texture2D?> _textures = new();
+    private readonly Dictionary<uint, (Texture2D? Texture, bool HasAlpha)> _textures = new();
 
     private bool _pumpedOnce;
 
@@ -108,30 +114,36 @@ public partial class Engine_ModernDecals : Node3D
 
     private Godot.Decal? Make(Engine_DecalFeed.Decal decal)
     {
-        if (!_textures.TryGetValue(decal.Texture, out Texture2D? texture))
+        if (!_textures.TryGetValue(decal.Texture, out (Texture2D? Texture, bool HasAlpha) cached))
         {
-            texture = Refii.Level.Engine_EnvironmentTextures.Load(decal.Texture, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out _);
-            _textures[decal.Texture] = texture;
+            Texture2D? loaded = Refii.Level.Engine_EnvironmentTextures.Load(
+                decal.Texture, Refii.Models.Engine_BnkMeshLoader.ReadBytes, out _, out bool loadedAlpha);
+            cached = (loaded, loadedAlpha);
+            _textures[decal.Texture] = cached;
         }
-        if (texture is null)
+        if (cached.Texture is null)
         {
             return null;
         }
+        bool hasAlpha = cached.HasAlpha;
         return new Godot.Decal
         {
             TopLevel = true,
-            TextureAlbedo = texture,
-            AlbedoMix = 1f,
+            TextureAlbedo = hasAlpha ? cached.Texture : null,
+            TextureEmission = hasAlpha ? null : cached.Texture,
+            AlbedoMix = hasAlpha ? 1f : 0f,
+            EmissionEnergy = hasAlpha ? 1f : 1.5f,
             NormalFade = 0f,
             DistanceFadeEnabled = true,
             DistanceFadeBegin = FadeBegin,
             DistanceFadeLength = FadeLength,
             // The title projects a decal once, onto what its projector saw when it was laid: a
-            // character walking over it later is not painted. A decal on an owner rides that
-            // owner, so it keeps the entities' layer. Particles are never painted.
-            CullMask = (decal.Owner != 0u
-                ? uint.MaxValue
-                : uint.MaxValue & ~Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask) & ~Refii.Models.Engine_ClassicParticles.Layer,
+            // character walking over it later is not painted. An unowned decal targets only static
+            // world receivers on StaticDecalReceiverLayer; an owned decal rides its owner.
+            // Particles are never painted.
+            CullMask = decal.Owner != 0u
+                ? uint.MaxValue & ~Refii.Models.Engine_ClassicParticles.Layer
+                : StaticDecalReceiverLayerMask,
         };
     }
 

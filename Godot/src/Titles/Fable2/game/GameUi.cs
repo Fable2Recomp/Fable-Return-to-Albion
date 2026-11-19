@@ -3348,20 +3348,13 @@ public partial class GameUi : Node, IGameTitleUi
 	private readonly uint[] _reticuleObject = new uint[2];
 	private readonly uint[] _lastReticuleObject = new uint[2];
 
-	/// <summary>Smoothly interpolates each player's 15 Hz 3D aim anchor on Godot's clock to match the camera's draw tick.</summary>
-	private readonly Refii.Core.Engine_TickTimeline[] _reticuleAnchorLines =
-	{
-		new(stillWhenUnchanged: true),
-		new(stillWhenUnchanged: true),
-	};
-
-	/// <summary>Each player's reticule anchor last read whole inside one mouse account, and that account's sequence.</summary>
-	private readonly Vector3?[] _aimAnchor = new Vector3?[2];
-	private readonly uint[] _aimAnchorSequence = new uint[2];
-
 	private uint _cachedReticuleHud;
+	private uint _cachedReticuleHudForHeight;
+	private uint _lastReticuleMouseSeq;
 	private float _cachedReticuleGuestHeight = 720f;
 	private readonly bool[] _cachedReticuleActive = new bool[2];
+	private readonly Vector3[] _cachedReticuleAnchor = new Vector3[2];
+	private readonly uint?[] _cachedReticuleMouseSeq = new uint?[2];
 	private readonly float[] _cachedReticuleProgress = new float[2];
 	private readonly Color[] _cachedReticuleColour = new Color[2];
 	private readonly uint[] _cachedReticuleMode = new uint[2];
@@ -3380,7 +3373,9 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		bool split = Engine_Views.Split;
+		uint currentMouseSeq = Refii.Game.GameWorld.MouseLookSequence;
 		bool needPoll = guestFrame ||
+			currentMouseSeq != _lastReticuleMouseSeq ||
 			_reticuleObject[0] != _lastReticuleObject[0] ||
 			(split && _reticuleObject[1] != _lastReticuleObject[1]);
 
@@ -3399,13 +3394,16 @@ public partial class GameUi : Node, IGameTitleUi
 				HostBridge.TryPeekWord(root[8] + 72u, out uint hudAddr)
 				? hudAddr
 				: 0u;
-			if (_cachedReticuleHud != 0u)
+			if (_cachedReticuleHud != 0u &&
+				(_cachedReticuleHud != _cachedReticuleHudForHeight || _cachedReticuleGuestHeight <= 0f))
 			{
 				// The guest's backbuffer, `qword_834A5FE8` — the pixels its petal sizes are stated in.
 				System.Span<uint> backbuffer = stackalloc uint[2];
 				int bbCount = HostBridge.Peek(HostBridge.GuestAddress(0x834A5FE8u), backbuffer);
 				_cachedReticuleGuestHeight = bbCount == 2 && backbuffer[1] != 0u ? backbuffer[1] : 720f;
+				_cachedReticuleHudForHeight = _cachedReticuleHud;
 			}
+			_lastReticuleMouseSeq = currentMouseSeq;
 		}
 
 		uint hud = _cachedReticuleHud;
@@ -3415,8 +3413,8 @@ public partial class GameUi : Node, IGameTitleUi
 			_cachedReticuleActive[1] = false;
 			_lastReticuleObject[0] = 0u;
 			_lastReticuleObject[1] = 0u;
-			_aimAnchor[0] = null;
-			_aimAnchor[1] = null;
+			_cachedReticuleMouseSeq[0] = null;
+			_cachedReticuleMouseSeq[1] = null;
 			_reticule.Feed(0, null);
 			_reticule.Feed(1, null);
 			_reticuleTwo?.Feed(0, null);
@@ -3444,7 +3442,7 @@ public partial class GameUi : Node, IGameTitleUi
 		{
 			_cachedReticuleActive[1] = false;
 			_lastReticuleObject[1] = 0u;
-			_aimAnchor[1] = null;
+			_cachedReticuleMouseSeq[1] = null;
 			_reticule.Feed(1, null);
 			_reticuleTwo?.Feed(1, null);
 		}
@@ -3458,23 +3456,24 @@ public partial class GameUi : Node, IGameTitleUi
 		int playerCount = split ? 2 : 1;
 		for (int player = 0; player < playerCount; ++player)
 		{
-			bool turnsWithView = _reticuleObject[player] != 0u &&
-				_reticuleObject[player] == Refii.Game.GameWorld.MouseLookAim;
-			Refii.Core.Engine_TickTimeline line = _reticuleAnchorLines[player];
-
+			uint aimObj = _reticuleObject[player];
 			if (needPoll)
 			{
+				bool bracketMouseSeq = aimObj != 0u &&
+					!Refii.Game.GameWorld.IsHostAiming(aimObj) &&
+					aimObj == Refii.Game.GameWorld.MouseLookAim;
+
 				int recCount = HostBridge.Peek(hud + (64u * (uint)player), record);
-				uint? sequenceBefore = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
-				int ancCount = _reticuleObject[player] != 0u
-					? HostBridge.Peek(_reticuleObject[player] + 0x90u, anchor)
+				uint? sequenceBefore = bracketMouseSeq ? HostBridge.GetMouseLook()?.Sequence : null;
+				int ancCount = aimObj != 0u
+					? HostBridge.Peek(aimObj + 0x90u, anchor)
 					: 0;
-				uint? sequenceAfter = turnsWithView ? HostBridge.GetMouseLook()?.Sequence : null;
+				uint? sequenceAfter = bracketMouseSeq ? HostBridge.GetMouseLook()?.Sequence : null;
 				if (recCount != 14 || (record[0] >> 24) == 0u || ancCount != 3)
 				{
 					_cachedReticuleActive[player] = false;
 					_lastReticuleObject[player] = 0u;
-					_aimAnchor[player] = null;
+					_cachedReticuleMouseSeq[player] = null;
 					_reticule.Feed(player, null);
 					_reticuleTwo?.Feed(player, null);
 					continue;
@@ -3485,67 +3484,27 @@ public partial class GameUi : Node, IGameTitleUi
 				_cachedReticuleColour[player] = new Color(F(record[4]), F(record[5]), F(record[6]), F(record[7]));
 				_cachedReticuleMode[player] = record[8];
 				_cachedReticuleCounter[player] = unchecked((int)record[13]);
-
-				// Stated aim anchor from guest memory (updated on 15 Hz game ticks).
-				var statedPoll = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
-				bool objectChanged = _reticuleObject[player] != _lastReticuleObject[player];
-				_lastReticuleObject[player] = _reticuleObject[player];
-
-				if (objectChanged || line.Empty)
-				{
-					line.Reset(cameraTick, new Transform3D(Basis.Identity, statedPoll));
-				}
-				else if (stepComplete)
-				{
-					line.Observe(cameraTick, new Transform3D(Basis.Identity, statedPoll));
-				}
-
-				if (turnsWithView && sequenceBefore is { } before && before == sequenceAfter &&
-					before == Refii.Game.GameWorld.MouseLookSequence)
-				{
-					_aimAnchor[player] = statedPoll;
-					_aimAnchorSequence[player] = before;
-				}
+				_cachedReticuleAnchor[player] = new Vector3(F(anchor[0]), F(anchor[1]), F(anchor[2]));
+				_cachedReticuleMouseSeq[player] =
+					sequenceBefore is { } seq && seq == sequenceAfter ? seq : null;
+				_lastReticuleObject[player] = aimObj;
 			}
 			else if (!_cachedReticuleActive[player])
 			{
 				continue;
 			}
 
-			Vector3 stated = line.Empty ? Vector3.Zero : line.Newest.Origin;
-
-			// On Godot's clock: smoothly interpolate the aim anchor in world space to match
-			// the camera's draw tick, eliminating the 15 Hz drift-and-snap judder.
-			if (!turnsWithView && !line.Empty)
-			{
-				Transform3D drawn = line.Advance(
-					Refii.Entities.Engine_DrawnFrame.NowUsec,
-					Refii.Entities.Engine_DrawnFrame.DrawTick);
-				stated = drawn.Origin;
-			}
-
-			// The mouse's aim turns with the view: the anchor is turned by the turn drawn ahead of
-			// the guest's camera, as the guest's next update turns the aim (GameWorld.TurnAimAhead).
-			// The anchor must be the one stated with the account the camera was drawn from: one read
-			// across a camera update already carries a turn still drawn ahead, so the last anchor read
-			// inside that account stands in for it.
-			if (turnsWithView)
-			{
-				if (_aimAnchor[player] is { } kept &&
-					_aimAnchorSequence[player] == Refii.Game.GameWorld.MouseLookSequence)
-				{
-					stated = kept;
-				}
-
-				stated = Refii.Game.GameWorld.TurnAimAhead(stated);
-			}
-
 			var aim = new Engine_HudReticule.Aim(
-				stated,
+				_cachedReticuleAnchor[player],
 				_cachedReticuleProgress[player],
 				_cachedReticuleColour[player],
 				_cachedReticuleMode[player],
-				_cachedReticuleCounter[player]);
+				_cachedReticuleCounter[player],
+				Screen: null,
+				Object: aimObj,
+				Tick: cameraTick,
+				StepComplete: stepComplete,
+				MouseSequence: _cachedReticuleMouseSeq[player]);
 			_reticule.Feed(player, aim);
 			_reticuleTwo?.Feed(player, aim);
 		}
@@ -3918,12 +3877,8 @@ public partial class GameUi : Node, IGameTitleUi
 		/// </summary>
 		public bool TestSight = true;
 
-		/// <summary>The frame <see cref="View"/> and <see cref="Projection"/> were taken on.</summary>
-		public ulong ViewFrame = ulong.MaxValue;
-
-		public Transform3D View;
-
-		public Projection Projection;
+		/// <summary>Cached world-to-viewport projector updated once per frame.</summary>
+		public readonly Refii.Core.Engine_CameraProjector Projector = new();
 
 		/// <summary>A pixel on the camera's viewport, in the seat's own pixels.</summary>
 		public Vector2 SeatPixel(Vector2 pixel) =>
@@ -4039,8 +3994,8 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private Engine_HudWorldSprites.Placed? PlaceIn(SpriteView view, Vector3 guest, uint entity, bool clip)
 	{
-		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera) || !camera.IsInsideTree() ||
-			view.Viewport.X <= 0f || view.Viewport.Y <= 0f)
+		if (view.Camera is not { } camera ||
+			!view.Projector.Update(camera, view.Viewport, Engine.GetProcessFrames()))
 		{
 			return null;
 		}
@@ -4049,35 +4004,16 @@ public partial class GameUi : Node, IGameTitleUi
 			? entities.WorldAnchorFor(entity, guest)
 			: GameWorld.GuestToGodot(guest);
 
-		if (camera.IsPositionBehind(world))
+		if (!view.Projector.TryProject(world, out Vector2 pixel, out float depth))
 		{
 			return null;
 		}
 
-		// Once a frame: the view and projection the depth buffer was written with.
-		ulong frame = Engine.GetProcessFrames();
-		if (frame != view.ViewFrame)
-		{
-			view.ViewFrame = frame;
-			view.View = camera.GlobalTransform.AffineInverse();
-			view.Projection = camera.GetCameraProjection();
-		}
-
-		Vector3 eye = view.View * world;
-		Vector4 clipSpace = view.Projection * new Vector4(eye.X, eye.Y, eye.Z, 1f);
-		if (clipSpace.W <= 0.0001f)
-		{
-			return null;
-		}
-
-		Vector2 pixel = camera.UnprojectPosition(world);
 		if (clip && !view.Frame.IsWhole && !view.Shows(pixel))
 		{
 			return null;
 		}
 
-		// Godot's depth buffer is REVERSED: 1 at the near plane, 0 at the far one.
-		float depth = 0.5f - (0.5f * (clipSpace.Z / clipSpace.W));
 		return new Engine_HudWorldSprites.Placed(
 			view.Frame.FromPixel(view.SeatPixel(pixel)),
 			view.TestSight
@@ -4098,7 +4034,8 @@ public partial class GameUi : Node, IGameTitleUi
 	/// <summary><see cref="ProjectWorldSprite"/> through one view's camera, into that view's seat.</summary>
 	private static Vector2? ProjectWorldSpriteIn(SpriteView view, Vector3 guest, uint entity = 0u)
 	{
-		if (view.Camera is not { } camera || !GodotObject.IsInstanceValid(camera))
+		if (view.Camera is not { } camera ||
+			!view.Projector.Update(camera, view.Viewport, Engine.GetProcessFrames()))
 		{
 			return null;
 		}
@@ -4109,12 +4046,11 @@ public partial class GameUi : Node, IGameTitleUi
 		Vector3 world = entity != 0u && GameEntities.Current is { } entities
 			? entities.WorldAnchorFor(entity, guest)
 			: GameWorld.GuestToGodot(guest);
-		if (camera.IsPositionBehind(world))
+		if (!view.Projector.TryProject(world, out Vector2 pixel, out _))
 		{
 			return null;
 		}
 
-		Vector2 pixel = camera.UnprojectPosition(world);
 		if (!view.Frame.IsWhole && !view.Shows(pixel))
 		{
 			return new Vector2(100000f, 100000f);

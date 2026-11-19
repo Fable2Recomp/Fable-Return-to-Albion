@@ -49,6 +49,22 @@ public partial class GameWorld : Node3D
 	/// </summary>
 	public static uint MouseLookAim { get; private set; }
 
+	/// <summary>True while the host owns ranged aiming orientation at display rate.</summary>
+	public static bool HostAimActive { get; private set; }
+
+	/// <summary>Guest ranged aim object currently driven by host aim, or 0 when inactive.</summary>
+	public static uint HostAimObject { get; private set; }
+
+	/// <summary>Current vertical FOV during ranged aiming (0 outside aim mode), used for ADS zoom scaling.</summary>
+	public static float ActiveAimFov { get; private set; }
+
+	/// <summary>Latest whole read of the guest's mouse-look account.</summary>
+	public static HostBridge.MouseLookState? LastMouseLook { get; private set; }
+
+	/// <summary>True when host aim owns <paramref name="aimObject"/> this frame.</summary>
+	public static bool IsHostAiming(uint aimObject) =>
+		HostAimActive && aimObject != 0u && aimObject == HostAimObject;
+
 	/// <summary>The sequence of the mouse account the camera was last drawn from (a whole read).</summary>
 	public static uint MouseLookSequence { get; private set; }
 
@@ -75,6 +91,12 @@ public partial class GameWorld : Node3D
 	public static long MouseLookTornReads;
 
 	private readonly Refii.Core.Engine_MouseLook _mouseLook = new();
+	private readonly Engine_HostAimCamera _hostAimCamera = new();
+	private Viewport? _cachedRootViewport;
+	private bool _cameraDirty = true;
+	private Transform3D _lastCameraTransform;
+	private float _lastCameraFov;
+	private Camera3D.KeepAspectEnum _lastKeepAspect = (Camera3D.KeepAspectEnum)(-1);
 
 	/// <summary>The camera timeline's own drawn transform last frame, before the mouse's outstanding turn.</summary>
 	private Transform3D _lineDrawn = Transform3D.Identity;
@@ -479,6 +501,9 @@ public partial class GameWorld : Node3D
 
 	public override void _ExitTree()
 	{
+		EndHostAim(forwardResidualDelta: false);
+		_cameraDirty = true;
+		_cachedRootViewport = null;
 		if (_preDrawDetailProvider is not null &&
 		    ReferenceEquals(Refii.Core.Engine_FramePhases.PreDrawDetailProvider, _preDrawDetailProvider))
 		{
@@ -490,6 +515,78 @@ public partial class GameWorld : Node3D
 		if (GetViewport() is { } rootViewport)
 		{
 			rootViewport.Disable3D = false;
+		}
+	}
+
+	private void ApplyCameraToGodot(Transform3D transform, float fov)
+	{
+		if (_cameraDirty || !_lastCameraTransform.IsEqualApprox(transform))
+		{
+			_camera.GlobalTransform = transform;
+			_lastCameraTransform = transform;
+		}
+
+		if (float.IsFinite(fov) && fov >= 1f && fov <= 179f &&
+			(_cameraDirty || !Mathf.IsEqualApprox(_lastCameraFov, fov)))
+		{
+			_camera.Fov = fov;
+			_lastCameraFov = fov;
+		}
+
+		if (_cameraDirty || _lastKeepAspect != Camera3D.KeepAspectEnum.Height)
+		{
+			_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
+			_lastKeepAspect = Camera3D.KeepAspectEnum.Height;
+		}
+
+		_cameraDirty = false;
+	}
+
+	private void EndHostAim(bool forwardResidualDelta)
+	{
+		bool wasActive = _hostAimCamera.Active || HostAimActive;
+		_hostAimCamera.End();
+		HostBridge.SetHostAim(false, Vector3.Zero);
+		HostAimActive = false;
+		HostAimObject = 0u;
+		ActiveAimFov = 0f;
+
+		Vector2 residual = GameInput.TakeHostAimDelta();
+		if (forwardResidualDelta && wasActive && residual != Vector2.Zero)
+		{
+			HostBridge.PostMouseLook(residual.X, residual.Y);
+		}
+	}
+
+	private void EvaluateAndApplyHostAim(double delta, uint cameraTick, bool hasPair)
+	{
+		Vector2 hostDelta = GameInput.TakeHostAimDelta();
+		_hostAimCamera.ApplyMouseDelta(hostDelta.X, hostDelta.Y);
+		Transform3D aimDrawn = _hostAimCamera.Evaluate(
+			Refii.Entities.Engine_DrawnFrame.NowUsec,
+			Refii.Entities.Engine_DrawnFrame.DrawTick,
+			delta,
+			out float aimFov,
+			out Vector3 guestForward);
+
+		ActiveAimFov = aimFov;
+		HostBridge.SetHostAim(true, guestForward);
+		_cameraLine.Reset(cameraTick, aimDrawn, aimFov);
+		_lineDrawn = aimDrawn;
+		_aheadTurn = Basis.Identity;
+		++BlendedCameras;
+
+		ApplyCameraToGodot(aimDrawn, aimFov);
+		SampleCameraTrace(aimDrawn.Origin, CameraObserved, cameraTick);
+		_split.Follow(_camera);
+
+		if (!_reported)
+		{
+			_reported = true;
+			GD.Print($"[game-world] driving Godot's camera from host aim: " +
+				$"pos={aimDrawn.Origin} fov={_camera.Fov:F1}deg " +
+				$"pair={(hasPair ? "yes" : "no")}");
+			Refii.Core.Engine_FramePhases.ArmDrawTrace("camera-drive", 5);
 		}
 	}
 
@@ -516,7 +613,11 @@ public partial class GameWorld : Node3D
 			System.Threading.Interlocked.Increment(ref _activeWorldFrames);
 		}
 		ReleaseWhenPropsHaveStreamed();
-		if (GetViewport() is { } rootViewport)
+		if (_cachedRootViewport is null || !GodotObject.IsInstanceValid(_cachedRootViewport))
+		{
+			_cachedRootViewport = GetViewport();
+		}
+		if (_cachedRootViewport is { } rootViewport)
 		{
 			bool disable3D = !ShouldEnableSceneRendering(HasActiveWorld, CoverHeld, ReadyForWarmupAndSettle);
 			if (rootViewport.Disable3D != disable3D)
@@ -529,25 +630,22 @@ public partial class GameWorld : Node3D
 		PumpDeferredCompaction();
 		PumpLohHighWatermark();
 		TraceEntities();
-		if (Engine_TitleGame.Active.ApplyCamera(_camera)) return;
-
-		// Photo mode owns the camera: it places it first each frame and restores the guest's
-		// transform when it closes, so the statement below is read again from then on.
-        if (GamePhotoMode.Active)
+		if (Engine_TitleGame.Active.ApplyCamera(_camera))
 		{
+			_cameraDirty = true;
+			EndHostAim(forwardResidualDelta: false);
 			return;
 		}
 
-		// The camera is drawn on the same clock as the bodies (`GameEntities.Drawn()`), with no
-		// latency. The guest has no split either: `sub_8228FEF0` (camera) and `sub_822112D8`
-		// (renderables) are handed the SAME alpha register — one `fdivs` at `0x822771e4`, two
-		// branches at `0x82278e34` and `0x82278ec0`, no arithmetic on either path between.
-		//
-		// No teleport threshold: the guest states a snap itself, the byte at `live+0x34`, which
-		// `0x8228ff40` reads to force alpha to 1.0.
-		// The mouse's account is read on both sides of the camera: the guest states the two in one
-		// window (mouse_look.cpp refreshes the live block before closing it), so an unchanged even
-		// sequence means this camera carries exactly the turn the account says it absorbed.
+		// Photo mode owns the camera: it places it first each frame and restores the guest's
+		// transform when it closes, so the statement below is read again from then on.
+		if (GamePhotoMode.Active)
+		{
+			_cameraDirty = true;
+			EndHostAim(forwardResidualDelta: false);
+			return;
+		}
+
 		HostBridge.MouseLookState? lookBefore = HostBridge.GetMouseLook();
 		var pair = HostBridge.GetCameraPair();
 		HostBridge.GuestCamera camera;
@@ -576,14 +674,21 @@ public partial class GameWorld : Node3D
 			return;
 		}
 
+		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
 		bool torn = lookBefore is { } first && lookAfter is { } look &&
 			(first.Sequence != look.Sequence || (look.Sequence & 1u) != 0u);
 		if (torn)
 		{
 			// The camera may or may not carry the update that was in flight: it is not stated
 			// this frame, and the turn posted since the last whole read is drawn against the
-			// camera already drawn.
+			// camera already drawn (or integrated directly when host aim is active).
 			++MouseLookTornReads;
+			if (_hostAimCamera.Active)
+			{
+				EvaluateAndApplyHostAim(delta, cameraTick, pair is not null);
+				return;
+			}
+
 			if (lookAfter is { } partial)
 			{
 				_mouseLook.ObservePosted(partial.Posted, partial.PostedPitch);
@@ -593,39 +698,87 @@ public partial class GameWorld : Node3D
 			{
 				_lineDrawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
 					Refii.Entities.Engine_DrawnFrame.DrawTick);
-				_camera.GlobalTransform = DrawMouseLook(_lineDrawn);
+				Transform3D drawnTorn = DrawMouseLook(_lineDrawn);
+				ApplyCameraToGodot(drawnTorn, _cameraLine.DrawnScalar);
+				SampleCameraTrace(drawnTorn.Origin, CameraCarried, cameraTick);
 				_split.Follow(_camera);
 			}
 
 			return;
 		}
 
-		if (lookBefore is not null && lookAfter is { } whole)
+		if (lookBefore is not null && lookAfter is not null)
 		{
-			ObserveMouseLook(whole);
+			LastMouseLook = lookAfter;
 		}
 
-		// Blended between consecutive STATED cameras, not across the guest's own pair. The guest
-		// latches `prev <- live` late in a tick and updates `live` only partway into the next,
-		// so for part of every tick both halves are equal and any alpha gives a frozen camera.
-		// The guest renders only at alpha 0.5 and 1.0, where that is harmless; we render through
-		// the window. The drawn value is still the guest's; only the history is ours.
-		//
-		// A STATEMENT ONLY ON A FRAME WHOSE STEP IS COMPLETE. The stamp (GuestGameTick) is read
-		// at frame start; this camera is read here, milliseconds later, and the guest's step runs
-		// between grants on its own thread. A step that finishes in that gap hands this frame
-		// the NEXT tick's camera under THIS tick's stamp: the timeline then takes two ticks of
-		// travel as one tick's (a frame at 2-3x speed), and on the next frame, the same camera
-		// again under its own tick, as standing still — a whole tick crawling at the correction
-		// floor, then a catch-up. That is the pad-pan judder, and the bodies never had it: the
-		// entity walk is gated on Engine_GuestFrame.Changed, the HF-pass counter the guest bumps
-		// after its step, read in the same instant as the stamp. The guest is idle until the next
-		// grant (GameSession, after every reader), so on a frame where that counter moved every
-		// read is the finished step's and the stamp is its tick. On any other frame the camera
-		// is not a statement and the timeline runs on by the motion already stated.
 		bool snap = pair is { } snapping && snapping.Live.Flag;
-		uint cameraTick = Refii.Core.Engine_TickClock.GuestGameTick;
 		bool stepComplete = Refii.Core.Engine_GuestFrame.Changed;
+		bool wantsHostAim = lookBefore is not null && lookAfter is { } wholeAim &&
+			Refii.Ui.Engine_UiInputMode.KeyboardMouse &&
+			wholeAim.Mode == Refii.Core.Engine_MouseLook.ModeAim &&
+			wholeAim.Aim != 0u &&
+			wholeAim.HasHead &&
+			wholeAim.HeadGuest.IsFinite();
+
+		if (wantsHostAim)
+		{
+			HostBridge.MouseLookState whole = lookAfter!.Value;
+			ObserveMouseLook(whole, allowTurnAbout: false);
+			MouseLookOutstanding = 0.0;
+			MouseLookOutstandingPitch = 0.0;
+
+			Vector3 headGodot = ToGodot(whole.HeadGuest);
+			bool starting = !_hostAimCamera.Active || HostAimObject != whole.Aim;
+			if (starting)
+			{
+				Transform3D seed = _cameraLine.Empty ? stated : DrawMouseLook(_lineDrawn);
+				_hostAimCamera.Begin(
+					seed, stated, headGodot, fov,
+					whole.PitchLimit, whole.Factor, whole.LookInverted, cameraTick);
+				HostAimActive = true;
+				HostAimObject = whole.Aim;
+				_ = GameInput.TakeHostAimDelta();
+			}
+			else if (stepComplete)
+			{
+				_hostAimCamera.ObserveGuest(
+					cameraTick, stated, headGodot, fov,
+					whole.PitchLimit, whole.Factor, whole.LookInverted, snap);
+			}
+
+			if (stepComplete)
+			{
+				Refii.Entities.Engine_DrawnFrame.NoteRestated();
+			}
+
+			EvaluateAndApplyHostAim(delta, cameraTick, pair is not null);
+			return;
+		}
+
+		if (_hostAimCamera.Active || HostAimActive)
+		{
+			EndHostAim(forwardResidualDelta: true);
+		}
+
+		ActiveAimFov = (lookBefore is not null && lookAfter is { Mode: Refii.Core.Engine_MouseLook.ModeAim })
+			? fov
+			: 0f;
+
+		if (lookBefore is not null && lookAfter is { } wholeNonHost)
+		{
+			// Only advance MouseLookSequence and apply TurnAbout on a completed guest step (or initial
+			// seed) so deferred in-flight frames never desync GameWorld.MouseLookSequence from GameUi.
+			if (stepComplete || _cameraLine.Empty)
+			{
+				ObserveMouseLook(wholeNonHost, allowTurnAbout: true);
+			}
+			else
+			{
+				_mouseLook.ObservePosted(wholeNonHost.Posted, wholeNonHost.PostedPitch);
+			}
+		}
+
 		bool changed = _cameraLine.Empty ||
 			!stated.Origin.IsEqualApprox(_cameraLine.Newest.Origin) ||
 			!stated.Basis.IsEqualApprox(_cameraLine.Newest.Basis) ||
@@ -660,10 +813,7 @@ public partial class GameWorld : Node3D
 		else
 		{
 			// On the bodies' clock and rule (Engine_TickTimeline): moved by the stated motion
-			// every frame, steered toward the guest's blend at the world's draw point. The fov
-			// rides the same timeline; the guest blends it in the same call, `stfs f10, 0x30(r31)`
-			// at `0x82290058`. Under `motion_arrival_fit` the same line draws a moving camera from
-			// its statements' arrival instants instead (Engine_ArrivalFit), as it draws the bodies.
+			// every frame, steered toward the guest's blend at the world's draw point.
 			_cameraLine.Observe(cameraTick, stated, fov);
 			drawn = _cameraLine.Advance(Refii.Entities.Engine_DrawnFrame.NowUsec,
 				Refii.Entities.Engine_DrawnFrame.DrawTick);
@@ -674,15 +824,8 @@ public partial class GameWorld : Node3D
 
 		_lineDrawn = drawn;
 		drawn = DrawMouseLook(drawn);
-		_camera.GlobalTransform = drawn;
+		ApplyCameraToGodot(drawn, drawnFov);
 		SampleCameraTrace(drawn.Origin, how, cameraTick);
-
-		if (float.IsFinite(drawnFov) && drawnFov >= 1f && drawnFov <= 179f)
-		{
-			_camera.Fov = drawnFov;
-		}
-
-		_camera.KeepAspect = Camera3D.KeepAspectEnum.Height;
 		_split.Follow(_camera);
 
 		if (!_reported)
@@ -704,17 +847,19 @@ public partial class GameWorld : Node3D
 	/// timeline goes on blending only the camera's own motion. A turn absorbed while none was drawn
 	/// ahead (the camera had refused the mouse until this update) is left to the timeline to glide.
 	/// </summary>
-	private void ObserveMouseLook(HostBridge.MouseLookState look)
+	private void ObserveMouseLook(HostBridge.MouseLookState look, bool allowTurnAbout = true)
 	{
 		int drawnMode = _mouseLook.Mode;
 		Vector3 drawnPivot = _mouseLook.PivotOffsets;
 		(double right, double up) = _mouseLook.Observe(look.Posted, look.Taken, look.Absorbed,
 			look.PostedPitch, look.TakenPitch, look.AbsorbedPitch, look.Factor, look.Pivot, look.Mode,
 			look.PitchLimit, look.Aim);
-		if ((right != 0.0 || up != 0.0) && drawnMode != Refii.Core.Engine_MouseLook.ModeNone && !_cameraLine.Empty)
+		if (allowTurnAbout && (right != 0.0 || up != 0.0) &&
+			drawnMode != Refii.Core.Engine_MouseLook.ModeNone && !_cameraLine.Empty)
 		{
-			_cameraLine.TurnAbout(Refii.Core.Engine_MouseLook.PivotFor(_lineDrawn, drawnMode, drawnPivot),
-				Refii.Core.Engine_MouseLook.Rotation(_lineDrawn, drawnMode, right, up));
+			Transform3D newest = _cameraLine.Newest;
+			_cameraLine.TurnAbout(Refii.Core.Engine_MouseLook.PivotFor(newest, drawnMode, drawnPivot),
+				Refii.Core.Engine_MouseLook.Rotation(newest, drawnMode, right, up));
 		}
 
 		MouseLookMode = _mouseLook.Mode;
@@ -1992,6 +2137,10 @@ public partial class GameWorld : Node3D
 		// REMEMBERED BEFORE IT IS CLEARED. Everything below forgets what was standing, and the
 		// one thing the next build must not do is recreate it.
 		_torndownKey = _standingKey;
+
+		EndHostAim(forwardResidualDelta: false);
+		_cameraDirty = true;
+		LastMouseLook = null;
 
 		_loaded = false;
 		HasActiveWorld = false;

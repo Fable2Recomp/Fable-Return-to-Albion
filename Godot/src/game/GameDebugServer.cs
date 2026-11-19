@@ -941,6 +941,7 @@ public partial class GameDebugServer : Node
 					? m.GetString() ?? string.Empty
 					: string.Empty;
 				var cvars = new List<Dictionary<string, object?>>();
+				var seenNames = new HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
 				int count = Refii.Host.HostBridge.GetCvarCount();
 				for (int i = 0; i < count; ++i)
 				{
@@ -949,6 +950,7 @@ public partial class GameDebugServer : Node
 						continue;
 					}
 
+					seenNames.Add(info.Name);
 					if (match.Length != 0 &&
 						!info.Name.Contains(match, System.StringComparison.OrdinalIgnoreCase) &&
 						!info.Category.Contains(match, System.StringComparison.OrdinalIgnoreCase))
@@ -976,6 +978,11 @@ public partial class GameDebugServer : Node
 				foreach ((Refii.Launcher.Core.RuntimeCVarDefinition def, string val, bool modified) in
 					Refii.Core.Engine_RefiiConfig.GetGodotCvars())
 				{
+					if (seenNames.Contains(def.Name))
+					{
+						continue;
+					}
+
 					if (match.Length != 0 &&
 						!def.Name.Contains(match, System.StringComparison.OrdinalIgnoreCase) &&
 						!def.Category.Contains(match, System.StringComparison.OrdinalIgnoreCase))
@@ -1019,10 +1026,11 @@ public partial class GameDebugServer : Node
 					};
 				}
 
-				// The registry's own validator answers — lifecycle, range, allowed values;
-				// fall back to Godot's CVar table when the guest registry does not own it.
-				bool accepted = Refii.Host.HostBridge.SetCvar(name, value) ||
-					Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value);
+				// Update both registries when a CVar exists on both sides (e.g. fx_weapon_augment_always_active)
+				// so Godot config overrides and OnConfigChanged listeners stay in sync with the native runtime.
+				bool nativeAccepted = Refii.Host.HostBridge.SetCvar(name, value);
+				bool godotAccepted = Refii.Core.Engine_RefiiConfig.TrySetGodotCvar(name, value);
+				bool accepted = nativeAccepted || godotAccepted;
 				return Ok(new Dictionary<string, object?>
 				{
 					["name"] = name,
@@ -3265,6 +3273,8 @@ public partial class GameDebugServer : Node
 						["mouseLookAbsorbed"] = Refii.Game.GameWorld.MouseLookAbsorbed,
 						["mouseLookAbsorbedPitch"] = Refii.Game.GameWorld.MouseLookAbsorbedPitch,
 						["mouseLookAim"] = $"0x{Refii.Game.GameWorld.MouseLookAim:X8}",
+						["hostAimActive"] = Refii.Game.GameWorld.HostAimActive,
+						["hostAimObject"] = $"0x{Refii.Game.GameWorld.HostAimObject:X8}",
 						["mouseLookTorn"] = Refii.Game.GameWorld.MouseLookTornReads,
 						["mouseLookDevice"] = Refii.Ui.Engine_UiInputMode.KeyboardMouse,
 						["mouseLookFlicks"] = Refii.Game.GameWorld.MouseLookFlicks,

@@ -356,61 +356,111 @@ public class FxParticleAnimationTests
     }
 
     [TestCase]
-    public void NonLoopingSystemWithUseLifeRespectsAuthoredLifetimeFramesPastEmitterLastStartFrames()
+    public void NonLoopingSystemWithUseLifeUsesVisualSpanForParticlesAndEmitterLifetimeForWindow()
     {
-        var bank = new FxBank { Ok = true };
-        var em = new FxEmitter
+        // 1. Direct helper contract: non-looping uses system LastStartFrames; infinite loop uses emitter LifetimeFrames.
+        AssertThat(Engine_FxSystem.ComputeParticleLife(useLife: true, emitterLifetimeFrames: 30f, loopCount: 0, systemLifeFrames: 18f))
+            .IsEqual(18f);
+        AssertThat(Engine_FxSystem.ComputeParticleLife(useLife: true, emitterLifetimeFrames: 6f, loopCount: 0, systemLifeFrames: 30f))
+            .IsEqual(30f);
+        AssertThat(Engine_FxSystem.ComputeParticleLife(useLife: true, emitterLifetimeFrames: 20f, loopCount: -1, systemLifeFrames: 10f))
+            .IsEqual(20f);
+        AssertThat(Engine_FxSystem.ComputeParticleLife(useLife: false, emitterLifetimeFrames: 0f, loopCount: -1, systemLifeFrames: 30f))
+            .IsEqual(-1f);
+
+        // 2. When emitter LifetimeFrames (30) > system LastStartFrames (10) (like weapon sparkles FX_64D9750B):
+        // particles spawned at frame 0 expire at LastStartFrames (10), while emitter continues spawning until frame 30.
+        var sparkleBank = new FxBank { Ok = true };
+        var sparkleEmitter = new FxEmitter
         {
             TypeId = 0,
             HasMotion = true,
-            MaxActive = 10f,
+            MaxActive = 32f,
             InitialNum = 1f,
             AttachToRoot = true,
-            LifetimeFrames = 30, // authored particle lifespan = 30 frames (1.0s)
+            LifetimeFrames = 30,
             UseLife = true,
         };
-        em.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+        sparkleEmitter.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
 
-        // sysDef.LastStartFrames is only 10 (when emitter bursts stop starting)
-        var sysDef = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 10 };
-        sysDef.Visuals.Add(new FxVisual { HasTexture = true, Texture = "sparkle.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
+        var sparkleSys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 10 };
+        sparkleSys.Visuals.Add(new FxVisual { HasTexture = true, Texture = "sparkle.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
 
-        var eff = new FxEffect
+        var sparkleEff = new FxEffect
         {
             Name = "test_weapon_sparkles",
             NameHash = FxBank.Fnv1Lower("test_weapon_sparkles"),
             UpdateFrequency = 1,
         };
-        // sys.LoopCount == 0 (non-looping one-shot emitter)
-        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0, 0));
-        bank.Emitters.Add(em);
-        bank.Systems.Add(sysDef);
-        bank.Effects.Add(eff);
-        bank.Reindex();
+        sparkleEff.Parts.Add(new FxEffectPart(0, 0, 1, 0, 0));
+        sparkleBank.Emitters.Add(sparkleEmitter);
+        sparkleBank.Systems.Add(sparkleSys);
+        sparkleBank.Effects.Add(sparkleEff);
+        sparkleBank.Reindex();
 
-        var fx = new Engine_FxSystem();
-        var placement = new FxPlacement { EffectName = "test_weapon_sparkles" };
-        fx.Build(bank, new[] { placement });
-        AssertThat(placement.Resolved).IsTrue();
+        var sparkleFx = new Engine_FxSystem();
+        var sparklePlace = new FxPlacement { EffectName = "test_weapon_sparkles" };
+        sparkleFx.Build(sparkleBank, new[] { sparklePlace });
+        AssertThat(sparklePlace.Resolved).IsTrue();
+        sparkleFx.SetLoop(false);
 
-        // Step 15 frames at 30 Hz:
-        // Past sysDef.LastStartFrames (10 frames), but before LifetimeFrames (30 frames)
-        for (int i = 0; i < 15; i++)
+        for (int i = 0; i < 8; i++) sparkleFx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(sparkleFx.AliveCount()).IsEqual(1);
+
+        // Step past LastStartFrames (10) before LifetimeFrames (30): particle dies at its 10-frame visual span.
+        for (int i = 0; i < 5; i++) sparkleFx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(sparkleFx.AliveCount()).IsEqual(0);
+
+        // 3. When emitter LifetimeFrames (6) < system LastStartFrames (30) (like muzzle flash FX_2992CB02 / water splash FX_76528C9A):
+        // emission stops at frame 6 while spawned particles survive past frame 6 through frame 30.
+        var burstBank = new FxBank { Ok = true };
+        var burstEmitter = new FxEmitter
         {
-            fx.Update(1f / 30f, Transform3D.Identity);
-        }
+            TypeId = 0,
+            HasMotion = true,
+            MaxActive = 32f,
+            InitialNum = 1f,
+            AttachToRoot = true,
+            LifetimeFrames = 6,
+            UseLife = true,
+        };
+        burstEmitter.Generic[2].DefaultValue = 1f;
+        burstEmitter.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
 
-        // Particle must still be alive at frame 15 (previously died prematurely at LastStartFrames = 10)
-        AssertThat(fx.AliveCount()).IsEqual(1);
+        var burstSys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 30 };
+        burstSys.Visuals.Add(new FxVisual { HasTexture = true, Texture = "flash.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
 
-        // Step past frame 30 (total 35 frames)
-        for (int i = 0; i < 20; i++)
+        var burstEff = new FxEffect
         {
-            fx.Update(1f / 30f, Transform3D.Identity);
-        }
+            Name = "test_muzzle_flash",
+            NameHash = FxBank.Fnv1Lower("test_muzzle_flash"),
+            UpdateFrequency = 1,
+        };
+        burstEff.Parts.Add(new FxEffectPart(0, 0, 1, 0, 0));
+        burstBank.Emitters.Add(burstEmitter);
+        burstBank.Systems.Add(burstSys);
+        burstBank.Effects.Add(burstEff);
+        burstBank.Reindex();
 
-        // Now particle has reached its authored 30-frame life and retired naturally
-        AssertThat(fx.AliveCount()).IsEqual(0);
+        var burstFx = new Engine_FxSystem();
+        var burstPlace = new FxPlacement { EffectName = "test_muzzle_flash" };
+        burstFx.Build(burstBank, new[] { burstPlace });
+        AssertThat(burstPlace.Resolved).IsTrue();
+        burstFx.SetLoop(false);
+
+        for (int i = 0; i < 6; i++) burstFx.Update(1f / 30f, Transform3D.Identity);
+        int spawnedAtFrame6 = burstFx.TotalSpawned;
+        AssertThat(spawnedAtFrame6).IsGreater(0);
+        AssertThat(burstFx.AliveCount()).IsEqual(spawnedAtFrame6);
+
+        // At frame 15 (past LifetimeFrames = 6, before LastStartFrames = 30): no new spawns, all burst particles still alive.
+        for (int i = 0; i < 9; i++) burstFx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(burstFx.TotalSpawned).IsEqual(spawnedAtFrame6);
+        AssertThat(burstFx.AliveCount()).IsEqual(spawnedAtFrame6);
+
+        // Step past LastStartFrames = 30 from the last spawned particle (total 40 frames): particles expire naturally.
+        for (int i = 0; i < 25; i++) burstFx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(burstFx.AliveCount()).IsEqual(0);
     }
 
     [TestCase]
@@ -448,5 +498,94 @@ public class FxParticleAnimationTests
         AssertThat(drawnPtsRun[1].X).IsEqualApprox(15.8f, 1e-4f);
         AssertThat(drawnPtsRun[1].Y).IsEqualApprox(2.0f, 1e-4f);
         AssertThat(drawnPtsRun[1].Z).IsEqualApprox(8.0f, 1e-4f);
+    }
+
+    [TestCase]
+    public void PerKeyframeVisualRenderStatePreservesDistinctBlendModes()
+    {
+        var bank = new FxBank();
+        var emitter = new FxEmitter
+        {
+            HasMotion = true,
+            MaxActive = 4f,
+            InitialNum = 1f,
+            LifetimeFrames = 30,
+            UseLife = true,
+        };
+        var sys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 30 };
+
+        // Keyframe 0: alpha blend ("mix": src=1, dst=5, op=0), SaturationMask = true, SoftDepthContrast = 0.5
+        var vis0 = new FxVisual
+        {
+            HasTexture = true,
+            Texture = "tex_mix.tex",
+            HasSize = true,
+            SizeX = 0.5f,
+            SizeY = 0.5f,
+            SrcBlend = 1,
+            DstBlend = 5,
+            BlendOp = 0,
+            SaturationMask = true,
+            SoftDepthContrast = 0.5f,
+        };
+        // Keyframe 1: additive one ("addone": src=1, dst=1, op=0), SaturationMask = false, SoftDepthContrast = 0
+        var vis1 = new FxVisual
+        {
+            HasTexture = true,
+            Texture = "tex_add.tex",
+            HasSize = true,
+            SizeX = 0.5f,
+            SizeY = 0.5f,
+            SrcBlend = 1,
+            DstBlend = 1,
+            BlendOp = 0,
+            SaturationMask = false,
+            SoftDepthContrast = 0f,
+        };
+        // Keyframe 2: displacement ("disp")
+        var vis2 = new FxVisual
+        {
+            HasTexture = true,
+            Texture = "tex_disp.tex",
+            HasSize = true,
+            SizeX = 0.5f,
+            SizeY = 0.5f,
+            Displacement = true,
+        };
+
+        sys.Visuals.Add(vis0);
+        sys.Visuals.Add(vis1);
+        sys.Visuals.Add(vis2);
+
+        (string blend0, bool sat0, float soft0) = Engine_FxSystem.ResolveVisualRenderState(vis0);
+        (string blend1, bool sat1, float soft1) = Engine_FxSystem.ResolveVisualRenderState(vis1);
+        (string blend2, bool sat2, float soft2) = Engine_FxSystem.ResolveVisualRenderState(vis2);
+
+        AssertThat(blend0).IsEqual("mix");
+        AssertThat(sat0).IsTrue();
+        AssertThat(soft0).IsEqualApprox(0.5f, 1e-5f);
+
+        AssertThat(blend1).IsEqual("addone");
+        AssertThat(sat1).IsFalse();
+        AssertThat(soft1).IsEqualApprox(0.0f, 1e-5f);
+
+        AssertThat(blend2).IsEqual("disp");
+        AssertThat(sat2).IsFalse();
+        AssertThat(soft2).IsEqualApprox(0.0f, 1e-5f);
+
+        // Verify full FxSystem build & update completes cleanly with heterogeneous keyframe visuals.
+        var eff = new FxEffect { Name = "test_multi_blend", NameHash = FxBank.Fnv1Lower("test_multi_blend"), UpdateFrequency = 1 };
+        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0, 0));
+        bank.Emitters.Add(emitter);
+        bank.Systems.Add(sys);
+        bank.Effects.Add(eff);
+        bank.Reindex();
+
+        var fx = new Engine_FxSystem();
+        var place = new FxPlacement { EffectName = "test_multi_blend" };
+        fx.Build(bank, new[] { place });
+        AssertThat(place.Resolved).IsTrue();
+        fx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(fx.AliveCount()).IsGreater(0);
     }
 }

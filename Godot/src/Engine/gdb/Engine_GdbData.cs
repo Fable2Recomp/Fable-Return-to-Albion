@@ -417,30 +417,21 @@ public sealed class GdbView
 
     public List<GdbField> Fields(int index)
     {
+        if (index < 0 || index >= RecordCount)
+        {
+            return new List<GdbField>();
+        }
+
         int record = _recordOffsets[index];
         if (!TryReadSchemaHeader(
-                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount))
+                _bytes, record, SchemaBase, HashBase, out _, out int fieldCount))
         {
             return new List<GdbField>();
         }
 
         var fields = new List<GdbField>(fieldCount);
-        int hashes = schemaOffset + 4;
-        int descriptors = hashes + (fieldCount * 4);
-
-        for (int i = 0; i < fieldCount; i++)
+        foreach ((uint fieldHash, GdbFieldType type, uint raw) in DeclaredFields(index))
         {
-            int slot = record + 4 + (i * 4);
-            if (slot + 4 > BodyEnd)
-            {
-                break;
-            }
-
-            uint fieldHash = ReadU32(_bytes, hashes + (i * 4));
-            uint descriptor = ReadU32(_bytes, descriptors + (i * 4));
-            var type = (GdbFieldType)(byte)(descriptor >> 24);
-            uint raw = ReadU32(_bytes, slot);
-
             fields.Add(Named(fieldHash, type, raw));
         }
 
@@ -650,6 +641,101 @@ public sealed class GdbView
             readonly object System.Collections.IEnumerator.Current => Current;
 
             public void Reset() => _at = -1;
+
+            public readonly void Dispose() { }
+        }
+    }
+
+    /// <summary>
+    /// A record's fields in their original declaration order (<c>slot = descriptor &amp; 0xFFFFFF</c>),
+    /// matching how the Xbox 360 binary indexes records by property slot.
+    /// </summary>
+    public DeclaredFieldList DeclaredFields(int index)
+    {
+        if (index < 0 || index >= RecordCount)
+        {
+            return default;
+        }
+
+        int record = _recordOffsets[index];
+        return TryReadSchemaHeader(
+                _bytes, record, SchemaBase, HashBase, out int schemaOffset, out int fieldCount)
+            ? new DeclaredFieldList(_bytes, record, schemaOffset + 4, fieldCount, BodyEnd)
+            : default;
+    }
+
+    /// <summary>What <see cref="DeclaredFields"/> returns: foreach over it allocates nothing.</summary>
+    public readonly struct DeclaredFieldList : IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)>
+    {
+        private readonly byte[]? _bytes;
+        private readonly int _record, _hashes, _count, _bodyEnd;
+
+        internal DeclaredFieldList(byte[] bytes, int record, int hashes, int count, int bodyEnd)
+        {
+            _bytes = bytes;
+            _record = record;
+            _hashes = hashes;
+            _count = count;
+            _bodyEnd = bodyEnd;
+        }
+
+        public Enumerator GetEnumerator() => new(_bytes, _record, _hashes, _count, _bodyEnd);
+
+        IEnumerator<(uint Hash, GdbFieldType Type, uint Raw)> IEnumerable<(uint Hash, GdbFieldType Type, uint Raw)>.GetEnumerator() =>
+            GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public struct Enumerator : IEnumerator<(uint Hash, GdbFieldType Type, uint Raw)>
+        {
+            private readonly byte[]? _bytes;
+            private readonly int _record, _hashes, _count, _bodyEnd;
+            private int _at;
+            private int _slot;
+
+            internal Enumerator(byte[]? bytes, int record, int hashes, int count, int bodyEnd)
+            {
+                _bytes = bytes;
+                _record = record;
+                _hashes = hashes;
+                _count = count;
+                _bodyEnd = bodyEnd;
+                _at = -1;
+                _slot = 0;
+            }
+
+            public bool MoveNext()
+            {
+                int next = _at + 1;
+                if (next >= _count)
+                {
+                    return false;
+                }
+
+                uint desc = ReadU32(_bytes!, _hashes + (_count * 4) + (next * 4));
+                int slot = (int)(desc & 0x00FFFFFFu);
+                if (slot < 0 || slot >= _count || _record + 4 + (slot * 4) + 4 > _bodyEnd)
+                {
+                    return false;
+                }
+
+                _at = next;
+                _slot = slot;
+                return true;
+            }
+
+            public readonly (uint Hash, GdbFieldType Type, uint Raw) Current => (
+                ReadU32(_bytes!, _hashes + (_slot * 4)),
+                (GdbFieldType)(byte)(ReadU32(_bytes!, _hashes + (_count * 4) + (_slot * 4)) >> 24),
+                ReadU32(_bytes!, _record + 4 + (_slot * 4)));
+
+            readonly object System.Collections.IEnumerator.Current => Current;
+
+            public void Reset()
+            {
+                _at = -1;
+                _slot = 0;
+            }
 
             public readonly void Dispose() { }
         }

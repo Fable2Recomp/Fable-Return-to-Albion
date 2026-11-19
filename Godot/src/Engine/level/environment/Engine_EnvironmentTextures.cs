@@ -87,9 +87,13 @@ public static class Engine_EnvironmentTextures
     private static Func<IEnumerable<string>>? _indexSource;
     private static long _indexBuilt;
 
-    public static Texture2D? Load(uint hash, Func<string, byte[]?> read, out string path)
+    public static Texture2D? Load(uint hash, Func<string, byte[]?> read, out string path) =>
+        Load(hash, read, out path, out _);
+
+    public static Texture2D? Load(uint hash, Func<string, byte[]?> read, out string path, out bool hasAlpha)
     {
         path = string.Empty;
+        hasAlpha = false;
 
         string? resolved = ResolvePath(hash);
         if (resolved is null)
@@ -105,6 +109,6 @@ public static class Engine_EnvironmentTextures
             return null;
         }
 
-        return Engine_TexImage.TryCreateTexture(bytes, out _);
+        return Engine_TexImage.TryCreateTexture(bytes, out hasAlpha, out _);
     }
 }

@@ -4222,13 +4222,75 @@ public static class CoopHeroLua
 				RangedCombatCamera.UpdateCurrentDirection ~= C.AimUpdateCurrentDirection then
 			local shipped = RangedCombatCamera.UpdateCurrentDirection
 			C.AimUpdateCurrentDirection = C.Permanent(function(self, ...)
+				local hx, hy, hz = self.RefiiHostAimX, self.RefiiHostAimY, self.RefiiHostAimZ
+				self.RefiiHostAimX, self.RefiiHostAimY, self.RefiiHostAimZ = nil, nil, nil
 				local yaw, tilt = self.RefiiAimYaw, self.RefiiAimTilt
 				self.RefiiAimYaw, self.RefiiAimTilt = nil, nil
+				if self == RefiiMouseLookCamera and hx ~= nil and hy ~= nil and hz ~= nil and
+						self.Player ~= nil and Creature ~= nil and Creature.GetCollisionHeadPosition ~= nil then
+					if self.GetTightness ~= nil then
+						self:GetTightness()
+					end
+					local len = math.sqrt(hx * hx + hy * hy + hz * hz)
+					local pivot = Creature.GetCollisionHeadPosition(self.Player)
+					if len >= 0.0001 and pivot ~= nil then
+						local nx, ny, nz = hx / len, hy / len, hz / len
+						local limit = self.AngleLimit or (math.pi / 6)
+						local elev = math.asin(math.max(-1, math.min(1, nz)))
+						if elev > limit or elev < -limit then
+							local clamped = math.max(-limit, math.min(limit, elev))
+							local hlen = math.sqrt(nx * nx + ny * ny)
+							local c = math.cos(clamped)
+							if hlen > 0.0001 then
+								nx, ny = (nx / hlen) * c, (ny / hlen) * c
+							end
+							nz = math.sin(clamped)
+						end
+						local dir = CVector3(nx, ny, nz)
+						local oldD = self.CurrentDirection
+						if oldD ~= nil and self.CurrentPosition ~= nil then
+							local ox, oy, oz = oldD:GetX(), oldD:GetY(), oldD:GetZ()
+							local olen = math.sqrt(ox * ox + oy * oy + oz * oz)
+							local nhlen = math.sqrt(nx * nx + ny * ny)
+							if olen >= 0.0001 and nhlen >= 0.0001 then
+								ox, oy, oz = ox / olen, oy / olen, oz / olen
+								local ohlen = math.sqrt(ox * ox + oy * oy)
+								if ohlen >= 0.0001 then
+									local px, py, pz = pivot:GetX(), pivot:GetY(), pivot:GetZ()
+									local cx = self.CurrentPosition:GetX() - px
+									local cy = self.CurrentPosition:GetY() - py
+									local cz = self.CurrentPosition:GetZ() - pz
+									if cx * cx + cy * cy + cz * cz < 625 then
+										local ofx, ofy = ox / ohlen, oy / ohlen
+										local orx, ory = ofy, -ofx
+										local side = cx * orx + cy * ory
+										local behind = -(cx * ofx + cy * ofy) / math.max(ohlen, 0.1)
+										local height = cz + oz * behind
+										local nfx, nfy = nx / nhlen, ny / nhlen
+										local nrx, nry = nfy, -nfx
+										self.CurrentPosition = CVector3(
+											px - nx * behind + nrx * side,
+											py - ny * behind + nry * side,
+											pz - nz * behind + height)
+									end
+								end
+							end
+						end
+						self.CurrentDirection = dir
+						self.CurrentDesired = dir
+						self.RefiiAimPivot = pivot
+						self.RefiiHostAimApplied = true
+						return
+					end
+				end
 				local d = self.CurrentDirection
 				if self ~= RefiiMouseLookCamera or yaw == nil or tilt == nil or d == nil or
 						self.Player == nil or Creature == nil or Creature.GetCollisionHeadPosition == nil or
 						Targeting == nil or Targeting.GetCameraSafeTargetedPosition == nil then
 					return shipped(self, ...)
+				end
+				if self.GetTightness ~= nil then
+					self:GetTightness()
 				end
 				local pivot = Creature.GetCollisionHeadPosition(self.Player)
 				local dx, dy, dz = d:GetX(), d:GetY(), d:GetZ()

@@ -1,5 +1,6 @@
 using System;
 using Godot;
+using Refii.Core;
 
 namespace Refii.Ui;
 
@@ -33,20 +34,133 @@ public sealed partial class Engine_HudReticule : Node3D
 		GD.Load<Shader>("res://src/Engine/ui/ui_world_marker.gdshader");
 
 	/// <summary>One player's reticule as the guest states it this frame.</summary>
-	/// <param name="Anchor">The aim point, guest world space (`object+0x90`).</param>
+	/// <param name="Anchor">The aim point, guest world space (`object+0x90` / `aimer+0x80`).</param>
 	/// <param name="Progress">Lock progress, record +12.</param>
 	/// <param name="Colour">Record +16, RGBA.</param>
 	/// <param name="Mode">Record +32: 0 picks `targeta`, 1 and 2 `targetb`, above that `target`.</param>
 	/// <param name="Counter">Record +52, the frames since the mode last changed.</param>
 	/// <param name="Screen">The point as the guest stated it on screen (its pixels from the centre, y up), for a
 	/// reticule whose world point the guest never keeps; null to place <paramref name="Anchor"/> through <see cref="Place"/>.</param>
+	/// <param name="Object">Guest ranged-aim object address for anchor identity and host-aim locking (0 when none).</param>
+	/// <param name="Tick">Guest game tick corresponding to <paramref name="Anchor"/>.</param>
+	/// <param name="StepComplete">True when a guest step completed this frame (controls timeline observation).</param>
+	/// <param name="MouseSequence">Mouse-look sequence read coherently around <paramref name="Anchor"/>, or null if straddled/unread.</param>
 	public readonly record struct Aim(
-		Vector3 Anchor, float Progress, Color Colour, uint Mode, int Counter, Vector2? Screen = null);
+		Vector3 Anchor, float Progress, Color Colour, uint Mode, int Counter, Vector2? Screen = null,
+		uint Object = 0u, uint Tick = 0u, bool StepComplete = true, uint? MouseSequence = null);
 
 	/// <summary>A title's reticule draw in its guest pixels: r = (1 − m)·RadiusSpan + RadiusBase,
 	/// s = (1 − t)·SizeSpan + SizeBase, each player's Phase, the clamp fraction (null: none), the art by mode.</summary>
 	public sealed record Style(int Petals, float RadiusSpan, float RadiusBase, float SizeSpan, float SizeBase,
 		float[] Phase, float? Clamp, Func<uint, string> ArtFor);
+
+	/// <summary>
+	/// Pure-managed per-player 3D anchor tracker shared across titles: maintains tick-timeline
+	/// interpolation, teleport/object/hide resets, and sequence-coherent ahead-turn tracking.
+	/// </summary>
+	internal sealed class AnchorTracker
+	{
+		private readonly Engine_TickTimeline _line = new(stillWhenUnchanged: true);
+		private uint _lastObject;
+		private Vector3? _aimAnchor;
+		private uint _aimAnchorSequence;
+		private bool _lastWasScreen;
+
+		public bool Empty => _line.Empty;
+
+		public void Clear()
+		{
+			_line.Clear();
+			_lastObject = 0u;
+			_aimAnchor = null;
+			_aimAnchorSequence = 0u;
+			_lastWasScreen = false;
+		}
+
+		public void Observe(Aim aim, bool turnsWithView, bool hostAiming, uint currentMouseSequence)
+		{
+			if (aim.Screen is not null)
+			{
+				if (!_lastWasScreen)
+				{
+					_line.Clear();
+					_aimAnchor = null;
+					_lastWasScreen = true;
+				}
+				return;
+			}
+
+			_lastWasScreen = false;
+			bool objectChanged = aim.Object != _lastObject;
+			_lastObject = aim.Object;
+
+			if (hostAiming)
+			{
+				// Keep timeline seeded at the current aim point so exiting host-aim (e.g. target
+				// lock snap) hands off smoothly with no jump.
+				_aimAnchor = aim.Anchor;
+				_aimAnchorSequence = currentMouseSequence;
+				_line.Reset(aim.Tick, new Transform3D(Basis.Identity, aim.Anchor));
+				return;
+			}
+
+			if (turnsWithView)
+			{
+				// Never overwrite Newest or _aimAnchor when MouseSequence disagrees: doing so on a
+				// deferred or torn frame produces a double-turn (+2Δ) spike on the next frame.
+				if (aim.MouseSequence is { } seq && seq == currentMouseSequence)
+				{
+					_aimAnchor = aim.Anchor;
+					_aimAnchorSequence = seq;
+					_line.Reset(aim.Tick, new Transform3D(Basis.Identity, aim.Anchor));
+				}
+				else if (_line.Empty)
+				{
+					_line.Reset(aim.Tick, new Transform3D(Basis.Identity, aim.Anchor));
+				}
+				return;
+			}
+
+			_aimAnchor = null;
+			bool teleport = !_line.Empty &&
+				_line.Newest.Origin.DistanceSquaredTo(aim.Anchor) >
+					Engine_TickTimeline.TeleportMetres * Engine_TickTimeline.TeleportMetres;
+
+			if (objectChanged || _line.Empty || teleport)
+			{
+				_line.Reset(aim.Tick, new Transform3D(Basis.Identity, aim.Anchor));
+			}
+			else if (aim.StepComplete)
+			{
+				_line.Observe(aim.Tick, new Transform3D(Basis.Identity, aim.Anchor));
+			}
+		}
+
+		public Vector3 Evaluate(
+			bool turnsWithView, uint currentMouseSequence, ulong nowUsec, double drawTick,
+			Func<Vector3, Vector3>? turnAimAhead)
+		{
+			if (turnsWithView)
+			{
+				Vector3 baseAnchor = _aimAnchor is { } kept && _aimAnchorSequence == currentMouseSequence
+					? kept
+					: (_line.Empty ? Vector3.Zero : _line.Newest.Origin);
+				return turnAimAhead is not null ? turnAimAhead(baseAnchor) : baseAnchor;
+			}
+
+			return _line.Empty ? Vector3.Zero : _line.Advance(nowUsec, drawTick).Origin;
+		}
+	}
+
+	/// <summary>Builds a non-shearing petal quad transform (local scale before Z rotation).</summary>
+	internal static Transform3D PetalTransform(
+		Vector2 centre, Vector2 offset, float angle, float k, float s, float scale)
+	{
+		float rz = -(angle + Mathf.Pi);
+		Basis basis = new Basis(Vector3.Back, rz) *
+			Basis.FromScale(new Vector3(2f * k * s * scale, 2f * s * scale, 1f));
+		return new Transform3D(basis, new Vector3(centre.X + offset.X, centre.Y + offset.Y, 0f));
+	}
 
 	/// <summary>The title's draw; set before the node enters the tree.</summary>
 	public Style Look { get; init; } = null!;
@@ -72,10 +186,15 @@ public sealed partial class Engine_HudReticule : Node3D
 	public int OnlyPlayer { get; set; } = -1;
 
 	private readonly Aim?[] _aims = new Aim?[2];
+	private readonly bool[] _fedPending = new bool[2];
+	private readonly AnchorTracker[] _trackers = { new(), new() };
+	private readonly bool[] _lastWasScreen = new bool[2];
 	private MeshInstance3D[,] _quads = null!;
 	private ShaderMaterial[,] _materials = null!;
 	private Color[,] _lastTint = null!;
 	private Texture2D?[,] _lastTexture = null!;
+	private Transform3D[,] _lastTransform = null!;
+	private bool[,] _hasTransform = null!;
 	private readonly bool[] _hidden = { true, true };
 	private readonly System.Collections.Generic.Dictionary<string, Texture2D?> _textures = new();
 
@@ -93,6 +212,8 @@ public sealed partial class Engine_HudReticule : Node3D
 		_materials = new ShaderMaterial[2, Petals];
 		_lastTint = new Color[2, Petals];
 		_lastTexture = new Texture2D?[2, Petals];
+		_lastTransform = new Transform3D[2, Petals];
+		_hasTransform = new bool[2, Petals];
 		for (int player = 0; player < 2; ++player)
 		{
 			for (int i = 0; i < Petals; ++i)
@@ -119,6 +240,7 @@ public sealed partial class Engine_HudReticule : Node3D
 		if (player is 0 or 1)
 		{
 			_aims[player] = aim;
+			_fedPending[player] = aim is not null;
 		}
 	}
 
@@ -127,7 +249,7 @@ public sealed partial class Engine_HudReticule : Node3D
 		string name = Look.ArtFor(mode);
 		if (!_textures.TryGetValue(name, out Texture2D? texture))
 		{
-			texture = ResolveTexture?.Invoke(Refii.Core.Engine_GameHash.ResourcePath(name));
+			texture = ResolveTexture?.Invoke(Engine_GameHash.ResourcePath(name));
 			_textures[name] = texture;
 			if (texture is null)
 			{
@@ -146,6 +268,10 @@ public sealed partial class Engine_HudReticule : Node3D
 
 	public override void _Process(double delta)
 	{
+		uint currentMouseSeq = Refii.Game.GameWorld.MouseLookSequence;
+		ulong nowUsec = Refii.Entities.Engine_DrawnFrame.NowUsec;
+		double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+
 		for (int player = 0; player < 2; ++player)
 		{
 			if (_aims[player] is not { } aim || (OnlyPlayer >= 0 && player != OnlyPlayer))
@@ -153,12 +279,52 @@ public sealed partial class Engine_HudReticule : Node3D
 				_last[player] = null;
 				_drawnIntro[player] = 0f;
 				_drawnProgress[player] = 0f;
+				_fedPending[player] = false;
+				_lastWasScreen[player] = false;
+				_trackers[player].Clear();
+				for (int i = 0; i < Petals; ++i)
+				{
+					_hasTransform[player, i] = false;
+				}
 				Hide(player);
 				continue;
 			}
 
-			// Behind the camera the guest keeps its last point; so does this.
-			Vector2? placed = aim.Screen is { } stated ? stated * UnitsPerGuestPixel : Place?.Invoke(aim.Anchor);
+			bool isScreen = aim.Screen is not null;
+			if (isScreen != _lastWasScreen[player])
+			{
+				_last[player] = null;
+				_lastWasScreen[player] = isScreen;
+			}
+
+			bool hostAiming = !isScreen && player == 0 && aim.Object != 0u &&
+				Refii.Game.GameWorld.IsHostAiming(aim.Object);
+			bool turnsWithView = !isScreen && !hostAiming && aim.Object != 0u &&
+				aim.Object == Refii.Game.GameWorld.MouseLookAim;
+
+			if (_fedPending[player])
+			{
+				_fedPending[player] = false;
+				_trackers[player].Observe(aim, turnsWithView, hostAiming, currentMouseSeq);
+			}
+
+			Vector2? placed;
+			if (aim.Screen is { } stated)
+			{
+				placed = stated * UnitsPerGuestPixel;
+			}
+			else if (hostAiming)
+			{
+				placed = Vector2.Zero;
+			}
+			else
+			{
+				Vector3 anchor = _trackers[player].Evaluate(
+					turnsWithView, currentMouseSeq, nowUsec, drawTick,
+					turnsWithView ? Refii.Game.GameWorld.TurnAimAhead : null);
+				placed = Place?.Invoke(anchor);
+			}
+
 			if (placed is { } fresh)
 			{
 				_last[player] = fresh;
@@ -198,9 +364,13 @@ public sealed partial class Engine_HudReticule : Node3D
 				// Guest screen space is y down; the canvas is y up, so y and the turn both flip.
 				var offset = new Vector2(Mathf.Sin(angle) * r, -Mathf.Cos(angle) * r) * scale;
 				MeshInstance3D quad = _quads[player, i];
-				quad.Position = new Vector3(centre.X + offset.X, centre.Y + offset.Y, 0f);
-				quad.Rotation = new Vector3(0f, 0f, -(angle + Mathf.Pi));
-				quad.Scale = new Vector3(2f * k * s * scale, 2f * s * scale, 1f);
+				Transform3D tx = PetalTransform(centre, offset, angle, k, s, scale);
+				if (!_hasTransform[player, i] || !_lastTransform[player, i].IsEqualApprox(tx))
+				{
+					_lastTransform[player, i] = tx;
+					_hasTransform[player, i] = true;
+					quad.Transform = tx;
+				}
 				if (quad.Visible != visible)
 				{
 					quad.Visible = visible;

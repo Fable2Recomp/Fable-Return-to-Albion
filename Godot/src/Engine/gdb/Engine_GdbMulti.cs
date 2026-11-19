@@ -493,7 +493,7 @@ public sealed class GdbMulti
         var emitted = new HashSet<uint>();
         foreach (GdbCursor at in chain)
         {
-            foreach ((uint hash, GdbFieldType type, uint raw) in at.View.RawFields(at.Record))
+            foreach ((uint hash, GdbFieldType type, uint raw) in at.View.DeclaredFields(at.Record))
             {
                 if (hash == GdbView.HashParent || !emitted.Add(hash))
                 {

@@ -49,7 +49,7 @@ public sealed class Engine_NewGameInventory
             }
             _names.Add(record, name);
             var entry = new GdbPatchEntry(record, cursor.View.RecordSchemaFlags(cursor.Record));
-            foreach (var field in cursor.View.RawFields(cursor.Record))
+            foreach (var field in cursor.View.DeclaredFields(cursor.Record))
             {
                 entry.Properties.Add(new GdbPatchProperty(field.Hash, field.Type, field.Raw));
                 // THE STRINGS COME WITH THE COPY. It shadows the original record, and its field names

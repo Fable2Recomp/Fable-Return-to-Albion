@@ -60,6 +60,7 @@
 
 #include <rex/system/kernel_state.h>
 
+#include "appearance_sublist.h"
 #include "core/host_asset_reader.h"
 #include "core/precise_sleep.h"
 #include "core/payload_bridge_fable2.h"
@@ -9265,6 +9266,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityDisplacementParts(uint32_t enti
     if (morph < 0x10000u || morph >= 0xC0000000u) {
         return 0u;
     }
+    const uint32_t renderable = EntityComponent(base, entity, 3u);
+    if (!refii::hostcore::IsAppearanceSubcomponentActive(
+            refii::hostcore::GuestReader{base}, renderable,
+            refii::hostcore::kFable2AppearanceSublistOffset, morph + 0x0Cu)) {
+        return 0u;
+    }
     const uint32_t begin = GuestWordAt(base, morph + 0x38u);
     const uint32_t end = GuestWordAt(base, morph + 0x3Cu);
     const uint32_t capacity = GuestWordAt(base, morph + 0x40u);
@@ -9336,9 +9343,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
     // morph parts answers with the two eyes alone.
     constexpr uint8_t kEyesComponentId = 7u;
     const uint32_t eyes = component(kEyesComponentId);
+    const uint32_t renderable = component(3u);
 
     const auto append_eyes = [&](uint32_t written) -> uint32_t {
-        if (!plausible(eyes) || read8(eyes + 0x60u) == 0u) {
+        if (!plausible(eyes) || read8(eyes + 0x60u) == 0u ||
+            !refii::hostcore::IsAppearanceSubcomponentActive(
+                refii::hostcore::GuestReader{base}, renderable,
+                refii::hostcore::kFable2AppearanceSublistOffset, eyes + 0x0Cu)) {
             return written;
         }
         const uint32_t right = read32(eyes + 0x18u);
@@ -9354,7 +9365,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntityMorphParts(uint32_t entity, uin
 
     constexpr uint8_t kMorphComponentId = 17u;
     const uint32_t morph = component(kMorphComponentId);
-    if (!plausible(morph)) {
+    if (!plausible(morph) ||
+        !refii::hostcore::IsAppearanceSubcomponentActive(
+            refii::hostcore::GuestReader{base}, renderable,
+            refii::hostcore::kFable2AppearanceSublistOffset, morph + 0x0Cu)) {
         return append_eyes(0u);
     }
 

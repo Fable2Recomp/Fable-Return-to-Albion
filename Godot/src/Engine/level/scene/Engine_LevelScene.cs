@@ -1356,7 +1356,7 @@ public static class Engine_LevelScene
             {
                 var chunk = new MeshInstance3D
                 {
-                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
+                    Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers | Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask,
                     Name = $"{name}{i}",
                     Mesh = chunks[i],
                 };

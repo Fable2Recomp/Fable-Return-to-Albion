@@ -233,7 +233,7 @@ public static class Engine_LevelLighting
 		// directional sun/moon light so sunlight never leaks through walls or roofs onto indoor
 		// geometry when sun shadows are disabled or beyond cascade depth.
 		uint desiredCullMask = (Engine_LightZones.Active && frame.HasSky)
-			? ~(Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask | Refii.Models.Engine_ClassicViews.IndoorViewLayers)
+			? ~(Engine_LightZones.IndoorMask | Engine_LightZones.IndoorLampHostMask | Refii.Models.Engine_ClassicViews.IndoorViewLayers | Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask)
 			: uint.MaxValue;
 		if (light.LightCullMask != desiredCullMask)
 		{

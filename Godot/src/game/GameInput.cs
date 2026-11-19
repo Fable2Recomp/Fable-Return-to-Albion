@@ -1,3 +1,4 @@
+using System;
 using Refii.Ui;
 using Godot;
 using Refii.Core;
@@ -450,6 +451,31 @@ public partial class GameInput : Node
 	/// <summary>`mouse_sensitivity` in refii.toml, 1.0 by default.</summary>
 	public static float MouseSensitivity { get; private set; } = 1f;
 
+	/// <summary>`mouse_zoom_sensitivity` in refii.toml, true by default — scales aiming sensitivity by tan(fov/2) when zoomed.</summary>
+	public static bool MouseZoomSensitivity { get; private set; } = true;
+
+	private static Vector2 _hostAimDelta;
+
+	/// <summary>Drains mouse look degrees accumulated this frame while host-authoritative aiming is active.</summary>
+	public static Vector2 TakeHostAimDelta()
+	{
+		Vector2 delta = _hostAimDelta;
+		_hostAimDelta = Vector2.Zero;
+		return delta;
+	}
+
+	/// <summary>Scale multiplier applied to ADS mouse turn based on vertical FOV.</summary>
+	internal static float ZoomSensitivityScale(float fovDegrees, bool enabled)
+	{
+		if (!enabled || !float.IsFinite(fovDegrees) || fovDegrees <= 0f || fovDegrees >= 55f)
+		{
+			return 1f;
+		}
+
+		float scale = MathF.Tan(Mathf.DegToRad(fovDegrees) * 0.5f) / MathF.Tan(Mathf.DegToRad(55f) * 0.5f);
+		return Mathf.Clamp(scale, 0.15f, 1f);
+	}
+
 	/// <summary>`mouse_input` in refii.toml — whether mouse input is processed at all.</summary>
 	public static bool MouseInput { get; private set; } = true;
 
@@ -500,6 +526,7 @@ public partial class GameInput : Node
 		Refii.Mods.ModInput.ReadBindings(values);
 		MouseSensitivity = Mathf.Clamp(
 			Refii.Core.Engine_RefiiConfig.Float(values, "mouse_sensitivity", 1f), 0.05f, 10f);
+		MouseZoomSensitivity = Refii.Core.Engine_RefiiConfig.Bool(values, "mouse_zoom_sensitivity", true);
 	}
 
 	/// <summary>

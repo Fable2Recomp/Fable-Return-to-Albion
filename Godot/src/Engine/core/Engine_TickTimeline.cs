@@ -140,6 +140,14 @@ public sealed partial class Engine_TickTimeline
 		ReleaseArrivals();
 	}
 
+	/// <summary>Resets this timeline to the empty state so reused timelines drop stale history.</summary>
+	public void Clear()
+	{
+		_started = false;
+		_lastUsec = 0UL;
+		ReleaseArrivals();
+	}
+
 	/// <summary>
 	/// Restates the whole history — both stated samples, the drawn transform and its motion — as
 	/// turned rightward by <paramref name="rightDegrees"/> about the vertical through
@@ -193,6 +201,11 @@ public sealed partial class Engine_TickTimeline
 		if (!_started || tick < _stamp)
 		{
 			Reset(tick, sample, scalar);
+			return;
+		}
+
+		if (tick == _stamp && sample.IsEqualApprox(Newest) && Mathf.IsEqualApprox(scalar, NewestScalar))
+		{
 			return;
 		}
 

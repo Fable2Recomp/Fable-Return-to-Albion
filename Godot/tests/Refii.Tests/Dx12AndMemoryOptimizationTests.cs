@@ -1451,6 +1451,27 @@ public sealed class Dx12AndMemoryOptimizationTests
 		AssertThat(Refii.Level.Engine_WaterTheme.ShouldLogDegenerateEdgeBlend(0f, 0f, 0f)).IsTrue();
 	}
 
+	[TestCase]
+	public void ShadowProxyFollowerReachAndSpecialisedCutoutPolicy()
+	{
+		// Stationary rigid props use static ShadowReach culling; skinned characters and moving
+		// attached followers (held/sheathed weapons) travel with their holder and stay excluded.
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesStaticShadowReach(skinned: false, follows: false)).IsTrue();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesStaticShadowReach(skinned: false, follows: true)).IsFalse();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesStaticShadowReach(skinned: true, follows: true)).IsFalse();
+		AssertThat(Refii.Entities.Engine_ShadowProxy.UsesStaticShadowReach(skinned: true, follows: false)).IsFalse();
+
+		string shadowProxySource = File.ReadAllText(
+			Path.Combine(FindRepoRoot(), "src", "Engine", "entities", "Engine_ShadowProxy.cs"));
+		int cutoutCallIdx = shadowProxySource.IndexOf("CanUseDedicatedCutoutCaster(", StringComparison.Ordinal);
+		// Skip the method declaration itself and inspect the call site inside Build().
+		int buildCallIdx = shadowProxySource.IndexOf("CanUseDedicatedCutoutCaster(", cutoutCallIdx + 1, StringComparison.Ordinal);
+		AssertThat(buildCallIdx).IsGreater(0);
+		string callSlice = shadowProxySource.Substring(buildCallIdx, Math.Min(260, shadowProxySource.Length - buildCallIdx));
+		AssertThat(callSlice.Contains("Engine_ShaderSpecialisation.PathOf(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(callSlice.Contains("Engine_ShaderVariant.FullPathOf(", StringComparison.Ordinal)).IsTrue();
+	}
+
 	/// <summary>
 	/// Verifies RD viewport texture invalidation across A -> B -> A Scaling3DScale transitions,
 	/// relaxed D3D12/Vulkan upload budgets, and wake-on-enqueue chained worker servicing.
@@ -1768,5 +1789,31 @@ public sealed class Dx12AndMemoryOptimizationTests
 		string additiveResizeSlice = ExtractSourceSlice(additiveSource, "private void Resize()", "public override void _Process(");
 		AssertThat(additiveResizeSlice.Contains("_layerRd = ViewportTexRid();", StringComparison.Ordinal)).IsTrue();
 		AssertThat(additiveResizeSlice.Contains("_publishedTex[_view] = _layerRd;", StringComparison.Ordinal)).IsTrue();
+	}
+
+	/// <summary>
+	/// Ensures legacy/upscaled vanilla assets (<c>!FABLE_IS_PBR</c>) preserve their authored
+	/// <c>specular_tex</c> colour and exponent while still reading cavity AO and parallax height
+	/// from synthesized ORM textures, and keeps ORM-to-Phong reconstruction gated strictly on
+	/// <c>FABLE_IS_PBR</c>.
+	/// </summary>
+	[TestCase]
+	public void LegacyVanillaSpecularIsPreservedWithSynthesizedOrm()
+	{
+		string godotRoot = FindRepoRoot();
+		string raw = File.ReadAllText(Path.Combine(godotRoot, "src", "Engine", "material", "standard_material_body.gdshaderinc"));
+		string body = StripShaderComments(raw);
+
+		AssertThat(body.Contains("FABLE_HAS_ORM && (has_specular || FABLE_IS_PBR)", StringComparison.Ordinal)).IsFalse();
+
+		string specSlice = ExtractSourceSlice(body, "v_specular = spec_colour;", "#endif");
+		AssertThat(specSlice.Contains("v_specular = spec_colour;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(specSlice.Contains("v_specular_power = spec_power;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(specSlice.Contains("if (FABLE_HAS_ORM && FABLE_IS_PBR)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(specSlice.Contains("v_specular = mix(vec3(0.04), alb.rgb, METALLIC);", StringComparison.Ordinal)).IsTrue();
+
+		// Preserve synthesized ORM upscaling features (cavity AO + parallax height) on legacy assets.
+		AssertThat(body.Contains("ao = orm.r;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(body.Contains("if (FABLE_HAS_ORM && has_height && parallax_scale > 0.0)", StringComparison.Ordinal)).IsTrue();
 	}
 }

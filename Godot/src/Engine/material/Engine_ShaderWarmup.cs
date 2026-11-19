@@ -407,6 +407,8 @@ public partial class Engine_ShaderWarmup : Node
 			return;
 		}
 
+		Engine_MaterialCopy.WarmShader(shader);
+
 		var material = new ShaderMaterial { Shader = shader };
 		string code = shader.Code;
 		int at = code.IndexOf("shader_type", System.StringComparison.Ordinal);

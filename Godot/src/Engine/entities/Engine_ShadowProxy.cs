@@ -152,6 +152,13 @@ public static class Engine_ShadowProxy
 	public static bool UsesSolidProxyCaster(bool skinned, bool always) => skinned || always;
 
 	/// <summary>
+	/// Whether a shadow proxy belongs to static <see cref="Refii.Lighting.Engine_ShadowReach"/>
+	/// culling. Skinned characters and moving attached followers (held/sheathed weapons) travel
+	/// across the region and must not be culled against spawn-time static bounds.
+	/// </summary>
+	public static bool UsesStaticShadowReach(bool skinned, bool follows) => !skinned && !follows;
+
+	/// <summary>
 	/// Whether a kept alpha-scissor surface on a proxy can use the 1-tap derivative-free
 	/// <c>shadow_caster_cutout.gdshader</c> (non-swaying standard materials on characters/entities).
 	/// </summary>
@@ -566,9 +573,10 @@ public static class Engine_ShadowProxy
 		body.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off;
 		Proxied.Add(bodyId);
 
-		// A rigid prop's shadow is withdrawn by size and distance; a character keeps its own. A
-		// prop that rigs later takes its proxy back, cast-only as it was.
-		if (!skinned)
+		// A static rigid prop's shadow is withdrawn by size and distance; a character and any
+		// moving attached follower (held/sheathed weapons) keep their own. A prop that rigs or
+		// follows later takes its proxy back, cast-only and visibility-synced as it was.
+		if (UsesStaticShadowReach(skinned, follows))
 		{
 			Refii.Lighting.Engine_ShadowReach.Adopt(proxy);
 		}
@@ -576,6 +584,10 @@ public static class Engine_ShadowProxy
 		{
 			Refii.Lighting.Engine_ShadowReach.Release(proxy);
 			proxy.CastShadow = GeometryInstance3D.ShadowCastingSetting.ShadowsOnly;
+			if (beside)
+			{
+				proxy.Visible = body.IsVisibleInTree();
+			}
 		}
 	}
 
@@ -797,7 +809,11 @@ public static class Engine_ShadowProxy
 					return;
 				}
 				Material surfaceMaterial = material is ShaderMaterial shadedMat &&
-					CanUseDedicatedCutoutCaster(skinned, always, shadedMat.Shader?.ResourcePath)
+					CanUseDedicatedCutoutCaster(
+						skinned,
+						always,
+						Refii.Models.Engine_ShaderVariant.FullPathOf(
+							Refii.Models.Engine_ShaderSpecialisation.PathOf(shadedMat.Shader)))
 					? GetOrCreateCutoutCaster(shadedMat)
 					: material;
 				result.SurfaceSetMaterial(countAfter - 1, surfaceMaterial);

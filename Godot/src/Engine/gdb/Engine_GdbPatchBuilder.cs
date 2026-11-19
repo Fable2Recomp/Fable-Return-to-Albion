@@ -59,7 +59,7 @@ public static class GdbPatchBuilder
                 byte flags = view.RecordSchemaFlags(i);
                 var entry = new GdbPatchEntry(id, flags);
 
-                foreach (var (hash, type, raw) in view.RawFields(i))
+                foreach (var (hash, type, raw) in view.DeclaredFields(i))
                 {
                     entry.Properties.Add(new GdbPatchProperty(hash, type, raw));
                 }
@@ -124,9 +124,17 @@ public static class GdbPatchBuilder
                     existing.SchemaFlags = tuEntry.SchemaFlags;
                 }
 
+                Dictionary<uint, int>? seen = tuEntry.Properties.Count > 1 ? new Dictionary<uint, int>() : null;
                 foreach (GdbPatchProperty prop in tuEntry.Properties)
                 {
-                    int propIdx = existing.Properties.FindIndex(p => p.NameHash == prop.NameHash);
+                    int occ = 0;
+                    if (seen is not null)
+                    {
+                        seen.TryGetValue(prop.NameHash, out occ);
+                        seen[prop.NameHash] = occ + 1;
+                    }
+
+                    int propIdx = FindPropertyOccurrence(existing.Properties, prop.NameHash, occ);
                     if (propIdx >= 0)
                     {
                         existing.Properties[propIdx].Value = prop.Value;
@@ -140,7 +148,7 @@ public static class GdbPatchBuilder
             }
             else
             {
-                var cloned = new GdbPatchEntry(tuEntry.Id, tuEntry.SchemaFlags != 0 ? tuEntry.SchemaFlags : (byte)0x01);
+                var cloned = new GdbPatchEntry(tuEntry.Id, tuEntry.SchemaFlags);
                 foreach (GdbPatchProperty prop in tuEntry.Properties)
                 {
                     cloned.Properties.Add(new GdbPatchProperty(prop.NameHash, prop.Type, prop.Value));
@@ -244,7 +252,9 @@ public static class GdbPatchBuilder
         {
             byte schemaFlags = sparseEntry.SchemaFlags;
             var fullProperties = new List<GdbPatchProperty>();
-            var propMap = new Dictionary<uint, int>();
+            var propMap = new Dictionary<(uint Hash, int Occurrence), int>();
+            var localHashes = new HashSet<uint>();
+            var localOcc = new Dictionary<uint, int>();
 
             if (baseMulti.TryLookup(sparseEntry.Id, out GdbCursor cursor))
             {
@@ -261,82 +271,55 @@ public static class GdbPatchBuilder
                     fullDb.Names[sparseEntry.Id] = entryName;
                 }
 
-                // Populate all inherited properties from parent hierarchy:
-                foreach (var (hash, type, raw) in baseMulti.InheritedFields(cursor))
+                // Populate local fields FIRST in exact declared order (keeping `parent` at index 0
+                // and preserving repeated-hash array elements at their original positions):
+                foreach (var (hash, type, raw) in cursor.View.DeclaredFields(cursor.Record))
                 {
-                    propMap[hash] = fullProperties.Count;
+                    localHashes.Add(hash);
+                    localOcc.TryGetValue(hash, out int occ);
+                    localOcc[hash] = occ + 1;
+                    propMap[(hash, occ)] = fullProperties.Count;
                     fullProperties.Add(new GdbPatchProperty(hash, type, raw));
-                    string propName = baseMulti.NameOf(hash);
-                    if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(hash))
-                    {
-                        fullDb.Names[hash] = propName;
-                    }
-                    if (type == GdbFieldType.String)
-                    {
-                        string strVal = baseMulti.NameOf(raw);
-                        if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(raw))
-                        {
-                            fullDb.Names[raw] = strVal;
-                        }
-                    }
+                    RecordFieldNames(fullDb, baseMulti, hash, type, raw);
                 }
 
-                // Ensure local fields (such as parent reference) are also included:
-                foreach (var (hash, type, raw) in cursor.View.RawFields(cursor.Record))
+                // Append ancestor-only inherited properties from parent hierarchy:
+                foreach (var (hash, type, raw) in baseMulti.InheritedFields(cursor))
                 {
-                    if (propMap.TryGetValue(hash, out int idx))
+                    if (!localHashes.Add(hash))
                     {
-                        fullProperties[idx].Value = raw;
-                        fullProperties[idx].Type = type;
+                        continue;
                     }
-                    else
-                    {
-                        propMap[hash] = fullProperties.Count;
-                        fullProperties.Add(new GdbPatchProperty(hash, type, raw));
-                    }
-                    string propName = baseMulti.NameOf(hash);
-                    if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(hash))
-                    {
-                        fullDb.Names[hash] = propName;
-                    }
-                    if (type == GdbFieldType.String)
-                    {
-                        string strVal = baseMulti.NameOf(raw);
-                        if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(raw))
-                        {
-                            fullDb.Names[raw] = strVal;
-                        }
-                    }
+
+                    propMap[(hash, 0)] = fullProperties.Count;
+                    fullProperties.Add(new GdbPatchProperty(hash, type, raw));
+                    RecordFieldNames(fullDb, baseMulti, hash, type, raw);
                 }
             }
 
             // Apply sparse properties on top of base fields:
+            Dictionary<uint, int>? sparseOcc = sparseEntry.Properties.Count > 1 ? new Dictionary<uint, int>() : null;
             foreach (GdbPatchProperty sparseProp in sparseEntry.Properties)
             {
-                if (propMap.TryGetValue(sparseProp.NameHash, out int idx))
+                int occ = 0;
+                if (sparseOcc is not null)
+                {
+                    sparseOcc.TryGetValue(sparseProp.NameHash, out occ);
+                    sparseOcc[sparseProp.NameHash] = occ + 1;
+                }
+
+                if (propMap.TryGetValue((sparseProp.NameHash, occ), out int idx))
                 {
                     fullProperties[idx].Value = sparseProp.Value;
                     fullProperties[idx].Type = sparseProp.Type;
                 }
                 else
                 {
-                    propMap[sparseProp.NameHash] = fullProperties.Count;
+                    propMap[(sparseProp.NameHash, occ)] = fullProperties.Count;
                     fullProperties.Add(new GdbPatchProperty(sparseProp.NameHash, sparseProp.Type, sparseProp.Value));
                 }
 
-                string propName = baseMulti.NameOf(sparseProp.NameHash);
-                if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(sparseProp.NameHash))
-                {
-                    fullDb.Names[sparseProp.NameHash] = propName;
-                }
-                if (sparseProp.Type == GdbFieldType.String)
-                {
-                    string strVal = baseMulti.NameOf(sparseProp.Value);
-                    if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(sparseProp.Value))
-                    {
-                        fullDb.Names[sparseProp.Value] = strVal;
-                    }
-                }
+                RecordFieldNames(fullDb, baseMulti, sparseProp.NameHash, sparseProp.Type, sparseProp.Value);
             }
 
             var entry = new GdbPatchEntry(sparseEntry.Id, schemaFlags);
@@ -345,6 +328,44 @@ public static class GdbPatchBuilder
         }
 
         return fullDb;
+    }
+
+    private static int FindPropertyOccurrence(List<GdbPatchProperty> properties, uint nameHash, int occurrence)
+    {
+        int seen = 0;
+        for (int i = 0; i < properties.Count; i++)
+        {
+            if (properties[i].NameHash == nameHash)
+            {
+                if (seen == occurrence)
+                {
+                    return i;
+                }
+
+                seen++;
+            }
+        }
+
+        return -1;
+    }
+
+    private static void RecordFieldNames(
+        GdbPatchDatabase fullDb, GdbMulti baseMulti, uint hash, GdbFieldType type, uint raw)
+    {
+        string propName = baseMulti.NameOf(hash);
+        if (!string.IsNullOrEmpty(propName) && !fullDb.Names.ContainsKey(hash))
+        {
+            fullDb.Names[hash] = propName;
+        }
+
+        if (type == GdbFieldType.String)
+        {
+            string strVal = baseMulti.NameOf(raw);
+            if (!string.IsNullOrEmpty(strVal) && !fullDb.Names.ContainsKey(raw))
+            {
+                fullDb.Names[raw] = strVal;
+            }
+        }
     }
 
     /// <summary>

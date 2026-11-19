@@ -1052,4 +1052,55 @@ public class LightZonesAndPlacementsTests
 
         Engine_LevelFx.ClearCaches();
     }
+
+    [TestCase]
+    public void StaticDecalReceiverLayerIsolatesDynamicEntitiesAndRespectsLightZones()
+    {
+        uint prevModel = 0;
+        string? prevEnv = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL");
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+        bool prevInterior = Engine_LightingFrame.CurrentInterior;
+        Engine_LightingFrame.CurrentInterior = false;
+        try
+        {
+            _ = prevModel;
+            uint decalLayer = Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask;
+            AssertThat(decalLayer).IsEqual(1u << 9);
+
+            // Must not overlap any reserved render layer bit.
+            uint reservedMask =
+                1u |
+                Refii.Level.Engine_WaterReflection.WaterLayer |
+                Engine_LightZones.IndoorMask |
+                Engine_LightZones.IndoorLampHostMask |
+                Refii.Level.Engine_ReflectionLayer.Mask |
+                Engine_LevelLights.EntityCasterLayerMask |
+                Engine_LevelLights.IndoorEntityCasterMask |
+                Engine_LevelLights.LampHostLayerMask |
+                Refii.Entities.Engine_EntityHighlightLayer.LayerMask |
+                Refii.Fx.Engine_FxDisplacement.LayerMask |
+                Refii.Fx.Engine_FxAdditiveLayer.LayerMask;
+            AssertThat(decalLayer & reservedMask).IsEqual(0u);
+
+            const uint dummyRecord = 0x12340001u;
+            uint staticLayers = Engine_LevelLights.EntityLayersOf(dummyRecord, includeDynamicCaster: false);
+            uint dynamicLayers = Engine_LevelLights.EntityLayersOf(dummyRecord, includeDynamicCaster: true);
+
+            // Static world entities receive unowned decals; dynamic entities do NOT.
+            AssertThat(staticLayers & decalLayer).IsNotEqual(0u);
+            AssertThat(dynamicLayers & decalLayer).IsEqual(0u);
+
+            // Indoor static entities keep StaticDecalReceiverLayerMask, are lit indoors, and stay isolated from outdoor lights.
+            uint indoorStatic = Engine_LightZones.Zoned(staticLayers, 0x00123456u);
+            AssertThat(indoorStatic & decalLayer).IsNotEqual(0u);
+            AssertThat(indoorStatic & Engine_LightZones.IndoorMask).IsNotEqual(0u);
+            AssertThat(indoorStatic & Engine_LightZones.OutdoorCullMask).IsEqual(0u);
+            AssertThat(indoorStatic & Engine_LightZones.IndoorCullMask).IsNotEqual(0u);
+        }
+        finally
+        {
+            Engine_LightingFrame.CurrentInterior = prevInterior;
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", prevEnv);
+        }
+    }
 }

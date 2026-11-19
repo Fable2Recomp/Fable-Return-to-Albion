@@ -38,4 +38,20 @@ public class ControlsSettingsTests
         AssertThat(mouseLock).IsNotNull();
         AssertThat(RuntimeSettingsModel.FormatDisplayName(mouseLock!)).IsEqual("Mouse lock");
     }
+
+    [TestCase]
+    public void TestMouseZoomSensitivityCVarAndScale()
+    {
+        RuntimeCVarDefinition? cvar = RuntimeCVarSet.All.FirstOrDefault(d => d.Name == "mouse_zoom_sensitivity");
+        AssertThat(cvar).IsNotNull();
+        AssertThat(cvar!.Category).IsEqual(RuntimeCVarsGodot.ControlsCategory);
+        AssertThat(cvar.Type).IsEqual(RuntimeCVarType.Bool);
+        AssertThat(cvar.DefaultValue).IsEqual("true");
+
+        AssertThat(Refii.Game.GameInput.ZoomSensitivityScale(11.278f, enabled: false)).IsEqual(1f);
+        float zoomed = Refii.Game.GameInput.ZoomSensitivityScale(11.278f, enabled: true);
+        float wide = Refii.Game.GameInput.ZoomSensitivityScale(60f, enabled: true);
+        AssertThat(zoomed).IsGreater(0f);
+        AssertThat(zoomed).IsLess(wide);
+    }
 }

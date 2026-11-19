@@ -89,7 +89,11 @@ public class TitleRigTests
 		AssertThat(fable2.FocalBone(bones, "Character.Focal.Eye.L")).IsEqual(3);
 		AssertThat(fable2.FocalBone(bones, "Character.Focal.Eye.R")).IsEqual(2);
 		AssertThat(fable2.FocalBone(bones, "Carry_Hand_DummyObject1")).IsEqual(-1);
-		AssertThat(new Fable3Rig().FocalBone(Fable3Bones, "Character.Focal.Head")).IsEqual(-1);
+		var fable3 = new Fable3Rig();
+		AssertThat(fable3.FocalBone(Fable3Bones, "Character.Focal.Head")).IsEqual(4);
+		AssertThat(fable3.FocalBone(Fable3Bones, "Character.Focal.Eye.L")).IsEqual(6);
+		AssertThat(fable3.FocalBone(Fable3Bones, "Character.Focal.Eye.R")).IsEqual(7);
+		AssertThat(fable3.FocalBone(Fable3Bones, "Carry_Hand_DummyObject1")).IsEqual(-1);
 	}
 
 	[TestCase]

@@ -551,9 +551,20 @@ public partial class GameInput
 		}
 
 		Vector2 degrees = Refii.Core.Engine_MouseLook.Degrees(motion.Relative, MouseSensitivity, InvertCameraX);
+		if (GameWorld.ActiveAimFov > 0f)
+		{
+			degrees *= ZoomSensitivityScale(GameWorld.ActiveAimFov, MouseZoomSensitivity);
+		}
 		if (degrees != Vector2.Zero)
 		{
-			HostBridge.PostMouseLook(degrees.X, degrees.Y);
+			if (GameWorld.HostAimActive)
+			{
+				_hostAimDelta += degrees;
+			}
+			else
+			{
+				HostBridge.PostMouseLook(degrees.X, degrees.Y);
+			}
 		}
 	}
 

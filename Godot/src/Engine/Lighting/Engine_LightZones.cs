@@ -37,7 +37,7 @@ public static class Engine_LightZones
     /// <summary>What an outdoor light lights: everything but interiors and indoor lamp hosts.</summary>
     private const uint OutdoorOnly = ~(IndoorMask | IndoorLampHostMask | Refii.Level.Engine_ReflectionLayer.Mask |
         Engine_LevelLights.EntityCasterLayerMask | Engine_LevelLights.IndoorEntityCasterMask |
-        Refii.Models.Engine_ClassicViews.IndoorViewLayers);
+        Refii.Models.Engine_ClassicViews.IndoorViewLayers | Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask);
 
     /// <summary>
     /// What an indoor light lights: interiors (including characters zoned to the interior via Zoned()),

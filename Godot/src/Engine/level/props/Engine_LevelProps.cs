@@ -2119,7 +2119,7 @@ public static partial class Engine_LevelProps
             Refii.Models.Engine_ClassicMaterial.Active && ModelClass == PropModelClass.Tree &&
             role == PropRole.Shadow
                 ? 0u
-                : Refii.Level.Engine_ReflectionLayer.ReflectedLayers;
+                : Refii.Level.Engine_ReflectionLayer.ReflectedLayers | Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask;
 
         /// <summary>
         /// Marks a node with how it casts under classic, for its caster once the mesh is in. A

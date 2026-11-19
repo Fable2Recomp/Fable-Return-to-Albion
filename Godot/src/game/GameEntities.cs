@@ -243,6 +243,14 @@ public partial class GameEntities : Node3D
     /// <summary>Rigs by guest entity address, for the entities that turned out to be characters.</summary>
     private readonly Dictionary<uint, Refii.Entities.Engine_EntitySkeleton> _skeletons = new();
 
+    private readonly Dictionary<uint, uint> _lastModelHash = new();
+    private readonly Dictionary<uint, Refii.Physics.Engine_DisarticulatedRig> _disarticulated = new();
+    private readonly Dictionary<string, (Vector3 Pos, Quaternion Rot)> _capturedBonesScratch =
+        new(System.StringComparer.OrdinalIgnoreCase);
+    private readonly Vector3[] _guestBonesScratch = new Vector3[HostBridge.MaxBones];
+    private Transform3D[] _restGlobalsScratch = new Transform3D[HostBridge.MaxBones];
+    private float _lastFrameDelta = 1f / 60f;
+
     private readonly HashSet<uint> _seen = new();
 
     private int _ticks;
@@ -374,6 +382,7 @@ public partial class GameEntities : Node3D
     /// <summary>Feeds entities and publishes successful clip work summed across this frame.</summary>
     public override void _Process(double delta)
 	{
+		_lastFrameDelta = (float)delta;
 		using var clipFrame = Refii.Animations.Engine_ClipAnimator.FrameWork.BeginFrame();
 		// One read of the engine's frame counter for the walk: every rig stamps and compares it.
 		using var processFrame = Refii.Core.Engine_ProcessFrame.Begin();
@@ -1077,6 +1086,28 @@ public partial class GameEntities : Node3D
                 _guestPlacements[entity.Address] = (entity.Position, entity.Rotation);
             }
 
+            uint prevModelHashForMesh = entity.ModelHash;
+            if (_lastModelHash.TryGetValue(entity.Address, out uint knownModelHash))
+            {
+                prevModelHashForMesh = knownModelHash;
+                if (knownModelHash != entity.ModelHash)
+                {
+                    _compositeParts.Remove(entity.Address);
+                    _eyes.Remove(entity.Address);
+                    _bodyAndEyes.Remove(entity.Address);
+                    _skipIndex.Invalidate(entity.Address);
+                    if (entity.ModelHash == 0u)
+                    {
+                        _disarticulated.Remove(entity.Address);
+                        if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? activeRig))
+                        {
+                            activeRig.IsDisarticulated = false;
+                        }
+                    }
+                }
+            }
+            _lastModelHash[entity.Address] = entity.ModelHash;
+
             if (entity.ModelHash == 0)
             {
                 // A COMPOSITE CHARACTER, or nothing at all.
@@ -1405,34 +1436,31 @@ public partial class GameEntities : Node3D
                     Unbatch(entity.Address, node);
                     node.Mesh = mesh;
                     _nodeMesh[entity.Address] = mesh;
-                    Refii.Physics.Engine_ClothBody.Attach(node, mesh, PartPathsOf(mesh));
-                    LightEntity(node);
-                    Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
-                    if (_unrigged.Contains(entity.Address))
-                    {
-                        // The cull range and the shadow reach are the mesh's extent: a new mesh,
-                        // a new range, and the reach measured again from scratch.
-                        node.VisibilityRangeEnd = 0f;
-                        Refii.AndroidRuntime.AndroidEntityProps.ApplyVisibilityRange(node, mesh);
-                        Refii.Lighting.Engine_ShadowReach.Release(node);
-                        Refii.Lighting.Engine_ShadowReach.Adopt(node);
-                        if (Refii.Models.Engine_MdlRig.TryFrom(mesh) is not null)
-                        {
-                            _awaitingRig.Add(entity.Address);
-                        }
-                        else
-                        {
-                            _awaitingRig.Remove(entity.Address);
-                        }
-                    }
 
                     // The rig is the mesh's: a composite's bone table is the union of its parts, and
-                    // the skeleton and skin are built from it, so a new mesh needs a new rig or its
-                    // vertices address the wrong bones (a body that dresses after it was rigged).
+                    // the skeleton and skin are built from it, so a new mesh needs a new rig (and must
+                    // be bound before cloth attaches) or its vertices/cloth address the wrong bones.
+                    Refii.Models.Engine_MdlRig? nextMdlRig = Refii.Models.Engine_MdlRig.TryFrom(mesh);
                     bool sameBinding = Refii.Models.Engine_MdlRig.TryFrom(drawnMesh) is { } previousRig &&
-                        Refii.Models.Engine_MdlRig.TryFrom(mesh) is { } nextRig && previousRig.HasSameBinding(nextRig);
+                        nextMdlRig is { } nextRig && previousRig.HasSameBinding(nextRig);
                     if (!sameBinding && _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? stale))
                     {
+                        bool enteringCrumble = prevModelHashForMesh == 0u &&
+                            entity.ModelHash != 0u &&
+                            nextMdlRig is { } crumbleRig &&
+                            Refii.Core.Engine_TitleGame.Active.Rig.IsDisarticulatedCrumble(
+                                0u,
+                                entity.ModelHash,
+                                Refii.Level.Engine_PropModelIndex.Resolve(entity.ModelHash, System.Array.Empty<string>()),
+                                crumbleRig.Parents);
+
+                        Transform3D entityWorld = toWorld * ToGodot(entity.Position, entity.Rotation);
+                        if (enteringCrumble)
+                        {
+                            Transform3D captureWorld = node.IsInsideTree() ? node.GlobalTransform : entityWorld;
+                            stale.CaptureWorldBones(captureWorld, _capturedBonesScratch);
+                        }
+
                         node.Skeleton = new NodePath();
                         node.Skin = null;
                         Refii.Entities.Engine_ShadowProxy.Sync(node);
@@ -1444,12 +1472,14 @@ public partial class GameEntities : Node3D
 
                         _skeletons.Remove(entity.Address);
                         _clipAnimators.Remove(entity.Address);
+                        _boneWriteAskedMs.Remove(entity.Address);
+                        _disarticulated.Remove(entity.Address);
                         _attachments.Forget(entity.Address);
                         node.VisibilityRangeEnd = 0f;
                         if (!TryRig(entity.Address, node, mesh))
                         {
                             _unrigged.Add(entity.Address);
-                            if (Refii.Models.Engine_MdlRig.TryFrom(mesh) is not null)
+                            if (nextMdlRig is not null)
                             {
                                 _awaitingRig.Add(entity.Address);
                             }
@@ -1460,10 +1490,53 @@ public partial class GameEntities : Node3D
                         {
                             _awaitingRig.Remove(entity.Address);
                             Refii.Level.Engine_PropDrawRange.Apply(node);
+                            if (enteringCrumble &&
+                                _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? crumbledRig))
+                            {
+                                crumbledRig.IsDisarticulated = true;
+                                Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(crumbledRig.Node, true);
+                                if (_restGlobalsScratch.Length < crumbledRig.BoneCount)
+                                {
+                                    _restGlobalsScratch = new Transform3D[crumbledRig.BoneCount];
+                                }
+                                crumbledRig.CopyRestGlobals(_restGlobalsScratch);
+                                var shatter = new Refii.Physics.Engine_DisarticulatedRig();
+                                shatter.Initialize(
+                                    entityWorld,
+                                    crumbledRig.BoneNames,
+                                    new System.ReadOnlySpan<Transform3D>(_restGlobalsScratch, 0, crumbledRig.BoneCount),
+                                    crumbledRig.Parents,
+                                    _capturedBonesScratch,
+                                    Vector3.Zero,
+                                    entity.Address ^ (uint)entity.UniqueId);
+                                crumbledRig.ApplyModelSpacePoses(shatter.ModelPoses);
+                                _disarticulated[entity.Address] = shatter;
+                            }
                         }
 
                         GD.Print($"[rig] entity 0x{entity.Address:X8} changed mesh — re-rigged " +
                             $"({(_skeletons.ContainsKey(entity.Address) ? "new skeleton" : "no rig yet, retrying")})");
+                    }
+
+                    Refii.Physics.Engine_ClothBody.Attach(node, mesh, PartPathsOf(mesh));
+                    LightEntity(node);
+                    Refii.Entities.Engine_HiddenClusters.Apply(node, entity.Address);
+                    if (_unrigged.Contains(entity.Address))
+                    {
+                        // The cull range and the shadow reach are the mesh's extent: a new mesh,
+                        // a new range, and the reach measured again from scratch.
+                        node.VisibilityRangeEnd = 0f;
+                        Refii.AndroidRuntime.AndroidEntityProps.ApplyVisibilityRange(node, mesh);
+                        Refii.Lighting.Engine_ShadowReach.Release(node);
+                        Refii.Lighting.Engine_ShadowReach.Adopt(node);
+                        if (nextMdlRig is not null)
+                        {
+                            _awaitingRig.Add(entity.Address);
+                        }
+                        else
+                        {
+                            _awaitingRig.Remove(entity.Address);
+                        }
                     }
 
                     // Last: the cull range, the shadow reach and the rig above are what it copies.
@@ -1813,16 +1886,17 @@ public partial class GameEntities : Node3D
                     // guest's 15 Hz HalfRate cadence.
                     bool fullRate = !measurable || principal ||
                         eyeDistanceSq <= PoseFullRateRadius * PoseFullRateRadius;
+                    bool disarticulated = _disarticulated.ContainsKey(entity.Address);
                     Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(
-                        rig.Node, principal || (_movers.Contains(entity.Address) && fullRate));
+                        rig.Node, principal || disarticulated || (_movers.Contains(entity.Address) && fullRate));
                     bool neverPosed = !_boneWriteAskedMs.TryGetValue(entity.Address, out ulong askedMs);
-                    bool settledStaticProp = !principal && !entity.Changed && !created && !Due(entity.Address, 6) &&
+                    bool settledStaticProp = !principal && !disarticulated && !entity.Changed && !created && !Due(entity.Address, 6) &&
                         !_movers.Contains(entity.Address) &&
                         !_animating.Contains(entity.Address) &&
                         !_reblending.Contains(entity.Address) &&
                         _clipAnimators.TryGetValue(entity.Address, out Refii.Animations.Engine_ClipAnimator? existingAnim) &&
                         !existingAnim.IsCharacterRig && existingAnim.IsSettled;
-                    writeBones = !settledStaticProp && ((inView && (fullRate || FarRigPosesThisStep(entity.Address, nowMs - askedMs))) || neverPosed);
+                    writeBones = disarticulated || (!settledStaticProp && ((inView && (fullRate || FarRigPosesThisStep(entity.Address, nowMs - askedMs))) || neverPosed));
                     if (inView && !writeBones)
                     {
                         ++farHeld;
@@ -1840,34 +1914,67 @@ public partial class GameEntities : Node3D
 
                     if (writeBones)
                     {
-                        long clipFrom = SectionClock();
-                        Refii.Animations.Engine_ClipAnimator animator = ClipAnimatorFor(entity.Address, rig);
-                        if (!animator.Begin(entity.Address, writeBones: true, out bool fold))
+                        if (disarticulated &&
+                            _disarticulated.TryGetValue(entity.Address, out Refii.Physics.Engine_DisarticulatedRig? shatter))
                         {
-                            // The feed is about to write this skeleton, so the animator's
-                            // written-pose cache no longer describes it.
-                            animator.ForgetWrittenPose();
-                            rig.Follow(entity.Address, true);
-                            if (!rig.IsSettled)
+                            Transform3D entityWorld = node.IsInsideTree()
+                                ? node.GlobalTransform
+                                : toWorld * ToGodot(entity.Position, entity.Rotation);
+                            int boneCap = System.Math.Min(rig.BoneCount, _guestBonesScratch.Length);
+                            bool hasGuest = rig.TrySampleGuestWorldBones(
+                                entity.Address,
+                                entityWorld,
+                                new System.Span<Vector3>(_guestBonesScratch, 0, boneCap),
+                                out int validCount);
+                            if (shatter.LastSteppedFrame != Refii.Core.Engine_ProcessFrame.Current)
                             {
-                                _reblending.Add(entity.Address);
+                                shatter.Step(
+                                    _lastFrameDelta,
+                                    entityWorld,
+                                    SampleActiveGround,
+                                    hasGuest ? new System.ReadOnlySpan<Vector3>(_guestBonesScratch, 0, boneCap) : default,
+                                    validCount);
+                                shatter.LastSteppedFrame = Refii.Core.Engine_ProcessFrame.Current;
+                            }
+
+                            rig.ApplyModelSpacePoses(shatter.ModelPoses);
+                            if (shatter.ReassemblyFinished)
+                            {
+                                _disarticulated.Remove(entity.Address);
+                                rig.IsDisarticulated = false;
                             }
                         }
                         else
                         {
-                            rig.ForgetLastPose();
-                            if (!animator.IsSettled)
+                            long clipFrom = SectionClock();
+                            Refii.Animations.Engine_ClipAnimator animator = ClipAnimatorFor(entity.Address, rig);
+                            if (!animator.Begin(entity.Address, writeBones: true, out bool fold))
                             {
-                                _animating.Add(entity.Address);
+                                // The feed is about to write this skeleton, so the animator's
+                                // written-pose cache no longer describes it.
+                                animator.ForgetWrittenPose();
+                                rig.Follow(entity.Address, true);
+                                if (!rig.IsSettled)
+                                {
+                                    _reblending.Add(entity.Address);
+                                }
                             }
-                            if (fold)
+                            else
                             {
-                                // Folds on the thread pool while the loop goes on; written after it, in this order.
-                                _poseBatch.Add(animator);
+                                rig.ForgetLastPose();
+                                if (!animator.IsSettled)
+                                {
+                                    _animating.Add(entity.Address);
+                                }
+                                if (fold)
+                                {
+                                    // Folds on the thread pool while the loop goes on; written after it, in this order.
+                                    _poseBatch.Add(animator);
+                                }
                             }
-                        }
 
-                        clipTicks += SectionClock() - clipFrom;
+                            clipTicks += SectionClock() - clipFrom;
+                        }
                     }
                 }
 
@@ -2558,13 +2665,17 @@ public partial class GameEntities : Node3D
             {
                 bool parentIndoor = (parentLayers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
                 bool childIndoor = (node.Layers & Refii.Lighting.Engine_LightZones.IndoorMask) != 0u;
-                if (parentIndoor != childIndoor && !Refii.Models.Engine_ClassicMaterial.Active && !Refii.Lighting.Engine_LightingFrame.CurrentInterior)
+                bool stripStaticDecal = (node.Layers & Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask) != 0u;
+                if ((parentIndoor != childIndoor || stripStaticDecal) && !Refii.Models.Engine_ClassicMaterial.Active && !Refii.Lighting.Engine_LightingFrame.CurrentInterior)
                 {
-                    uint updatedLayers = parentIndoor
-                        ? ((node.Layers & ~(1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask)) |
-                           Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)
-                        : ((node.Layers & ~(Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)) |
-                           1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask);
+                    uint cleanedLayers = node.Layers & ~Refii.Fx.Engine_ModernDecals.StaticDecalReceiverLayerMask;
+                    uint updatedLayers = parentIndoor != childIndoor
+                        ? (parentIndoor
+                            ? ((cleanedLayers & ~(1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask)) |
+                               Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)
+                            : ((cleanedLayers & ~(Refii.Lighting.Engine_LightZones.IndoorMask | Refii.Lighting.Engine_LevelLights.IndoorEntityCasterMask)) |
+                               1u | Refii.Lighting.Engine_LevelLights.EntityCasterLayerMask))
+                        : cleanedLayers;
                     _entityLayers[child] = updatedLayers;
                     node.Layers = updatedLayers;
                     syncProxy = true;
@@ -2682,14 +2793,30 @@ public partial class GameEntities : Node3D
 
     private Vector3 _lastHeroZonePos = new(float.NaN, float.NaN, float.NaN);
 
-    private readonly List<uint> _attachedChildrenScratch = new();
+    /// <summary>
+    /// Maps an attached effect's stated placement (<paramref name="effectStated"/>) from its
+    /// target entity's stated transform (<paramref name="targetStated"/>) onto the target's live
+    /// drawn transform (<paramref name="targetDrawn"/>), preserving local offsets (e.g. feet,
+    /// water level, or weapon attachments).
+    /// </summary>
+    public static Transform3D MapAttachedTargetTransform(
+        Transform3D targetStated, Transform3D targetDrawn, Transform3D effectStated)
+    {
+        float det = targetStated.Basis.Determinant();
+        if (!float.IsFinite(det) || Mathf.Abs(det) <= 1e-6f)
+        {
+            return effectStated;
+        }
+
+        Transform3D mapped = targetDrawn * (targetStated.AffineInverse() * effectStated);
+        return mapped.Origin.IsFinite() ? mapped : effectStated;
+    }
 
     /// <summary>
-    /// Attempts to place an effect that is attached either to an entity directly (as child)
-    /// or to a target character/weapon (<paramref name="attachedTarget"/>). When
-    /// <paramref name="attachedTarget"/> is itself an attached follower (such as the Hero's gun
-    /// or melee weapon), or has attached children, maps the effect from the target's stated
-    /// placement to its live drawn placement on the host skeleton.
+    /// Attempts to place an effect that is attached either to an entity directly (as a
+    /// <c>CECObjectAttachment</c> child via <paramref name="owner"/>) or to a target entity
+    /// (<paramref name="attachedTarget"/>, such as a character or weapon). Maps the effect from
+    /// the target's stated placement to its live drawn placement while preserving its local offset.
     /// </summary>
     public bool TryPlaceAttachedEffect(uint owner, uint attachedTarget, Transform3D effectStated, out Transform3D placed)
     {
@@ -2700,34 +2827,12 @@ public partial class GameEntities : Node3D
 
         if (attachedTarget != 0u)
         {
-            _attachments.ChildrenOfParent(attachedTarget, _attachedChildrenScratch);
-            float bestDistanceSq = 16f; // within 4 metres
-            uint bestChild = 0u;
-            for (int i = 0; i < _attachedChildrenScratch.Count; i++)
-            {
-                uint child = _attachedChildrenScratch[i];
-                Vector3 childOrigin = TryGuestPosition(child, out Vector3 childGuestPos)
-                    ? GameWorld.GuestToGodot(childGuestPos)
-                    : StatedOf(child, effectStated).Origin;
-                float distSq = childOrigin.DistanceSquaredTo(effectStated.Origin);
-                if (distSq < bestDistanceSq)
-                {
-                    bestDistanceSq = distSq;
-                    bestChild = child;
-                }
-            }
-
-            if (bestChild != 0u && TryPlaceAttachedEntity(bestChild, effectStated, out placed))
-            {
-                return true;
-            }
-
-            // Direct target entity (e.g. a multi-dummy weapon augmentation effect where
-            // `attachedTarget` is the Weapon entity itself, detached from `CECObjectAttachment`
-            // by `sub_825EC7E0` so `CParticleEmitterComponent` can drive its dummy spline points).
+            // Map the effect's offset relative to `attachedTarget`'s stated placement onto its
+            // live drawn placement (e.g. weapon sparkles on a Weapon entity, or foot/water FX
+            // offset relative to the Hero).
             if (TryGetStatedAndDrawnTransform(attachedTarget, out Transform3D targetStated, out Transform3D targetDrawn))
             {
-                placed = targetDrawn * (targetStated.AffineInverse() * effectStated);
+                placed = MapAttachedTargetTransform(targetStated, targetDrawn, effectStated);
                 return true;
             }
         }
@@ -3892,6 +3997,8 @@ public partial class GameEntities : Node3D
         // The rig goes with the node it hung under; leaving the entry behind would keep
         // a freed skeleton reachable and pose it every frame.
         _skeletons.Remove(address);
+        _lastModelHash.Remove(address);
+        _disarticulated.Remove(address);
         _rigSeenMs.Remove(address);
         _viewSpheres.Remove(address);
         _boneWriteAskedMs.Remove(address);
@@ -4041,7 +4148,8 @@ public partial class GameEntities : Node3D
             return known.Parts;
         }
 
-        uint[] eyes = HostBridge.GetEntityMorphParts(address, out _);
+        uint[] raw = HostBridge.GetEntityMorphParts(address, out int built);
+        uint[] eyes = built == 0 ? raw : System.Array.Empty<uint>();
         _eyes[address] = (uniqueId, eyes);
         return eyes;
     }
@@ -5767,6 +5875,80 @@ public partial class GameEntities : Node3D
 
         // Folded on the thread pool as they were added, written in the order above.
         _poseBatch.Finish();
+
+        if (_disarticulated.Count > 0)
+        {
+            _arrived.Clear();
+            ulong currentFrame = Refii.Core.Engine_ProcessFrame.Current;
+            foreach ((uint address, Refii.Physics.Engine_DisarticulatedRig shatter) in _disarticulated)
+            {
+                if (!_nodes.TryGetValue(address, out MeshInstance3D? node) ||
+                    !_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) ||
+                    !GodotObject.IsInstanceValid(node) ||
+                    shatter.ReassemblyFinished)
+                {
+                    _arrived.Add(address);
+                    continue;
+                }
+
+                if (shatter.LastSteppedFrame != currentFrame)
+                {
+                    Transform3D entityWorld = node.IsInsideTree() ? node.GlobalTransform : toWorld * node.Transform;
+                    shatter.Step(_lastFrameDelta, entityWorld, SampleActiveGround, default, 0);
+                    shatter.LastSteppedFrame = currentFrame;
+                    rig.ApplyModelSpacePoses(shatter.ModelPoses);
+                }
+            }
+
+            foreach (uint address in _arrived)
+            {
+                _disarticulated.Remove(address);
+                if (_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? finishedRig))
+                {
+                    finishedRig.IsDisarticulated = false;
+                }
+            }
+        }
+    }
+
+    private static bool SampleActiveGround(Vector3 worldPos, out Vector3 contactPos, out Vector3 contactNormal)
+    {
+        Refii.Level.Engine_SkyEnvironmentNode? sky = Refii.Level.Engine_SkyEnvironmentNode.Current;
+        if (sky?.InteractionGround is not { } ground || sky.GetParent() is not Node3D regionRoot)
+        {
+            contactPos = default;
+            contactNormal = Vector3.Up;
+            return false;
+        }
+
+        Transform3D worldFromGround = regionRoot.GlobalTransform;
+        Vector3 local = worldFromGround.AffineInverse() * worldPos;
+        if (!ground.TryHeight(local.X, local.Z, out float h))
+        {
+            contactPos = default;
+            contactNormal = Vector3.Up;
+            return false;
+        }
+
+        contactPos = worldFromGround * new Vector3(local.X, h, local.Z);
+        const float eps = 0.25f;
+        if (ground.TryHeight(local.X - eps, local.Z, out float hx0) &&
+            ground.TryHeight(local.X + eps, local.Z, out float hx1) &&
+            ground.TryHeight(local.X, local.Z - eps, out float hz0) &&
+            ground.TryHeight(local.X, local.Z + eps, out float hz1))
+        {
+            var localNormal = new Vector3(hx0 - hx1, 2f * eps, hz0 - hz1);
+            Vector3 worldNormal = worldFromGround.Basis * localNormal;
+            contactNormal = worldNormal.IsFinite() && worldNormal.LengthSquared() > 1e-6f
+                ? worldNormal.Normalized()
+                : Vector3.Up;
+        }
+        else
+        {
+            contactNormal = Vector3.Up;
+        }
+
+        return true;
     }
 
     /// <summary>Rigs whose pose is due this frame (Engine_ClipAnimator.PoseBatch).</summary>

@@ -31,6 +31,7 @@
 // are dropped otherwise — the wheel has no other use in play.
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 
@@ -63,6 +64,15 @@ float g_pivot_up = 0.0f;
 float g_pitch_limit = 0.0f;
 int32_t g_mode = 0;
 uint32_t g_aim = 0u;
+float g_head_x = 0.0f;
+float g_head_y = 0.0f;
+float g_head_z = 0.0f;
+uint32_t g_flags = 0u;
+
+bool g_host_aim_active = false;
+float g_host_aim_x = 0.0f;
+float g_host_aim_y = 0.0f;
+float g_host_aim_z = 0.0f;
 
 std::atomic<uint32_t> g_seq{0u};
 
@@ -85,6 +95,28 @@ void MouseLookPost(float yaw_degrees, float pitch_degrees) {
 
 /// Whether the mouse is the player's look device, as the host's device switch last stated it.
 void MouseLookSetDevice(bool mouse) { g_device.store(mouse, std::memory_order_release); }
+
+/// Sets or clears the host-authoritative aim ray direction in guest world space.
+void MouseLookSetHostAim(bool active, float fwd_x, float fwd_y, float fwd_z) {
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (active && std::isfinite(fwd_x) && std::isfinite(fwd_y) && std::isfinite(fwd_z)) {
+    const double len_sq = static_cast<double>(fwd_x) * fwd_x +
+                          static_cast<double>(fwd_y) * fwd_y +
+                          static_cast<double>(fwd_z) * fwd_z;
+    if (len_sq > 1e-8) {
+      const double inv_len = 1.0 / std::sqrt(len_sq);
+      g_host_aim_active = true;
+      g_host_aim_x = static_cast<float>(fwd_x * inv_len);
+      g_host_aim_y = static_cast<float>(fwd_y * inv_len);
+      g_host_aim_z = static_cast<float>(fwd_z * inv_len);
+      return;
+    }
+  }
+  g_host_aim_active = false;
+  g_host_aim_x = 0.0f;
+  g_host_aim_y = 0.0f;
+  g_host_aim_z = 0.0f;
+}
 
 /// Adds wheel notches, rightward positive (a notch down +1, up -1).
 void MouseLookWheel(int32_t notches) { g_wheel.fetch_add(notches, std::memory_order_acq_rel); }
@@ -109,6 +141,10 @@ uint32_t MouseLookState(double* out, uint32_t count) {
       static_cast<double>(g_flicks.load(std::memory_order_acquire)),
       static_cast<double>(g_pitch_limit),
       static_cast<double>(g_aim),
+      static_cast<double>(g_head_x),
+      static_cast<double>(g_head_y),
+      static_cast<double>(g_head_z),
+      static_cast<double>(g_flags),
   };
   constexpr uint32_t kValues = sizeof(values) / sizeof(values[0]);
   for (uint32_t i = 0; out != nullptr && i < count && i < kValues; ++i) {
@@ -133,11 +169,12 @@ void refii_bridge_mouse_look_take(float* out_yaw, float* out_pitch) {
   g_pending_pitch = 0.0;
 }
 
-void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float taken_pitch,
-                                   float held_pitch, float absorbed_yaw, float absorbed_pitch,
-                                   float factor, float pivot_forward, float pivot_right,
-                                   float pivot_up, float pitch_limit, int32_t mode,
-                                   uint32_t aim) {
+void refii_bridge_mouse_look_state_ex(uint32_t tick, float taken_yaw, float taken_pitch,
+                                      float held_pitch, float absorbed_yaw, float absorbed_pitch,
+                                      float factor, float pivot_forward, float pivot_right,
+                                      float pivot_up, float pitch_limit, int32_t mode,
+                                      uint32_t aim, float head_x, float head_y, float head_z,
+                                      uint32_t flags) {
   using namespace refii::vfs;
   std::lock_guard<std::mutex> guard(g_lock);
   g_taken_yaw += taken_yaw;
@@ -155,9 +192,35 @@ void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float taken_p
   g_pitch_limit = pitch_limit;
   g_mode = mode;
   g_aim = aim;
+  g_head_x = head_x;
+  g_head_y = head_y;
+  g_head_z = head_z;
+  g_flags = flags;
   if ((g_seq.load(std::memory_order_relaxed) & 1u) != 0u) {
     g_seq.fetch_add(1u, std::memory_order_acq_rel);
   }
+}
+
+void refii_bridge_mouse_look_state(uint32_t tick, float taken_yaw, float taken_pitch,
+                                   float held_pitch, float absorbed_yaw, float absorbed_pitch,
+                                   float factor, float pivot_forward, float pivot_right,
+                                   float pivot_up, float pitch_limit, int32_t mode,
+                                   uint32_t aim) {
+  refii_bridge_mouse_look_state_ex(tick, taken_yaw, taken_pitch, held_pitch, absorbed_yaw,
+                                   absorbed_pitch, factor, pivot_forward, pivot_right, pivot_up,
+                                   pitch_limit, mode, aim, 0.0f, 0.0f, 0.0f, 0u);
+}
+
+int32_t refii_bridge_mouse_look_host_aim(float* out_fwd_x, float* out_fwd_y, float* out_fwd_z) {
+  using namespace refii::vfs;
+  std::lock_guard<std::mutex> guard(g_lock);
+  if (!g_host_aim_active) {
+    return 0;
+  }
+  if (out_fwd_x != nullptr) *out_fwd_x = g_host_aim_x;
+  if (out_fwd_y != nullptr) *out_fwd_y = g_host_aim_y;
+  if (out_fwd_z != nullptr) *out_fwd_z = g_host_aim_z;
+  return 1;
 }
 
 int32_t refii_bridge_mouse_look_device(void) {

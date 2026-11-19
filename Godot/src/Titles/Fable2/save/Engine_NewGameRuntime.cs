@@ -97,7 +97,7 @@ public static class Engine_NewGameRuntime
     }
 
     /// <summary>Raise when the patch changes in a way the build stamp would not show.</summary>
-    private const int CacheFormat = 1;
+    private const int CacheFormat = 2;
 
     public static bool Prepare(NewGameSelection selection, out bool? female, out string error)
     {

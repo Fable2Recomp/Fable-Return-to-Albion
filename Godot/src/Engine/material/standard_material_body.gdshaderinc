@@ -635,11 +635,13 @@ void fragment() {
 #ifndef FABLE_LITE_NO_SPEC
     v_specular = spec_colour;
     v_specular_power = spec_power;
-    // GATED ON THE SPECULAR TOO: the reconstruction only replaces values a specular fetch
-    // produced. A normal-only ORM has no exponent to invert, and the 0.04 dielectric floor
-    // would hand a specular lobe to a material the guest renders with NONE — its fallback
-    // sampler is transparent black.
-    if (FABLE_HAS_ORM && (has_specular || FABLE_IS_PBR)) {
+    // Legacy / upscaled vanilla assets (`!FABLE_IS_PBR`) carry their authored (and upscaled)
+    // specular colour and exponent in `specular_tex`, while their synthesized ORM supplies
+    // cavity AO (`orm.r`) and parallax height (`orm.a`). Overwriting `v_specular` with
+    // `mix(0.04, alb.rgb, METALLIC)` and tightening `v_specular_power` from ORM roughness
+    // crushes specular highlights on dark-albedo armor and melee weapons. Only reconstruct
+    // `v_specular` and `v_specular_power` from ORM for authored PBR mod assets (`FABLE_IS_PBR`).
+    if (FABLE_HAS_ORM && FABLE_IS_PBR) {
         v_specular_power = clamp(2.0 / max(ROUGHNESS * ROUGHNESS, 1e-4) - 2.0, 1.0, 4096.0);
         v_specular = mix(vec3(0.04), alb.rgb, METALLIC);
     }

@@ -653,6 +653,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Controls, "Mouse & Camera", SettingTier.Essential, "Mouse Look Sensitivity",
                 "Camera rotation speed with the mouse (1.0x = default).",
                 new NumericRange(0.1, 4.0, 0.05, "x"), Order: 10),
+            ["mouse_zoom_sensitivity"] = new(
+                SettingsTab.Controls, "Mouse & Camera", SettingTier.Essential, "Zoom-Scaled Aim Sensitivity",
+                "Scales mouse look speed proportionally to FOV when aiming down zoomed sights.",
+                Order: 15),
             ["mouse_input"] = new(
                 SettingsTab.Controls, "Mouse & Camera", SettingTier.Essential, "Enable Mouse Camera & Menu Input",
                 "Turn off to play purely on controller or keyboard without mouse capture.",

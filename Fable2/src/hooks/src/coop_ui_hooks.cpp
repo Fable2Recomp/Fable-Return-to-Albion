@@ -55,6 +55,7 @@
 #include "core/guest_state.h"
 #include "core/payload_bridge_fable2.h"
 #include "core/refii_mod.h"
+#include "exp_orb_hooks.h"
 
 extern "C" uint8_t* RefiiGuestBase(void);
 extern "C" int RefiiCoopJobWorker(void);
@@ -204,19 +205,19 @@ void RefiiCoopOrbTarget(PPCRegister& r31, PPCRegister& r30, PPCRegister& orb) {
   }
   const uint32_t one = refii_mod_player_hero(base, 1);
   const uint32_t two = refii_mod_player_hero(base, 2);
-  if (two == 0u || (r31.u32 != one && r31.u32 != two)) {
-    return;
+  if (two != 0u && (r31.u32 == one || r31.u32 == two)) {
+    uint32_t earner = 0u;
+    {
+      std::lock_guard<std::mutex> lock(g_orb_mutex);
+      const auto found = g_orb_earner.find(orb.u32);
+      earner = found != g_orb_earner.end() ? refii_mod_handle_address(found->second) : 0u;
+    }
+    if ((earner == one || earner == two) && earner != r31.u32 && refii_mod_entity_alive(base, earner) != 0) {
+      r31.u64 = earner;
+      r30.u64 = 0u;
+    }
   }
-  uint32_t earner = 0u;
-  {
-    std::lock_guard<std::mutex> lock(g_orb_mutex);
-    const auto found = g_orb_earner.find(orb.u32);
-    earner = found != g_orb_earner.end() ? refii_mod_handle_address(found->second) : 0u;
-  }
-  if ((earner == one || earner == two) && earner != r31.u32 && refii_mod_entity_alive(base, earner) != 0) {
-    r31.u64 = earner;
-    r30.u64 = 0u;
-  }
+  refii::hooks::FixupExperienceOrb(base, r31.u32, orb.u32);
 }
 
 // --- THE NAMES THE GAME SHOWS FOR OTHER PLAYERS -------------------------------------------------

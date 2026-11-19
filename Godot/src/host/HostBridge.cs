@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 244;
+	public const int ExpectedAbiVersion = 245;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -2849,6 +2849,9 @@ public static partial class HostBridge
 			Mathf.RadToDeg(2f * Mathf.Atan(0.75f * Mathf.Tan(HorizontalFov * 0.5f)));
 	}
 
+	[ThreadStatic]
+	private static float[]? _cameraScratch;
+
 	/// <summary>
 	/// The guest's camera, or null when it could not be read coherently. The snapshot is five
 	/// unsynchronised stores with no sequence counter, so the bridge reads it twice and requires
@@ -2856,7 +2859,7 @@ public static partial class HostBridge
 	/// </summary>
 	public static GuestCamera? GetCamera()
 	{
-		var values = new float[11];
+		float[] values = _cameraScratch ??= new float[11];
 		if (RefiiHostGetCamera(values) == 0)
 		{
 			return null;
@@ -4323,7 +4326,11 @@ public static partial class HostBridge
 
 		/// <summary>A spline setter stated points for this effect (flag 128): read them with
 		/// <see cref="GetFxSpline"/>.</summary>
-		bool SplineStated = false);
+		bool SplineStated = false,
+
+		/// <summary>A Type 5 <c>CParticleSplineNode</c> carries runtime world-space spline override
+		/// endpoints in <see cref="Rows"/>[0..count-1] with count in <see cref="Scale"/> (flag 32).</summary>
+		bool SplineOverride = false);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -4386,7 +4393,8 @@ public static partial class HostBridge
 				new Color(Bits(_activeFx[at + 22]), Bits(_activeFx[at + 23]), Bits(_activeFx[at + 24]), Bits(_activeFx[at + 25])),
 				_activeFx[at + 26],
 				(flags & 256u) != 0,
-				(flags & 128u) != 0));
+				(flags & 128u) != 0,
+				SplineOverride: isSplineOverride));
 		}
 
 		return effects;
@@ -5289,6 +5297,37 @@ public static partial class HostBridge
 		RefiiHostSetMouseLookDevice(mouse ? 1 : 0);
 	}
 
+	private static bool _lastHostAimActive;
+
+	/// <summary>
+	/// States or clears the host-authoritative ranged aim forward vector (unit vector in guest world
+	/// space). Redundant inactive writes are suppressed once cleared.
+	/// </summary>
+	public static void SetHostAim(bool active, Vector3 guestForward)
+	{
+		if (!active && !_lastHostAimActive)
+		{
+			return;
+		}
+
+		if (TryGetAbiVersion() is null || !IsGuestUp)
+		{
+			_lastHostAimActive = false;
+			return;
+		}
+
+		if (active && guestForward.IsFinite() && guestForward.LengthSquared() > 1e-8f)
+		{
+			RefiiHostSetHostAim(1, guestForward.X, guestForward.Y, guestForward.Z);
+			_lastHostAimActive = true;
+		}
+		else
+		{
+			RefiiHostSetHostAim(0, 0f, 0f, 0f);
+			_lastHostAimActive = false;
+		}
+	}
+
 	/// <summary>
 	/// Adds mouse-wheel notches made while the mouse is the camera's, rightward positive: a notch
 	/// down +1, up -1. Under a target lock a mod states switches by the wheel, each notch is one
@@ -5324,16 +5363,23 @@ public static partial class HostBridge
 	/// <param name="Flicks">Target switches the mouse handed to a target lock (flicks and wheel notches), run total.</param>
 	/// <param name="PitchLimit">For the aim mode: the camera's elevation bound, degrees.</param>
 	/// <param name="Aim">For the aim mode: the ranged aim object whose reticule turns with the view.</param>
+	/// <param name="HeadGuest">For the aim mode: hero head pivot in guest world space.</param>
+	/// <param name="Flags">Flag bits: bit 0 LookInverted, bit 1 HostAimApplied, bit 2 HasHead.</param>
 	public readonly record struct MouseLookState(
 		uint Sequence, uint Tick, double Posted, double Taken, double Absorbed,
 		double PostedPitch, double TakenPitch, double AbsorbedPitch, float Factor,
-		Vector3 Pivot, int Mode, uint Flicks, float PitchLimit, uint Aim)
+		Vector3 Pivot, int Mode, uint Flicks, float PitchLimit, uint Aim,
+		Vector3 HeadGuest = default, uint Flags = 0u)
 	{
 		/// <summary>The focus distance along the level line of sight (the orbit mode's pivot).</summary>
 		public float PivotMetres => Pivot.X;
+
+		public bool LookInverted => (Flags & 1u) != 0u;
+		public bool HostAimApplied => (Flags & 2u) != 0u;
+		public bool HasHead => (Flags & 4u) != 0u;
 	}
 
-	private const int MouseLookValues = 15;
+	private const int MouseLookValues = 19;
 
 	[ThreadStatic]
 	private static double[]? _mouseLookScratch;
@@ -5346,14 +5392,14 @@ public static partial class HostBridge
 			return null;
 		}
 
-		// Read every frame by the camera (twice) and the UI: one buffer per thread, not one per read.
+		// Read every frame by the camera and UI: one buffer per thread, overwritten completely by native.
 		double[] v = _mouseLookScratch ??= new double[MouseLookValues];
-		System.Array.Clear(v);
 		uint sequence = RefiiHostGetMouseLook(v, MouseLookValues);
 		return new MouseLookState(
 			sequence, (uint)v[0], v[1], v[2], v[3], v[4], v[5], v[6], (float)v[7],
 			new Vector3((float)v[8], (float)v[9], (float)v[10]), (int)v[11], (uint)v[12],
-			(float)v[13], (uint)v[14]);
+			(float)v[13], (uint)v[14], new Vector3((float)v[15], (float)v[16], (float)v[17]),
+			(uint)v[18]);
 	}
 
 	[ThreadStatic]
@@ -8164,6 +8210,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern void RefiiHostSetMouseLookDevice(int mouse);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostSetHostAim(int active, float fwdX, float fwdY, float fwdZ);
 
 	[DllImport(Library)]
 	private static extern void RefiiHostPostMouseWheel(int notches);
