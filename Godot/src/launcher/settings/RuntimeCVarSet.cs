@@ -244,6 +244,15 @@ public static class RuntimeCVarsGodot
                 + "distance each one's game data states. 1 is the 360's own distances: most "
                 + "townsfolk 25-64 m, and their shadows stop there too. 2 doubles them. You and "
                 + "your co-op partner are always drawn. Read at launch."),
+            new("corpse_lifetime_seconds", DisplayCategory, RuntimeCVarType.Int, "45",
+                "How long fallen physical enemy and creature corpses (skeletons, humans, monsters, "
+                + "animals) remain on the ground before fading out, in seconds. 0 restores the "
+                + "original game's quick despawn; exploding bugs and vanishing spirits are "
+                + "unaffected. No upper cap. Hot-reloadable."),
+            new("corpse_max_count", DisplayCategory, RuntimeCVarType.Int, "0",
+                "Maximum number of retained fallen corpses active in the current region before "
+                + "the oldest distant corpse fades out early. 0 chooses an automatic cap scaled to "
+                + "corpse lifetime and platform; -1 allows unlimited corpses."),
             new("prop_fade_fraction", DisplayCategory, RuntimeCVarType.Double, "0.15",
                 "The last share of a placement's draw distance over which it fades out rather "
                 + "than popping. The 360 faded rocks over 0.03 and cut undergrowth hard; 0.15 "

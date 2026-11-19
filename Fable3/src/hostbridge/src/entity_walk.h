@@ -43,6 +43,7 @@
 #include <cstring>
 #include <initializer_list>
 
+#include "appearance_sublist.h"
 #include "guest_span.h"
 #include "../../vfs/include/fable3_guest_build.h"
 
@@ -59,6 +60,7 @@ constexpr uint32_t kMaxListed = 8192u;
 constexpr uint32_t kEntityStride = 29u;
 constexpr uint32_t kOne = 0x3F800000u;
 constexpr uint32_t kAppearanceDrawable = 1u;
+constexpr uint32_t kCreatureComponent = 24u;
 constexpr uint32_t kAttachmentComponent = 26u;
 constexpr uint32_t kAttachmentGripWords = 18u;
 
@@ -505,6 +507,10 @@ uint32_t WalkEntities(const Memory& memory, uint32_t em, uint32_t* out, uint32_t
         appearance[2] = look.Word(0x78u);
         look.Words(0x50u, appearance + 3, 4u);
         appearance[7] = look.Byte(0xE5u) != 0u && look.Word(refii::guest::Pick(0x120u, 0x114u)) == 0u ? kAppearanceDrawable : 0u;
+        const uint32_t creature = components.Find(kCreatureComponent);
+        if (refii::hostcore::IsDeadCreature(memory, creature)) {
+            appearance[7] |= refii::hostcore::kAppearanceDeadCreature;
+        }
         ++written;
     }
 

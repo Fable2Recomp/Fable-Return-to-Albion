@@ -1237,6 +1237,17 @@ public partial class Engine_ClothBody : MeshInstance3D
         ApplyBounds();
     }
 
+    /// <summary>
+    /// Stops per-frame cloth simulation while retaining the final draped vertex state (e.g. on a
+    /// retained corpse whose skeleton is settled and waiting to fade out).
+    /// </summary>
+    public void Freeze()
+    {
+        Land();
+        _sleeping = true;
+        SetProcess(false);
+    }
+
     private static int PopCount(UInt128 mask) =>
         System.Numerics.BitOperations.PopCount((ulong)(mask & ulong.MaxValue)) +
         System.Numerics.BitOperations.PopCount((ulong)(mask >> 64));

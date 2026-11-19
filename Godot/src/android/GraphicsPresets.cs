@@ -70,8 +70,9 @@ public static class GraphicsPresets
     /// 17: Low, Medium and High (and Ultra, which takes High's) skip the lighting maths for lights that add nothing (lite_skip_black_lights).
     /// 18: Low turns normal maps off and Low (lean) the ground's contact shadow: looks traded for speed on
     /// the lowest presets only; Medium and above keep them.
-    /// 19: Low takes Low (lean)'s settings and Low (lean) is gone; each preset sets its lighting model.</remarks>
-    public const int Revision = 19;
+    /// 19: Low takes Low (lean)'s settings and Low (lean) is gone; each preset sets its lighting model.
+    /// 20: Each preset sets its corpse persistence time (<c>corpse_lifetime_seconds</c>): Low 0s, Medium 10s, High 20s, Ultra 45s.</remarks>
+    public const int Revision = 20;
 
     /// <summary>High: the phone's default picture.</summary>
     public const string High = "android";
@@ -126,6 +127,7 @@ public static class GraphicsPresets
             // The 360's own distances: characters at their stated range, trees shadowing only as
             // far as the level file says. Coarser models a little sooner than the 360 switched.
             ["entity_draw_distance_scale"] = "1",
+            ["corpse_lifetime_seconds"] = "20",
             ["tree_shadow_reach"] = "stated",
             ["mesh_lod_pixels"] = "2",
             // Far trees' thinned crowns from three quarters of the distance, the ground's levels at the
@@ -301,6 +303,7 @@ public static class GraphicsPresets
             ["placed_light_limit"] = "4",
             ["prop_cull_distance_scale"] = "0.4",
             ["mesh_lod_pixels"] = "4",
+            ["corpse_lifetime_seconds"] = "0",
             // The lite shaders without the shadow sampling a frame with no shadow map never runs
             // (sun_shadow_distance 0 above; ignored the moment anything could cast): 7% of an
             // Adreno 640's GPU work.
@@ -389,6 +392,7 @@ public static class GraphicsPresets
             // +4% / +2%, and +2% / +1%.
             ["prop_cull_distance_scale"] = "0.5",
             ["mesh_lod_pixels"] = "3",
+            ["corpse_lifetime_seconds"] = "10",
             // Every tree to its stated reach, the ground's coarser levels at three quarters of the
             // distance and the far trees' thinned crowns at half (Options' Distant detail Medium): the
             // trees at 0.75 cost an Adreno 640 8.5% more in Oakfield. A far reach of 400 m or 300 m
@@ -427,6 +431,7 @@ public static class GraphicsPresets
             // Coarser models when the 360 switched to them, small props at the desktop's distances.
             ["mesh_lod_pixels"] = "1",
             ["prop_cull_distance_scale"] = "1",
+            ["corpse_lifetime_seconds"] = "45",
             // The sun's shadow over half again High's reach, every prop's shadow at its
             // size tier's full reach.
             ["sun_shadow_distance"] = "120",

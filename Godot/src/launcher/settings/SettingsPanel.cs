@@ -1192,6 +1192,7 @@ public partial class SettingsPanel : VBoxContainer
 		{
 			MinValue = range.Min,
 			MaxValue = range.Max,
+			AllowGreater = false,
 			Step = range.Step,
 			Value = Math.Clamp(val, range.Min, range.Max),
 			CustomMinimumSize = new Vector2(LauncherScale.Px(72), 0),
@@ -1200,6 +1201,61 @@ public partial class SettingsPanel : VBoxContainer
 			Editable = !isFsrFixedScale,
 		};
 		Apply(slider);
+
+		if (range.AllowGreater)
+		{
+			bool allowNeg = definition.Name == "corpse_max_count";
+			var spin = new SpinBox
+			{
+				MinValue = allowNeg ? -1 : range.Min,
+				MaxValue = range.Max,
+				AllowGreater = true,
+				AllowLesser = allowNeg,
+				Step = definition.Type == RuntimeCVarType.Int ? 1 : range.Step,
+				Suffix = range.Suffix,
+				Value = allowNeg ? Math.Max(val, -1) : Math.Max(val, range.Min),
+				CustomMinimumSize = new Vector2(SliderReadoutWidth + LauncherScale.Px(26), 0),
+				Editable = !isFsrFixedScale,
+			};
+			Apply(spin);
+			if (range.ZeroLabel is not null)
+			{
+				spin.TooltipText = allowNeg
+					? "0 = Auto, -1 = Unlimited, >0 = Exact cap"
+					: $"0 = {range.ZeroLabel} (no upper limit)";
+			}
+
+			string FormatVal(double v) => definition.Type == RuntimeCVarType.Int
+				? ((int)Math.Round(v)).ToString(CultureInfo.InvariantCulture)
+				: v.ToString("0.###", CultureInfo.InvariantCulture);
+
+			bool syncing = false;
+			slider.ValueChanged += next =>
+			{
+				if (syncing) return;
+				syncing = true;
+				spin.Value = next;
+				syncing = false;
+				string formatted = FormatVal(next);
+				UpdateResetVisibility(resetBtn, formatted, baseline);
+				Commit(definition, formatted);
+			};
+
+			spin.ValueChanged += next =>
+			{
+				if (syncing) return;
+				syncing = true;
+				slider.Value = Math.Clamp(next, range.Min, range.Max);
+				syncing = false;
+				string formatted = FormatVal(next);
+				UpdateResetVisibility(resetBtn, formatted, baseline);
+				Commit(definition, formatted);
+			};
+
+			box.AddChild(slider);
+			box.AddChild(spin);
+			return box;
+		}
 
 		var readout = MakeLabel(FormatNumericReadout(val, definition.Type == RuntimeCVarType.Int, range));
 		readout.CustomMinimumSize = new Vector2(SliderReadoutWidth, 0);

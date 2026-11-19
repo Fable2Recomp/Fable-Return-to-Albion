@@ -30,18 +30,22 @@ public sealed class Engine_DisarticulatedRig
         public Vector3 LinearVelocity;
         public Vector3 AngularVelocity;
         public float Radius;
+        public float Restitution;
+        public float Irregularity;
         public bool IsRootWrapper;
         public bool Asleep;
         public int SleepSteps;
     }
 
     private const float Gravity = -9.81f;
-    private const float AirDragPerSecond = 0.35f;
-    private const float Restitution = 0.34f;
-    private const float SlideDamping = 0.72f;
-    private const float AngularRestitutionDrag = 0.65f;
-    private const float SleepSpeedSq = 0.045f * 0.045f;
-    private const int SleepStepsRequired = 10;
+    private const float AirDragPerSecond = 0.28f;
+    private const float GroundSlideFrictionPerSec = 4.2f;
+    private const float GroundAngularDecayPerSec = 4.5f;
+    private const float ImpactCoulombMu = 0.28f;
+    private const float BounceMinNormalSpeed = 0.20f;
+    private const float BoneCollisionRestitution = 0.45f;
+    private const float SleepSpeedSq = 0.055f * 0.055f;
+    private const int SleepStepsRequired = 12;
     private const float CryptSlabRadiusSq = 1.45f * 1.45f;
     private const float ReassemblyDuration = 0.25f;
 
@@ -69,6 +73,23 @@ public sealed class Engine_DisarticulatedRig
 
     /// <summary>True once reassembly blend reached 1.0 and guest/animator can resume ownership.</summary>
     public bool ReassemblyFinished { get; private set; }
+
+    /// <summary>True once every non-root bone body has bounced and rolled to rest.</summary>
+    public bool AllAsleep
+    {
+        get
+        {
+            for (int m = 0; m < BoneCount; ++m)
+            {
+                if (!_bodies[m].IsRootWrapper && !_bodies[m].Asleep)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
 
     /// <summary>Latest simulated transforms in entity-local model space (length equals <see cref="BoneCount"/>).</summary>
     public ReadOnlySpan<Transform3D> ModelPoses => _modelPoses.AsSpan(0, BoneCount);
@@ -181,7 +202,13 @@ public sealed class Engine_DisarticulatedRig
             centroid = entityWorld.Origin + Vector3.Up * 0.8f;
         }
 
-        Vector3 inherited = inheritedVelocity.IsFinite() ? inheritedVelocity * 0.45f : Vector3.Zero;
+        Vector3 inherited = inheritedVelocity.IsFinite() ? inheritedVelocity * 0.6f : Vector3.Zero;
+        float inheritedSpeed = inherited.Length();
+        if (inheritedSpeed > 7.0f)
+        {
+            inherited *= 7.0f / inheritedSpeed;
+        }
+
         for (int m = 0; m < count; ++m)
         {
             if (_bodies[m].IsRootWrapper)
@@ -193,6 +220,14 @@ public sealed class Engine_DisarticulatedRig
             float rx = NextUnit(ref rng);
             float rz = NextUnit(ref rng);
             float ry = NextZeroToOne(ref rng);
+            float rOut = NextZeroToOne(ref rng);
+            float rBounce = NextZeroToOne(ref rng);
+            float rIrreg = NextZeroToOne(ref rng);
+
+            _bodies[m].Restitution = GuessBoneRestitution(boneNames[m], rBounce);
+            bool isRound = boneNames[m].Contains("Head", StringComparison.OrdinalIgnoreCase) ||
+                boneNames[m].Contains("Skull", StringComparison.OrdinalIgnoreCase);
+            _bodies[m].Irregularity = isRound ? (0.08f + (0.06f * rIrreg)) : (0.14f + (0.14f * rIrreg));
 
             Vector3 radial = _bodies[m].Position - centroid;
             radial.Y = 0f;
@@ -210,9 +245,14 @@ public sealed class Engine_DisarticulatedRig
                 radial = Vector3.Forward;
             }
 
-            float outwardSpeed = 1.9f + (NextZeroToOne(ref rng) * 2.1f);
-            float upwardSpeed = 1.6f + (ry * 2.5f);
-            Vector3 lateralJitter = new Vector3(rx, 0f, rz) * 0.85f;
+            float heightFrac = Math.Clamp((_bodies[m].Position.Y - entityWorld.Origin.Y) / 1.7f, 0f, 1f);
+            float outwardSpeed = heightFrac < 0.45f
+                ? (1.2f + (rOut * 1.4f))
+                : (1.5f + (rOut * 1.8f));
+            float upwardSpeed = heightFrac < 0.45f
+                ? (0.55f + (ry * 1.0f))
+                : (0.95f + (ry * 1.4f));
+            Vector3 lateralJitter = new Vector3(rx, 0f, rz) * 0.75f;
             _bodies[m].LinearVelocity = inherited + (radial * outwardSpeed) + lateralJitter + (Vector3.Up * upwardSpeed);
 
             Vector3 spinAxis = new Vector3(NextUnit(ref rng), NextUnit(ref rng), NextUnit(ref rng));
@@ -225,7 +265,7 @@ public sealed class Engine_DisarticulatedRig
                 spinAxis = spinAxis.Normalized();
             }
 
-            float spinRate = 4.5f + (NextZeroToOne(ref rng) * 7.5f);
+            float spinRate = 5.5f + (NextZeroToOne(ref rng) * 8.0f);
             _bodies[m].AngularVelocity = spinAxis * spinRate;
         }
 
@@ -319,12 +359,15 @@ public sealed class Engine_DisarticulatedRig
             }
         }
 
-        int substeps = clampedDt > (1f / 45f) ? 2 : 1;
+        int substeps = Math.Clamp((int)MathF.Ceiling(clampedDt / (1f / 90f)), 1, 4);
         float subDt = clampedDt / substeps;
         float drag = MathF.Exp(-AirDragPerSecond * subDt);
+        float slideDecay = MathF.Exp(-GroundSlideFrictionPerSec * subDt);
+        float angBlend = 1f - MathF.Exp(-GroundAngularDecayPerSec * subDt);
 
         for (int step = 0; step < substeps; ++step)
         {
+            // Pass 1: integrate gravity, drag, linear motion, and spin.
             for (int m = 0; m < BoneCount; ++m)
             {
                 ref BoneBody body = ref _bodies[m];
@@ -343,6 +386,73 @@ public sealed class Engine_DisarticulatedRig
                     Vector3 axis = body.AngularVelocity / spinMag;
                     var dq = new Quaternion(axis, spinMag * subDt);
                     body.Rotation = (dq * body.Rotation).Normalized();
+                }
+            }
+
+            // Pass 2: pairwise bone-to-bone separation and clatter impulses before ground clamping.
+            if (!IsReassembling && BoneCount <= 48)
+            {
+                for (int i = 0; i < BoneCount; ++i)
+                {
+                    ref BoneBody a = ref _bodies[i];
+                    if (a.IsRootWrapper)
+                    {
+                        continue;
+                    }
+
+                    for (int j = i + 1; j < BoneCount; ++j)
+                    {
+                        ref BoneBody b = ref _bodies[j];
+                        if (b.IsRootWrapper || (a.Asleep && b.Asleep))
+                        {
+                            continue;
+                        }
+
+                        Vector3 delta = b.Position - a.Position;
+                        float minDist = (a.Radius + b.Radius) * 1.15f;
+                        float distSq = delta.LengthSquared();
+                        if (distSq <= 1e-6f || distSq >= (minDist * minDist))
+                        {
+                            continue;
+                        }
+
+                        float dist = MathF.Sqrt(distSq);
+                        Vector3 n = delta / dist;
+                        float overlap = (minDist - dist) * 0.5f;
+                        a.Position -= n * overlap;
+                        b.Position += n * overlap;
+
+                        float relVel = (b.LinearVelocity - a.LinearVelocity).Dot(n);
+                        if (relVel < 0f)
+                        {
+                            float jImp = -0.5f * (1f + BoneCollisionRestitution) * relVel;
+                            Vector3 impulse = n * jImp;
+                            a.LinearVelocity -= impulse;
+                            b.LinearVelocity += impulse;
+
+                            Vector3 spinKick = n.Cross(Vector3.Up) * (jImp * 4f);
+                            a.AngularVelocity += spinKick;
+                            b.AngularVelocity -= spinKick;
+
+                            if (jImp > 0.15f)
+                            {
+                                a.Asleep = false;
+                                a.SleepSteps = 0;
+                                b.Asleep = false;
+                                b.SleepSteps = 0;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Pass 3: ground plane collision, restitution bounce, irregular deflection, and sleep.
+            for (int m = 0; m < BoneCount; ++m)
+            {
+                ref BoneBody body = ref _bodies[m];
+                if (body.IsRootWrapper || body.Asleep)
+                {
+                    continue;
                 }
 
                 float floorY = guestFloorY;
@@ -372,26 +482,60 @@ public sealed class Engine_DisarticulatedRig
                 {
                     body.Position.Y = surfaceY;
                     float normalVel = body.LinearVelocity.Dot(floorNormal);
-                    if (normalVel < 0f)
+                    Vector3 tangent = body.LinearVelocity - (floorNormal * normalVel);
+                    if (normalVel < -BounceMinNormalSpeed)
                     {
-                        if (normalVel < -0.55f)
+                        float bounceUp = -body.Restitution * normalVel;
+                        float tanSpeed = tangent.Length();
+                        float impulseDrop = ImpactCoulombMu * (-normalVel);
+                        Vector3 newTangent = tanSpeed > impulseDrop && tanSpeed > 1e-4f
+                            ? tangent * ((tanSpeed - impulseDrop) / tanSpeed)
+                            : Vector3.Zero;
+
+                        // Oblique bone-end impact deflects skitter direction and adds natural tumble.
+                        Vector3 boneAxis = body.Rotation * Vector3.Right;
+                        Vector3 kickDir = boneAxis - (floorNormal * boneAxis.Dot(floorNormal));
+                        float kickSq = kickDir.LengthSquared();
+                        if (kickSq > 1e-4f)
                         {
-                            body.LinearVelocity -= floorNormal * ((1f + Restitution) * normalVel);
-                            body.AngularVelocity *= AngularRestitutionDrag;
+                            kickDir /= MathF.Sqrt(kickSq);
+                            newTangent += kickDir * (body.Irregularity * (-normalVel) * 0.55f);
                         }
                         else
                         {
-                            body.LinearVelocity -= floorNormal * normalVel;
+                            kickDir = Vector3.Zero;
                         }
 
-                        // Tangential slide damping while on the surface.
-                        Vector3 tangent = body.LinearVelocity - (floorNormal * body.LinearVelocity.Dot(floorNormal));
-                        body.LinearVelocity = (floorNormal * body.LinearVelocity.Dot(floorNormal)) + (tangent * SlideDamping);
-                        body.AngularVelocity *= SlideDamping;
+                        body.LinearVelocity = (floorNormal * bounceUp) + newTangent;
+
+                        float invRadius = 1f / MathF.Max(body.Radius, 0.05f);
+                        Vector3 rollSpin = floorNormal.Cross(newTangent) * invRadius;
+                        Vector3 strikeTorque = floorNormal.Cross(kickDir) * (body.Irregularity * (-normalVel) * 6.5f);
+                        body.AngularVelocity = (body.AngularVelocity * 0.65f) + (rollSpin * 0.35f) + strikeTorque;
+                        float spinLen = body.AngularVelocity.Length();
+                        if (spinLen > 18f)
+                        {
+                            body.AngularVelocity *= 18f / spinLen;
+                        }
+                    }
+                    else
+                    {
+                        if (normalVel < 0f)
+                        {
+                            body.LinearVelocity = tangent;
+                        }
+
+                        Vector3 dampedTangent = tangent * slideDecay;
+                        float postUp = body.LinearVelocity.Dot(floorNormal);
+                        body.LinearVelocity = (postUp > 0f ? floorNormal * postUp : Vector3.Zero) + dampedTangent;
+
+                        float invRadius = 1f / MathF.Max(body.Radius, 0.05f);
+                        Vector3 rollSpin = floorNormal.Cross(dampedTangent) * invRadius;
+                        body.AngularVelocity = body.AngularVelocity.Lerp(rollSpin, angBlend);
                     }
 
                     if (body.LinearVelocity.LengthSquared() <= SleepSpeedSq &&
-                        body.AngularVelocity.LengthSquared() <= 0.16f)
+                        body.AngularVelocity.LengthSquared() <= 0.20f)
                     {
                         if (++body.SleepSteps >= SleepStepsRequired)
                         {
@@ -465,6 +609,38 @@ public sealed class Engine_DisarticulatedRig
         }
 
         return 0.06f;
+    }
+
+    /// <summary>Estimates rigid restitution by bone geometry so skulls and limb shafts bounce crisply.</summary>
+    public static float GuessBoneRestitution(string boneName, float unitNoise)
+    {
+        float jitter = unitNoise * 0.10f;
+        if (!string.IsNullOrEmpty(boneName) &&
+            (boneName.Contains("Head", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Skull", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Femur", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Thigh", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Tibia", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Calf", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Humerus", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Forearm", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Ulna", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("UpperArm", StringComparison.OrdinalIgnoreCase)))
+        {
+            return 0.48f + jitter;
+        }
+
+        if (!string.IsNullOrEmpty(boneName) &&
+            (boneName.Contains("Pelvis", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Hip", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Chest", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Rib", StringComparison.OrdinalIgnoreCase) ||
+             boneName.Contains("Spine", StringComparison.OrdinalIgnoreCase)))
+        {
+            return 0.38f + jitter;
+        }
+
+        return 0.42f + jitter;
     }
 
     private static uint Hash(uint x)

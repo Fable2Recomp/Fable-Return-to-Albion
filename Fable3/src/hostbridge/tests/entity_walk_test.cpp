@@ -461,6 +461,10 @@ uint32_t WalkEntities(uint32_t em, uint32_t* out, uint32_t max_entities, NoteUnk
         appearance[7] = GuestByteAt(renderable + 0xE5u) != 0u && GuestWordAt(renderable + 0x120u) == 0u
                             ? kAppearanceDrawable
                             : 0u;
+        const uint32_t creature = Component(entity, 24u);
+        if (creature != 0u && GuestByteAt(creature + 0x18u) == 0u) {
+            appearance[7] |= refii::hostcore::kAppearanceDeadCreature;
+        }
         ++written;
     }
 
@@ -872,10 +876,36 @@ void CheckAppearanceSublist() {
     }
 }
 
+/// CECCreature+0x18 alive-byte check used by both Fable 2 and Fable 3 native bridges.
+void CheckDeadCreatureFlag() {
+    using refii::hostcore::IsDeadCreature;
+
+    SyntheticMemory m;
+    constexpr uint32_t kCreature = 0x10060000u;
+
+    if (IsDeadCreature(m, 0u) || IsDeadCreature(m, 0x1234u)) {
+        Fail(0u, "implausible creature pointer must not be flagged dead");
+        return;
+    }
+
+    m.Put8(kCreature + 0x18u, 1u);
+    if (IsDeadCreature(m, kCreature)) {
+        Fail(0u, "living creature (alive==1) must not be flagged dead");
+        return;
+    }
+
+    m.Put8(kCreature + 0x18u, 0u);
+    if (!IsDeadCreature(m, kCreature)) {
+        Fail(0u, "dead creature (alive==0) must be flagged dead");
+        return;
+    }
+}
+
 }  // namespace
 
 int main() {
     CheckAppearanceSublist();
+    CheckDeadCreatureFlag();
     uint32_t walked = 0u;
     for (uint32_t seed = 1u; seed <= 400u; ++seed) {
         World world(seed);

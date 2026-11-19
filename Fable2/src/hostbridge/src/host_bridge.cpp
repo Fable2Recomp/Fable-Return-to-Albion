@@ -6466,6 +6466,10 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetEntities(uint32_t* out, uint32_t max_
             // What the guest's appearance setters stated for this renderable — every death fade
             // (DeathType 5/6/7 ramp SetAlpha), the corpse tint, hidden carry slots, SetScale.
             refii::vfs::StatedAppearanceFor(renderable, appearance);
+            const uint32_t creature = EntityComponentOf(base, fields, 20u);
+            if (refii::hostcore::IsDeadCreature(refii::hostcore::GuestReader{base}, creature)) {
+                appearance[kAppearanceFlags] |= refii::hostcore::kAppearanceDeadCreature;
+            }
         }
 
         ++written;

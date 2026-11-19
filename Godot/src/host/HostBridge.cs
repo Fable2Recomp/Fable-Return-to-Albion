@@ -1910,6 +1910,7 @@ public static partial class HostBridge
 		public const uint DrawableFlag = 1u;
 		public const uint SaturationFlag = 2u;
 		public const uint NoAlphaDepthFlag = 4u;
+		public const uint DeadCreatureFlag = 8u;
 
 		/// <summary>SetAsDrawable (+197). Clear: the guest releases the proxies — no draw, no shadow.</summary>
 		public bool Drawable => (Flags & DrawableFlag) != 0u;
@@ -1923,6 +1924,13 @@ public static partial class HostBridge
 		/// pass nothing (see Engine_EntityAppearance).
 		/// </summary>
 		public bool NoAlphaDepthWrites => (Flags & NoAlphaDepthFlag) != 0u;
+
+		/// <summary>Entity carries a <c>CECCreature</c> component whose <c>alive</c> byte (<c>+0x18</c>) is 0.</summary>
+		public bool IsDeadCreature => (Flags & DeadCreatureFlag) != 0u;
+
+		/// <summary>Appearance stripped of <see cref="DeadCreatureFlag"/> so shader/tint caches ignore liveness flips.</summary>
+		public EntityAppearance VisualOnly =>
+			(Flags & DeadCreatureFlag) == 0u ? this : this with { Flags = Flags & ~DeadCreatureFlag };
 
 		/// <summary>The opacity the guest blends by: `+116 * +112` (`sub_82572A58`).</summary>
 		public float Opacity => Alpha * CameraAlpha;
@@ -1947,7 +1955,7 @@ public static partial class HostBridge
 		/// field, and every entity the walk does not skip asks this several times.
 		/// </summary>
 		public bool IsConstructed =>
-			Alpha == 1f && CameraAlpha == 1f && Scale == 1f && Flags == DrawableFlag &&
+			Alpha == 1f && CameraAlpha == 1f && Scale == 1f && (Flags & ~DeadCreatureFlag) == DrawableFlag &&
 			TintLanes.X == 1f && TintLanes.Y == 1f && TintLanes.Z == 1f && TintLanes.W == 1f;
 	}
 

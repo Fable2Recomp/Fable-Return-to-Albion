@@ -22,7 +22,7 @@ public static class DesktopGraphicsPresets
     public const string RevisionKey = "performance_preset_revision";
 
     /// <summary>Current revision of the desktop preset definitions.</summary>
-    public const int Revision = 3;
+    public const int Revision = 4;
 
     /// <summary>Preset tuned for entry-level integrated GPUs and battery play.</summary>
     public const string Low = "low";
@@ -80,6 +80,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "1.25",
             ["prop_cull_distance_scale"] = "0.85",
             ["entity_draw_distance_scale"] = "1.5",
+            ["corpse_lifetime_seconds"] = "45",
         };
 
     private static readonly IReadOnlyDictionary<string, string> LowValues =
@@ -100,6 +101,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "2",
             ["prop_cull_distance_scale"] = "0.65",
             ["entity_draw_distance_scale"] = "1",
+            ["corpse_lifetime_seconds"] = "10",
         });
 
     private static readonly IReadOnlyDictionary<string, string> HighValues =
@@ -130,6 +132,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "1",
             ["prop_cull_distance_scale"] = "1",
             ["entity_draw_distance_scale"] = "2",
+            ["corpse_lifetime_seconds"] = "120",
         });
 
     private static readonly IReadOnlyDictionary<string, string> UltraValues =
@@ -150,6 +153,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "0.75",
             ["prop_cull_distance_scale"] = "1.25",
             ["entity_draw_distance_scale"] = "2.5",
+            ["corpse_lifetime_seconds"] = "300",
         });
 
     private static readonly HashSet<string> MemberSet = new(BalancedValues.Keys, StringComparer.Ordinal);

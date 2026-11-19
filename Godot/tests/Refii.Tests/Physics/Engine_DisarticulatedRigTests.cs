@@ -231,4 +231,89 @@ public sealed class Engine_DisarticulatedRigTests
             AssertThat(finalWorld.DistanceTo(gatheredGuest[m])).IsLess(1e-3f);
         }
     }
+
+    [TestCase]
+    public void ReboundsUpwardOnGroundImpactBeforeSleeping()
+    {
+        var entityWorld = new Transform3D(Basis.Identity, new Vector3(0f, 1.8f, 0f));
+        Transform3D[] rest = MakeRestGlobals(CrumbleNames.Length);
+        var rig = new Engine_DisarticulatedRig();
+        rig.Initialize(entityWorld, CrumbleNames, rest, CrumbleParents, null, Vector3.Zero, 314159u);
+
+        Engine_DisarticulatedRig.TrySampleGroundContact flat = (Vector3 pos, out Vector3 contact, out Vector3 normal) =>
+        {
+            contact = new Vector3(pos.X, 0f, pos.Z);
+            normal = Vector3.Up;
+            return true;
+        };
+
+        var sawUpwardRebound = new bool[rig.BoneCount];
+        var wasDescending = new bool[rig.BoneCount];
+        for (int step = 0; step < 720; ++step)
+        {
+            rig.Step(1f / 120f, entityWorld, flat, default, 0);
+            for (int m = 1; m < rig.BoneCount; ++m)
+            {
+                float vy = rig.Bodies[m].LinearVelocity.Y;
+                if (vy < -0.8f)
+                {
+                    wasDescending[m] = true;
+                }
+                else if (wasDescending[m] && vy > 0.35f)
+                {
+                    sawUpwardRebound[m] = true;
+                }
+            }
+        }
+
+        int reboundingBones = 0;
+        for (int m = 1; m < rig.BoneCount; ++m)
+        {
+            if (sawUpwardRebound[m])
+            {
+                ++reboundingBones;
+            }
+        }
+
+        AssertThat(reboundingBones).IsGreaterEqual(4);
+        AssertThat(rig.AllAsleep).IsTrue();
+    }
+
+    [TestCase]
+    public void SeparatesOverlappingBonesWithoutFloorPenetrationAcrossFrameRates()
+    {
+        Engine_DisarticulatedRig.TrySampleGroundContact flat = (Vector3 pos, out Vector3 contact, out Vector3 normal) =>
+        {
+            contact = new Vector3(pos.X, 0f, pos.Z);
+            normal = Vector3.Up;
+            return true;
+        };
+
+        var entityWorld = new Transform3D(Basis.Identity, Vector3.Zero);
+        Transform3D[] rest = MakeRestGlobals(CrumbleNames.Length);
+
+        var rig60 = new Engine_DisarticulatedRig();
+        rig60.Initialize(entityWorld, CrumbleNames, rest, CrumbleParents, null, new Vector3(1.5f, 0f, 0f), 98765u);
+        for (int s = 0; s < 240; ++s)
+        {
+            rig60.Step(1f / 60f, entityWorld, flat, default, 0);
+        }
+
+        var rig144 = new Engine_DisarticulatedRig();
+        rig144.Initialize(entityWorld, CrumbleNames, rest, CrumbleParents, null, new Vector3(1.5f, 0f, 0f), 98765u);
+        for (int s = 0; s < 576; ++s)
+        {
+            rig144.Step(1f / 144f, entityWorld, flat, default, 0);
+        }
+
+        AssertThat(rig60.AllAsleep).IsTrue();
+        AssertThat(rig144.AllAsleep).IsTrue();
+
+        for (int m = 1; m < rig60.BoneCount; ++m)
+        {
+            AssertThat(rig60.Bodies[m].Position.Y).IsGreaterEqual(rig60.Bodies[m].Radius - 1e-3f);
+            AssertThat(rig144.Bodies[m].Position.Y).IsGreaterEqual(rig144.Bodies[m].Radius - 1e-3f);
+            AssertThat(rig60.Bodies[m].Position.DistanceTo(rig144.Bodies[m].Position)).IsLess(0.65f);
+        }
+    }
 }

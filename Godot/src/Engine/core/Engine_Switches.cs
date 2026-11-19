@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
-using Godot;
 
 namespace Refii.Core;
 
@@ -121,7 +120,7 @@ public static class Engine_Switches
             if (!EnvByKey.TryGetValue(key, out fromEnv))
             {
                 string env = "REFII_" + key.Replace('-', '_').ToUpperInvariant();
-                string value = OS.GetEnvironment(env);
+                string value = Environment.GetEnvironmentVariable(env) ?? string.Empty;
                 fromEnv = value.Length != 0 ? value : null;
                 EnvByKey[key] = fromEnv;
             }

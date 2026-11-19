@@ -417,7 +417,7 @@ public class GraphicsPresetTests
         // Each setting it changes from High costs more, never less.
         string[] costlier = { "render_scale_percent", "prop_cull_distance_scale", "sun_shadow_distance",
                               "sun_shadow_reach_scale", "placed_light_limit", "placed_light_range",
-                              "sun_shadow_filter", "tree_lod_bias", "foliage_density" };
+                              "sun_shadow_filter", "tree_lod_bias", "foliage_density", "corpse_lifetime_seconds" };
         foreach (string key in costlier)
         {
             AssertThat(double.Parse(GraphicsPresets.UltraValues[key], System.Globalization.CultureInfo.InvariantCulture))
@@ -460,7 +460,7 @@ public class GraphicsPresetTests
     [TestCase]
     public void TestRevision19FoldsLowLeanIntoLowAndNamesEachLightingModel()
     {
-        AssertThat(GraphicsPresets.Revision).IsEqual(19);
+        AssertThat(GraphicsPresets.Revision).IsGreaterEqual(19);
         AssertThat(GraphicsPresets.LowValues["android_modern_lighting"]).IsEqual("true");
         AssertThat(GraphicsPresets.MediumValues["android_modern_lighting"]).IsEqual("false");
         AssertThat(GraphicsPresets.HighValues["android_modern_lighting"]).IsEqual("false");
@@ -474,7 +474,7 @@ public class GraphicsPresetTests
         };
         AssertThat(GraphicsPresets.Upgrade(lean)).IsTrue();
         AssertThat(lean[GraphicsPresets.Key]).IsEqual(GraphicsPresets.Low);
-        AssertThat(lean[GraphicsPresets.RevisionKey]).IsEqual("19");
+        AssertThat(lean[GraphicsPresets.RevisionKey]).IsEqual(GraphicsPresets.Revision.ToString());
         AssertThat(lean["lite_normal_maps"]).IsEqual("off");
         AssertThat(GraphicsPresets.Current(lean)).IsEqual(GraphicsPresets.Low);
         AssertThat(GraphicsPresets.Label("android_low_lean")).IsEqual("Low");
@@ -503,6 +503,28 @@ public class GraphicsPresetTests
         AssertThat(phone["render_scale_percent"]).IsEqual("50");
         AssertThat(phone["lite_normal_maps"]).IsEqual("full");
         AssertThat(phone["lite_skip_black_lights"]).IsEqual("true");
+    }
+
+    [TestCase]
+    public void TestRevision20AddsCorpseLifetimePerPreset()
+    {
+        AssertThat(GraphicsPresets.Revision).IsEqual(20);
+        AssertThat(GraphicsPresets.LowValues["corpse_lifetime_seconds"]).IsEqual("0");
+        AssertThat(GraphicsPresets.MediumValues["corpse_lifetime_seconds"]).IsEqual("10");
+        AssertThat(GraphicsPresets.HighValues["corpse_lifetime_seconds"]).IsEqual("20");
+        AssertThat(GraphicsPresets.UltraValues["corpse_lifetime_seconds"]).IsEqual("45");
+
+        var rev19High = new Dictionary<string, string>(GraphicsPresets.HighValues)
+        {
+            [GraphicsPresets.Key] = GraphicsPresets.High,
+            [GraphicsPresets.RevisionKey] = "19",
+        };
+        rev19High.Remove("corpse_lifetime_seconds");
+
+        AssertThat(GraphicsPresets.Upgrade(rev19High)).IsTrue();
+        AssertThat(rev19High[GraphicsPresets.RevisionKey]).IsEqual("20");
+        AssertThat(rev19High["corpse_lifetime_seconds"]).IsEqual("20");
+        AssertThat(GraphicsPresets.Current(rev19High)).IsEqual(GraphicsPresets.High);
     }
 
     [TestCase]

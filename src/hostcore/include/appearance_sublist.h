@@ -23,6 +23,17 @@ inline constexpr uint32_t kFable2AppearanceSublistOffset = 0x10u;
 /// Fable 3 places the circular `std::list` sentinel `_Myhead` directly at comp3 + 0x0C.
 inline constexpr uint32_t kFable3AppearanceSublistOffset = 0x0Cu;
 
+/// Bit 3 (`8u`) of EntityAppearance.Flags: entity carries a CECCreature component whose
+/// alive byte (`+0x18`) is 0 (Fable 2 comp 20, Fable 3 comp 24).
+inline constexpr uint32_t kAppearanceDeadCreature = 8u;
+
+/// Returns true if `creature_component` is plausible and its `alive` byte at `+0x18` is 0.
+template <typename Memory>
+bool IsDeadCreature(const Memory& memory, uint32_t creature_component) {
+    return creature_component >= 0x10000u && creature_component < 0xC0000000u &&
+           memory.Byte(creature_component + 0x18u) == 0u;
+}
+
 /// Returns true if `subcomp_node` (`subcomp + 0x0Cu`) is linked in component 3's active draw list
 /// at `renderable + sentinel_offset`, or if the renderable/sentinel state is absent or torn
 /// (conservative fallback so synthetic/partial entities are never hidden).

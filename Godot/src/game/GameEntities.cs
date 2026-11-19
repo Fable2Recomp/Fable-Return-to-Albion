@@ -250,6 +250,34 @@ public partial class GameEntities : Node3D
     private readonly Vector3[] _guestBonesScratch = new Vector3[HostBridge.MaxBones];
     private Transform3D[] _restGlobalsScratch = new Transform3D[HostBridge.MaxBones];
     private float _lastFrameDelta = 1f / 60f;
+    private double _guestWalkElapsed;
+    private bool _shuttingDown;
+    private readonly Refii.Entities.Engine_CorpseManager _corpses = new();
+    private readonly HashSet<uint> _sawEtherealAlive = new();
+    private readonly Dictionary<uint, DeadCorpseTrack> _deadCorpseState = new();
+    private readonly Dictionary<uint, PendingCrumble> _pendingCrumble = new();
+
+    private sealed class DeadCorpseTrack
+    {
+        public uint RecordHash;
+        public string? ModelPath;
+        public bool RecordExcluded;
+        public bool SawVisibleWhileDead;
+        public bool FadePinned;
+        public bool HasPinnedPos;
+        public Vector3 PinnedPos;
+        public HostBridge.EntityAppearance LastDeadLook = HostBridge.EntityAppearance.Constructed;
+        public float DeathAge;
+    }
+
+    private sealed class PendingCrumble
+    {
+        public ulong UniqueId;
+        public Transform3D EntityWorld;
+        public Vector3 InheritedVelocity;
+        public readonly Dictionary<string, (Vector3 Pos, Quaternion Rot)> Bones =
+            new(System.StringComparer.OrdinalIgnoreCase);
+    }
 
     private readonly HashSet<uint> _seen = new();
 
@@ -331,6 +359,8 @@ public partial class GameEntities : Node3D
     /// workers remain tracked through their final publication attempt, without disposing shared results.</remarks>
     public override void _ExitTree()
     {
+        _shuttingDown = true;
+        ClearCorpseState();
         GameCurrentOwner.Retire(ref Current, this);
         if (Refii.Core.Engine_Platform.IsAndroid)
             _retirementWorkers.Retire(() => { while (_completions.TryDequeue(out _)) { } });
@@ -383,6 +413,7 @@ public partial class GameEntities : Node3D
     public override void _Process(double delta)
 	{
 		_lastFrameDelta = (float)delta;
+		_guestWalkElapsed += delta;
 		using var clipFrame = Refii.Animations.Engine_ClipAnimator.FrameWork.BeginFrame();
 		// One read of the engine's frame counter for the walk: every rig stamps and compares it.
 		using var processFrame = Refii.Core.Engine_ProcessFrame.Begin();
@@ -390,6 +421,14 @@ public partial class GameEntities : Node3D
 		{
 			RefreshCollectedKeys(delta);
 			entities_processBody(delta);
+			if (_shuttingDown || (HostBridge.IsInGame && !HostBridge.WorldIsActive()))
+			{
+				ClearCorpseState();
+			}
+			else if (_corpses.Count > 0)
+			{
+				_corpses.Step((float)delta, CurrentEyePosition(), SampleActiveGround);
+			}
 		}
 	}
 
@@ -595,6 +634,9 @@ public partial class GameEntities : Node3D
             ApplyDrawn();
             return;
         }
+
+        float walkDelta = (float)System.Math.Min(_guestWalkElapsed, 0.25);
+        _guestWalkElapsed = 0.0;
 
         // The guest frame that completes a game tick: the sub-step on which the guest poses its
         // far rigs (FarRigPosesThisStep).
@@ -886,6 +928,8 @@ public partial class GameEntities : Node3D
                 RetireAddress(entity.Address);
             }
 
+            ObserveCorpseLiveness(in entity, walkDelta);
+
             // ANSWERED BY THE LAST WALK'S VERDICT. Unchanged, off its reconcile cadence and no
             // principal is everything the three skip paths below ask of the statement (the empty
             // path's longer cadence divides by this one); what else they read is the verdict's to
@@ -896,7 +940,8 @@ public partial class GameEntities : Node3D
             // still paths' reconcile. A held rigged prop's pose gate is still asked here, as its
             // row would ask it; a held building replays what its full prologue repeats.
             if (skipIndex && !entity.Changed && entity.Address != _morphPreviewHero &&
-                !IsPrincipal(entity.Address) &&
+                !IsPrincipal(entity.Address) && !entity.Appearance.IsDeadCreature &&
+                !_disarticulated.ContainsKey(entity.Address) &&
                 _skipIndex.TryFind(entity.Address, entity.UniqueId, row,
                     out Refii.Entities.Engine_EntitySkipIndex.Kind verdict, out int verdictTag) &&
                 HeldThisWalk(entity.Address, verdict, verdictTag))
@@ -1096,8 +1141,17 @@ public partial class GameEntities : Node3D
                     _eyes.Remove(entity.Address);
                     _bodyAndEyes.Remove(entity.Address);
                     _skipIndex.Invalidate(entity.Address);
-                    if (entity.ModelHash == 0u)
+                    if (knownModelHash == 0u && entity.ModelHash != 0u &&
+                        _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? liveRig) &&
+                        _nodes.TryGetValue(entity.Address, out MeshInstance3D? liveNode))
                     {
+                        Transform3D entityWorld = toWorld * ToGodot(entity.Position, entity.Rotation);
+                        Transform3D captureWorld = liveNode.IsInsideTree() ? liveNode.GlobalTransform : entityWorld;
+                        TryCapturePendingCrumble(entity.Address, entity.UniqueId, captureWorld, liveRig, ComputeInheritedVelocity(in entity));
+                    }
+                    else if (entity.ModelHash == 0u)
+                    {
+                        _pendingCrumble.Remove(entity.Address);
                         _disarticulated.Remove(entity.Address);
                         if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? activeRig))
                         {
@@ -1455,10 +1509,10 @@ public partial class GameEntities : Node3D
                                 crumbleRig.Parents);
 
                         Transform3D entityWorld = toWorld * ToGodot(entity.Position, entity.Rotation);
-                        if (enteringCrumble)
+                        if (enteringCrumble && !_pendingCrumble.ContainsKey(entity.Address))
                         {
                             Transform3D captureWorld = node.IsInsideTree() ? node.GlobalTransform : entityWorld;
-                            stale.CaptureWorldBones(captureWorld, _capturedBonesScratch);
+                            TryCapturePendingCrumble(entity.Address, entity.UniqueId, captureWorld, stale, ComputeInheritedVelocity(in entity));
                         }
 
                         node.Skeleton = new NodePath();
@@ -1490,28 +1544,7 @@ public partial class GameEntities : Node3D
                         {
                             _awaitingRig.Remove(entity.Address);
                             Refii.Level.Engine_PropDrawRange.Apply(node);
-                            if (enteringCrumble &&
-                                _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? crumbledRig))
-                            {
-                                crumbledRig.IsDisarticulated = true;
-                                Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(crumbledRig.Node, true);
-                                if (_restGlobalsScratch.Length < crumbledRig.BoneCount)
-                                {
-                                    _restGlobalsScratch = new Transform3D[crumbledRig.BoneCount];
-                                }
-                                crumbledRig.CopyRestGlobals(_restGlobalsScratch);
-                                var shatter = new Refii.Physics.Engine_DisarticulatedRig();
-                                shatter.Initialize(
-                                    entityWorld,
-                                    crumbledRig.BoneNames,
-                                    new System.ReadOnlySpan<Transform3D>(_restGlobalsScratch, 0, crumbledRig.BoneCount),
-                                    crumbledRig.Parents,
-                                    _capturedBonesScratch,
-                                    Vector3.Zero,
-                                    entity.Address ^ (uint)entity.UniqueId);
-                                crumbledRig.ApplyModelSpacePoses(shatter.ModelPoses);
-                                _disarticulated[entity.Address] = shatter;
-                            }
+                            TryStartPendingCrumble(entity.Address, node, mesh, toWorld, entity.ModelHash, entity.UniqueId);
                         }
 
                         GD.Print($"[rig] entity 0x{entity.Address:X8} changed mesh — re-rigged " +
@@ -1559,7 +1592,10 @@ public partial class GameEntities : Node3D
             // node itself: a batch draws every instance alike, and a married twin may be one
             // instance of a MultiMesh. The marriage ends for good; the region's copy goes, as
             // it would for an entity destroyed, and this node draws from now on.
-            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(entity.Appearance) || Engine_TitleGame.Active.WantsOwnNode(entity))
+            HostBridge.EntityAppearance effectiveAppearance =
+                ResolveEffectiveAppearance(in entity, title, out DeadCorpseTrack? corpseTrack);
+
+            if (Refii.Entities.Engine_EntityAppearance.NeedsOwnNode(effectiveAppearance) || Engine_TitleGame.Active.WantsOwnNode(entity))
             {
                 if (adopted && _adoptions.TryGetValue(entity.Address, out var marriage))
                 {
@@ -1572,7 +1608,7 @@ public partial class GameEntities : Node3D
                 Unbatch(entity.Address, node);
             }
 
-            Refii.Entities.Engine_EntityAppearance.Apply(node, entity.Appearance, IsPrincipal(entity.Address));
+            Refii.Entities.Engine_EntityAppearance.Apply(node, effectiveAppearance, IsPrincipal(entity.Address));
             if (SkipHeroRendering && IsHero(entity.Address) && node.Visible)
             {
                 node.Visible = false;
@@ -1585,7 +1621,7 @@ public partial class GameEntities : Node3D
                 bool hasOverlay = node.MaterialOverlay is not null;
                 GD.Print($"[dx12-trace] hero-ready addr=0x{entity.Address:X8} surfaces={surfCount} overlay={hasOverlay} visible={node.Visible}");
             }
-            _lastLook[entity.Address] = entity.Appearance;
+            _lastLook[entity.Address] = effectiveAppearance;
 
             // A hero's head goes while its player's stated camera is first person, for a hold that
             // leaves the game's body fade out (Engine_FirstPersonHead). Created once per skeleton;
@@ -1707,8 +1743,35 @@ public partial class GameEntities : Node3D
                     }
                     else
                     {
-                        Place(entity.Address, node!,
-                            Refii.Entities.Engine_EntityAppearance.Scaled(Drawn(entity, stated), entity.Appearance));
+                        DeadCorpseTrack? corpseTrack = entity.Appearance.IsDeadCreature &&
+                            _deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? pinnedTrack) &&
+                            pinnedTrack.FadePinned
+                            ? pinnedTrack
+                            : null;
+                        HostBridge.EntityAppearance placedLook = corpseTrack is not null &&
+                            _lastLook.TryGetValue(entity.Address, out HostBridge.EntityAppearance cachedLook)
+                            ? cachedLook
+                            : entity.Appearance;
+                        Transform3D placed = Refii.Entities.Engine_EntityAppearance.Scaled(Drawn(entity, stated), placedLook);
+                        if (corpseTrack is not null)
+                        {
+                            if (!corpseTrack.HasPinnedPos)
+                            {
+                                corpseTrack.PinnedPos = placed.Origin;
+                                corpseTrack.HasPinnedPos = true;
+                            }
+                            else
+                            {
+                                float dx = placed.Origin.X - corpseTrack.PinnedPos.X;
+                                float dz = placed.Origin.Z - corpseTrack.PinnedPos.Z;
+                                if (((dx * dx) + (dz * dz)) < 0.0625f && placed.Origin.Y < corpseTrack.PinnedPos.Y - 0.01f)
+                                {
+                                    placed.Origin = new Vector3(placed.Origin.X, corpseTrack.PinnedPos.Y, placed.Origin.Z);
+                                }
+                            }
+                        }
+
+                        Place(entity.Address, node!, placed);
                     }
                 }
 
@@ -3182,6 +3245,9 @@ public partial class GameEntities : Node3D
 
                 // After the release, which hands the BODY its shadow back: the proxy casts.
                 Refii.Entities.Engine_ShadowProxy.Sync(node);
+                _lastModelHash.TryGetValue(address, out uint modelHash);
+                _nodeUid.TryGetValue(address, out ulong uid);
+                TryStartPendingCrumble(address, node, mesh, GlobalTransform, modelHash, uid);
                 _rigged.Add(address);
             }
         }
@@ -3959,7 +4025,9 @@ public partial class GameEntities : Node3D
     /// </summary>
     private void RetireAddress(uint address)
     {
-        if (_nodes.TryGetValue(address, out MeshInstance3D? node) &&
+        bool adoptedCorpse = TryAdoptRetiredCorpse(address);
+        if (!adoptedCorpse &&
+            _nodes.TryGetValue(address, out MeshInstance3D? node) &&
             GodotObject.IsInstanceValid(node))
         {
             Refii.Entities.Engine_EntityAppearance.Forget(node);
@@ -3999,6 +4067,9 @@ public partial class GameEntities : Node3D
         _skeletons.Remove(address);
         _lastModelHash.Remove(address);
         _disarticulated.Remove(address);
+        _pendingCrumble.Remove(address);
+        _deadCorpseState.Remove(address);
+        _sawEtherealAlive.Remove(address);
         _rigSeenMs.Remove(address);
         _viewSpheres.Remove(address);
         _boneWriteAskedMs.Remove(address);
@@ -4033,6 +4104,259 @@ public partial class GameEntities : Node3D
         _entityLightZone.Remove(address);
         _entityLayers.Remove(address);
         _offscreenDeferred.Remove(address);
+    }
+
+    private void ClearCorpseState()
+    {
+        _corpses.Clear();
+        _deadCorpseState.Clear();
+        _sawEtherealAlive.Clear();
+        _pendingCrumble.Clear();
+    }
+
+    private Vector3 CurrentEyePosition() =>
+        _poseViewCount > 0 ? _poseViews[0].Eye : (HeroPosition ?? Vector3.Zero);
+
+    private void ObserveCorpseLiveness(in HostBridge.GuestEntity entity, float walkDelta)
+    {
+        if (!entity.Appearance.IsDeadCreature)
+        {
+            if (Refii.Entities.Engine_CorpsePolicy.IsEtherealAppearance(entity.Appearance))
+            {
+                _sawEtherealAlive.Add(entity.Address);
+            }
+            _deadCorpseState.Remove(entity.Address);
+            return;
+        }
+
+        if (!_deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? track))
+        {
+            track = new DeadCorpseTrack
+            {
+                RecordHash = entity.RecordHash,
+            };
+            _deadCorpseState[entity.Address] = track;
+        }
+
+        track.DeathAge += walkDelta;
+        track.RecordHash = entity.RecordHash;
+
+        if (track.ModelPath is null)
+        {
+            string? resolved = entity.ModelHash != 0u
+                ? Refii.Level.Engine_PropModelIndex.Resolve(entity.ModelHash, System.Array.Empty<string>())
+                : null;
+            if (string.IsNullOrEmpty(resolved) && _nodeMesh.TryGetValue(entity.Address, out Mesh? existingMesh))
+            {
+                resolved = FirstExcludedCompositeModelPath(existingMesh);
+            }
+
+            if (!string.IsNullOrEmpty(resolved))
+            {
+                track.ModelPath = resolved;
+                track.RecordExcluded = Refii.Entities.Engine_CorpsePolicy.IsExcludedRecord(entity.RecordHash, track.ModelPath);
+            }
+            else if (!track.RecordExcluded)
+            {
+                track.RecordExcluded = Refii.Entities.Engine_CorpsePolicy.IsExcludedRecord(entity.RecordHash, null);
+            }
+        }
+
+        if (entity.Appearance.Drawn(false) && entity.Appearance.Scale > 0.05f)
+        {
+            track.SawVisibleWhileDead = true;
+            track.LastDeadLook = entity.Appearance.VisualOnly;
+        }
+    }
+
+    private static string? FirstExcludedCompositeModelPath(Mesh? mesh)
+    {
+        if (mesh is null)
+        {
+            return null;
+        }
+
+        foreach (string path in Refii.Models.Engine_MdlComposite.ModelPathsOf(mesh))
+        {
+            if (Refii.Entities.Engine_CorpsePolicy.HasExcludedName(path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    private HostBridge.EntityAppearance ResolveEffectiveAppearance(
+        in HostBridge.GuestEntity entity,
+        Refii.Core.Engine_TitleGame title,
+        out DeadCorpseTrack? corpseTrack)
+    {
+        corpseTrack = null;
+        if (!Refii.Entities.Engine_CorpsePolicy.Enabled ||
+            !entity.Appearance.IsDeadCreature ||
+            IsPrincipal(entity.Address) ||
+            entity.Address == title.CompanionEntityAddress ||
+            _sawEtherealAlive.Contains(entity.Address) ||
+            (!_skeletons.ContainsKey(entity.Address) && !_awaitingRig.Contains(entity.Address)) ||
+            !_deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? track) ||
+            !track.SawVisibleWhileDead ||
+            track.RecordExcluded)
+        {
+            return entity.Appearance;
+        }
+
+        if (!track.FadePinned && entity.Appearance.Alpha >= 0.98f && entity.Appearance.Drawable)
+        {
+            return entity.Appearance;
+        }
+
+        track.FadePinned = true;
+        corpseTrack = track;
+        HostBridge.EntityAppearance clean = track.LastDeadLook.VisualOnly;
+        Vector4 tint = clean.TintLanes;
+        if (!tint.IsFinite() || (tint.X == 0f && tint.Y == 0f && tint.Z == 0f && tint.W == 0f))
+        {
+            tint = Vector4.One;
+        }
+
+        float scale = float.IsFinite(clean.Scale) && clean.Scale > 0.05f ? clean.Scale : 1f;
+        return clean with
+        {
+            Alpha = 1f,
+            CameraAlpha = 1f,
+            Scale = scale,
+            TintLanes = tint,
+            Flags = clean.Flags | HostBridge.EntityAppearance.DrawableFlag,
+        };
+    }
+
+    private static Vector3 ComputeInheritedVelocity(in HostBridge.GuestEntity entity)
+    {
+        if (!IsUsablePlacement(entity.PreviousPosition))
+        {
+            return Vector3.Zero;
+        }
+
+        Vector3 delta = ToGodot(entity.Position) - ToGodot(entity.PreviousPosition);
+        if (!delta.IsFinite() || delta.LengthSquared() > 16f)
+        {
+            return Vector3.Zero;
+        }
+
+        return delta * 15f;
+    }
+
+    private void TryCapturePendingCrumble(
+        uint address,
+        ulong uniqueId,
+        Transform3D captureWorld,
+        Refii.Entities.Engine_EntitySkeleton liveRig,
+        Vector3 inheritedVelocity)
+    {
+        liveRig.CaptureWorldBones(captureWorld, _capturedBonesScratch);
+        var pending = new PendingCrumble
+        {
+            UniqueId = uniqueId,
+            EntityWorld = captureWorld,
+            InheritedVelocity = inheritedVelocity,
+        };
+        foreach ((string boneName, (Vector3 Pos, Quaternion Rot) xform) in _capturedBonesScratch)
+        {
+            pending.Bones[boneName] = xform;
+        }
+
+        _pendingCrumble[address] = pending;
+    }
+
+    private void TryStartPendingCrumble(
+        uint address,
+        MeshInstance3D node,
+        Mesh mesh,
+        Transform3D toWorld,
+        uint modelHash,
+        ulong uniqueId)
+    {
+        if (!_pendingCrumble.TryGetValue(address, out PendingCrumble? pending))
+        {
+            return;
+        }
+
+        _pendingCrumble.Remove(address);
+        if (pending.UniqueId != 0ul && uniqueId != 0ul && pending.UniqueId != uniqueId)
+        {
+            return;
+        }
+
+        if (modelHash == 0u ||
+            Refii.Models.Engine_MdlRig.TryFrom(mesh) is not { } crumbleRig ||
+            !Refii.Core.Engine_TitleGame.Active.Rig.IsDisarticulatedCrumble(
+                0u,
+                modelHash,
+                Refii.Level.Engine_PropModelIndex.Resolve(modelHash, System.Array.Empty<string>()),
+                crumbleRig.Parents) ||
+            !_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? crumbledRig))
+        {
+            return;
+        }
+
+        crumbledRig.IsDisarticulated = true;
+        Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(crumbledRig.Node, true);
+        if (_restGlobalsScratch.Length < crumbledRig.BoneCount)
+        {
+            _restGlobalsScratch = new Transform3D[crumbledRig.BoneCount];
+        }
+
+        crumbledRig.CopyRestGlobals(_restGlobalsScratch);
+        Transform3D entityWorld = node.IsInsideTree() ? node.GlobalTransform : pending.EntityWorld;
+        var shatter = new Refii.Physics.Engine_DisarticulatedRig();
+        shatter.Initialize(
+            entityWorld,
+            crumbledRig.BoneNames,
+            new System.ReadOnlySpan<Transform3D>(_restGlobalsScratch, 0, crumbledRig.BoneCount),
+            crumbledRig.Parents,
+            pending.Bones,
+            pending.InheritedVelocity,
+            address ^ (uint)uniqueId);
+        crumbledRig.ApplyModelSpacePoses(shatter.ModelPoses);
+        _disarticulated[address] = shatter;
+    }
+
+    private bool TryAdoptRetiredCorpse(uint address)
+    {
+        if (_shuttingDown ||
+            !Refii.Entities.Engine_CorpsePolicy.Enabled ||
+            (HostBridge.IsInGame && !HostBridge.WorldIsActive()) ||
+            !_deadCorpseState.TryGetValue(address, out DeadCorpseTrack? track) ||
+            !_nodes.TryGetValue(address, out MeshInstance3D? node) ||
+            !GodotObject.IsInstanceValid(node))
+        {
+            return false;
+        }
+
+        bool hasSkeleton = _skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) &&
+            GodotObject.IsInstanceValid(rig.Node);
+        _disarticulated.TryGetValue(address, out Refii.Physics.Engine_DisarticulatedRig? shatter);
+
+        var candidate = new Refii.Entities.Engine_CorpsePolicy.CorpseCandidate(
+            IsDeadCreature: true,
+            HasSkeleton: hasSkeleton,
+            SawVisibleWhileDead: track.SawVisibleWhileDead,
+            SawEtherealWhileAlive: _sawEtherealAlive.Contains(address),
+            IsPrincipal: IsPrincipal(address),
+            IsCompanion: address == Refii.Core.Engine_TitleGame.Active.CompanionEntityAddress,
+            RecordHash: track.RecordHash,
+            ModelPath: track.ModelPath,
+            RecordExcluded: track.RecordExcluded);
+
+        if (!Refii.Entities.Engine_CorpsePolicy.IsEligibleCorpse(in candidate))
+        {
+            return false;
+        }
+
+        Unbatch(address, node);
+        _corpses.Adopt(node, rig, shatter, track.LastDeadLook, track.DeathAge);
+        return true;
     }
 
     /// <summary>The unique id of the entity each node was built for (entity+0x14).</summary>
