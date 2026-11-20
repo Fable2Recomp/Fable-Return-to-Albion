@@ -454,10 +454,6 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "3D Volumetric Fog & Light Rays",
                 "Atmospheric light shafts through mist, trees, and cave openings.",
                 Order: 30),
-            ["water_quality"] = new(
-                SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "Water Quality",
-                "Controls lake and ocean reflections, refraction absorption, wave octaves, and shoreline detail (applies immediately).",
-                Order: 35),
             ["sun_shadows"] = new(
                 SettingsTab.Graphics, "Lighting & Shadows", SettingTier.Essential, "Directional Sun & Moon Shadows",
                 "Real-time cascading shadows from the sun and moon.",
@@ -508,6 +504,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Continuous Weapon Augment Glow",
                 "Keeps elemental weapon augment particles active while walking and running.",
                 Order: 230),
+            ["water_quality"] = new(
+                SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Water Quality",
+                "Controls lake and ocean reflections, underwater clarity, wave detail, and shoreline foam (applies immediately).",
+                Order: 235),
             ["dynamic_sky_and_weather"] = new(
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Dynamic Procedural Sky & Weather",
                 "Optional procedural sky dome with moving clouds, storms, and surface wetness.",

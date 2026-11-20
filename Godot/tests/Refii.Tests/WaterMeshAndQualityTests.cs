@@ -11,7 +11,7 @@ namespace Refii.Tests;
 /// <summary>
 /// Pure-managed tests verifying <see cref="Engine_WaterQuality"/> tier policies,
 /// <see cref="Engine_WaterMesh"/> shoreline apron + 2D interior quad merging,
-/// <see cref="Engine_ThemeTimeline.BlendWaterInto"/> reuse, and <c>water.gdshader</c> DXIL/HDR invariants.
+/// <see cref="Engine_ThemeTimeline.BlendWaterInto"/> reuse, and <c>water.gdshader</c> DXIL/HDR/Lit invariants.
 /// </summary>
 [TestSuite]
 public sealed class WaterMeshAndQualityTests
@@ -72,20 +72,20 @@ public sealed class WaterMeshAndQualityTests
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Low))
 			.IsEqual(new WaterMirrorSpec(false, 256, 4, 50f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Balanced))
-			.IsEqual(new WaterMirrorSpec(true, 256, 4, 200f, 4f));
+			.IsEqual(new WaterMirrorSpec(false, 256, 4, 200f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.High))
-			.IsEqual(new WaterMirrorSpec(true, 384, 2, 275f, 3f));
+			.IsEqual(new WaterMirrorSpec(true, 256, 3, 225f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Ultra))
-			.IsEqual(new WaterMirrorSpec(true, 512, 1, 350f, 2f));
+			.IsEqual(new WaterMirrorSpec(true, 384, 2, 300f, 3f));
 
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Low, hasPlanarMirror: false)).IsEqual(0);
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Low, hasPlanarMirror: true)).IsEqual(0);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: true)).IsEqual(8);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: false)).IsEqual(12);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.High, hasPlanarMirror: true)).IsEqual(12);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.High, hasPlanarMirror: false)).IsEqual(16);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Ultra, hasPlanarMirror: true)).IsEqual(16);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Ultra, hasPlanarMirror: false)).IsEqual(22);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: false)).IsEqual(14);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: true)).IsEqual(14);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.High, hasPlanarMirror: false)).IsEqual(18);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.High, hasPlanarMirror: true)).IsEqual(18);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Ultra, hasPlanarMirror: false)).IsEqual(24);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Ultra, hasPlanarMirror: true)).IsEqual(24);
 	}
 
 	[TestCase]
@@ -230,23 +230,30 @@ public sealed class WaterMeshAndQualityTests
 		string raw = File.ReadAllText(shaderPath);
 		string clean = StripShaderComments(raw);
 
-		// Forward+ transparent shader: zero `discard;` anywhere.
+		// Forward+ transparent shader: zero `discard;` anywhere and lit (not `unshaded`).
 		AssertThat(Regex.IsMatch(clean, @"\bdiscard\s*;")).IsFalse();
+		AssertThat(Regex.IsMatch(clean, @"\bunshaded\b")).IsFalse();
 
 		// Scene-referred HDR compliance and configurable quality/surf uniforms.
 		AssertThat(clean.Contains("uniform bool is_pbr = false;", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("uniform int water_quality_tier", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("uniform bool coastal_surf", StringComparison.Ordinal)).IsTrue();
-		AssertThat(clean.Contains("ALBEDO = max(col, vec3(0.0));", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("ALBEDO = max(lit_albedo, vec3(0.0));", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("EMISSION = max(lit_emissive, vec3(0.0));", StringComparison.Ordinal)).IsTrue();
 
 		// Zero constant array declarations/indexing (`WAVE_DIR[...]`).
 		AssertThat(clean.Contains("WAVE_DIR", StringComparison.Ordinal)).IsFalse();
 		AssertThat(clean.Contains("WAVE_LEN", StringComparison.Ordinal)).IsFalse();
 
-		// Extract fragment() body and verify derivatives come before any `if (` and zero implicit `texture(` calls exist.
+		// Extract fragment() and light() bodies; verify derivatives come before any `if (`,
+		// zero implicit `texture(` calls exist in fragment(), and zero `return;` exists in light().
 		int fragStart = clean.IndexOf("void fragment()", StringComparison.Ordinal);
+		int lightStart = clean.IndexOf("void light()", StringComparison.Ordinal);
 		AssertThat(fragStart).IsGreater(-1);
-		string fragBody = clean[fragStart..];
+		AssertThat(lightStart).IsGreater(fragStart);
+
+		string fragBody = clean[fragStart..lightStart];
+		string lightBody = clean[lightStart..];
 
 		int dfdxIdx = fragBody.IndexOf("dFdx(", StringComparison.Ordinal);
 		int dfdyIdx = fragBody.IndexOf("dFdy(", StringComparison.Ordinal);
@@ -258,5 +265,6 @@ public sealed class WaterMeshAndQualityTests
 		AssertThat(dfdyIdx).IsLess(firstIfIdx);
 
 		AssertThat(Regex.IsMatch(fragBody, @"\btexture\s*\(")).IsFalse();
+		AssertThat(Regex.IsMatch(lightBody, @"\breturn\b")).IsFalse();
 	}
 }

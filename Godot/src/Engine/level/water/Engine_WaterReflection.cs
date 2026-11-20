@@ -57,9 +57,13 @@ public sealed partial class Engine_WaterReflection : Node
         public readonly MirrorRig?[] Mirrors = new MirrorRig?[2];
 
         public float Height;
+        public float Area;
         public bool IsClassicOrGuest;
         public bool IsOcean;
+        public bool EligibleForModernMirror;
     }
+
+    private const float MinModernMirrorAreaMetresSq = 64f;
 
     private static readonly StringName PlanarReflectionName = "planar_reflection";
     private static readonly StringName ReflectionTexName = "reflection_tex";
@@ -182,11 +186,13 @@ public sealed partial class Engine_WaterReflection : Node
             Aabb bounds = surface.GetAabb();
             float height = surface.GlobalTransform.Origin.Y +
                 (bounds.Position.Y + (bounds.Size.Y * 0.5f));
+            float footprintArea = System.MathF.Abs(bounds.Size.X * bounds.Size.Z);
 
             surface.Layers = WaterLayer;
 
             bool classicOrGuest = material.HasMeta(Engine_ClassicWater.Meta) ||
                 material.GetShaderParameter("guest_water").AsBool();
+            bool vistaBody = surface.HasMeta(Refii.Level.Engine_LevelScene.VistaWaterBodyMeta);
             WaterMirrorSpec spec = SpecFor(classicOrGuest);
 
             // ONE MIRROR PER PLANE. A planar reflection depends only on the plane, so a surface
@@ -213,9 +219,13 @@ public sealed partial class Engine_WaterReflection : Node
                 if (!ocean)
                 {
                     same.Sharers.Add(surface);
+                    if (!vistaBody)
+                    {
+                        same.Area += footprintArea;
+                    }
                 }
 
-                if (same.Mirrors[0] is { } existing)
+                if (classicOrGuest && same.Mirrors[0] is { } existing)
                 {
                     Texture2D shared = existing.Viewport.GetTexture();
                     material.SetShaderParameter(ReflectionTexName, shared);
@@ -235,11 +245,13 @@ public sealed partial class Engine_WaterReflection : Node
             {
                 Surface = surface,
                 Height = height,
+                Area = (!ocean && !vistaBody) ? footprintArea : 0f,
                 IsClassicOrGuest = classicOrGuest,
                 IsOcean = ocean,
+                EligibleForModernMirror = false,
             };
 
-            if (spec.Enabled)
+            if (classicOrGuest && spec.Enabled)
             {
                 MirrorRig mirror = NewMirror(view, spec);
                 Texture2D mirrorTex = mirror.Viewport.GetTexture();
@@ -257,16 +269,37 @@ public sealed partial class Engine_WaterReflection : Node
             _bodies.Add(body);
         }
 
-        if (_bodies.Count != 0)
+        // In Modern Forward+, allocate at most ONE planar reflection mirror on the dominant
+        // non-vista lake plane (>= 64 m^2); smaller ponds and vista bodies rely on SSR + sky dome.
+        Body? dominantModern = null;
+        foreach (Body candidate in _bodies)
         {
-            WaterMirrorSpec activeSpec = SpecFor(Refii.Models.Engine_ClassicMaterial.Active || Engine_WaterMaterial.GuestMode);
-            string desc = activeSpec.Enabled
-                ? $"{activeSpec.TileHeight}p (cadence {activeSpec.Cadence}, far {activeSpec.FarPlane:0}m)"
-                : "disabled (Low tier)";
-            GD.Print($"[water] {_bodies.Count} planar reflection body(s), {desc}, {_shared} surface(s) sharing one");
+            if (!candidate.IsClassicOrGuest &&
+                candidate.Area >= MinModernMirrorAreaMetresSq &&
+                (dominantModern is null || candidate.Area > dominantModern.Area))
+            {
+                dominantModern = candidate;
+            }
+        }
+        if (dominantModern is not null)
+        {
+            dominantModern.EligibleForModernMirror = true;
         }
 
-        SyncViews();
+        SyncQuality();
+
+        if (_bodies.Count != 0)
+        {
+            bool classicActive = Refii.Models.Engine_ClassicMaterial.Active || Engine_WaterMaterial.GuestMode;
+            WaterMirrorSpec activeSpec = SpecFor(classicActive);
+            int activeMirrors = classicActive
+                ? _bodies.Count
+                : (activeSpec.Enabled && dominantModern is not null ? 1 : 0);
+            string desc = activeSpec.Enabled && activeMirrors > 0
+                ? $"{activeSpec.TileHeight}p (cadence {activeSpec.Cadence}, far {activeSpec.FarPlane:0}m)"
+                : "SSR-only (0 SubViewports)";
+            GD.Print($"[water] {activeMirrors}/{_bodies.Count} planar reflection body(s), {desc}, {_shared} surface(s) sharing one");
+        }
     }
 
     public override void _EnterTree()
@@ -396,7 +429,7 @@ public sealed partial class Engine_WaterReflection : Node
                 continue;
             }
 
-            if (!modernSpec.Enabled)
+            if (!modernSpec.Enabled || !body.EligibleForModernMirror)
             {
                 foreach (MirrorRig? rig in body.Mirrors)
                 {
@@ -448,8 +481,9 @@ public sealed partial class Engine_WaterReflection : Node
         foreach (Body body in _bodies)
         {
             WaterMirrorSpec spec = SpecFor(body.IsClassicOrGuest);
+            bool allowMirror = spec.Enabled && (body.IsClassicOrGuest || body.EligibleForModernMirror);
             MirrorRig? second = body.Mirrors[1];
-            if (split && spec.Enabled && second is null)
+            if (split && allowMirror && second is null)
             {
                 second = NewMirror(_view!, spec);
                 body.Mirrors[1] = second;
@@ -470,7 +504,7 @@ public sealed partial class Engine_WaterReflection : Node
                     }
                 }
             }
-            else if ((!split || !spec.Enabled) && second is not null)
+            else if ((!split || !allowMirror) && second is not null)
             {
                 foreach (ShaderMaterial reader in body.Readers)
                 {
@@ -645,7 +679,8 @@ public sealed partial class Engine_WaterReflection : Node
         {
             Body body = _bodies[(_turn[view] + i) % _bodies.Count];
             WaterMirrorSpec bodySpec = SpecFor(body.IsClassicOrGuest);
-            if (!bodySpec.Enabled || body.Mirrors[view] is not { } mirror)
+            if (!bodySpec.Enabled || (!body.IsClassicOrGuest && !body.EligibleForModernMirror) ||
+                body.Mirrors[view] is not { } mirror)
             {
                 continue;
             }

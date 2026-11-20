@@ -2096,6 +2096,12 @@ public static class Engine_LevelScene
                     Mesh = Engine_LevelMesh.ToArrayMesh(mesh, name),
                 };
 
+                if (waterPath.Contains("/vistas/", StringComparison.OrdinalIgnoreCase) ||
+                    waterPath.Contains("\\vistas\\", StringComparison.OrdinalIgnoreCase))
+                {
+                    node.SetMeta(VistaWaterBodyMeta, true);
+                }
+
                 bool coastalSurf = AllowsVistaOcean(level);
                 string materialError = string.Empty;
                 ShaderMaterial? material = classic ?? Engine_WaterMaterial.Build(
@@ -2214,6 +2220,7 @@ public static class Engine_LevelScene
     }
 
     public const string VistaOceanNodeName = "VistaOcean";
+    public const string VistaWaterBodyMeta = "water_vista_body";
 
     /// <summary>Half the ocean's side: the `sky_oceanwater` VS (blob 0129) spans ±2850 units.</summary>
     private const float VistaOceanHalfExtent = 2850f;

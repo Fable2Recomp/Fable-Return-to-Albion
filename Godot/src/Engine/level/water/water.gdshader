@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
+render_mode blend_mix, cull_disabled, depth_draw_never;
 
 #include "res://src/Engine/level/environment/sky_dome.gdshaderinc"
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
@@ -78,6 +78,7 @@ varying vec3 v_world;
 varying vec3 v_eye_local;
 varying vec3 v_sun_local;
 varying vec4 v_shore; // xy = shore_dir, z = water depth above terrain, w = terrain slope
+varying float v_cloud_t;
 
 float body_edge(vec2 p) {
 	if (!has_body_bounds) {
@@ -148,7 +149,6 @@ void add_swell_wave(vec2 p, float t, vec2 dir, float len_m, float amp_m, inout v
 void vertex() {
 	vec3 pos = VERTEX;
 	v_eye_local = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
-	// Light direction is free of body translation (w = 0).
 	v_sun_local = (inverse(MODEL_MATRIX) * vec4(fable_sun_toward, 0.0)).xyz;
 	v_shore = vec4(0.0, 0.0, 4.0, 0.0);
 
@@ -170,8 +170,8 @@ void vertex() {
 		} else if (water_quality_tier >= 3 && !ocean_mode) {
 			vec2 swell_slope = vec2(0.0);
 			float swell_h = 0.0;
-			add_swell_wave(pos.xz, TIME * 0.85, vec2(0.940, 0.342), 13.7, 0.016, swell_slope, swell_h);
-			add_swell_wave(pos.xz, TIME * 0.85, vec2(-0.515, 0.857), 8.3, 0.010, swell_slope, swell_h);
+			add_swell_wave(pos.xz, TIME * 0.85, vec2(0.940, 0.342), 13.7, 0.014, swell_slope, swell_h);
+			add_swell_wave(pos.xz, TIME * 0.85, vec2(-0.515, 0.857), 8.3, 0.009, swell_slope, swell_h);
 			float shore_att = clamp(dt * 0.75, 0.0, 1.0) * body_edge(pos.xz);
 			pos.y += swell_h * shore_att;
 		}
@@ -180,6 +180,7 @@ void vertex() {
 	VERTEX = pos;
 	v_local = pos;
 	v_world = (MODEL_MATRIX * vec4(pos, 1.0)).xyz;
+	v_cloud_t = guest_water ? 1.0 : surface_cloud_transmission(v_world);
 }
 
 // Reoriented normal mapping in Z-up tangent space.
@@ -233,8 +234,12 @@ vec3 dome_reflect(vec3 r_world) {
 }
 
 // Reconstructs positive view-space linear depth with explicit textureLod (DXIL-safe in loops).
+// In Forward+ reversed-Z, d == 0.0 is the infinite sky plane; return 1e6 so sky pixels never match SSR rays.
 float linear_depth(vec2 uv, mat4 inv_proj) {
 	float d = textureLod(depth_tex, uv, 0.0).r;
+	if (d <= 1e-5) {
+		return 1e6;
+	}
 	float raw_w = (inv_proj[2].w * d) + inv_proj[3].w;
 	float safe_w = abs(raw_w) > 1e-6 ? raw_w : 1e-6;
 	return -((inv_proj[2].z * d) + inv_proj[3].z) / safe_w;
@@ -287,6 +292,7 @@ void fragment() {
 	if (!guest_water && modern_alpha <= 0.002) {
 		// Depth-draw-never transparent early-out with zero `discard;`.
 		ALBEDO = vec3(0.0);
+		EMISSION = vec3(0.0);
 		ALPHA = 0.0;
 	} else {
 		vec3 view = v_eye_local - v_local;
@@ -301,14 +307,15 @@ void fragment() {
 		float swell_h = 0.0;
 
 		if (!guest_water && water_quality_tier >= 1 && !ocean_mode) {
-			float shore_damp = has_terrain_height ? clamp(dt * 0.85, 0.15, 1.0) : 1.0;
-			add_swell_wave(v_local.xz, TIME * 0.85, vec2(0.940, 0.342), 13.7, 0.032 * shore_damp, swell_slope, swell_h);
-			add_swell_wave(v_local.xz, TIME * 0.85, vec2(-0.515, 0.857), 8.3, 0.022 * shore_damp, swell_slope, swell_h);
+			float shore_damp = (has_terrain_height ? clamp(dt * 0.85, 0.15, 1.0) : 1.0)
+				* smoothstep(140.0, 25.0, dist);
+			add_swell_wave(v_local.xz, TIME * 0.85, vec2(0.940, 0.342), 13.7, 0.028 * shore_damp, swell_slope, swell_h);
+			add_swell_wave(v_local.xz, TIME * 0.85, vec2(-0.515, 0.857), 8.3, 0.019 * shore_damp, swell_slope, swell_h);
 			if (water_quality_tier >= 2) {
-				add_swell_wave(v_local.xz, TIME * 0.85, vec2(0.292, -0.956), 4.9, 0.014 * shore_damp, swell_slope, swell_h);
-				add_swell_wave(v_local.xz, TIME * 0.85, vec2(-0.875, -0.485), 2.9, 0.009 * shore_damp, swell_slope, swell_h);
+				add_swell_wave(v_local.xz, TIME * 0.85, vec2(0.292, -0.956), 4.9, 0.012 * shore_damp, swell_slope, swell_h);
+				add_swell_wave(v_local.xz, TIME * 0.85, vec2(-0.875, -0.485), 2.9, 0.008 * shore_damp, swell_slope, swell_h);
 			}
-			w_warp = swell_slope * 1.4;
+			w_warp = swell_slope * 1.2;
 		}
 
 		vec2 uv0 = ((v_local.xz + w_warp) * w_scale.xy) + phase01;
@@ -363,20 +370,21 @@ void fragment() {
 				col = col * fog_t + (vec3(1.0) - fog_t) * fog_c;
 			}
 
-			ALBEDO = max(col, vec3(0.0));
+			ALBEDO = vec3(0.0);
+			EMISSION = max(col, vec3(0.0));
 			ALPHA = mask_alpha;
 		} else {
 			vec3 n_detail = rnm_blend(t0, t1);
 
-			// Non-axis-aligned rotated 3rd micro-ripple octave breaks sliding grid repetition.
-			if (water_quality_tier >= 1 && dist < 95.0) {
+			// Near-field rotated 3rd micro-ripple octave; strictly faded out by 28 m so FSR1 + aniso=0 never speckles.
+			if (water_quality_tier >= 1 && dist < 28.0) {
 				const mat2 ROT37 = mat2(vec2(0.8, 0.6), vec2(-0.6, 0.8));
-				vec2 s2 = w_scale.zw * 2.13;
-				vec2 uv2 = (ROT37 * v_local.xz) * s2 + vec2(TIME * 0.023, -TIME * 0.031);
+				vec2 s2 = w_scale.zw * 2.05;
+				vec2 uv2 = (ROT37 * v_local.xz) * s2 + vec2(TIME * 0.021, -TIME * 0.029);
 				vec2 ddx2 = (ROT37 * local_xz_dx) * s2;
 				vec2 ddy2 = (ROT37 * local_xz_dy) * s2;
 				vec3 t2 = sample_water_normal(uv2, ddx2, ddy2);
-				float micro_fade = smoothstep(95.0, 18.0, dist) * 0.36;
+				float micro_fade = smoothstep(28.0, 6.0, dist) * 0.28;
 				t2 = normalize(mix(vec3(0.0, 0.0, 1.0), t2, micro_fade));
 				n_detail = rnm_blend(n_detail, t2);
 			}
@@ -387,79 +395,89 @@ void fragment() {
 					* (1.0 - smoothstep(18.0, 42.0, dist));
 			}
 
-			// Correct NormalScale application: scale horizontal XY slopes instead of squashing Y.
-			float normal_strength = clamp(w_bias.z, 0.10, 1.40);
-			float dist_fade = mix(1.0, 0.45, clamp(dist / 120.0, 0.0, 1.0));
-			vec2 surf_nxy = ((n_detail.xy * normal_strength) + (swell_slope * normal_strength) + rain_n + w_wave_n)
-				* dist_fade;
-			vec3 Nf = normalize(vec3(surf_nxy.x, n_detail.z, surf_nxy.y));
+			// Derivative / Toksvig footprint damping prevents sub-pixel normal & specular fireflies under FSR.
+			float uv_footprint = max(length(local_xz_dx * w_scale.x), length(local_xz_dy * w_scale.x));
+			float aa_damp = 1.0 / (1.0 + (uv_footprint * uv_footprint * 85.0));
+			float roughness = clamp(0.045 + clamp(uv_footprint * 6.5, 0.0, 0.42), 0.045, 0.48);
 
-			// Derivative / Toksvig specular roughness anti-aliasing prevents distant shimmer sparkles.
-			float footprint = length(vec2(length(local_xz_dx * w_scale.x), length(local_xz_dy * w_scale.x)));
-			float roughness = clamp(0.035 + clamp(footprint * 11.0, 0.0, 0.55), 0.035, 0.65);
+			// Fable's WATER_NORMAL_SCALE (w_bias.z) scales vertical Z: lower values amplify gentle normal-map slopes.
+			float z_scale = clamp(w_bias.z, 0.20, 2.0);
+			vec2 combined_xy = (((n_detail.xy / z_scale) + swell_slope + rain_n) * aa_damp) + w_wave_n;
+			float xy_len = length(combined_xy);
+			if (xy_len > 0.85) {
+				combined_xy *= 0.85 / xy_len;
+			}
+			// Nf drives 3D ripple shading, Fresnel contrast, and wave highlights; Nr keeps reflected silhouettes coherent.
+			vec3 Nf = normalize(vec3(combined_xy.x, n_detail.z, combined_xy.y));
+			float refl_tilt = clamp(w_reflp.x * 0.28, 0.14, 0.55);
+			vec3 Nr = normalize(mix(vec3(0.0, 1.0, 0.0), Nf, refl_tilt));
 
 			float water_lin = -VERTEX.z;
 			float scene_here = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
 			float raw_depth_here = max(scene_here - water_lin, 0.0);
 
-			float ndv = clamp(dot(V, Nf), 0.001, 1.0);
-			float fres_phys = 0.02 + ((0.98 - (0.55 * roughness)) * pow(1.0 - ndv, 5.0));
-			vec3 shallow_deep = mix(w_deep.rgb, w_surface.rgb, clamp(fres_phys * 1.4, 0.0, 1.0));
+			float ndv_f = clamp(dot(V, Nf), 0.001, 1.0);
+			float fres_curve = 0.08 + ((0.92 - (0.35 * roughness)) * pow(1.0 - ndv_f, 3.0));
 
-			// Depth-accurate underwater refraction + chromatic Beer-Lambert absorption.
-			vec3 under = shallow_deep;
+			// Underwater transmitted scene (lit) vs in-scattered water volume reflectance (lit via ALBEDO + light()).
+			vec3 refr_transmitted = vec3(0.0);
+			vec3 volume_albedo = mix(w_deep.rgb, w_surface.rgb, clamp(fres_curve, 0.0, 1.0));
 			if (!ocean_mode) {
-				float refr_strength = clamp(w_reflp.y, 0.04, 1.2) * 0.14 *
-					clamp(raw_depth_here * 0.70, 0.0, 1.0) * smoothstep(95.0, 18.0, dist);
-				vec2 refr_offset = water_quality_tier >= 1 ? (surf_nxy * refr_strength) : vec2(0.0);
+				float refr_strength = clamp(w_reflp.y, 0.05, 1.5) * 0.09 *
+					clamp(raw_depth_here * 0.85, 0.0, 1.0) * smoothstep(95.0, 16.0, dist);
+				vec2 refr_offset = water_quality_tier >= 1 ? (Nr.xz * refr_strength) : vec2(0.0);
 				vec2 refr_uv = clamp(SCREEN_UV + refr_offset, vec2(0.001), vec2(0.999));
 				float refr_lin = water_quality_tier >= 1
 					? linear_depth(refr_uv, INV_PROJECTION_MATRIX)
 					: scene_here;
-				if (refr_lin <= water_lin) {
+				if (refr_lin <= water_lin || refr_lin > 9e5) {
 					refr_uv = SCREEN_UV;
 					refr_lin = scene_here;
 					refr_offset = vec2(0.0);
 				}
 
 				vec3 Rr = max(textureLod(screen_tex, refr_uv, 0.0).rgb, vec3(0.0));
-				if (water_quality_tier >= 3 && dist < 35.0 && length(refr_offset) > 1e-4) {
-					vec2 uv_r = clamp(refr_uv + (refr_offset * 0.14), vec2(0.001), vec2(0.999));
-					vec2 uv_b = clamp(refr_uv - (refr_offset * 0.14), vec2(0.001), vec2(0.999));
-					if (linear_depth(uv_r, INV_PROJECTION_MATRIX) > water_lin) {
+				if (water_quality_tier >= 3 && dist < 30.0 && length(refr_offset) > 1e-4) {
+					vec2 uv_r = clamp(refr_uv + (refr_offset * 0.12), vec2(0.001), vec2(0.999));
+					vec2 uv_b = clamp(refr_uv - (refr_offset * 0.12), vec2(0.001), vec2(0.999));
+					float lin_r = linear_depth(uv_r, INV_PROJECTION_MATRIX);
+					float lin_b = linear_depth(uv_b, INV_PROJECTION_MATRIX);
+					if (lin_r > water_lin && lin_r < 9e5) {
 						Rr.r = max(textureLod(screen_tex, uv_r, 0.0).r, 0.0);
 					}
-					if (linear_depth(uv_b, INV_PROJECTION_MATRIX) > water_lin) {
+					if (lin_b > water_lin && lin_b < 9e5) {
 						Rr.b = max(textureLod(screen_tex, uv_b, 0.0).b, 0.0);
 					}
 				}
 
-				float depth_w = max(refr_lin - water_lin, 0.0);
-				float clarity_depth = clamp(w_bias.w, 2.0, 14.0);
-				vec3 extinction = vec3(1.55, 0.62, 0.48) / max(clarity_depth * 0.45, 0.5);
+				float depth_w = clamp(refr_lin - water_lin, 0.0, 60.0);
+				float absorb_scale = 1.0 / clamp(w_bias.w * 0.22, 0.75, 3.0);
+				vec3 extinction = vec3(1.75, 0.88, 0.72) * absorb_scale;
 				vec3 transmittance = exp(-depth_w * extinction);
-				float deep_mix = 1.0 - exp(-depth_w / max(clarity_depth * 0.65, 1.0));
+				float deep_mix = 1.0 - exp(-depth_w * 0.75);
 				vec3 scatter_col = mix(w_surface.rgb, w_deep.rgb, deep_mix);
-				vec3 sss = w_surface.rgb * fable_sun_colour *
-					(0.22 * exp(-depth_w * 0.85) * clamp((dot(-V, L) * 0.5) + 0.5, 0.2, 1.0) * clamp(L.y * 3.0, 0.0, 1.0));
-				under = (Rr * transmittance) + (scatter_col * (vec3(1.0) - transmittance)) + sss;
+				refr_transmitted = Rr * transmittance;
+				volume_albedo = scatter_col * (vec3(1.0) - transmittance);
 			}
 
-			// Sky dome base reflection in world space (keeps region X-mirror exact).
-			vec3 R_local = reflect(-V, Nf);
-			R_local.y = abs(R_local.y);
-			vec3 R_world = normalize((MODEL_MATRIX * vec4(R_local, 0.0)).xyz);
+			// World-space reflection direction clamped above the horizontal water plane so rays never dip into lakebed mud.
+			vec3 R_local = reflect(-V, Nr);
+			vec3 R_world = (MODEL_MATRIX * vec4(R_local, 0.0)).xyz;
+			R_world.y = max(R_world.y, 0.012);
+			R_world = normalize(R_world);
 			vec3 sky_refl = has_dome ? dome_reflect(R_world) : sky_constant;
 			vec3 refl_col = sky_refl;
 
 			float refl_str = clamp(w_deep.w, 0.0, 1.0);
-			float contact_alpha = ocean_mode ? 1.0 : clamp(raw_depth_here * 4.0, 0.0, 1.0);
-			float frefl = clamp(fres_phys + (w_bias.y * 0.35), 0.0, 1.0);
-			float grazing_lift = smoothstep(35.0, 140.0, dist) * 0.22;
-			float F = clamp((frefl + grazing_lift) * refl_str * mix(0.35, 1.0, contact_alpha), 0.0, 0.98);
+			float artist_bias = clamp((w_bias.x * 0.30) + (w_bias.y * 0.45), -0.05, 0.45);
+			float depth_reflect = ocean_mode ? 1.0 : smoothstep(0.0, 2.2, raw_depth_here);
+			float dist_reflect = ocean_mode ? 1.0 : smoothstep(6.0, 55.0, dist);
+			float shore_clear = ocean_mode ? 1.0 : mix(0.25, 1.0, clamp(raw_depth_here * 3.0, 0.0, 1.0));
+			float base_f = max(fres_curve + artist_bias, mix(0.14, 0.58, depth_reflect * mix(0.45, 1.0, dist_reflect)));
+			float F = clamp(base_f * refl_str * shore_clear, 0.0, 0.95);
 
 			if (planar_reflection) {
-				vec2 raw_planar_uv = SCREEN_UV + (surf_nxy * 0.22 * clamp(w_reflp.x, 0.1, 1.5));
+				vec2 raw_planar_uv = SCREEN_UV + (Nr.xz * 0.16 * clamp(w_reflp.x, 0.1, 1.5));
 				vec2 planar_uv = clamp(vec2(1.0 - raw_planar_uv.x, raw_planar_uv.y), vec2(0.001), vec2(0.999));
 				bool second_view = second_reflection &&
 					distance(CAMERA_POSITION_WORLD, second_eye) < distance(CAMERA_POSITION_WORLD, first_eye);
@@ -467,120 +485,102 @@ void fragment() {
 					? textureLod(reflection_tex_second, planar_uv, 0.0).rgb
 					: textureLod(reflection_tex, planar_uv, 0.0).rgb, vec3(0.0));
 				vec2 pb = min(planar_uv, 1.0 - planar_uv);
-				float planar_edge = smoothstep(0.0, 0.05, min(pb.x, pb.y));
-				refl_col = mix(sky_refl, planar_col, planar_edge * 0.92);
+				float planar_edge = smoothstep(0.0, 0.06, min(pb.x, pb.y));
+				refl_col = mix(sky_refl, planar_col, planar_edge * 0.94);
 			}
 
-			// Perspective-correct contact SSR with Bayer jitter and 4-step binary refinement.
-			if (water_quality_tier >= 1 && F > 0.02) {
-				int max_steps = planar_reflection
-					? (water_quality_tier >= 3 ? 16 : (water_quality_tier == 2 ? 12 : 8))
-					: (water_quality_tier >= 3 ? 22 : (water_quality_tier == 2 ? 16 : 12));
-				float step_growth = water_quality_tier >= 3 ? 1.15 : (water_quality_tier == 2 ? 1.18 : 1.24);
-				float max_ssr_dist = planar_reflection ? 28.0 : 120.0;
+			// Full-range perspective SSR (~60-110 m reach) with overlap slab thickness (zero Bayer checkerboard speckles)
+			// and 4-step binary search refinement. Captures characters, NPCs, entity pillars, and shoreline trees.
+			if (water_quality_tier >= 1 && F > 0.02 && dist < 150.0) {
+				int max_steps = water_quality_tier >= 3 ? 24 : (water_quality_tier == 2 ? 18 : 14);
+				float t_start = water_quality_tier >= 3 ? 0.22 : (water_quality_tier == 2 ? 0.26 : 0.30);
+				float step_growth = water_quality_tier >= 3 ? 1.31 : (water_quality_tier == 2 ? 1.40 : 1.50);
 
-				if (dist < (max_ssr_dist * 2.5)) {
-					vec3 world_n = normalize((MODEL_MATRIX * vec4(Nf, 0.0)).xyz);
-					vec3 view_n = normalize((VIEW_MATRIX * vec4(world_n, 0.0)).xyz);
-					vec3 ro = VERTEX;
-					vec3 rd = normalize(reflect(normalize(ro), view_n));
-					if (dot(rd, view_n) > 0.02) {
-						vec4 clip_ro = PROJECTION_MATRIX * vec4(ro, 1.0);
-						vec4 clip_rd = PROJECTION_MATRIX * vec4(rd, 0.0);
+				vec3 ro = VERTEX;
+				vec3 rd = normalize((VIEW_MATRIX * vec4(R_world, 0.0)).xyz);
+				vec4 clip_ro = PROJECTION_MATRIX * vec4(ro, 1.0);
+				vec4 clip_rd = PROJECTION_MATRIX * vec4(rd, 0.0);
 
-						float jitter = fable_bayer_threshold(FRAGCOORD.xy);
-						float t_prev = 0.0;
-						float t_ray = 0.08 + (jitter * 0.14);
-						bool found = false;
-						float hit_lo = 0.0;
-						float hit_hi = 0.0;
-						float hit_thickness = 0.1;
-						vec2 hit_uv = vec2(0.0);
+				float jitter = fable_bayer_threshold(FRAGCOORD.xy);
+				float t_prev = 0.06;
+				float t_ray = t_start * (0.88 + (0.24 * jitter));
+				bool found = false;
+				float hit_lo = 0.0;
+				float hit_hi = 0.0;
+				float hit_thickness = 0.25;
+				vec2 hit_uv = vec2(0.0);
 
-						const int MAX_SSR = 22;
-						for (int i = 0; i < MAX_SSR; i++) {
-							if (i >= max_steps || t_ray > max_ssr_dist) {
-								break;
-							}
-							vec4 clip = clip_ro + (clip_rd * t_ray);
-							if (clip.w <= 0.01) {
-								break;
-							}
-							float safe_w = max(clip.w, 1e-4);
-							vec2 uv = ((clip.xy / safe_w) * 0.5) + 0.5;
-							if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-								break;
-							}
+				const int MAX_SSR = 24;
+				for (int i = 0; i < MAX_SSR; i++) {
+					if (i >= max_steps || t_ray > 125.0) {
+						break;
+					}
+					vec4 clip = clip_ro + (clip_rd * t_ray);
+					if (clip.w <= 0.01) {
+						break;
+					}
+					float safe_w = max(clip.w, 1e-4);
+					vec2 uv = ((clip.xy / safe_w) * 0.5) + 0.5;
+					if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+						break;
+					}
 
-							float scene = linear_depth(uv, INV_PROJECTION_MATRIX);
-							float ray = -(ro.z + (rd.z * t_ray));
-							float thickness = 0.06 + (t_ray * 0.10);
-							if (scene > 0.25 && scene < ray && (ray - scene) < thickness) {
-								found = true;
-								hit_lo = t_prev;
-								hit_hi = t_ray;
-								hit_thickness = thickness;
-								hit_uv = uv;
-								break;
-							}
+					float scene = linear_depth(uv, INV_PROJECTION_MATRIX);
+					float ray = -(ro.z + (rd.z * t_ray));
+					float step_span = t_ray - t_prev;
+					float thickness = max(step_span * 1.40, 0.20 + (t_ray * 0.18));
+					if (scene < 9e5 && scene > 0.20 && scene < ray && (ray - scene) < thickness) {
+						found = true;
+						hit_lo = t_prev;
+						hit_hi = t_ray;
+						hit_thickness = thickness;
+						hit_uv = uv;
+						break;
+					}
 
-							t_prev = t_ray;
-							t_ray *= step_growth;
+					t_prev = t_ray;
+					t_ray *= step_growth;
+				}
+
+				if (found) {
+					float ray_best = -(ro.z + (rd.z * hit_hi));
+					float scene_best = linear_depth(hit_uv, INV_PROJECTION_MATRIX);
+					for (int b = 0; b < 4; b++) {
+						float mid = 0.5 * (hit_lo + hit_hi);
+						vec4 clip_m = clip_ro + (clip_rd * mid);
+						float safe_wm = max(clip_m.w, 1e-4);
+						vec2 uv_m = clamp(((clip_m.xy / safe_wm) * 0.5) + 0.5, vec2(0.001), vec2(0.999));
+						float scene_m = linear_depth(uv_m, INV_PROJECTION_MATRIX);
+						float ray_m = -(ro.z + (rd.z * mid));
+						if (scene_m < 9e5 && scene_m > 0.20 && scene_m < ray_m) {
+							hit_hi = mid;
+							hit_uv = uv_m;
+							ray_best = ray_m;
+							scene_best = scene_m;
+						} else {
+							hit_lo = mid;
 						}
+					}
 
-						if (found) {
-							float ray_best = -(ro.z + (rd.z * hit_hi));
-							float scene_best = linear_depth(hit_uv, INV_PROJECTION_MATRIX);
-							for (int b = 0; b < 4; b++) {
-								float mid = 0.5 * (hit_lo + hit_hi);
-								vec4 clip_m = clip_ro + (clip_rd * mid);
-								float safe_wm = max(clip_m.w, 1e-4);
-								vec2 uv_m = clamp(((clip_m.xy / safe_wm) * 0.5) + 0.5, vec2(0.001), vec2(0.999));
-								float scene_m = linear_depth(uv_m, INV_PROJECTION_MATRIX);
-								float ray_m = -(ro.z + (rd.z * mid));
-								if (scene_m > 0.25 && scene_m < ray_m) {
-									hit_hi = mid;
-									hit_uv = uv_m;
-									ray_best = ray_m;
-									scene_best = scene_m;
-								} else {
-									hit_lo = mid;
-								}
-							}
-
-							vec2 b = min(hit_uv, 1.0 - hit_uv);
-							float edge = smoothstep(0.0, 0.08, b.x) * smoothstep(0.0, 0.14, hit_uv.y)
-								* smoothstep(0.0, 0.06, 1.0 - hit_uv.y);
-							float conf = 1.0 - clamp((ray_best - scene_best) / max(hit_thickness, 0.05), 0.0, 1.0);
-							float hit_weight = edge * conf;
-							if (hit_weight > 0.004) {
-								vec3 ssr_col = max(textureLod(screen_tex, hit_uv, roughness * 2.2).rgb, vec3(0.0));
-								float ssr_mix = planar_reflection
-									? (hit_weight * smoothstep(max_ssr_dist, 5.0, hit_hi) * 0.85)
-									: hit_weight;
-								refl_col = mix(refl_col, ssr_col, ssr_mix);
-							}
-						}
+					vec2 b = min(hit_uv, 1.0 - hit_uv);
+					float edge = smoothstep(0.0, 0.07, b.x) * smoothstep(0.0, 0.12, hit_uv.y)
+						* smoothstep(0.0, 0.05, 1.0 - hit_uv.y);
+					float gap = max(ray_best - scene_best, 0.0);
+					float conf = 1.0 - smoothstep(hit_thickness * 0.45, hit_thickness, gap);
+					float hit_weight = edge * conf * smoothstep(145.0, 95.0, dist);
+					if (hit_weight > 0.004) {
+						vec3 ssr_col = max(textureLod(screen_tex, hit_uv, roughness * 2.0).rgb, vec3(0.0));
+						refl_col = mix(refl_col, ssr_col, hit_weight);
 					}
 				}
 			}
 
-			vec3 col = mix(under, refl_col, F);
+			vec3 lit_emissive = (refr_transmitted * (1.0 - F)) + (refl_col * F);
+			vec3 lit_albedo = volume_albedo * (1.0 - F);
 
-			// Sun sparkle corridor attenuated by overhead dynamic clouds (scene-referred HDR).
-			float cloud_t = surface_cloud_transmission(v_world);
-			vec3 H = normalize(L + V);
-			float gb = mix(0.25, 1.25, clamp(w_reflp.z, 0.0, 2.0));
-			vec3 g = normalize(vec3(Nf.x * gb, Nf.y, Nf.z * gb));
-			float ndh = clamp(dot(g, H), 0.0, 1.0);
-			float power = max(w_glit.x * (1.0 - (roughness * 0.65)), 8.0);
-			float glare = pow(ndh, power) + (0.05 * pow(ndh, max(power * 0.12, 4.0)));
-			float corridor = pow(clamp(dot(reflect(-V, vec3(0.0, 1.0, 0.0)), L), 0.0, 1.0), 14.0);
-			col += fable_sun_colour * max(w_reflp.w, 0.0) * glare * corridor *
-				clamp(L.y * 6.0, 0.0, 1.0) * cloud_t;
-
-			// Shoreline foam: surf breakers on coastlines vs gentle meniscus on calm inland lakes.
+			// Shoreline foam routed through lit_albedo so shadows and night darkness attenuate foam naturally.
 			if (!ocean_mode && dist < 85.0) {
+				float foam_w = 0.0;
 				if (coastal_surf) {
 					float w_surge = clamp(swell_h / max(wave_amp, 0.04), -1.0, 1.0);
 					float lap = 0.6 + (0.4 * w_surge);
@@ -595,37 +595,84 @@ void fragment() {
 							(v_local.xz * 0.19) - vec2(TIME * 0.016, TIME * 0.010),
 							local_xz_dx * 0.19, local_xz_dy * 0.19).y;
 						float pattern = mix(f1, f0, clamp((band - 0.4) / 0.4, 0.0, 1.0));
-						float foam = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern)));
-
-						vec3 zen = has_dome ? dome_reflect(vec3(0.0, 1.0, 0.0)) : sky_constant;
-						vec3 foam_col = (zen * 0.75) + (fable_sun_colour * 0.30 * clamp(L.y * 2.0, 0.0, 1.0));
-						col = mix(col, foam_col, foam * 0.75);
+						foam_w = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern))) * 0.72;
 					}
 				} else if (dist < 45.0) {
 					float calm_lap = 0.55 + (0.25 * sin((TIME * 1.1) + dot(v_local.xz, vec2(0.31, 0.17))));
-					float meniscus = (1.0 - clamp(raw_depth_here / max(foam_width * 0.35, 0.12), 0.0, 1.0))
+					float meniscus = (1.0 - clamp(raw_depth_here / max(foam_width * 0.30, 0.10), 0.0, 1.0))
 						* calm_lap * (1.0 - smoothstep(beach_slope * 0.7, beach_slope * 1.4, slope))
 						* smoothstep(45.0, 12.0, dist);
 					if (meniscus > 0.008) {
 						float f0 = textureGrad(normal_map,
 							(v_local.xz * 0.42) + vec2(TIME * 0.010, TIME * 0.007),
 							local_xz_dx * 0.42, local_xz_dy * 0.42).x;
-						float foam = smoothstep(0.42, 0.95, meniscus * (0.40 + (0.85 * f0)));
-						vec3 zen = has_dome ? dome_reflect(vec3(0.0, 1.0, 0.0)) : sky_constant;
-						vec3 foam_col = (zen * 0.70) + (fable_sun_colour * 0.22 * clamp(L.y * 2.0, 0.0, 1.0));
-						col = mix(col, foam_col, foam * 0.35);
+						foam_w = smoothstep(0.45, 0.95, meniscus * (0.40 + (0.85 * f0))) * 0.32;
 					}
+				}
+
+				if (foam_w > 0.001) {
+					lit_albedo = mix(lit_albedo, vec3(0.62), foam_w);
+					lit_emissive *= (1.0 - (foam_w * 0.65));
 				}
 			}
 
-			vec3 fog_t;
-			vec3 fog_c;
+			vec3 fog_t = vec3(1.0);
+			vec3 fog_c = vec3(0.0);
 			if (fable_atmosphere_terms(VERTEX, INV_VIEW_MATRIX, fog_t, fog_c)) {
-				col = col * fog_t + (vec3(1.0) - fog_t) * fog_c;
+				fable_atmosphere_apply(fog_t, fog_c, 1.0, lit_albedo, lit_emissive);
 			}
 
-			ALBEDO = max(col, vec3(0.0));
+			vec3 world_nf = normalize((MODEL_MATRIX * vec4(Nf, 0.0)).xyz);
+			NORMAL = normalize((VIEW_MATRIX * vec4(world_nf, 0.0)).xyz);
+			ROUGHNESS = roughness;
+			METALLIC = 0.0;
+			BACKLIGHT = fog_t;
+			ALBEDO = max(lit_albedo, vec3(0.0));
+			EMISSION = max(lit_emissive, vec3(0.0));
 			ALPHA = modern_alpha;
+		}
+	}
+}
+
+// Forward+ water lighting: directional sun/moon shadows + GGX ripple highlights + placed/FX lamps.
+// Guarded with `if` rather than `return;` per Godot's light processor rule.
+void light() {
+	if (!guest_water && ALPHA > 0.002) {
+		float cloud_gate = LIGHT_IS_DIRECTIONAL ? v_cloud_t : 1.0;
+		vec3 radiance = (LIGHT_COLOR * (1.0 / PI)) * ATTENUATION * cloud_gate;
+		float ndl = dot(NORMAL, LIGHT);
+
+		// Subsurface wrap diffuse illuminates ALBEDO water volume & wave slopes in sunlit areas
+		// while dropping cleanly into shadow behind pillars, cliffs, bridges, and trees.
+		float wrap_diff = clamp((ndl + 0.35) / 1.35, 0.0, 1.0);
+		DIFFUSE_LIGHT += radiance * wrap_diff;
+
+		// Dual-lobe Trowbridge-Reitz GGX: crisp sparkle + broad wave-facet sheen across all camera angles.
+		if (ndl > -0.15 && SPECULAR_AMOUNT > 0.0) {
+			vec3 H = normalize(LIGHT + VIEW);
+			float ndh = clamp(dot(NORMAL, H), 0.0, 1.0);
+			float ndv_l = clamp(dot(NORMAL, VIEW), 0.001, 1.0);
+			float ndl_pos = clamp((ndl * 0.85) + 0.15, 0.001, 1.0);
+			float vdh = clamp(dot(VIEW, H), 0.0, 1.0);
+
+			float a_sharp = clamp(ROUGHNESS * 0.85, 0.045, 0.42);
+			float a2_s = a_sharp * a_sharp;
+			float denom_s = (ndh * ndh * (a2_s - 1.0)) + 1.0;
+			float D_s = a2_s / max(PI * denom_s * denom_s, 1e-5);
+			float gv_s = ndl_pos * sqrt((ndv_l * ndv_l * (1.0 - a2_s)) + a2_s);
+			float gl_s = ndv_l * sqrt((ndl_pos * ndl_pos * (1.0 - a2_s)) + a2_s);
+			float Vis_s = 0.5 / max(gv_s + gl_s, 1e-4);
+
+			float a_sheen = clamp((ROUGHNESS * 2.4) + 0.16, 0.20, 0.65);
+			float a2_w = a_sheen * a_sheen;
+			float denom_w = (ndh * ndh * (a2_w - 1.0)) + 1.0;
+			float D_w = a2_w / max(PI * denom_w * denom_w, 1e-5);
+
+			float f_spec = 0.02 + (0.98 * pow(1.0 - vdh, 5.0));
+			float glit_scale = LIGHT_IS_DIRECTIONAL ? clamp(w_reflp.w * 0.18, 0.40, 1.80) : 1.0;
+			// Soft-cap single-pixel NDF spikes so sub-pixel waves never fire isolated FSR speckles.
+			float spec_brdf = (min(D_s * Vis_s, 16.0) * glit_scale) + (D_w * 0.22);
+			SPECULAR_LIGHT += radiance * (spec_brdf * f_spec * ndl_pos * SPECULAR_AMOUNT) * BACKLIGHT;
 		}
 	}
 }
