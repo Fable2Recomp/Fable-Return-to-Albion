@@ -28,15 +28,8 @@ public static class RuntimeCVarsAndroid
             + "named preset takes that preset's newer values once, on its next start."),
     };
 
-    /// <summary>The sun shadow's edge filter (<see cref="Refii.AndroidRuntime.AndroidSunShadows"/>), after <c>sun_shadow_map</c>.</summary>
-    public static readonly RuntimeCVarDefinition[] SunShadowFilter =
-    {
-        new(Refii.AndroidRuntime.AndroidSunShadows.FilterKey, LightingCategory, RuntimeCVarType.Int, "0",
-            "Android: how smoothly the edges of the sun's shadows are filtered. 0 is hard (Godot's "
-            + "default on a phone, stair-stepped), 1 to 5 are Godot's Soft Very Low to Soft Ultra; "
-            + "1 is grainy without TAA. The desktop always filters at Soft Medium. Options in the "
-            + "game steps it, and it applies at once."),
-    };
+    /// <summary>Retained empty group after promoting <c>sun_shadow_filter</c> to a shared desktop + mobile CVar.</summary>
+    public static readonly RuntimeCVarDefinition[] SunShadowFilter = System.Array.Empty<RuntimeCVarDefinition>();
 
     /// <summary>The launcher's Skip intro videos (<see cref="Refii.AndroidRuntime.AndroidStartup"/>), beside Baked lamp shadows.</summary>
     public static readonly RuntimeCVarDefinition[] IntroVideos =

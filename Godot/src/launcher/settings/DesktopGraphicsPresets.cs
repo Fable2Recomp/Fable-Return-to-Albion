@@ -22,7 +22,7 @@ public static class DesktopGraphicsPresets
     public const string RevisionKey = "performance_preset_revision";
 
     /// <summary>Current revision of the desktop preset definitions.</summary>
-    public const int Revision = 4;
+    public const int Revision = 5;
 
     /// <summary>Preset tuned for entry-level integrated GPUs and battery play.</summary>
     public const string Low = "low";
@@ -63,7 +63,8 @@ public static class DesktopGraphicsPresets
             ["volumetric_fog"] = "true",
             ["sun_shadows"] = "true",
             ["sun_shadow_map"] = "2048",
-            ["sun_shadow_splits"] = "2",
+            ["sun_shadow_splits"] = "4",
+            ["sun_shadow_filter"] = "3",
             ["sun_shadow_distance"] = "150",
             ["tree_shadow_reach"] = "stated",
             ["placed_light_limit"] = "24",
@@ -80,6 +81,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "1.25",
             ["prop_cull_distance_scale"] = "0.85",
             ["entity_draw_distance_scale"] = "1.5",
+            [Refii.Physics.Engine_ClothBody.DistanceScaleKey] = "1.25",
             ["corpse_lifetime_seconds"] = "45",
         };
 
@@ -88,6 +90,8 @@ public static class DesktopGraphicsPresets
         {
             ["fsr_quality"] = "quality",
             ["volumetric_fog"] = "false",
+            ["sun_shadow_splits"] = "2",
+            ["sun_shadow_filter"] = "2",
             ["sun_shadow_distance"] = "100",
             ["placed_light_limit"] = "16",
             ["placed_light_shadows"] = "true",
@@ -101,6 +105,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "2",
             ["prop_cull_distance_scale"] = "0.65",
             ["entity_draw_distance_scale"] = "1",
+            [Refii.Physics.Engine_ClothBody.DistanceScaleKey] = "0.75",
             ["corpse_lifetime_seconds"] = "10",
         });
 
@@ -115,7 +120,8 @@ public static class DesktopGraphicsPresets
             ["gi_half_resolution"] = "true",
             ["volumetric_fog"] = "true",
             ["sun_shadow_map"] = "4096",
-            ["sun_shadow_splits"] = "2",
+            ["sun_shadow_splits"] = "4",
+            ["sun_shadow_filter"] = "4",
             ["sun_shadow_distance"] = "200",
             ["tree_shadow_reach"] = "full",
             ["placed_light_limit"] = "32",
@@ -132,6 +138,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "1",
             ["prop_cull_distance_scale"] = "1",
             ["entity_draw_distance_scale"] = "2",
+            [Refii.Physics.Engine_ClothBody.DistanceScaleKey] = "2",
             ["corpse_lifetime_seconds"] = "120",
         });
 
@@ -141,6 +148,7 @@ public static class DesktopGraphicsPresets
             ["gi_half_resolution"] = "false",
             ["sun_shadow_map"] = "8192",
             ["sun_shadow_splits"] = "4",
+            ["sun_shadow_filter"] = "5",
             ["sun_shadow_distance"] = "250",
             ["placed_light_limit"] = "0",
             ["placed_shadow_limit"] = "8",
@@ -153,6 +161,7 @@ public static class DesktopGraphicsPresets
             ["mesh_lod_pixels"] = "0.75",
             ["prop_cull_distance_scale"] = "1.25",
             ["entity_draw_distance_scale"] = "2.5",
+            [Refii.Physics.Engine_ClothBody.DistanceScaleKey] = "3",
             ["corpse_lifetime_seconds"] = "300",
         });
 

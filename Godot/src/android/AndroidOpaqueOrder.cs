@@ -49,6 +49,7 @@ public static class AndroidOpaqueOrder
     /// </summary>
     public static bool Discards(string fullPath) => fullPath is
         Refii.Models.Engine_ShaderFamily.StandardPath or
+        Refii.Models.Engine_ShaderFamily.StandardCutoutCulledPath or
         Refii.Models.Engine_ShaderFamily.StandardTreePath or
         Refii.Models.Engine_ShaderFamily.StandardWindPath;
 

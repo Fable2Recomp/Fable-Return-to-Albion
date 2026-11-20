@@ -707,7 +707,15 @@ public partial class GameWindow : Node
 	{
 		Engine.MaxFps = settings.MaxFps;
 		Refii.Core.Engine_TickClock.Pin = settings.DrawLatencyTicks;
-		RenderingServer.DirectionalShadowAtlasSetSize(settings.SunShadowMap, true);
+		int sunShadowMap = settings.SunShadowMap > 0 ? settings.SunShadowMap : 4096;
+		RenderingServer.DirectionalShadowAtlasSetSize(sunShadowMap, true);
+		RenderingServer.DirectionalSoftShadowFilterSetQuality((RenderingServer.ShadowQuality)settings.SunShadowFilter);
+		Refii.Lighting.Engine_LevelLighting.SunShadowMap = sunShadowMap;
+		Refii.Lighting.Engine_LevelLighting.ReloadConfig();
+		if (root.FindChild(Refii.Lighting.Engine_LevelLighting.SunNodeName, true, false) is DirectionalLight3D activeSun)
+		{
+			activeSun.ShadowBias = Refii.Lighting.Engine_LevelLighting.SunBiasFor(sunShadowMap);
+		}
 		int positionalAtlasSize = GameWindowSettings.ResolvePositionalShadowAtlasSize(
 			settings.PlacedLightShadows, Refii.Lighting.Engine_LightShadowBudget.Budget);
 		if (view.PositionalShadowAtlasSize != positionalAtlasSize)

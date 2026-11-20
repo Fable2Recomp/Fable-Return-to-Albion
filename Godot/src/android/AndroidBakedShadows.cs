@@ -103,6 +103,11 @@ public static class AndroidBakedShadows
     /// and leaves its AO to the launcher's sweep; until then the area plays without baked AO.</summary>
     public static bool InGameBakesAo => !Engine_Platform.IsAndroid;
 
+    /// <summary>Whether a level's shadow and ground-AO GPU bakes share one persistent local <see cref="Godot.RenderingDevice"/>
+    /// and single uploaded BVH buffer pair across both passes. True on desktop; false on Android so each step releases
+    /// its driver allocations before <see cref="BetweenSteps"/> compacts managed memory.</summary>
+    public static bool SharesLocalBakeDevice => !Engine_Platform.IsAndroid;
+
     /// <summary>On a phone, after a level's background bake during play, collects what the bake left and returns
     /// the freed memory to the system. A plain compacting collection (<see cref="BetweenSteps"/>) kept it committed:
     /// on the S10e the game stayed about 450 MB above its level before the bake, near the size at which Android
@@ -143,9 +148,9 @@ public static class AndroidBakedShadows
     public static int AoTraceColumns(int width, int rows) => Engine_Platform.IsAndroid ? PhoneAoTraceColumns(width, rows) : width;
 
     /// <summary>On a phone, traces one ground-AO strip in column pieces of <paramref name="columns"/>, each its own
-    /// submission waited on before the next, then filters the strip in one more: the same shader writing the same
-    /// texels as the desktop's single submission (the trace's push constant at byte 60 is its column offset).
-    /// The caller reads the strip back after its own Sync.</summary>
+    /// submission waited on before the next on the worker-owned local <see cref="Godot.RenderingDevice"/>, then filters
+    /// the strip in one more: the same shader writing the same texels as the desktop's single submission (the trace's
+    /// push constant at byte 60 is its column offset). The caller reads the strip back after its own Sync.</summary>
     /// <returns>False once the device is lost.</returns>
     public static bool TraceAoInPieces(Godot.RenderingDevice rd, Godot.Rid tracePipeline, Godot.Rid traceSet, byte[] tracePush,
         int columns, int width, int traceGroupsY, Godot.Rid filterPipeline, Godot.Rid filterSet, byte[] filterPush,
@@ -157,31 +162,24 @@ public static class AndroidBakedShadows
             int groupsX = (System.Math.Min(columns, width - offset) + 7) / 8;
             byte[] push = (byte[])tracePush.Clone();
             System.BitConverter.TryWriteBytes(push.AsSpan(60), offset);
-            Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
-            {
-                if (Engine_RdHealth.IsDeviceLost) return;
-                long list = rd.ComputeListBegin();
-                rd.ComputeListBindComputePipeline(list, tracePipeline);
-                rd.ComputeListBindUniformSet(list, traceSet, 0);
-                rd.ComputeListSetPushConstant(list, push, (uint)push.Length);
-                rd.ComputeListDispatch(list, (uint)groupsX, (uint)traceGroupsY, 1);
-                rd.ComputeListEnd();
-                rd.Submit();
-            });
-            Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () => rd.Sync());
-        }
-
-        Engine_ServerSyncs.RunGpuUpload(Engine_ServerSyncs.MaxBackgroundUploadBytesPerFrame, () =>
-        {
-            if (Engine_RdHealth.IsDeviceLost) return;
             long list = rd.ComputeListBegin();
-            rd.ComputeListBindComputePipeline(list, filterPipeline);
-            rd.ComputeListBindUniformSet(list, filterSet, 0);
-            rd.ComputeListSetPushConstant(list, filterPush, (uint)filterPush.Length);
-            rd.ComputeListDispatch(list, (uint)filterGroupsX, (uint)filterGroupsY, 1);
+            rd.ComputeListBindComputePipeline(list, tracePipeline);
+            rd.ComputeListBindUniformSet(list, traceSet, 0);
+            rd.ComputeListSetPushConstant(list, push, (uint)push.Length);
+            rd.ComputeListDispatch(list, (uint)groupsX, (uint)traceGroupsY, 1);
             rd.ComputeListEnd();
             rd.Submit();
-        });
+            rd.Sync();
+        }
+
+        if (Engine_RdHealth.IsDeviceLost) return false;
+        long filterList = rd.ComputeListBegin();
+        rd.ComputeListBindComputePipeline(filterList, filterPipeline);
+        rd.ComputeListBindUniformSet(filterList, filterSet, 0);
+        rd.ComputeListSetPushConstant(filterList, filterPush, (uint)filterPush.Length);
+        rd.ComputeListDispatch(filterList, (uint)filterGroupsX, (uint)filterGroupsY, 1);
+        rd.ComputeListEnd();
+        rd.Submit();
         return true;
     }
 

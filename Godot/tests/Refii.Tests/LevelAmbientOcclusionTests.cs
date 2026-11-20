@@ -350,10 +350,11 @@ public sealed class LevelAmbientOcclusionTests
 		AssertThat(texLib.Contains("BuildOrmFromImages(", StringComparison.Ordinal)).IsTrue();
 		AssertThat(heroMorph.Contains("Engine_TexLibrary.BuildOrmFromTextures(", StringComparison.Ordinal)).IsFalse();
 
-		// Verify static shadow atlas lookup uses hardware-bilinear tiered PCF with tile-clamped UVs and distance-proportional penumbra
+		// Verify static shadow atlas lookup uses per-texel texelFetch true bilinear PCF + 3D ray-tangent multi-tap filtering (never raw-depth textureLod interpolation)
 		AssertThat(lightingInc.Contains("float fable_sample_static_shadow_tiered(", StringComparison.Ordinal)).IsTrue();
-		AssertThat(lightingInc.Contains("textureLod(fable_static_shadow_atlas,", StringComparison.Ordinal)).IsTrue();
-		AssertThat(lightingInc.Contains("float penumbra = max(0.09, d * 0.055);", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("float fable_sample_static_shadow_bilinear_pcf(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("texelFetch(fable_static_shadow_atlas,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("textureLod(fable_static_shadow_atlas,", StringComparison.Ordinal)).IsFalse();
 	}
 
 	private static void AddBoxTriangles(List<Engine_LevelShadowMaps.BvhTriangle> into, Vector3 min, Vector3 max)

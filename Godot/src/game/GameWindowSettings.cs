@@ -42,6 +42,9 @@ public readonly partial struct GameWindowSettings
 	/// <summary>`sun_shadow_map`: the directional shadow atlas size in pixels.</summary>
 	public int SunShadowMap { get; init; }
 
+	/// <summary>`sun_shadow_filter`: directional soft-shadow filter quality (`0` Hard .. `5` Soft Ultra).</summary>
+	public int SunShadowFilter { get; init; }
+
 	/// <summary>`placed_light_shadows`: dynamic shadow maps on non-authored placed fixtures.</summary>
 	public bool PlacedLightShadows { get; init; }
 
@@ -135,6 +138,7 @@ public readonly partial struct GameWindowSettings
 			{
 				Size = DefaultSize,
 				Vsync = true,
+				SunShadowFilter = 3,
 				PlacedLightShadows = true,
 				RenderScalePercent = 100,
 				Scaler = "bilinear",
@@ -203,6 +207,7 @@ public readonly partial struct GameWindowSettings
 			DrawLatencyTicks = Engine_RefiiConfig.Float(values, "draw_latency_ticks", 0f),
 			MeshLodPixels = Math.Clamp(Engine_RefiiConfig.Float(values, "mesh_lod_pixels", 1f), 0f, 64f),
 			SunShadowMap = Math.Clamp(Engine_RefiiConfig.Int(values, "sun_shadow_map", 4096), 512, 16384),
+			SunShadowFilter = Math.Clamp(Engine_RefiiConfig.Int(values, "sun_shadow_filter", 3), 0, 5),
 			PlacedLightShadows = Engine_RefiiConfig.Bool(values, "placed_light_shadows", true),
 
 			// Clamped to what Godot's 3D scaling accepts. A zero here would render nothing at

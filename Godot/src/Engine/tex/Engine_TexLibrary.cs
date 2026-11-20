@@ -1308,7 +1308,7 @@ public static class Engine_TexLibrary
 			return false;
 		}
 
-		string key = Engine_TexCache.Key(keySource, TexSemantic.Orm, id, 2);
+		string key = Engine_TexCache.Key(keySource, TexSemantic.Orm, id, 4);
 		if (Engine_TexCache.TryReadHeader(key, out _, out _, out _))
 		{
 			return true;
@@ -2383,7 +2383,7 @@ public static class Engine_TexLibrary
 
 	private static string ComposedRecipe(
 		float powerMin, float powerMax, float aoStrength, float metallicStrength, bool withHeight) =>
-		$"{BitConverter.SingleToUInt32Bits(powerMin):x8}-{BitConverter.SingleToUInt32Bits(powerMax):x8}-" +
+		$"v3-{BitConverter.SingleToUInt32Bits(powerMin):x8}-{BitConverter.SingleToUInt32Bits(powerMax):x8}-" +
 		$"{BitConverter.SingleToUInt32Bits(aoStrength):x8}-{BitConverter.SingleToUInt32Bits(metallicStrength):x8}-" +
 		(withHeight ? "h" : "f");
 
@@ -2588,7 +2588,7 @@ public static class Engine_TexLibrary
 			return null;
 		}
 
-		string key = Engine_TexCache.Key(keySource, TexSemantic.Orm, id, 2);
+		string key = Engine_TexCache.Key(keySource, TexSemantic.Orm, id, 4);
 
 		Image? cached = Engine_TexCache.TryLoad(key, out bool cachedAlpha);
 		if (cached is not null)

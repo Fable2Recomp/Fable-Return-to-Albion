@@ -284,6 +284,32 @@ public static partial class Engine_LevelProps
         IReadOnlyList<byte> InstanceCasting);
 
     /// <summary>
+    /// Thread-safe snapshot of already-parsed static prop blocks, placed lights, light-bearing fixture
+    /// hashes/models, and decoded playable heightfields captured during <see cref="Build(LevelEntry,Func{string,byte[]?},Refii.Lighting.LightProbeField?,Refii.Lighting.LightingFrame?,Refii.Lighting.LightmapContainer?,Refii.Entities.EntityInspectData?,IReadOnlyList{GdbView}?,bool,out StaticLightingBakeSnapshot?,out PropBuildStats)"/>
+    /// so during-load GPU shadow and AO baking never has to re-parse GDBs, GMDs, or heightfields from scratch.
+    /// </summary>
+    public sealed class StaticLightingBakeSnapshot
+    {
+        /// <summary>Resolved virtual path of the level's primary GDB.</summary>
+        public string GdbPath { get; init; } = string.Empty;
+
+        /// <summary>Non-foliage static prop blocks and their world transforms/casting flags.</summary>
+        public List<StaticShadowPropBlock> PropBlocks { get; init; } = new();
+
+        /// <summary>Placement record hashes that host placed lights (excluded from self-shadowing).</summary>
+        public HashSet<uint> LightHosts { get; init; } = new();
+
+        /// <summary>Model virtual paths of light-hosting fixtures.</summary>
+        public HashSet<string> LightHostModels { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Resolved placed lights spawned for the scenario.</summary>
+        public List<Refii.Lighting.Engine_LevelLights.ResolvedLightInstance> ResolvedLights { get; init; } = new();
+
+        /// <summary>Decoded playable terrain heightfields for ground/contact AO and BVH assembly.</summary>
+        public List<GhfHeights> TerrainHeights { get; init; } = new();
+    }
+
+    /// <summary>
     /// Collects all static shadow-casting prop blocks, light-bearing host placement hashes, and
     /// resolved placed light instances for <paramref name="level"/> using the exact same GDB +
     /// engine_level + companion + GMD layout pipeline as <see cref="Build(LevelEntry,Func{string,byte[]?},Refii.Lighting.LightProbeField?,Refii.Lighting.LightingFrame?,Refii.Lighting.LightmapContainer?,Refii.Entities.EntityInspectData?,out PropBuildStats)"/>.
@@ -733,8 +759,28 @@ public static partial class Engine_LevelProps
         Refii.Lighting.LightmapContainer? bakes,
         Refii.Entities.EntityInspectData? inspect,
         IReadOnlyList<GdbView>? preloadedSupplemental,
+        out PropBuildStats stats) =>
+        Build(level, read, probes, lighting, bakes, inspect, preloadedSupplemental, captureLightingBakeSnapshot: false, out _, out stats);
+
+    /// <summary>
+    /// Builds the region's detached prop hierarchy and placed lights, optionally capturing a thread-safe
+    /// <see cref="StaticLightingBakeSnapshot"/> of all resolved static geometry and lights when
+    /// <paramref name="captureLightingBakeSnapshot"/> is true so uncached lighting bakes can start immediately
+    /// without re-parsing GDBs or GMDs.
+    /// </summary>
+    public static Node3D? Build(
+        LevelEntry level,
+        Func<string, byte[]?> read,
+        Refii.Lighting.LightProbeField? probes,
+        Refii.Lighting.LightingFrame? lighting,
+        Refii.Lighting.LightmapContainer? bakes,
+        Refii.Entities.EntityInspectData? inspect,
+        IReadOnlyList<GdbView>? preloadedSupplemental,
+        bool captureLightingBakeSnapshot,
+        out StaticLightingBakeSnapshot? lightingBakeSnapshot,
         out PropBuildStats stats)
     {
+        lightingBakeSnapshot = null;
         if (!TryCollectRegionBlocks(
             level, read, bakes, inspect, createSilverKeyNodes: true, preloadedSupplemental,
             out string gdbPath, out GdbView view, out List<SaveEntity> saveEntities,
@@ -1327,10 +1373,54 @@ public static partial class Engine_LevelProps
         // flame and the light that flame casts are two statements about one fixture, and until
         // this ran we built the first and not the second.
         int lights = Refii.Lighting.Engine_LevelLights.Spawn(
-            container, view, supplementalViews, placements, fxModelPaths);
+            container, view, supplementalViews, placements, fxModelPaths,
+            out List<Refii.Lighting.Engine_LevelLights.ResolvedLightInstance> resolvedLights,
+            out HashSet<uint> resolvedLightHosts);
         if (lights != 0)
         {
             GD.Print($"[props] {level}: {lights} placed lights");
+        }
+
+        if (captureLightingBakeSnapshot)
+        {
+            var snapshotBlocks = new List<StaticShadowPropBlock>(order.Count);
+            foreach (string key in order)
+            {
+                PropBlockBuild b = blocks[key];
+                if (b.Foliage || b.Instances.Count == 0)
+                {
+                    continue;
+                }
+
+                snapshotBlocks.Add(new StaticShadowPropBlock(
+                    b.ModelPath,
+                    b.ShadowModelPath,
+                    b.ModelClass,
+                    b.Foliage,
+                    b.Instances.ToArray(),
+                    b.InstanceHashes.ToArray(),
+                    b.InstanceCasting.ToArray()));
+            }
+
+            var mergedHosts = new HashSet<uint>(lightHosts);
+            mergedHosts.UnionWith(resolvedLightHosts);
+            var hostModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (uint h in mergedHosts)
+            {
+                if (fxModelPaths.TryGetValue(h, out string? mp) && !string.IsNullOrEmpty(mp))
+                {
+                    hostModels.Add(mp);
+                }
+            }
+
+            lightingBakeSnapshot = new StaticLightingBakeSnapshot
+            {
+                GdbPath = gdbPath,
+                PropBlocks = snapshotBlocks,
+                LightHosts = mergedHosts,
+                LightHostModels = hostModels,
+                ResolvedLights = new List<Refii.Lighting.Engine_LevelLights.ResolvedLightInstance>(resolvedLights),
+            };
         }
 
         if (container.GetChildCount() == 0)

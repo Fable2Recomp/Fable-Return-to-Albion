@@ -244,6 +244,11 @@ public static class RuntimeCVarsGodot
                 + "distance each one's game data states. 1 is the 360's own distances: most "
                 + "townsfolk 25-64 m, and their shadows stop there too. 2 doubles them. You and "
                 + "your co-op partner are always drawn. Read at launch."),
+            new(Refii.Physics.Engine_ClothBody.DistanceScaleKey, DisplayCategory, RuntimeCVarType.Double, "1",
+                "Multiplier on each entity's stated cloth simulation distance for blowing banners, "
+                + "market awnings, flags, and character garments. 1.0 is the Xbox 360's stated range "
+                + "(~20-30 m); higher values animate cloth further down streets and squares; 0 disables "
+                + "live cloth simulation. Hot-reloadable."),
             new("corpse_lifetime_seconds", DisplayCategory, RuntimeCVarType.Int, "45",
                 "How long fallen physical enemy and creature corpses (skeletons, humans, monsters, "
                 + "animals) remain on the ground before fading out, in seconds. 0 restores the "
@@ -494,6 +499,10 @@ public static class RuntimeCVarsGodot
                 + "Godot's default; the shadow bias follows the texel, so 2048 trades edge "
                 + "sharpness for fill on a slow GPU without striping the ground, and 8192 suits "
                 + "a 4K display."),
+            new("sun_shadow_filter", LightingCategory, RuntimeCVarType.Int, "3",
+                "Directional sun shadow edge filtering quality: 0 is Hard, 1 Soft Very Low, "
+                + "2 Soft Low, 3 Soft Medium, 4 Soft High, 5 Soft Ultra. Applies immediately.",
+                "0|Hard,1|Soft Very Low,2|Soft Low,3|Soft Medium,4|Soft High,5|Soft Ultra"),
             ..RuntimeCVarsAndroid.SunShadowFilter,
 
             new("sun_shadows", LightingCategory, RuntimeCVarType.Bool, "true",

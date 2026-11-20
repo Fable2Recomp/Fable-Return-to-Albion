@@ -260,13 +260,17 @@ public static int SurfacesWithLods;
         var sourceVertices = new List<int>(meshVertices);
         bool modernStaticAo = !Engine_ClassicMaterial.Active &&
             Refii.Lighting.Engine_LightingFrame.ModernModel &&
-            info.SkinnedCount <= 8 &&
             info.MovementMode != 2 &&
             sourceVertexTotal > 0;
         float[] modelSelfAo = System.Array.Empty<float>();
         if (modernStaticAo)
         {
-            if (Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, surfaces, sourceVertexTotal, virtualPath, out float[] fastSelfAo))
+            if (info.SkinnedCount > 8)
+            {
+                modelSelfAo = Engine_ModelSelfAo.ComputeFastCreviceAndBaseAo(
+                    surfaces, sourceVertexTotal, includeGroundPlane: false);
+            }
+            else if (Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, surfaces, sourceVertexTotal, virtualPath, out float[] fastSelfAo))
             {
                 modelSelfAo = fastSelfAo;
             }
@@ -502,8 +506,15 @@ public static int SurfacesWithLods;
             // per mesh (1 low plant, 2 tree), and every mesh carrying it is vegetation
             // (src/tools/WindGate.cs). So the mesh's statement is part of the shared material's
             // identity, never a mutation of a material another surface also holds.
+            bool checkExplicitTwins = info.MovementMode == 0 &&
+                !info.SwaysInWind &&
+                info.MeshKind is not (1 or 4) &&
+                !string.IsNullOrEmpty(geo.Material?.Diffuse) &&
+                (Refii.Textures.Engine_TexLibrary.HeaderFlags(geo.Material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader) & 0xA0) != 0;
+            bool explicitBothSides = checkExplicitTwins && geo.HasExplicitBothSides;
+
             Material? material =
-                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis);
+                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis, explicitBothSides);
             if (material is null)
             {
                 ReportFallback(virtualPath, geo.Name, geo.Material);

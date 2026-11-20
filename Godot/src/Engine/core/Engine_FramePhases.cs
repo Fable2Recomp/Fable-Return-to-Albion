@@ -819,13 +819,13 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 	{
 		Refii.Host.HostBridge.EndTimeBaseReadWindow();
 		Engine_ServerSyncs.NotifyMainFrameTick();
-		using (Engine_FramePhases.Measure("cloth_land"))
-		{
-			Refii.Physics.Engine_ClothBody.LandAll();
-		}
 		using (Engine_FramePhases.Measure("gpu_upload_pump_end"))
 		{
 			Engine_ServerSyncs.PumpWorkerGpuUploads(Engine_ServerSyncs.LoadCoverActive ? 12.0 : 6.0, waitForWorkers: false);
+		}
+		using (Engine_FramePhases.Measure("cloth_land"))
+		{
+			Refii.Physics.Engine_ClothBody.LandAll();
 		}
 		Engine_FramePhases.MarkFrameEnd();
 		CallDeferred(DeferredMark);

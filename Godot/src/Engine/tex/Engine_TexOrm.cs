@@ -57,7 +57,12 @@ public static class Engine_TexOrm
 	/// Only XY are read, because only XY are stored: the guest rebuilds Z as
 	/// <c>sqrt(1 - nx^2 - ny^2)</c> and a normal map's blue channel is not data.
 	/// </remarks>
-	private static byte[] CavityFromNormal(Image normal, int width, int height, float strength)
+	private static byte[] CavityFromNormal(
+		Image normal,
+		int width,
+		int height,
+		float strength,
+		ReadOnlySpan<byte> solvedHeight = default)
 	{
 		var work = (Image)normal.Duplicate();
 		work.ClearMipmaps();
@@ -77,35 +82,7 @@ public static class Engine_TexOrm
 		}
 
 		byte[] pixels = work.GetData();
-		var cavity = new byte[width * height];
-
-		for (int y = 0; y < height; ++y)
-		{
-			for (int x = 0; x < width; ++x)
-			{
-				// Clamped at the edges rather than wrapped. A wrapped read makes the left edge's
-				// occlusion depend on the right edge's normals, which is visible as a seam on
-				// anything that is not actually tiling.
-				int xm = Math.Max(0, x - 1);
-				int xp = Math.Min(width - 1, x + 1);
-				int ym = Math.Max(0, y - 1);
-				int yp = Math.Min(height - 1, y + 1);
-
-				float nxLeft = Decode(pixels, (y * width) + xm, 0);
-				float nxRight = Decode(pixels, (y * width) + xp, 0);
-				float nyUp = Decode(pixels, (ym * width) + x, 1);
-				float nyDown = Decode(pixels, (yp * width) + x, 1);
-
-				// Divergence. Negative where the field converges — a crevice.
-				float divergence = (nxRight - nxLeft) + (nyDown - nyUp);
-
-				float occlusion = Math.Clamp(1.0f + (divergence * strength), 0.0f, 1.0f);
-				cavity[(y * width) + x] =
-					(byte)Math.Clamp(MathF.Round(occlusion * 255.0f), 0.0f, 255.0f);
-			}
-		}
-
-		return cavity;
+		return CavityFromNormalBytes(pixels, width, height, strength, wrap: false, solvedHeight);
 	}
 
 	/// <summary>
@@ -118,33 +95,145 @@ public static class Engine_TexOrm
 	/// strength semantics, different topology.
 	/// </remarks>
 	public static byte[] CavityFromTilingNormal(
-		byte[] rgba, int width, int height, float strength)
+		byte[] rgba, int width, int height, float strength) =>
+		CavityFromNormalBytes(rgba, width, height, strength, wrap: true);
+
+	/// <summary>
+	/// Pure multi-scale normal-convergence and optional Poisson-height recess cavity filter over raw
+	/// RGBA8 normal-map bytes (<c>R = nx, G = ny</c>). Evaluates octave radii <c>{1, 2, 4, 8}</c> so
+	/// 4-24 texel wood grooves, stone mortar joints, and garment seams register crisp occlusion
+	/// rather than washing out at 1-texel finite differences, while flat surfaces remain <c>255</c>.
+	/// </summary>
+	public static byte[] CavityFromNormalBytes(
+		ReadOnlySpan<byte> rgba,
+		int width,
+		int height,
+		float strength,
+		bool wrap,
+		ReadOnlySpan<byte> solvedHeight = default)
 	{
-		var cavity = new byte[width * height];
-
-		for (int y = 0; y < height; ++y)
+		int texels = Math.Max(0, width * height);
+		var cavity = new byte[texels];
+		if (texels == 0 || width <= 0 || height <= 0)
 		{
-			int ym = ((y - 1) + height) % height;
-			int yp = (y + 1) % height;
-
-			for (int x = 0; x < width; ++x)
-			{
-				int xm = ((x - 1) + width) % width;
-				int xp = (x + 1) % width;
-
-				float nxLeft = Decode(rgba, (y * width) + xm, 0);
-				float nxRight = Decode(rgba, (y * width) + xp, 0);
-				float nyUp = Decode(rgba, (ym * width) + x, 1);
-				float nyDown = Decode(rgba, (yp * width) + x, 1);
-
-				float divergence = (nxRight - nxLeft) + (nyDown - nyUp);
-				float occlusion = Math.Clamp(1.0f + (divergence * strength), 0.0f, 1.0f);
-				cavity[(y * width) + x] =
-					(byte)Math.Clamp(MathF.Round(occlusion * 255.0f), 0.0f, 255.0f);
-			}
+			return cavity;
 		}
 
-		return cavity;
+		if (strength <= 0.0f || rgba.Length < texels * 4)
+		{
+			Array.Fill(cavity, (byte)255);
+			return cavity;
+		}
+
+		var pool = System.Buffers.ArrayPool<float>.Shared;
+		float[] nx = pool.Rent(texels);
+		float[] ny = pool.Rent(texels);
+		try
+		{
+			const float byteToSnorm = 2.0f / 255.0f;
+			for (int i = 0; i < texels; i++)
+			{
+				nx[i] = (rgba[i * 4] * byteToSnorm) - 1.0f;
+				ny[i] = (rgba[(i * 4) + 1] * byteToSnorm) - 1.0f;
+			}
+
+			int maxR = Math.Max(1, Math.Min(8, Math.Min(width, height) / 4));
+			Span<int> radii = stackalloc int[4] { 1, 2, 4, 8 };
+			Span<float> weights = stackalloc float[4] { 0.55f, 0.45f, 0.38f, 0.30f };
+			int octaveCount = 0;
+			for (int k = 0; k < 4; k++)
+			{
+				if (radii[k] <= maxR)
+				{
+					octaveCount = k + 1;
+				}
+			}
+
+			if (octaveCount == 0)
+			{
+				octaveCount = 1;
+			}
+
+			bool hasHeight = !solvedHeight.IsEmpty && solvedHeight.Length >= texels;
+			int rHeight = Math.Clamp(maxR, 1, 4);
+			float gain = strength * 1.25f;
+			Span<float> concOctaves = stackalloc float[4];
+
+			for (int y = 0; y < height; ++y)
+			{
+				int row = y * width;
+				for (int x = 0; x < width; ++x)
+				{
+					concOctaves.Clear();
+
+					for (int k = 0; k < octaveCount; ++k)
+					{
+						int r = radii[k];
+						int xm = wrap ? (((x - r) % width) + width) % width : Math.Max(0, x - r);
+						int xp = wrap ? (x + r) % width : Math.Min(width - 1, x + r);
+						int ym = wrap ? (((y - r) % height) + height) % height : Math.Max(0, y - r);
+						int yp = wrap ? (y + r) % height : Math.Min(height - 1, y + r);
+
+						int ymRow = ym * width;
+						int ypRow = yp * width;
+
+						float axial = (nx[row + xp] - nx[row + xm]) + (ny[ypRow + x] - ny[ymRow + x]);
+						float diag1 = ((nx[ypRow + xp] - nx[ymRow + xm]) + (ny[ypRow + xp] - ny[ymRow + xm])) * 0.5f;
+						float diag2 = ((nx[ymRow + xp] - nx[ypRow + xm]) - (ny[ymRow + xp] - ny[ypRow + xm])) * 0.5f;
+
+						// Negative divergence means normals converge inward into a concave crease.
+						concOctaves[k] = MathF.Max(0.0f, -((axial * 0.65f) + ((diag1 + diag2) * 0.35f)));
+					}
+
+					// Gate wide radii (r = 4, 8) on local (r = 1, 2) inward curvature so smooth wide grooves
+					// accumulate full multi-scale depth, while flat brick/cobble plateaus never bridge across
+					// mortar joints onto neighboring bricks' opposite bevels.
+					float localCurvature = concOctaves[0] + (octaveCount > 1 ? concOctaves[1] : 0.0f);
+					float wideGate = Math.Clamp(localCurvature * 3.5f, 0.0f, 1.0f);
+
+					float sumConc = 0.0f;
+					float maxConc = 0.0f;
+					for (int k = 0; k < octaveCount; ++k)
+					{
+						float gated = k <= 1 ? concOctaves[k] : concOctaves[k] * wideGate;
+						sumConc += gated * weights[k];
+						if (gated > maxConc)
+						{
+							maxConc = gated;
+						}
+					}
+
+					float combinedConc = (0.50f * maxConc) + (0.50f * sumConc);
+
+					if (hasHeight && wideGate > 0.01f)
+					{
+						int xmH = wrap ? (((x - rHeight) % width) + width) % width : Math.Max(0, x - rHeight);
+						int xpH = wrap ? (x + rHeight) % width : Math.Min(width - 1, x + rHeight);
+						int ymH = wrap ? (((y - rHeight) % height) + height) % height : Math.Max(0, y - rHeight);
+						int ypH = wrap ? (y + rHeight) % height : Math.Min(height - 1, y + rHeight);
+
+						float neighborMean = (
+							solvedHeight[row + xmH] +
+							solvedHeight[row + xpH] +
+							solvedHeight[(ymH * width) + x] +
+							solvedHeight[(ypH * width) + x]) * (0.25f / 255.0f);
+						float curH = solvedHeight[row + x] * (1.0f / 255.0f);
+						float recess = MathF.Max(0.0f, neighborMean - curH) * 1.8f * wideGate;
+						combinedConc = MathF.Max(combinedConc, (combinedConc * 0.78f) + recess);
+					}
+
+					float occlusion = Math.Clamp(1.0f - (combinedConc * gain), 0.28f, 1.0f);
+					cavity[row + x] = (byte)Math.Clamp(MathF.Round(occlusion * 255.0f), 0.0f, 255.0f);
+				}
+			}
+
+			return cavity;
+		}
+		finally
+		{
+			pool.Return(nx);
+			pool.Return(ny);
+		}
 	}
 
 	/// <summary>
@@ -276,24 +365,21 @@ public static class Engine_TexOrm
 
 		var orm = new byte[width * height * 4];
 
-		// AO comes from the NORMAL map when there is one and the player asked for it. Without
-		// either, R stays at 1 and the channel carries no information — which is the honest
-		// answer, because Fable 2 ships no occlusion data of its own.
-		byte[]? cavity = normal is not null && aoStrength > 0.0f
-			? CavityFromNormal(normal, width, height, aoStrength)
-			: null;
-
 		// HEIGHT RIDES IN THE ALPHA, which is free: Godot's ORM convention uses R, G and B and says
 		// nothing about the fourth channel. One texture then carries every derived scalar a
 		// material has, instead of a fourth binding for a single byte.
 		//
-		// It costs the block format, and that is the honest trade to state: a constant alpha
-		// compresses as DXT1, a varying one forces DXT5 and twice the bytes. TrySolve returns null
-		// for a flat normal map precisely so a texture with no relief keeps the cheaper format.
+		// Solved first so recessed grooves in the Poisson height field also reinforce cavity AO.
 		byte[]? relief = normal is not null && withHeight
 			? Engine_TexHeight.TrySolve(normal, width, height)
 			: null;
 		packedHeight = relief is not null;
+
+		// AO comes from the NORMAL map (plus solved height recess) when there is one and the player
+		// asked for it. Without either, R stays at 1 and the channel carries no information.
+		byte[]? cavity = normal is not null && aoStrength > 0.0f
+			? CavityFromNormal(normal, width, height, aoStrength, relief ?? ReadOnlySpan<byte>.Empty)
+			: null;
 
 		if (cavity is null && relief is null && pixels is null)
 		{
@@ -344,5 +430,5 @@ public static class Engine_TexOrm
 	/// wrong answer for a reason nobody wrote down is worse than no cache.
 	/// </remarks>
 	public static string CacheId(float powerMin, float powerMax) =>
-		$"orm-{powerMin:R}-{powerMax:R}";
+		$"orm-v4-{powerMin:R}-{powerMax:R}";
 }

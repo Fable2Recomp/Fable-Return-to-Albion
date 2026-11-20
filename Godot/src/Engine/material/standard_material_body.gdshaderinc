@@ -647,11 +647,13 @@ void fragment() {
     }
 #endif
 
+    vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+
     // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
 #ifdef FABLE_LITE
 #include "res://src/android/standard_lite_baked_ao.gdshaderinc"
 #else
-    float baked_ao = fable_evaluate_prop_baked_ao(COLOR.a, fable_world);
+    float baked_ao = fable_evaluate_prop_baked_ao_normal(COLOR.a, fable_world, world_normal);
 #endif
     float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, FABLE_UNIFIED));
     v_combined_ao = combined_ao;
@@ -666,7 +668,6 @@ void fragment() {
         SPECULAR = 0.5;
     }
 
-    vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 #ifndef FABLE_LITE
     vec3 weather_weights = surface_weights(fable_world, world_normal);
     surface_material(weather_weights, fable_world, alb.rgb, ROUGHNESS, METALLIC);

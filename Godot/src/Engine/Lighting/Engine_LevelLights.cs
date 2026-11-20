@@ -1265,12 +1265,30 @@ public static class Engine_LevelLights
 		resolved.AddRange(compacted);
 	}
 
+	/// <summary>
+	/// Resolves and attaches placed region lights to <paramref name="container"/>, returning the spawned count.
+	/// </summary>
 	public static int Spawn(
 		Node3D container,
 		GdbView levelView,
 		List<GdbView> supplementalViews,
 		List<GdbPlacement> placements,
-		Dictionary<uint, string>? modelPaths = null)
+		Dictionary<uint, string>? modelPaths = null) =>
+		Spawn(container, levelView, supplementalViews, placements, modelPaths, out _, out _);
+
+	/// <summary>
+	/// Resolves and attaches placed region lights to <paramref name="container"/>, also returning the resolved
+	/// <paramref name="resolvedLights"/> and <paramref name="resolvedLightHosts"/> so during-load static lighting
+	/// bakes can reuse them without re-parsing GDB placements.
+	/// </summary>
+	public static int Spawn(
+		Node3D container,
+		GdbView levelView,
+		List<GdbView> supplementalViews,
+		List<GdbPlacement> placements,
+		Dictionary<uint, string>? modelPaths,
+		out List<ResolvedLightInstance> resolvedLights,
+		out HashSet<uint> resolvedLightHosts)
 	{
 		var flicker = new Engine_LightFlicker { Name = Engine_LightFlicker.NodeName };
 		var hosts = new HashSet<uint>();
@@ -1282,6 +1300,8 @@ public static class Engine_LevelLights
 			hosts,
 			out int duplicate,
 			out int duplicateElsewhere);
+		resolvedLights = resolved;
+		resolvedLightHosts = hosts;
 
 		int spawned = 0;
 		foreach (ResolvedLightInstance item in resolved)

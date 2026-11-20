@@ -249,9 +249,11 @@ public static partial class Engine_MdlMaterial
     {
         LoadShared(Engine_ShaderFamily.StandardPath);
         LoadShared(Engine_ShaderFamily.StandardCulledPath);
+        LoadShared(Engine_ShaderFamily.StandardCutoutCulledPath);
         LoadShared(Engine_ShaderFamily.StandardWindPath);
         LoadShared(Engine_ShaderFamily.StandardTreePath);
         LoadShared(Engine_ShaderFamily.StandardTranslucentPath);
+        LoadShared(Engine_ShaderFamily.StandardTranslucentCulledPath);
         LoadShared(Engine_ShaderFamily.TreeCanopyPath);
         WarmLiteShaders();
     }
@@ -469,7 +471,8 @@ public static partial class Engine_MdlMaterial
     /// <see cref="WindDirection"/> for materials that respond to regional wind.
     /// </summary>
     internal static string BuildSharedKey(
-        MdlMaterial material, Refii.Models.MdlInfo info, bool authoredNormals, bool tangentBasis = true)
+        MdlMaterial material, Refii.Models.MdlInfo info, bool authoredNormals, bool tangentBasis = true,
+        bool explicitBothSides = false)
     {
         bool usesWind = info.SwaysInWind || info.MovementMode != 0;
         string windPart = usesWind
@@ -491,6 +494,7 @@ public static partial class Engine_MdlMaterial
             IsVegetationDrawPath(info) ? "v" : "-",
             authoredNormals ? "n" : "-",
             tangentBasis ? "t" : "-",
+            explicitBothSides ? "2" : "-",
             Refii.AndroidRuntime.AndroidTranslucentPass.KeyPart(info),
             windPart);
     }
@@ -515,7 +519,7 @@ public static partial class Engine_MdlMaterial
     /// </remarks>
     public static Material? TryCreateShared(
         MdlMaterial? material, Refii.Models.MdlInfo info, bool authoredNormals,
-        bool tangentBasis = true)
+        bool tangentBasis = true, bool explicitBothSides = false)
     {
         if (material is null)
         {
@@ -524,7 +528,7 @@ public static partial class Engine_MdlMaterial
 
         // Built once per surface at BUILD time, not per frame; the string is the cheap part of a
         // call that otherwise decodes textures.
-        string key = BuildSharedKey(material, info, authoredNormals, tangentBasis);
+        string key = BuildSharedKey(material, info, authoredNormals, tangentBasis, explicitBothSides);
 
         if (_shared.TryGetValue(key, out Material? hit))
         {
@@ -533,7 +537,8 @@ public static partial class Engine_MdlMaterial
         }
 
         Material? built = TryCreateCore(material, out bool overridden, info,
-            applySharedPostSteps: true, authoredNormals: authoredNormals, tangentBasis: tangentBasis);
+            applySharedPostSteps: true, authoredNormals: authoredNormals, tangentBasis: tangentBasis,
+            explicitBothSides: explicitBothSides);
         if (built is null)
         {
             return null;
@@ -563,7 +568,7 @@ public static partial class Engine_MdlMaterial
     /// <param name="info">The model the record belongs to, when known: the classic material
     /// chooses its ambient permutation from the model's lightmap and transfer data.</param>
     public static Material? TryCreate(MdlMaterial? material, out bool overridden, MdlInfo? info = null) =>
-        TryCreateCore(material, out overridden, info, applySharedPostSteps: false, authoredNormals: false, tangentBasis: true);
+        TryCreateCore(material, out overridden, info, applySharedPostSteps: false, authoredNormals: false, tangentBasis: true, explicitBothSides: false);
 
     private static Material? TryCreateCore(
         MdlMaterial? material,
@@ -571,7 +576,8 @@ public static partial class Engine_MdlMaterial
         MdlInfo? info,
         bool applySharedPostSteps,
         bool authoredNormals,
-        bool tangentBasis)
+        bool tangentBasis,
+        bool explicitBothSides)
     {
         overridden = false;
         if (material is null || Refii.Core.Engine_RdHealth.IsDeviceLost)
@@ -674,8 +680,18 @@ public static partial class Engine_MdlMaterial
                 ? Refii.Textures.Engine_TexLibrary.HeaderFlags(material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader)
                 : 0;
             bool cutout = vegetation ? albedoHasAlpha : (diffuseFlags & 0x20) != 0;
-            Shader? chosen = cutout || translucent ? shader : SharedCulled();
-            Shader? blended = translucent && !onePass ? LoadShared(Engine_ShaderFamily.StandardTranslucentPath) : null;
+            bool cullExplicitTwins = explicitBothSides &&
+                Engine_ShaderFamily.CullBackFaces &&
+                !vegetation &&
+                (info is null || (!info.SwaysInWind && info.MovementMode == 0));
+            Shader? chosen = cutout || translucent
+                ? (cullExplicitTwins ? (LoadShared(Engine_ShaderFamily.StandardCutoutCulledPath) ?? shader) : shader)
+                : SharedCulled();
+            Shader? blended = translucent && !onePass
+                ? LoadShared(cullExplicitTwins
+                    ? Engine_ShaderFamily.StandardTranslucentCulledPath
+                    : Engine_ShaderFamily.StandardTranslucentPath)
+                : null;
 
             bool needsOverriddenOrm = false;
             if (hasSpecular || hasNormal || !string.IsNullOrWhiteSpace(material.Diffuse))

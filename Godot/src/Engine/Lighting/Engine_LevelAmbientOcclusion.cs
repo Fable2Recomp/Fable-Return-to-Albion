@@ -434,7 +434,28 @@ public static class Engine_LevelAmbientOcclusion
 		int totalBytes = headerBytes + dirBytes + propVertCount + terrainByteCount;
 
 		var bytes = new byte[totalBytes];
-		Span<byte> span = bytes.AsSpan();
+		using var ms = new MemoryStream(bytes, writable: true);
+		WriteToStream(ms, container);
+		return bytes;
+	}
+
+	/// <summary>
+	/// Streams a <see cref="StaticAoContainer"/> in binary <c>.ao</c> Version 3 format directly to
+	/// <paramref name="stream"/> without allocating a duplicate multi-megabyte Large Object Heap byte array.
+	/// </summary>
+	public static void WriteToStream(Stream stream, StaticAoContainer container)
+	{
+		int placementCount = container.PlacementOffsets.Count;
+		int propVertCount = container.PropAoBytes.Length;
+		int terrainW = Math.Max(0, container.TerrainWidth);
+		int terrainH = Math.Max(0, container.TerrainHeight);
+		int texelCount = terrainW * terrainH;
+		int terrainByteCount = texelCount * BytesPerGroundAoTexel;
+
+		const int headerBytes = 48;
+		int dirBytes = placementCount * 12;
+		byte[] headerAndDir = new byte[headerBytes + dirBytes];
+		Span<byte> span = headerAndDir.AsSpan();
 
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(0, 4), Magic);
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(4, 4), Version);
@@ -461,43 +482,123 @@ public static class Engine_LevelAmbientOcclusion
 			cursor += 12;
 		}
 
+		stream.Write(span);
+
 		if (propVertCount > 0)
 		{
-			container.PropAoBytes.AsSpan(0, propVertCount).CopyTo(span.Slice(cursor, propVertCount));
-			cursor += propVertCount;
+			stream.Write(container.PropAoBytes.AsSpan(0, propVertCount));
 		}
 
-		if (terrainByteCount > 0 && container.TerrainAoBytes.Length >= terrainByteCount)
+		if (terrainByteCount <= 0)
 		{
-			container.TerrainAoBytes.AsSpan(0, terrainByteCount).CopyTo(span.Slice(cursor, terrainByteCount));
-		}
-		else if (terrainByteCount > 0 && container.TerrainAoBytes.Length == texelCount * 2)
-		{
-			Span<byte> dst = span.Slice(cursor, terrainByteCount);
-			for (int i = 0; i < texelCount; i++)
-			{
-				byte ao = container.TerrainAoBytes[i * 2];
-				byte h8 = container.TerrainAoBytes[i * 2 + 1];
-				dst[i * 4] = ao;
-				dst[i * 4 + 1] = ao;
-				dst[i * 4 + 2] = h8;
-				dst[i * 4 + 3] = h8;
-			}
-		}
-		else if (terrainByteCount > 0 && container.TerrainAoBytes.Length == texelCount)
-		{
-			Span<byte> dst = span.Slice(cursor, terrainByteCount);
-			for (int i = 0; i < texelCount; i++)
-			{
-				byte ao = container.TerrainAoBytes[i];
-				dst[i * 4] = ao;
-				dst[i * 4 + 1] = ao;
-				dst[i * 4 + 2] = 0;
-				dst[i * 4 + 3] = 0;
-			}
+			return;
 		}
 
-		return bytes;
+		if (container.TerrainAoBytes.Length >= terrainByteCount)
+		{
+			ReadOnlySpan<byte> rawTerrain = container.TerrainAoBytes.AsSpan(0, terrainByteCount);
+			const int chunkSize = 256 * 1024;
+			int pos = 0;
+			while (pos < rawTerrain.Length)
+			{
+				int len = Math.Min(chunkSize, rawTerrain.Length - pos);
+				stream.Write(rawTerrain.Slice(pos, len));
+				pos += len;
+			}
+		}
+		else if (container.TerrainAoBytes.Length == texelCount * 2)
+		{
+			Span<byte> chunk = stackalloc byte[4096];
+			int pos = 0;
+			while (pos < texelCount)
+			{
+				int count = Math.Min(chunk.Length / 4, texelCount - pos);
+				for (int i = 0; i < count; i++)
+				{
+					int src = (pos + i) * 2;
+					byte ao = container.TerrainAoBytes[src];
+					byte h8 = container.TerrainAoBytes[src + 1];
+					chunk[i * 4] = ao;
+					chunk[i * 4 + 1] = ao;
+					chunk[i * 4 + 2] = h8;
+					chunk[i * 4 + 3] = h8;
+				}
+
+				stream.Write(chunk.Slice(0, count * 4));
+				pos += count;
+			}
+		}
+		else if (container.TerrainAoBytes.Length == texelCount)
+		{
+			Span<byte> chunk = stackalloc byte[4096];
+			int pos = 0;
+			while (pos < texelCount)
+			{
+				int count = Math.Min(chunk.Length / 4, texelCount - pos);
+				for (int i = 0; i < count; i++)
+				{
+					byte ao = container.TerrainAoBytes[pos + i];
+					chunk[i * 4] = ao;
+					chunk[i * 4 + 1] = ao;
+					chunk[i * 4 + 2] = 0;
+					chunk[i * 4 + 3] = 0;
+				}
+
+				stream.Write(chunk.Slice(0, count * 4));
+				pos += count;
+			}
+		}
+		else
+		{
+			Span<byte> zeros = stackalloc byte[4096];
+			zeros.Clear();
+			int remaining = terrainByteCount;
+			while (remaining > 0)
+			{
+				int step = Math.Min(zeros.Length, remaining);
+				stream.Write(zeros.Slice(0, step));
+				remaining -= step;
+			}
+		}
+	}
+
+	/// <summary>
+	/// Streams <paramref name="container"/> to a temporary sibling file and atomically renames it onto
+	/// <paramref name="diskPath"/> so readers never observe truncated <c>.ao</c> files and no LOH copy is allocated.
+	/// </summary>
+	public static void WriteToFileAtomic(string diskPath, StaticAoContainer container)
+	{
+		string? dir = Path.GetDirectoryName(diskPath);
+		if (!string.IsNullOrEmpty(dir))
+		{
+			Directory.CreateDirectory(dir);
+		}
+
+		string tempPath = $"{diskPath}.{Guid.NewGuid():N}.tmp";
+		try
+		{
+			using (var fs = new FileStream(tempPath, FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, bufferSize: 65536))
+			{
+				WriteToStream(fs, container);
+			}
+
+			File.Move(tempPath, diskPath, overwrite: true);
+		}
+		catch
+		{
+			try
+			{
+				if (File.Exists(tempPath))
+				{
+					File.Delete(tempPath);
+				}
+			}
+			catch
+			{
+			}
+
+			throw;
+		}
 	}
 
 	/// <summary>
@@ -582,11 +683,89 @@ public static class Engine_LevelAmbientOcclusion
 	}
 
 	/// <summary>
+	/// Computes physical-density-capped, aspect-ratio-matched ground AO dimensions for a cropped region
+	/// of size <paramref name="spanX"/> by <paramref name="spanZ"/> meters under <paramref name="presetResolution"/>,
+	/// avoiding wasteful sub-5cm oversampling in small caves while keeping uniform square world texels.
+	/// </summary>
+	public static void ComputeTargetAoDimensions(
+		float spanX,
+		float spanZ,
+		int presetResolution,
+		out int targetW,
+		out int targetH)
+	{
+		int preset = Math.Clamp(presetResolution, 128, 16384);
+		float safeX = float.IsFinite(spanX) && spanX > 0.5f ? spanX : 1.0f;
+		float safeZ = float.IsFinite(spanZ) && spanZ > 0.5f ? spanZ : 1.0f;
+		float maxSpan = MathF.Max(safeX, safeZ);
+
+		float minTexelMeters = preset >= 8192
+			? 0.05f
+			: preset >= 4096
+				? 0.08f
+				: preset >= 2048
+					? 0.12f
+					: 0.20f;
+
+		int minFloor = Math.Min(256, preset);
+		int rawMaxDim = (int)MathF.Ceiling(maxSpan / minTexelMeters);
+		int alignedMaxDim = ((Math.Clamp(rawMaxDim, minFloor, preset) + 7) / 8) * 8;
+		if (alignedMaxDim > preset)
+		{
+			alignedMaxDim = preset;
+		}
+
+		if (safeX >= safeZ)
+		{
+			targetW = alignedMaxDim;
+			int scaledH = (int)MathF.Ceiling(alignedMaxDim * (safeZ / maxSpan));
+			targetH = Math.Min(alignedMaxDim, ((Math.Clamp(scaledH, minFloor, alignedMaxDim) + 7) / 8) * 8);
+		}
+		else
+		{
+			targetH = alignedMaxDim;
+			int scaledW = (int)MathF.Ceiling(alignedMaxDim * (safeX / maxSpan));
+			targetW = Math.Min(alignedMaxDim, ((Math.Clamp(scaledW, minFloor, alignedMaxDim) + 7) / 8) * 8);
+		}
+	}
+
+	/// <summary>
 	/// Pure cache-resolution validity predicate: cached terrain AO satisfies <paramref name="expectedResolution"/>
 	/// whenever its dimensions meet or exceed the requested preset resolution unless rebuild is forced.
 	/// </summary>
 	public static bool ShouldRebakeForResolution(int cachedWidth, int expectedResolution, bool forceRebuild = false) =>
 		forceRebuild || (cachedWidth >= 128 && cachedWidth < expectedResolution);
+
+	/// <summary>
+	/// Aspect- and physical-density-aware cache validity check using the <c>1/spanX</c> and <c>1/spanZ</c>
+	/// reciprocals stored in the <c>.ao</c> header's <c>TerrainWorldRect</c>.
+	/// </summary>
+	public static bool ShouldRebakeForDimensions(
+		int cachedWidth,
+		int cachedHeight,
+		float invSpanX,
+		float invSpanZ,
+		int expectedResolution,
+		bool forceRebuild = false)
+	{
+		if (forceRebuild)
+		{
+			return true;
+		}
+
+		if (cachedWidth < 128 || cachedHeight < 128)
+		{
+			return false;
+		}
+
+		if (float.IsFinite(invSpanX) && float.IsFinite(invSpanZ) && invSpanX > 1e-6f && invSpanZ > 1e-6f)
+		{
+			ComputeTargetAoDimensions(1.0f / invSpanX, 1.0f / invSpanZ, expectedResolution, out int targetW, out int targetH);
+			return cachedWidth < targetW || cachedHeight < targetH;
+		}
+
+		return ShouldRebakeForResolution(cachedWidth, expectedResolution, forceRebuild);
+	}
 
 	/// <summary>
 	/// Fast header-only check verifying whether an existing <c>.ao</c> file on disk has valid magic,
@@ -634,9 +813,12 @@ public static class Engine_LevelAmbientOcclusion
 				return false;
 			}
 
+			float invSpanX = BinaryPrimitives.ReadSingleLittleEndian(header.Slice(32, 4));
+			float invSpanZ = BinaryPrimitives.ReadSingleLittleEndian(header.Slice(36, 4));
+
 			// Invalidate legacy low-res (257/513/1024) or whole-prop-darkened .ao files and re-bake only
-			// when the requested ground AO resolution is strictly larger than the cached asset.
-			if (ShouldRebakeForResolution(terrainW, expectedResolution, forceRebuild) ||
+			// when the target physical AO dimensions exceed the cached asset.
+			if (ShouldRebakeForDimensions(terrainW, terrainH, invSpanX, invSpanZ, expectedResolution, forceRebuild) ||
 			    (placementCount > 16 && propVertCount > 0))
 			{
 				return false;
@@ -837,23 +1019,55 @@ public static class Engine_LevelAmbientOcclusion
 	{
 		if (Refii.Core.Engine_RdHealth.IsDeviceLost)
 		{
+			if (container is not null)
+			{
+				container.TerrainAoBytes = Array.Empty<byte>();
+			}
 			Refii.Core.Engine_RdHealth.NoteSuppressed();
 			return;
 		}
 
-		long uploadBytes = container?.TerrainAoBytes is { Length: > 0 } bytes ? bytes.LongLength : 4096L;
-		Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () =>
+		Image? preparedImage = null;
+		long uploadBytes = 4096L;
+		try
 		{
-			if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+			if (container is not null)
 			{
-				Refii.Core.Engine_RdHealth.NoteSuppressed();
-				return;
+				byte[] terrainSource = container.TerrainAoBytes;
+				container.TerrainAoBytes = Array.Empty<byte>();
+				int expectedLen = container.TerrainWidth * container.TerrainHeight * BytesPerGroundAoTexel;
+				if (container.TerrainWidth >= 2 &&
+				    container.TerrainHeight >= 2 &&
+				    terrainSource.Length >= expectedLen)
+				{
+					uploadBytes = Math.Max(4096L, expectedLen);
+					preparedImage = Image.CreateFromData(
+						container.TerrainWidth,
+						container.TerrainHeight,
+						false,
+						Image.Format.Rgba8,
+						terrainSource);
+				}
 			}
-			BindAoTexturesOnMainThread(container);
-		});
+
+			Image? imageToUpload = preparedImage;
+			Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () =>
+			{
+				if (Refii.Core.Engine_RdHealth.IsDeviceLost)
+				{
+					Refii.Core.Engine_RdHealth.NoteSuppressed();
+					return;
+				}
+				BindAoTexturesOnMainThread(container, imageToUpload);
+			});
+		}
+		finally
+		{
+			preparedImage?.Dispose();
+		}
 	}
 
-	private static void BindAoTexturesOnMainThread(StaticAoContainer? container)
+	private static void BindAoTexturesOnMainThread(StaticAoContainer? container, Image? preparedImage)
 	{
 		PublishAoParametersOnMainThread();
 
@@ -867,20 +1081,10 @@ public static class Engine_LevelAmbientOcclusion
 		}
 
 		// Upload 2D ground contact AO + 16-bit walkable-floor height texture (W x H, RGBA8).
-		byte[] terrainSource = container.TerrainAoBytes;
-		container.TerrainAoBytes = Array.Empty<byte>();
-		if (container.TerrainWidth >= 2 &&
-		    container.TerrainHeight >= 2 &&
-		    terrainSource.Length >= container.TerrainWidth * container.TerrainHeight * BytesPerGroundAoTexel)
+		if (preparedImage is not null)
 		{
-			Image tImg = Image.CreateFromData(
-				container.TerrainWidth,
-				container.TerrainHeight,
-				false,
-				Image.Format.Rgba8,
-				terrainSource);
-			ImageTexture terrainTex = ImageTexture.CreateFromImage(tImg);
-			GC.KeepAlive(tImg);
+			ImageTexture terrainTex = ImageTexture.CreateFromImage(preparedImage);
+			GC.KeepAlive(preparedImage);
 			container.RuntimeTerrainTexture = terrainTex;
 			float spanH = MathF.Max(0.01f, container.TerrainMaxHeight - container.TerrainMinHeight);
 			RenderingServer.GlobalShaderParameterSet(ParamTerrainContactAo, terrainTex);
@@ -994,7 +1198,24 @@ public static class Engine_LevelAmbientOcclusion
 		IReadOnlySet<string>? fixtureModelPaths,
 		GhfHeights? primaryTerrain,
 		Func<string, byte[]?> read,
-		Func<bool>? isCancelled = null)
+		Func<bool>? isCancelled = null) =>
+		BakeFromBvh(worldBvh, propBlocks, lightHosts, fixtureModelPaths, primaryTerrain, read, isCancelled, liveGameplayPaced: false, gpuSession: null);
+
+	/// <summary>
+	/// Bakes a <see cref="StaticAoContainer"/> from a pre-built world <see cref="Engine_LevelShadowMaps.BvhTree"/>,
+	/// optionally sharing <paramref name="gpuSession"/> with a preceding shadow-atlas bake and using gentle frame
+	/// yields when <paramref name="liveGameplayPaced"/> is true.
+	/// </summary>
+	internal static StaticAoContainer BakeFromBvh(
+		Engine_LevelShadowMaps.BvhTree worldBvh,
+		IReadOnlyList<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
+		IReadOnlySet<uint>? lightHosts,
+		IReadOnlySet<string>? fixtureModelPaths,
+		GhfHeights? primaryTerrain,
+		Func<string, byte[]?> read,
+		Func<bool>? isCancelled,
+		bool liveGameplayPaced,
+		Engine_GpuBvhBaker.GpuBakeSession? gpuSession)
 	{
 		const float cellSize = 16.0f;
 		const float invCellSize = 1.0f / cellSize;
@@ -1058,16 +1279,14 @@ public static class Engine_LevelAmbientOcclusion
 				else
 				{
 					int targetRes = TerrainAoResolution;
-					terrainW = targetRes;
-					terrainH = targetRes;
 
 					// Crop the 2K / 4K / 8K ground contact AO map tightly to the XZ bounding box of placed
 					// static geometry (+ 8m margin) so texel density is concentrated in the playable area
-					// (~5-10 cm/texel) instead of wasted across 1 km of outer sea/hill vista.
+					// (~5-12 cm/texel) instead of wasted across 1 km of outer sea/hill vista.
 					if (worldBvh.TriangleCount > 0)
 					{
-						Vector3 bvhMin = worldBvh.RootMin;
-						Vector3 bvhMax = worldBvh.RootMax;
+						Vector3 bvhMin = worldBvh.HasPropBounds ? worldBvh.PropMin : worldBvh.RootMin;
+						Vector3 bvhMax = worldBvh.HasPropBounds ? worldBvh.PropMax : worldBvh.RootMax;
 						// World X is mirrored (-localX), so localX spans [-bvhMax.X .. -bvhMin.X].
 						float propMinLocalX = MathF.Max(ghf.OriginX, -bvhMax.X - 8.0f);
 						float propMaxLocalX = MathF.Min(ghf.OriginX + fullSpanX, -bvhMin.X + 8.0f);
@@ -1082,12 +1301,14 @@ public static class Engine_LevelAmbientOcclusion
 							cropSpanZ = propMaxLocalZ - propMinLocalZ;
 						}
 					}
+
+					ComputeTargetAoDimensions(cropSpanX, cropSpanZ, targetRes, out terrainW, out terrainH);
 				}
 			}
 			else
 			{
-				Vector3 bvhMin = worldBvh.RootMin;
-				Vector3 bvhMax = worldBvh.RootMax;
+				Vector3 bvhMin = worldBvh.HasPropBounds ? worldBvh.PropMin : worldBvh.RootMin;
+				Vector3 bvhMax = worldBvh.HasPropBounds ? worldBvh.PropMax : worldBvh.RootMax;
 				float pad = Refii.Core.Engine_AppRoot.IsTestHost ? 1.0f : 4.0f;
 				cropOriginX = -bvhMax.X - pad;
 				cropOriginZ = bvhMin.Z - pad;
@@ -1103,8 +1324,7 @@ public static class Engine_LevelAmbientOcclusion
 				else
 				{
 					int targetRes = TerrainAoResolution;
-					terrainW = targetRes;
-					terrainH = targetRes;
+					ComputeTargetAoDimensions(cropSpanX, cropSpanZ, targetRes, out terrainW, out terrainH);
 				}
 			}
 
@@ -1133,7 +1353,9 @@ public static class Engine_LevelAmbientOcclusion
 					out terrainAoBytes,
 					out terrainMinH,
 					out terrainMaxH,
-					() => Refii.Core.Engine_RdHealth.IsDeviceLost || isCancelled?.Invoke() == true);
+					() => Refii.Core.Engine_RdHealth.IsDeviceLost || isCancelled?.Invoke() == true,
+					liveGameplayPaced,
+					gpuSession);
 
 			if (!gpuBaked && !Refii.Core.Engine_RdHealth.IsDeviceLost && isCancelled?.Invoke() != true)
 			{

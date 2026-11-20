@@ -2020,6 +2020,10 @@ public partial class GameEntities : Node3D
                                 if (!rig.IsSettled)
                                 {
                                     _reblending.Add(entity.Address);
+                                    if (fullRate)
+                                    {
+                                        Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(rig.Node, true);
+                                    }
                                 }
                             }
                             else
@@ -2028,6 +2032,10 @@ public partial class GameEntities : Node3D
                                 if (!animator.IsSettled)
                                 {
                                     _animating.Add(entity.Address);
+                                    if (fullRate)
+                                    {
+                                        Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(rig.Node, true);
+                                    }
                                 }
                                 if (fold)
                                 {

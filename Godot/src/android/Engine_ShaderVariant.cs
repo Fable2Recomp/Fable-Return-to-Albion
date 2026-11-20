@@ -287,7 +287,9 @@ public static class Engine_ShaderVariant
     /// with <c>FABLE_MODERN_DIRECT</c> in this process.
     /// </summary>
     public static bool ShouldComposeModernDirect(string path) =>
-        ModernDirect && (Models.ContainsKey(path) || path == TerrainFullPath);
+        ModernDirect && (Models.ContainsKey(path) || path == TerrainFullPath ||
+            path == Engine_ShaderFamily.StandardCutoutCulledPath ||
+            path == Engine_ShaderFamily.StandardTranslucentCulledPath);
 
     /// <summary>
     /// Prepends <c>#define FABLE_MODERN_DIRECT</c> ahead of <paramref name="fullCode"/>'s body <c>#include</c>. Pure.

@@ -112,7 +112,7 @@ public sealed class DesktopGraphicsPresetsTests
 	{
 		GraphicsPresets.Offered = false;
 
-		AssertThat(DesktopGraphicsPresets.Revision).IsEqual(4);
+		AssertThat(DesktopGraphicsPresets.Revision).IsEqual(5);
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["placed_light_shadows"]).IsEqual("true");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["placed_shadow_limit"]).IsEqual("1");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["placed_shadow_limit"]).IsEqual("2");
@@ -122,6 +122,18 @@ public sealed class DesktopGraphicsPresetsTests
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["corpse_lifetime_seconds"]).IsEqual("45");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!["corpse_lifetime_seconds"]).IsEqual("120");
 		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!["corpse_lifetime_seconds"]).IsEqual("300");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["sun_shadow_splits"]).IsEqual("2");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["sun_shadow_splits"]).IsEqual("4");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!["sun_shadow_splits"]).IsEqual("4");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!["sun_shadow_splits"]).IsEqual("4");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!["sun_shadow_filter"]).IsEqual("2");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!["sun_shadow_filter"]).IsEqual("3");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!["sun_shadow_filter"]).IsEqual("4");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!["sun_shadow_filter"]).IsEqual("5");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)![Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("0.75");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)![Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("1.25");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)![Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("2");
+		AssertThat(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)![Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("3");
 
 		foreach (string preset in DesktopGraphicsPresets.Order)
 		{
@@ -129,7 +141,7 @@ public sealed class DesktopGraphicsPresetsTests
 		}
 
 		// Revision-1 Balanced install (carrying legacy omni_shadow_mode, missing placed_shadow_limit)
-		// upgrades cleanly to Revision 4 Balanced with placed_shadow_limit = 2.
+		// upgrades cleanly to Revision 5 Balanced with placed_shadow_limit = 2, 4 sun splits, and cloth scale 1.25.
 		var rev1Balanced = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Balanced)!, StringComparer.Ordinal)
 		{
 			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Balanced,
@@ -140,13 +152,16 @@ public sealed class DesktopGraphicsPresetsTests
 
 		AssertThat(DesktopGraphicsPresets.Upgrade(rev1Balanced)).IsTrue();
 		AssertThat(rev1Balanced[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Balanced);
-		AssertThat(rev1Balanced[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
+		AssertThat(rev1Balanced[DesktopGraphicsPresets.RevisionKey]).IsEqual("5");
 		AssertThat(rev1Balanced["placed_shadow_limit"]).IsEqual("2");
 		AssertThat(rev1Balanced["corpse_lifetime_seconds"]).IsEqual("45");
+		AssertThat(rev1Balanced["sun_shadow_splits"]).IsEqual("4");
+		AssertThat(rev1Balanced["sun_shadow_filter"]).IsEqual("3");
+		AssertThat(rev1Balanced[Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("1.25");
 		AssertThat(rev1Balanced.ContainsKey("omni_shadow_mode")).IsFalse();
 
 		// Revision-2 Low install (previously placed_light_shadows = false) upgrades cleanly to
-		// Revision 4 Low with cube shadows enabled (placed_shadow_limit = 1).
+		// Revision 5 Low with cube shadows enabled (placed_shadow_limit = 1).
 		var rev2Low = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Low)!, StringComparer.Ordinal)
 		{
 			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Low,
@@ -155,21 +170,26 @@ public sealed class DesktopGraphicsPresetsTests
 		};
 		AssertThat(DesktopGraphicsPresets.Upgrade(rev2Low)).IsTrue();
 		AssertThat(rev2Low[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Low);
-		AssertThat(rev2Low[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
+		AssertThat(rev2Low[DesktopGraphicsPresets.RevisionKey]).IsEqual("5");
 		AssertThat(rev2Low["placed_light_shadows"]).IsEqual("true");
 		AssertThat(rev2Low["placed_shadow_limit"]).IsEqual("1");
 		AssertThat(rev2Low["corpse_lifetime_seconds"]).IsEqual("10");
+		AssertThat(rev2Low[Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("0.75");
 
-		// Revision-3 Ultra install receives Revision 4 corpse_lifetime_seconds = 300 cleanly.
-		var rev3Ultra = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.Ultra)!, StringComparer.Ordinal)
+		// Revision-4 High install receives Revision 5 4-cascade sun shadows, SoftHigh filter, and 2x cloth range cleanly.
+		var rev4High = new Dictionary<string, string>(DesktopGraphicsPresets.Values(DesktopGraphicsPresets.High)!, StringComparer.Ordinal)
 		{
-			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.Ultra,
-			[DesktopGraphicsPresets.RevisionKey] = "3",
+			[DesktopGraphicsPresets.Key] = DesktopGraphicsPresets.High,
+			[DesktopGraphicsPresets.RevisionKey] = "4",
+			["sun_shadow_splits"] = "2",
 		};
-		rev3Ultra.Remove("corpse_lifetime_seconds");
-		AssertThat(DesktopGraphicsPresets.Upgrade(rev3Ultra)).IsTrue();
-		AssertThat(rev3Ultra[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
-		AssertThat(rev3Ultra["corpse_lifetime_seconds"]).IsEqual("300");
+		rev4High.Remove("sun_shadow_filter");
+		rev4High.Remove(Refii.Physics.Engine_ClothBody.DistanceScaleKey);
+		AssertThat(DesktopGraphicsPresets.Upgrade(rev4High)).IsTrue();
+		AssertThat(rev4High[DesktopGraphicsPresets.RevisionKey]).IsEqual("5");
+		AssertThat(rev4High["sun_shadow_splits"]).IsEqual("4");
+		AssertThat(rev4High["sun_shadow_filter"]).IsEqual("4");
+		AssertThat(rev4High[Refii.Physics.Engine_ClothBody.DistanceScaleKey]).IsEqual("2");
 
 		// Custom configurations keep custom settings intact and strip legacy omni_shadow_mode on upgrade.
 		var rev1Custom = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -181,7 +201,7 @@ public sealed class DesktopGraphicsPresetsTests
 		};
 		AssertThat(DesktopGraphicsPresets.Upgrade(rev1Custom)).IsTrue();
 		AssertThat(rev1Custom[DesktopGraphicsPresets.Key]).IsEqual(DesktopGraphicsPresets.Custom);
-		AssertThat(rev1Custom[DesktopGraphicsPresets.RevisionKey]).IsEqual("4");
+		AssertThat(rev1Custom[DesktopGraphicsPresets.RevisionKey]).IsEqual("5");
 		AssertThat(rev1Custom["placed_shadow_limit"]).IsEqual("6");
 		AssertThat(rev1Custom.ContainsKey("omni_shadow_mode")).IsFalse();
 	}

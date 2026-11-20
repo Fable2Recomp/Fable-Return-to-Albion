@@ -956,6 +956,7 @@ public static class Engine_LevelScene
         LightmapContainer? bakedLightmaps = null;
         LightProbeField? probeField = null;
         string bakedGdbPath = string.Empty;
+        bool needLightingBake = false;
         if (source is not null)
         {
             Engine_LevelGdb.TryRead(level, p => source(p), out bakedGdbPath);
@@ -969,11 +970,15 @@ public static class Engine_LevelScene
                 $"[baked] {level}: {Engine_LevelBakedLighting.Describe(bakedLightmaps, probeField)}");
             bool shadowsReady = Engine_LevelShadowMaps.LoadOrClear(level, bakedGdbPath);
             bool aoReady = Engine_LevelAmbientOcclusion.LoadOrClear(level, bakedGdbPath);
-            // Always record active scenario (and launch non-blocking background GPU bake on cache miss).
-            Engine_LevelShadowPrebuild.EnsureScenarioBuiltAsync(level, bakedGdbPath);
-            if (!shadowsReady || !aoReady)
+            needLightingBake = !shadowsReady || !aoReady;
+            if (!needLightingBake)
             {
-                GD.Print($"[level] {level}: static lighting cache miss (shadowsReady={shadowsReady}, aoReady={aoReady}) -> baking asynchronously on GPU");
+                // Up-to-date cache hit: record the active scenario immediately.
+                Engine_LevelShadowPrebuild.EnsureScenarioBuiltAsync(level, bakedGdbPath);
+            }
+            else
+            {
+                GD.Print($"[level] {level}: static lighting cache miss (shadowsReady={shadowsReady}, aoReady={aoReady}) -> baking asynchronously during load");
             }
         }
         else
@@ -1215,9 +1220,40 @@ public static class Engine_LevelScene
 
         if (source is not null)
         {
+            bool captureBakeSnapshot = needLightingBake &&
+                !isEditor &&
+                !Refii.Models.Engine_ClassicMaterial.Active &&
+                !Refii.AndroidRuntime.AndroidBakedShadows.LevelsIgnoreBakes;
             Node3D? props = Engine_LevelProps.Build(
-                level, p => source(p), probeField, lightingFrame, bakedLightmaps, inspect,
-                cachedSupplemental, out PropBuildStats propStats);
+                level,
+                p => source(p),
+                probeField,
+                lightingFrame,
+                bakedLightmaps,
+                inspect,
+                cachedSupplemental,
+                captureBakeSnapshot,
+                out Engine_LevelProps.StaticLightingBakeSnapshot? lightingBakeSnapshot,
+                out PropBuildStats propStats);
+
+            if (needLightingBake)
+            {
+                if (lightingBakeSnapshot is not null)
+                {
+                    foreach ((StatedLandscape landscape, GhfHeights? grid) in cachedGrids)
+                    {
+                        if (grid is not null &&
+                            landscape.Ghf.Length != 0 &&
+                            (string.Equals(landscape.Ghf, heightfieldPath, StringComparison.OrdinalIgnoreCase) ||
+                             !Engine_LevelShadowMaps.IsVistaHeightfieldPath(landscape.Ghf)))
+                        {
+                            lightingBakeSnapshot.TerrainHeights.Add(grid);
+                        }
+                    }
+                }
+
+                Engine_LevelShadowPrebuild.EnsureScenarioBuiltAsync(level, bakedGdbPath, lightingBakeSnapshot);
+            }
 
             if (props is not null)
             {

@@ -109,21 +109,32 @@ public static partial class Engine_MdlMaterial
             }
 
             int facts = shaded.GetMeta(LiteFactsMeta).AsInt32();
-            if (Refii.AndroidRuntime.AndroidCharacterCull.For(info) &&
-                current.ResourcePath is Engine_ShaderFamily.StandardPath or Engine_ShaderFamily.StandardTranslucentPath)
+            string currentPath = Engine_ShaderSpecialisation.PathOf(current);
+            if (currentPath == Engine_ShaderFamily.StandardCutoutCulledPath)
+            {
+                SetFacts(shaded, FactCullBack, true);
+                currentPath = Engine_ShaderFamily.StandardPath;
+            }
+            else if (currentPath == Engine_ShaderFamily.StandardTranslucentCulledPath)
+            {
+                SetFacts(shaded, FactCullBack, true);
+                currentPath = Engine_ShaderFamily.StandardTranslucentPath;
+            }
+            else if (Refii.AndroidRuntime.AndroidCharacterCull.For(info) &&
+                currentPath is Engine_ShaderFamily.StandardPath or Engine_ShaderFamily.StandardTranslucentPath)
             {
                 SetFacts(shaded, FactCullBack, true);
             }
 
             if (Refii.AndroidRuntime.AndroidCharacterShading.For(info) &&
-                current.ResourcePath is Engine_ShaderFamily.StandardPath or Engine_ShaderFamily.StandardCulledPath
+                currentPath is Engine_ShaderFamily.StandardPath or Engine_ShaderFamily.StandardCulledPath
                     or Engine_ShaderFamily.StandardTranslucentPath)
             {
                 SetFacts(shaded, FactCharacter, true);
             }
 
             if (Engine_ShaderVariant.ModelPath(
-                    current.ResourcePath,
+                    currentPath,
                     specularMap: (facts & 1) != 0 && !grass,
                     envmap: (facts & 2) != 0,
                     pbr: (facts & 4) != 0,
@@ -135,6 +146,19 @@ public static partial class Engine_MdlMaterial
         }
     }
 
+    private static bool HasExplicitCullBackFact(Material built)
+    {
+        for (Material? pass = built; pass is ShaderMaterial shaded; pass = shaded.NextPass)
+        {
+            if (shaded.HasMeta(LiteFactsMeta) && (shaded.GetMeta(LiteFactsMeta).AsInt32() & FactCullBack) != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Moves a finished lite material's passes onto their specialised builds
     /// (Engine_ShaderSpecialisation): the same wrapper with code compiled out that this material,
@@ -144,7 +168,7 @@ public static partial class Engine_MdlMaterial
     {
         // The opaque pass's draw order class (AndroidOpaqueOrder); a no-op while its key is 0.
         Refii.AndroidRuntime.AndroidOpaqueOrder.Model(built);
-        if (!Engine_ShaderVariant.Lite || !Engine_ShaderSpecialisation.Any)
+        if (!Engine_ShaderVariant.Lite || (!Engine_ShaderSpecialisation.Any && !HasExplicitCullBackFact(built)))
         {
             return;
         }
