@@ -269,7 +269,7 @@ public sealed class AndroidLeanVaryingsTests
         AssertThat(Defines(Lite(CulledModern), "#define FABLE_PROP_FRAGMENT_WORLD")).IsTrue();
         string fragment = Stage(Lite(CulledModern, Near, World), "fragment");
         int hook = fragment.IndexOf("FABLE_PROP_FRAGMENT_WORLD", StringComparison.Ordinal);
-        AssertThat(hook).IsGreater(fragment.IndexOf("texture(normal_tex, uv)", StringComparison.Ordinal));
+        AssertThat(hook).IsGreater(fragment.IndexOf("textureGrad(normal_tex, uv,", StringComparison.Ordinal));
         AssertThat(hook).IsLess(fragment.IndexOf("fable_near_prop_baked_ao(", StringComparison.Ordinal));
         AssertThat(Defines(Lite(TerrainModern, World), "#define FABLE_TERRAIN_WORLD_IN fable_world = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;")).IsTrue();
         AssertThat(Defines(Lite(TerrainModern), "#define FABLE_TERRAIN_WORLD_IN")).IsTrue();

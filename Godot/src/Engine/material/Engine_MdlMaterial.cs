@@ -824,6 +824,8 @@ public static partial class Engine_MdlMaterial
 
                 // The lite variant's facts, before the duplicate below so the blended pass carries them too.
                 CaptureLiteFacts(mat, specular, envmap, normal, emissive);
+                SetFacts(mat, FactAlphaCut, albedo is not null && (cutout || translucent));
+                SetFacts(mat, FactBlended, albedo is not null && translucent);
 
                 if (orm is not null)
                 {

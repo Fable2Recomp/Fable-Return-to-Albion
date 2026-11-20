@@ -71,9 +71,10 @@ public static class Engine_ShaderSpecialisation
                 Shadowless: Refii.Core.Engine_RefiiConfig.Bool(values, ShadowlessKey, false),
                 BakeVariants: Refii.Core.Engine_RefiiConfig.Bool(values, BakeVariantsKey, false),
                 // Each set of flags is a shader build of its own, and a build's bookkeeping is native
-                // memory: the low-memory tier folds only what adds few builds.
+                // memory: the low-memory tier has its own scope, every fold by default since 2026-11-16 (on a
+                // OnePlus 7 Pro at Low, 2461 against 2456 MB PSS with none, and 3-4% less GPU time).
                 Folds: !Refii.Core.Engine_RefiiConfig.Bool(values, MaterialFoldsKey, false) ? FoldScope.Off
-                    : Refii.Game.AndroidMemoryRelease.LowRamMode ? ParseFoldScope(Refii.Core.Engine_RefiiConfig.String(values, MaterialFoldsLowRamKey, "off"))
+                    : Refii.Game.AndroidMemoryRelease.LowRamMode ? ParseFoldScope(Refii.Core.Engine_RefiiConfig.String(values, MaterialFoldsLowRamKey, "all"))
                     : FoldScope.All,
                 TerrainSingleFetch: Refii.Core.Engine_RefiiConfig.Bool(values, TerrainSingleFetchKey, false),
                 VegetationFolds: Refii.Core.Engine_RefiiConfig.Bool(values, VegetationFoldsKey, false),
@@ -169,7 +170,9 @@ public static class Engine_ShaderSpecialisation
 
     /// <summary>Whether any specialisation can apply in this process.</summary>
     public static bool Any => Read.Value.Shadowless || MaterialFolds || Read.Value.TerrainSingleFetch || Read.Value.VegetationFolds ||
-        Refii.AndroidRuntime.AndroidCharacterCull.On || Refii.AndroidRuntime.AndroidCharacterShading.On.Any;
+        Refii.AndroidRuntime.AndroidCharacterCull.On || Refii.AndroidRuntime.AndroidCharacterShading.On.Any ||
+        Refii.AndroidRuntime.AndroidVertexLitProps.On || Refii.AndroidRuntime.AndroidFlatCutouts.On || Refii.AndroidRuntime.AndroidFlatCutouts.SwayingOn ||
+        Refii.AndroidRuntime.AndroidCutoutPrepass.On;
 
     /// <summary>Whether `lite_vegetation_folds` is on (and the lite set drawn).</summary>
     public static bool VegetationFolds => Read.Value.VegetationFolds;
@@ -468,6 +471,15 @@ public static class Engine_ShaderSpecialisation
         {
             code = WithRenderMode(code, "shadows_disabled");
         }
+
+        // `lite_vertex_lit_props`: its marker compiles the build with `vertex_lighting`.
+        code = Refii.AndroidRuntime.AndroidVertexLitProps.Compose(code, defines);
+
+        // `lite_flat_cutouts`: its marker compiles the build `unshaded` with flat leaves' define.
+        code = Refii.AndroidRuntime.AndroidFlatCutouts.Compose(code, defines);
+
+        // `android_cutout_depth_prepass`: its marker adds `depth_prepass_alpha`, godot-patches/0017's request.
+        code = Refii.AndroidRuntime.AndroidCutoutPrepass.Compose(code, defines);
 
         // `android_character_cull_back`: its marker turns the build's `cull_disabled` into `cull_back`.
         if (System.Linq.Enumerable.Contains(defines, Refii.AndroidRuntime.AndroidCharacterCull.Define))

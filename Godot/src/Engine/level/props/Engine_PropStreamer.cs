@@ -1591,6 +1591,7 @@ public partial class Engine_PropStreamer : Node3D
             ApplyVisibilityRange(instance, mesh);
             AddBuildingOccluder(instance, mesh, path);
             Refii.Models.Engine_ClassicBillboards.Register(instance, mesh);
+            Refii.AndroidRuntime.AndroidTreeCards.Register(instance, mesh);
             Engine_PropFarShading.Register(instance, mesh);
             if (instance is MeshInstance3D displaced && displaced.HasMeta(RecordMeta))
             {

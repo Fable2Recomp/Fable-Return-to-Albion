@@ -14,8 +14,8 @@ public static class RuntimeCVarsAndroid
     {
         new(GraphicsPresets.Key, DisplayCategory, RuntimeCVarType.String, GraphicsPresets.High,
             "The picture's cost settings as one choice, on a phone. Low gives up the sun's "
-            + "shadow, most of the resolution and some distance for the most frame rate and the "
-            + "least memory (a 5-6 GB phone); Medium adds resolution, lamps and distance back (an "
+            + "shadow, most of the resolution and some detail for the most frame rate (a 5-6 GB "
+            + "phone), and Low and Medium draw far trees as pictures; Medium adds resolution, lamps and distance back (an "
             + "8 GB Adreno 640 phone's smoothest); High adds the sun's shadows and sharpness; Ultra "
             + "gives back resolution, distance, shadow reach and the ground's bump, for the fastest "
             + "phones. Low runs the modern lighting model with its lite shaders' cheaper fog, ground "
@@ -30,6 +30,52 @@ public static class RuntimeCVarsAndroid
 
     /// <summary>Retained empty group after promoting <c>sun_shadow_filter</c> to a shared desktop + mobile CVar.</summary>
     public static readonly RuntimeCVarDefinition[] SunShadowFilter = System.Array.Empty<RuntimeCVarDefinition>();
+
+    /// <summary>
+    /// Occlusion culling from the buildings (Engine_BuildingOccluders, <see cref="Refii.AndroidRuntime.AndroidOcclusionAuto"/>),
+    /// where upstream's on/off <c>occlusion_culling</c> stood. A phone offers off, on or auto with the occlusion
+    /// buffer's settings; a desktop keeps upstream's on/off and wording, and hides the buffer's rows (<see cref="AllKeys"/>).
+    /// </summary>
+    public static readonly RuntimeCVarDefinition[] OcclusionCulling =
+    {
+        new(Refii.AndroidRuntime.AndroidOcclusionAuto.Key, DisplayCategory,
+            Refii.Core.Engine_Platform.IsAndroid ? RuntimeCVarType.String : RuntimeCVarType.Bool, "false",
+            Refii.Core.Engine_Platform.IsAndroid ? PhoneOcclusionText : DesktopOcclusionText,
+            Refii.Core.Engine_Platform.IsAndroid ? PhoneOcclusionChoices : null),
+        new(Refii.AndroidRuntime.AndroidOcclusionAuto.MetresKey, DisplayCategory, RuntimeCVarType.Double, "50",
+            "With occlusion_culling = auto: culling turns on while a building's occluder is within "
+            + "this many metres of the camera and off past 1.5 times that (5 to 500). Applies the next time you start the game."),
+        new(Refii.AndroidRuntime.AndroidOcclusionAuto.RaysKey, DisplayCategory, RuntimeCVarType.Int, "512",
+            "With occlusion culling: Godot's occlusion rays per worker thread, which sets the occlusion "
+            + "buffer's resolution (never under the window's pixels / 1024). Fewer cost less CPU each "
+            + "frame but cull less, and a narrow gap between buildings may be missed. Applies the next time you start the game."),
+        new(Refii.AndroidRuntime.AndroidOcclusionAuto.BuildQualityKey, DisplayCategory, RuntimeCVarType.Int, "2",
+            "With occlusion culling: how carefully Godot builds the occluders' ray tree, 0 low to "
+            + "2 high. Lower builds faster on its own thread as town buildings stream in, but its "
+            + "rays run a little slower. Applies the next time you start the game."),
+    };
+
+    /// <summary>The occlusion row's choices on a phone.</summary>
+    public const string PhoneOcclusionChoices = "false|Off,true|On,auto|Auto";
+
+    /// <summary>The occlusion row's choices on a desktop: upstream's on and off.</summary>
+    public const string DesktopOcclusionChoices = "false|Off,true|On";
+
+    /// <summary>The occlusion row's wording on a phone.</summary>
+    public const string PhoneOcclusionText =
+            "Experimental: skip drawing what the town's buildings hide, using each building's "
+            + "own solid walls as the occluder. Saves geometry in a dense town at the cost of "
+            + "some CPU on worker threads; windows and cutouts never hide anything. auto turns it "
+            + "on only while a building is within occlusion_auto_metres of the camera, so places "
+            + "without buildings pay nothing. Applies the next time you start the game.";
+
+    private const string DesktopOcclusionText =
+            "Experimental: skip drawing what the town's buildings hide, using each building's "
+            + "own solid walls as the occluder. Saves geometry in a dense town at the cost of "
+            + "some CPU on worker threads; windows and cutouts never hide anything. Read at launch.";
+
+    /// <summary>The occlusion buffer's rows: a phone's only.</summary>
+    private static readonly RuntimeCVarDefinition[] OcclusionBuffer = OcclusionCulling[1..];
 
     /// <summary>The launcher's Skip intro videos (<see cref="Refii.AndroidRuntime.AndroidStartup"/>), beside Baked lamp shadows.</summary>
     public static readonly RuntimeCVarDefinition[] IntroVideos =
@@ -124,11 +170,12 @@ public static class RuntimeCVarsAndroid
             + "into its shader instead of read at draw. A surface without a normal map stops "
             + "carrying tangents too. The same picture; a few more shader builds. Applies at the next launch."),
 
-        new("lite_material_folds_low_ram", DisplayCategory, RuntimeCVarType.String, "off",
+        new("lite_material_folds_low_ram", DisplayCategory, RuntimeCVarType.String, "all",
             "Android, lite shaders, in the low-memory tier: which of lite_material_folds' switches are "
-            + "compiled in, since each mix of them is a shader build of its own. const: only those "
-            + "that add no build. normal: those and the normal map, at most one more build of each. "
-            + "all: every switch. off: none. The same picture. Applies at the next launch.",
+            + "compiled in, since each mix of them is a shader build of its own. all (the default): every "
+            + "switch, as outside the tier; on a OnePlus 7 Pro at Low 3-4% less GPU time for no more memory. "
+            + "normal: the switches that add no build and the normal map, at most one more build of each. "
+            + "const: only those that add no build. off: none. The same picture. Applies at the next launch.",
             "off|Off,const|No extra builds,normal|With the normal map,all|All"),
 
         new(Refii.Models.Engine_ShaderSpecialisation.VegetationFoldsKey, DisplayCategory, RuntimeCVarType.Bool, "false",
@@ -242,6 +289,43 @@ public static class RuntimeCVarsAndroid
             + "table draws as lean. Applies at the next launch.",
             "full|Full,lean|Lean,table|Table"),
 
+        new(Refii.AndroidRuntime.AndroidFogTrims.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, lite shaders with lite_fog lean: three exact trims of the fog. The sun's angle is "
+            + "taken through the view matrix instead of turning every pixel's ray; the volumetric cancel is "
+            + "compiled out where it is always 0 (the fable model, or the modern model with "
+            + "android_near_fog on); under the fable model outdoor_fog_scale is compiled in when it is 1. "
+            + "The same picture. Applies the next time you start the game."),
+
+        new(Refii.AndroidRuntime.AndroidFableAmbientOff.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, lite shaders under the fable lighting model: the fable builds compiled with "
+            + "ambient_light_disabled, dropping Godot's ambient block, which that model always runs at "
+            + "zero. Fable 2 only (Fable 3's map table lights world models with an ambient of its own). "
+            + "The same picture. Applies the next time you start the game."),
+
+        new(Refii.AndroidRuntime.AndroidShadowTwinDither.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, sun shadows: a prop batch's cast-only twin is drawn without the fade dither while it "
+            + "has no fade band and has finished arriving, where the dither discards nothing, so the shadow "
+            + "pass has no discard for it. The same picture. Applies the next time you start the game."),
+
+        new(Refii.AndroidRuntime.AndroidWaterZenith.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, water: the foam's sky colour straight up worked out at the water's vertices and "
+            + "passed on unchanged, instead of on every foam pixel. The same picture. Applies the next "
+            + "time you start the game."),
+
+        new(Refii.AndroidRuntime.AndroidSkyGlobals.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, sky: the dome reads the sun and its two scattering colours from global shader "
+            + "values, so the atmosphere's 15 Hz update no longer writes the sky material and Godot stops "
+            + "re-filtering the sky's radiance map, which nothing on a phone reads (with "
+            + "sky_radiance_lean). The same picture; the dome's sun moves every frame instead of 15 "
+            + "times a second. Applies the next time you start the game."),
+
+        new(Refii.Level.Engine_LevelProps.FoliageOwnCellsKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, undergrowth: patches holding one or two plants keep their own patch instead of "
+            + "joining one three times wider, so each stops drawing near the plants' own distance rather "
+            + "than about 30 m beyond it. The same picture where the size of the plant sets its distance; "
+            + "where the level states a shorter distance, those plants now reach it instead of fading "
+            + "earlier. Applies at the next loading screen."),
+
         new(Refii.AndroidRuntime.AndroidLeanShading.DarkeningKey, DisplayCategory, RuntimeCVarType.Bool, "true",
             "Android, lite shaders: the ambient's darkening where a normal map turns away from the light "
             + "is worked out with the camera's normals, without turning both into world space or "
@@ -303,9 +387,9 @@ public static class RuntimeCVarsAndroid
             "Android, lite shaders: models' vertex shaders work in world space, so each vertex skips "
             + "multiplying the camera into its model's matrix (per vertex for batched props). About a "
             + "sixth less vertex work for a batched prop, a fifth less in the binning pass. The same "
-            + "picture. Meant for presets without shadows (Low, Medium): while a shadow map renders, "
+            + "picture. Meant for presets without a sun shadow; on in Low. While a shadow map renders, "
             + "solid objects then cast through their own shader instead of the engine's shared "
-            + "depth-only one. Being measured. Applies at the next launch."),
+            + "depth-only one. Applies at the next launch."),
 
         new(Refii.AndroidRuntime.AndroidModernAmbientFold.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, lite shaders under the modern lighting model (android_modern_lighting): "
@@ -332,6 +416,48 @@ public static class RuntimeCVarsAndroid
             + "fading objects) draw among the solid ones: above 0 after them, below 0 before them, "
             + "0 as the engine sorts. The same picture except where two surfaces are exactly level "
             + "with each other. -16 to 16. Applies at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidOpaqueOrder.FrontToBackKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: solid surfaces draw nearest first, in bands of distance, instead of grouped by "
+            + "shader and material alone, so the GPU skips more of the pixels hidden behind nearer "
+            + "things. The same picture; a few more state changes for the CPU. Needs the Android "
+            + "templates built with godot-patches/0012. Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidEnginePatchSwitches.FrontToBackReachKey, DisplayCategory, RuntimeCVarType.Int, "0",
+            "Android, with android_opaque_front_to_back: only surfaces within this many metres draw "
+            + "nearest first; farther ones keep the engine's grouping by shader and material, which saves "
+            + "the CPU some state changes. 0 sorts every distance. The same picture. Needs the Android "
+            + "templates built with godot-patches/0015. Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidEnginePatchSwitches.SunShadowBeyondFadeKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: surfaces past the end of the sun's shadow skip looking it up, whose result "
+            + "there is always no shadow. The same picture. Needs the Android templates built with "
+            + "godot-patches/0014. Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidEnginePatchSwitches.SunShadowFacingAwayKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: surfaces turned away from the sun skip looking up its shadow, which the game's "
+            + "shaders do not use there. The same picture. A mod shader with its own light() sees "
+            + "ATTENUATION 1 (no shadow) from the sun on faces turned more than about 97 degrees from it; "
+            + "turn this off for a mod that lights those faces. "
+            + "Needs the Android templates built with godot-patches/0014. Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidEnginePatchSwitches.LampOutOfRangeKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: a lamp's lighting stops where its range ends, instead of being worked out to zero "
+            + "on every pixel of an object it touches. The same picture. A mod shader's own light() is "
+            + "not called for a lamp whose ATTENUATION there is zero (out of range, or outside a spot's "
+            + "cone); turn this off for a mod that lights without ATTENUATION. "
+            + "Needs the Android templates built with godot-patches/0014. Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidEnginePatchSwitches.LampBufferSkipsUnlitKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: lamps at zero brightness (an effect's flame between flickers, a lamp starting "
+            + "to fade in) are left out of the frame's lights. Objects keep their lamp counts, so no "
+            + "shader is built. The same picture. Needs the Android templates built with "
+            + "godot-patches/0014. Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidEnginePatchSwitches.DepthNotStoredKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: the 3D depth buffer is not written back to memory when nothing after the 3D pass "
+            + "reads it, saving the GPU that write every frame. The same picture. Needs the Android "
+            + "templates built with godot-patches/0016. Takes effect live."),
 
         new(Refii.AndroidRuntime.AndroidOpaqueOrder.TerrainKey, DisplayCategory, RuntimeCVarType.Int, "0",
             "Android: where the ground draws among the solid surfaces: above 0 after them, so the "
@@ -449,6 +575,22 @@ public static class RuntimeCVarsAndroid
             + "the same values), so a tree vertex is about 32 bytes. Applies to trees built after the "
             + "change; ignored under the classic renderer."),
 
+        new(Refii.Models.Engine_TreeCardLods.ClusterKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, with tree_card_lod: trees whose crowns are built from leaf clusters (up to 32 "
+            + "triangles each) thin with distance as card trees do. Most shipped trees are built this way "
+            + "and otherwise draw every leaf at any distance. Distant crowns are a little sparser. "
+            + "Applies the next time the game starts."),
+
+        new(Refii.Models.Engine_TreeCardLods.TrunkKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, with mesh_auto_lod: trees' trunks and boughs get generated simpler versions for "
+            + "far away, switched by the shared rule (mesh_lod_pixels) as other scenery's are. A trunk "
+            + "otherwise draws every triangle at any distance. Applies the next time the game starts."),
+
+        new(Refii.Level.Engine_TreeReach.TreeHandoverKey, DisplayCategory, RuntimeCVarType.Double, "1",
+            "Android: where a tree swaps its full model for the game's own far model, as a fraction "
+            + "of the distance the area states (0.25 to 1). 1 keeps the stated distance; lower swaps "
+            + "nearer, so fewer full trees are drawn. Takes effect at once."),
+
         new(Refii.AndroidRuntime.AndroidHudRate.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android: the in-game HUD is drawn every other frame while nothing on it follows the "
             + "world or the camera; menus, markers, mod pieces and a turning camera draw every "
@@ -467,6 +609,18 @@ public static class RuntimeCVarsAndroid
             + "longer ends its opaque pass, copies depth and reopens a pass for the see-through "
             + "objects (unless soft effects or water also read depth: fx_no_depth_reads, "
             + "android_fx_hard_all). Takes effect live."),
+
+        new(Refii.AndroidRuntime.AndroidDisplacementGate.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: the heat-haze pass (a copy of the whole screen and a pass over it) runs only "
+            + "while a haze from an effect, a body or a placed mesh can be on screen, not for every "
+            + "one nearby. The drunk warp always runs it. The same picture. Takes effect live."),
+        new(Refii.AndroidRuntime.AndroidDisplacementGate.LogKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, debugging: log the heat-haze pass's state and what woke it once a second ([disp-gate] in "
+            + "logcat), and where each effect is the first time it wakes it. Takes effect live."),
+        new(Refii.AndroidRuntime.AndroidDisplacementRect.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: the heat-haze pass copies and redraws only the part of the screen its sources "
+            + "can reach, not the whole screen. The drunk warp still covers the whole screen. The "
+            + "same picture. Takes effect live."),
 
         new(Refii.AndroidRuntime.AndroidPoseRate.Key, DisplayCategory, RuntimeCVarType.Double, "0",
             "Android: people and creatures within this many metres of the camera are posed every "
@@ -599,11 +753,20 @@ public static class RuntimeCVarsAndroid
             + "low-memory tier and leaves the runtime's own elsewhere; a number from 0 sets it; "
             + "default leaves it. Takes effect at the next launch."),
 
-        new("android_host_off_prime", DisplayCategory, RuntimeCVarType.Bool, "false",
+        new("android_host_off_prime", DisplayCategory, RuntimeCVarType.Bool, "true",
             "Android, CPU: every thread but the game's simulation thread is kept off the phone's "
             + "fastest cores, so that thread has them to itself instead of sharing them with "
-            + "Godot's own threads. The same game; the rest of the work runs on the other cores. "
+            + "Godot's own threads and the game's other threads. The same game; the rest of the work "
+            + "runs on the other cores. On by default: off, a Galaxy S10e ran the game about 9% slower. "
             + "Takes effect at the next launch."),
+        new(Refii.AndroidRuntime.AndroidGuestPlacement.FollowCeilingKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, CPU: with the game's thread pinned (android_guest_prime_core), keeps it on the cores "
+            + "the phone currently lets run fastest, looked at every 2 seconds, instead of the cores rated "
+            + "fastest. A hot phone may cap its fastest core below the next cluster. Takes effect at the next launch."),
+        new(Refii.AndroidRuntime.AndroidIdleWaits.YieldBackoffKey, DisplayCategory, RuntimeCVarType.Bool, "true",
+            "Android, CPU: a guest thread that keeps yielding while it waits sleeps for a moment between yields. "
+            + "Off, it keeps yielding: more processor time and heat, but a waiting game thread keeps its core's "
+            + "clock up. Takes effect at the next launch."),
 
         new(Refii.AndroidRuntime.AndroidLoadPlacement.Key, DisplayCategory, RuntimeCVarType.String, "off",
             "Android, CPU: while a level builds, the .NET and Godot worker threads run on the "
@@ -617,11 +780,55 @@ public static class RuntimeCVarsAndroid
             "The share of ground foliage (nettles, bracken, grass clumps) drawn, from 0.25 to 1. Each "
             + "clump is kept or left out by where it stands, so the cover thins evenly. Applies to the "
             + "next area loaded."),
+        new(Refii.Level.Engine_LevelProps.FoliageThinFixKey, DisplayCategory, RuntimeCVarType.Bool, "true",
+            "With foliage_density below 1: hedges, dead trees, large brambles and wall ivy are kept whole "
+            + "even when their placement is mirrored, and plants the game also places as live objects are "
+            + "never thinned, so they are drawn as scenery. Off thins them as before. Applies to the next "
+            + "area loaded."),
 
         new("android_guest_real_clock", DisplayCategory, RuntimeCVarType.Bool, "false",
             "Android, CPU: the game reads the real clock directly, instead of through the "
             + "desktop's stepped clock with a lock on every read. The same game at the same "
             + "speed, with less waiting between its threads. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidIdleWaits.ShortSleepsKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, CPU: a sleep the game asks for that is shorter than a millisecond lasts as "
+            + "long as it asked, instead of none at all (a bare yield, or nothing between alerts). "
+            + "Its waiting loops then sleep instead of spinning; the game's timing changes "
+            + "slightly. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidIdleWaits.TickWaitKey, DisplayCategory, RuntimeCVarType.Int, "500",
+            "Android, CPU: the longest sleep, in microseconds, the game's simulation thread takes "
+            + "while it waits for its next tick, between checks. 500 wakes it up to about 2,000 "
+            + "times a second while it waits; 2000 about a quarter as often, and a tick may start "
+            + "up to that much later. From 500 to 8000. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidIdleWaits.CompletionKey, DisplayCategory, RuntimeCVarType.Int, "1",
+            "Android, CPU: how often, in milliseconds, the frames the game presented are reported "
+            + "finished, in place of the console's graphics chip. 1 wakes a thread a thousand "
+            + "times a second; 4 a quarter as often, and a frame is reported up to that much later. "
+            + "From 1 to 8. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidIdleWaits.RexNetIdleKey, DisplayCategory, RuntimeCVarType.Int, "16",
+            "Android, network: how long, in milliseconds, RexNet's event thread sleeps between "
+            + "checks once nothing has arrived for two seconds (no other player's game is sending). "
+            + "Anything that arrives still wakes it at once; only its join and invite time-outs "
+            + "are checked less often. 16 is the same as in play. From 16 to 1000. Takes effect at "
+            + "the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidIdleWaits.WaitCheckKey, DisplayCategory, RuntimeCVarType.Int, "1",
+            "Android, CPU: how often, in milliseconds, a game thread waiting for an event or for "
+            + "several objects at once looks again. 1 is the old way: such a thread wakes about a "
+            + "thousand times a second while it waits (the file, texture and audio threads all "
+            + "do). From 2, it sleeps until what it waits for is signalled or it is sent a call, "
+            + "and looks again only that often, as a safety net. From 1 to 100. Takes effect at "
+            + "the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidClothLand.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, CPU: the frame's cloth, solved on another thread, is collected just before "
+            + "the frame goes to the renderer instead of at the end of the frame's processing, so "
+            + "the solve also overlaps Godot's skeleton updates and transform work. The same "
+            + "picture; the wait shows as cloth_land_predraw. Takes effect at the next launch."),
 
         new(Refii.AndroidRuntime.AndroidIdlePower.ScreenMinutesKey, DisplayCategory, RuntimeCVarType.Int, "10",
             "Android: minutes with no input until play pauses and the screen may turn off by the "
@@ -678,8 +885,8 @@ public static class RuntimeCVarsAndroid
             "Android, memory: the tier for a phone short of memory. Surface detail one size smaller, "
             + "fewer shader shortcuts and menus built when they first open, which costs that first "
             + "open a moment; hero_texture_sources_mb at 0 means 32 here instead of no limit. auto "
-            + "turns it on under 7 GB of memory; on and off choose, and the Low graphics preset "
-            + "sets on. Takes effect at the next launch.",
+            + "turns it on under 7 GB of memory; on and off choose. The phone's own setting: the "
+            + "graphics preset leaves it alone. Takes effect at the next launch.",
             "auto|Auto,on|On,off|Off"),
     };
 
@@ -716,6 +923,106 @@ public static class RuntimeCVarsAndroid
             + "corners instead of at every pixel, as the original game lights them. Nearly the "
             + "same picture: a lamp inside a large puff shows no bright middle, smoke within a "
             + "metre of a lamp reads brighter, and lamp light is not stopped by walls on them. "
+            + "Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidFlatLeaves.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, trees: the lite tree shaders drawn unshaded, each leaf lit at half the sun's "
+            + "full strength instead of by its own facing, plus its bake and fog as before. Crowns "
+            + "lose their sunlit and shaded sides and lamps no longer light leaves; about 4% of an "
+            + "S10e's frame in Oakfield at Low. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, trees: past three quarters of each tree's stated billboard distance, every tree is "
+            + "drawn as a flat card showing a picture of its model, as the original game drew distant "
+            + "trees, instead of its far model out to its cull. The pictures are captured when an area's "
+            + "trees have loaded and again when the sun moves; tree_far_reach still ends the cards. "
+            + "While the screen is split, trees are drawn as models instead. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.StartKey, DisplayCategory, RuntimeCVarType.Double, "1",
+            "Android, with tree_billboards: where the cards take over from the tree models, as a multiple of "
+            + "each tree's stated billboard distance (64-128 m for the shipped trees). 1 is the original "
+            + "game's distance; 2 keeps the models twice as far, which costs more but keeps cards further "
+            + "out, past the sun's shadow reach at High. Held to 1-8, never past a tree's cull. "
+            + "Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.PerFrameKey, DisplayCategory, RuntimeCVarType.Int, "4",
+            "Android, with tree_billboards: how many tree models a capture of the tree pictures draws a "
+            + "frame. 4 spreads a capture over about ten frames (about 37 models in Brightwood); 0 draws "
+            + "all of them in one frame, a longer frame each time. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.TurnKey, DisplayCategory, RuntimeCVarType.Double, "0",
+            "Android, with tree_billboards: degrees the view turns before the tree pictures are captured "
+            + "again from the new direction, so a tree's lit side stays where the sun is. Each capture "
+            + "swaps the far trees' pictures while you pan. 0 (the default) keeps the direction of the "
+            + "last capture; 5-90. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.HideCardsKey, DeveloperCategory, RuntimeCVarType.Bool, "false",
+            "Android, testing, with tree_billboards: the tree cards are never drawn, while the captures, "
+            + "the card buffer and the models' hand-over run as usual, so far trees past the hand-over "
+            + "are missing. Measures what drawing the cards costs. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.OpaqueCutKey, DeveloperCategory, RuntimeCVarType.Bool, "false",
+            "Android, testing, with tree_billboards: the tree cards cut out by a plain discard instead of "
+            + "an alpha scissor, so Godot draws them without blending. The same picture. "
+            + "Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.DrawLastKey, DeveloperCategory, RuntimeCVarType.Bool, "false",
+            "Android, testing, with tree_billboards: the tree cards drawn after every other solid surface, "
+            + "instead of where the middle of their area sorts them, so what hides them has drawn first. "
+            + "The same picture. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidTreeCards.FirstCaptureOnlyKey, DeveloperCategory, RuntimeCVarType.Bool, "false",
+            "Android, testing, with tree_billboards: after an area's first capture, the tree pictures are "
+            + "captured only for newly loaded trees, never again for the sun or a turn, so their lit sides "
+            + "go stale. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidFlatCutouts.DebugKey, DeveloperCategory, RuntimeCVarType.String, "off",
+            "Android, testing, lite shaders: the cut-out surfaces (hedges, undergrowth, leaves) drawn wrong on "
+            + "purpose to price a depth pre-pass. opaque: no cut-out holes, so they draw as solid cards. "
+            + "depth_only: the holes kept, drawn black and unlit. hidden: not drawn, their vertex work kept. "
+            + "Takes effect at the next launch.",
+            "off|Off,opaque|Opaque,depth_only|Depth only,hidden|Hidden"),
+
+        new(Refii.AndroidRuntime.AndroidFlatCutouts.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, lite shaders: hedges, brambles, bushes and other cut-out objects are lit at one "
+            + "level from the sun, as lite_flat_leaves lights tree leaves, instead of at every pixel. "
+            + "They lose the difference between their lit and shaded sides, and lamps no longer light "
+            + "them. Applies the next time the game starts."),
+
+        new(Refii.AndroidRuntime.AndroidFlatCutouts.SwayingKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, lite shaders: swaying plants (nettles, ferns, flowers and grass on the wind shader), "
+            + "which lite_flat_cutouts leaves per pixel, lit at one level from the sun as flat cut-outs are. "
+            + "Changes the picture: they lose the difference between their lit and shaded sides, and lamps "
+            + "no longer light them. Meant for Low. Applies the next time you start the game."),
+
+        new(Refii.AndroidRuntime.AndroidCutoutPrepass.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android: hedges and bushes are drawn depth first, so the pixels behind them are not lit for nothing. "
+            + "The same picture; one more draw for each hedge. Medium's since revision 27. Applies the next time you "
+            + "start the game."),
+
+        new(Refii.AndroidRuntime.AndroidCutoutPrepass.EqualKey, DeveloperCategory, RuntimeCVarType.Bool, "true",
+            "Android, testing, with android_cutout_depth_prepass: the cut-outs' colour draws compare depth EQUAL, so "
+            + "their holes fail the depth test before shading. False compares GREATER_OR_EQUAL, as every other solid "
+            + "draw does: the Adreno keeps its coarse depth test for them, but each layer's holes are shaded before the "
+            + "discard drops them. The same picture. Takes effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidCutoutPrepass.ScopeKey, DeveloperCategory, RuntimeCVarType.String, "two_sided",
+            "Android, testing, with android_cutout_depth_prepass: which cut-outs are drawn depth first. A comma list of "
+            + "two_sided (hedges, bushes, railings; the default), wind (swaying undergrowth) and trees (tree leaves), or "
+            + "all; add no_translucent to leave out the solid pass of see-through-edged leaves. The same picture. Takes "
+            + "effect at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidVertexLitProps.NoSpecularKey, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, with lite_vertex_lit_props: objects lit at their corners skip Godot's per-corner highlight "
+            + "(every material but authored PBR). Props lose the shine lamps and the sun put on them. Meant for Low. "
+            + "Applies at the next launch."),
+
+        new(Refii.AndroidRuntime.AndroidVertexLitProps.Key, DisplayCategory, RuntimeCVarType.Bool, "false",
+            "Android, objects: the lite prop and building shaders compiled with vertex_lighting, their "
+            + "direct light worked out at their corners by Godot's own light functions instead of per "
+            + "pixel by the game's. The sun keeps its shadow; lamps fall off as Godot's lights do, "
+            + "without the direct AO, and their pools follow a wall's vertices. Foliage and cut-out "
+            + "materials stay per pixel. About 5-7% of an Adreno 640's GPU time in Oakfield at Low. "
             + "Takes effect at the next launch."),
     };
 
@@ -766,6 +1073,7 @@ public static class RuntimeCVarsAndroid
             EffectsAndCanvas,
             StableLightCounts,
             GcStress,
+            OcclusionBuffer,
         })
         {
             foreach (RuntimeCVarDefinition definition in group)

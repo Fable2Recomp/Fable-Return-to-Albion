@@ -4480,8 +4480,7 @@ public partial class GameEntities : Node3D
             return known.Parts;
         }
 
-        uint[] raw = HostBridge.GetEntityMorphParts(address, out int built);
-        uint[] eyes = built == 0 ? raw : System.Array.Empty<uint>();
+        uint[] eyes = HostBridge.GetEntityMorphParts(address, out _);
         _eyes[address] = (uniqueId, eyes);
         return eyes;
     }

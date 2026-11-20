@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://b3xn3bjc3lu18"
+path="res://.godot/imported/tree_card_atlas.glsl-aecd50634f3c6e7afbf6ef310db46269.res"
+
+[deps]
+
+source_file="res://src/android/tree_card_atlas.glsl"
+dest_files=["res://.godot/imported/tree_card_atlas.glsl-aecd50634f3c6e7afbf6ef310db46269.res"]
+
+[params]
+

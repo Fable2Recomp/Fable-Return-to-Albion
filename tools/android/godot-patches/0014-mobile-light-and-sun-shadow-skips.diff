@@ -1,0 +1,213 @@
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+@@ -2379,6 +2379,19 @@
+ 
+ 	float luminance_multiplier = p_render_data->render_buffers.is_valid() ? p_render_data->render_buffers->get_luminance_multiplier() : 1.0;
+ 
++	// godot-patches/0014: per-pixel skips whose result is already known; same picture. Read each frame.
++	uint32_t skip_flags = 0;
++	if (GLOBAL_GET_CACHED(bool, "rendering/renderer/sun_shadow_skip_beyond_fade_mobile")) {
++		skip_flags |= RenderSceneDataRD::MOBILE_SKIP_SUN_SHADOW_BEYOND_FADE;
++	}
++	if (GLOBAL_GET_CACHED(bool, "rendering/renderer/sun_shadow_skip_facing_away_mobile")) {
++		skip_flags |= RenderSceneDataRD::MOBILE_SKIP_SUN_SHADOW_FACING_AWAY;
++	}
++	if (GLOBAL_GET_CACHED(bool, "rendering/renderer/light_skip_out_of_range_mobile")) {
++		skip_flags |= RenderSceneDataRD::MOBILE_SKIP_LIGHT_OUT_OF_RANGE;
++	}
++	p_render_data->scene_data->mobile_skip_flags = skip_flags;
++
+ 	// Start a new setup.
+ 	scene_state.uniform_buffers.prepare_for_upload();
+ 	p_render_data->scene_data->update_ubo(scene_state.uniform_buffers.get_for_upload(0u), get_debug_draw_mode(), env, reflection_probe_instance, p_render_data->camera_attributes, p_pancake_shadows, p_screen_size, p_viewport_size, p_default_bg_color, luminance_multiplier, p_opaque_render_buffers, false);
+@@ -3567,6 +3580,11 @@
+ 
+ 	// Opaque surfaces in front-to-back bands (see _fill_render_list). Off keeps the stock order.
+ 	GLOBAL_DEF("rendering/renderer/opaque_front_to_back_mobile", false);
++	// Per-pixel light and sun-shadow skips and the light buffer's unlit lights (godot-patches/0014). Off keeps stock.
++	GLOBAL_DEF("rendering/renderer/sun_shadow_skip_beyond_fade_mobile", false);
++	GLOBAL_DEF("rendering/renderer/sun_shadow_skip_facing_away_mobile", false);
++	GLOBAL_DEF("rendering/renderer/light_skip_out_of_range_mobile", false);
++	GLOBAL_DEF("rendering/renderer/light_buffer_skips_unlit_mobile", false);
+ 
+ 	disable_ubershaders = RD::get_singleton()->get_driver_workarounds().disable_ubershaders;
+ 	if (disable_ubershaders) {
+diff --git a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+--- a/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
++++ b/servers/rendering/renderer_rd/shaders/forward_mobile/scene_forward_mobile.glsl
+@@ -1975,7 +1975,20 @@
+ 
+ 				half shadow = half(1.0);
+ 
+-				if (directional_lights.data[i].shadow_opacity > 0.001) {
++				// godot-patches/0014: leave the shadow at 1.0 where its value is already known.
++				// Past fade_to the fade below returns exactly 1.0 whatever was sampled.
++				bool shadow_known = bool(scene_data.flags & SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_BEYOND_FADE) && vertex.z <= directional_lights.data[i].fade_to;
++#if defined(LIGHT_CODE_USED) && !defined(USE_VERTEX_LIGHTING)
++				// Facing away from the sun: a light() that uses ATTENUATION only where dot(NORMAL, LIGHT) > -0.1
++				// (all of the game's) never reads it here. The margin covers half-precision rounding.
++				shadow_known = shadow_known || (bool(scene_data.flags & SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_FACING_AWAY) && dot(vec3(normal), directional_lights.data[i].direction) < -0.125);
++#endif
++#ifdef USE_LIGHTMAP
++				// A shadowmask mixes in a value of its own: keep the full path.
++				shadow_known = shadow_known && shadowmask_mode == LIGHTMAP_SHADOWMASK_MODE_NONE;
++#endif
++
++				if (directional_lights.data[i].shadow_opacity > 0.001 && !shadow_known) {
+ 					float depth_z = -vertex.z;
+ 
+ 					vec4 pssm_coord;
+diff --git a/servers/rendering/renderer_rd/shaders/scene_data_inc.glsl b/servers/rendering/renderer_rd/shaders/scene_data_inc.glsl
+--- a/servers/rendering/renderer_rd/shaders/scene_data_inc.glsl
++++ b/servers/rendering/renderer_rd/shaders/scene_data_inc.glsl
+@@ -11,6 +11,10 @@
+ #define SCENE_DATA_FLAGS_USE_UV2_MATERIAL (1 << 5)
+ #define SCENE_DATA_FLAGS_USE_PANCAKE_SHADOWS (1 << 6)
+ #define SCENE_DATA_FLAGS_IN_SHADOW_PASS (1 << 7)
++// Mobile per-pixel skips (godot-patches/0014), each set from a project setting.
++#define SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_BEYOND_FADE (1 << 8)
++#define SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_FACING_AWAY (1 << 9)
++#define SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE (1 << 10)
+ 
+ struct SceneData {
+ 	mat4 projection_matrix;
+diff --git a/servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl b/servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl
+--- a/servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl
++++ b/servers/rendering/renderer_rd/shaders/scene_forward_lights_inc.glsl
+@@ -487,6 +487,12 @@
+ 	vec3 light_rel_vec = omni_lights.data[idx].position - vertex;
+ 	float light_length = length(light_rel_vec);
+ 	half omni_attenuation = get_omni_attenuation(light_length, omni_lights.data[idx].inv_radius, omni_lights.data[idx].attenuation);
++#ifdef USING_MOBILE_RENDERER
++	// godot-patches/0014: out of range the attenuation is 0 and every term below is scaled by it.
++	if (bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE) && omni_attenuation <= half(0.0)) {
++		return;
++	}
++#endif
+ 
+ 	// Compute size.
+ 	half size = half(0.0);
+@@ -797,6 +803,12 @@
+ 	// This conversion to a highp float is crucial to prevent light leaking due to precision errors.
+ 	float spot_rim = max(1e-4, (1.0 - scos) / (1.0 - cone_angle));
+ 	spot_attenuation *= half(1.0 - pow(spot_rim, spot_lights.data[idx].cone_attenuation));
++#ifdef USING_MOBILE_RENDERER
++	// godot-patches/0014: out of range or outside the cone the attenuation is 0 and every term below is scaled by it.
++	if (bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE) && spot_attenuation <= half(0.0)) {
++		return;
++	}
++#endif
+ 
+ 	// Compute size.
+ 	half size = half(0.0);
+diff --git a/servers/rendering/renderer_rd/shaders/scene_forward_vertex_lights_inc.glsl b/servers/rendering/renderer_rd/shaders/scene_forward_vertex_lights_inc.glsl
+--- a/servers/rendering/renderer_rd/shaders/scene_forward_vertex_lights_inc.glsl
++++ b/servers/rendering/renderer_rd/shaders/scene_forward_vertex_lights_inc.glsl
+@@ -53,6 +53,12 @@
+ 	float light_length = length(light_rel_vec);
+ 	hvec3 light_rel_vec_norm = hvec3(light_rel_vec / light_length);
+ 	half omni_attenuation = get_omni_attenuation(light_length, omni_lights.data[idx].inv_radius, omni_lights.data[idx].attenuation);
++#ifdef USING_MOBILE_RENDERER
++	// godot-patches/0014: a zero attenuation makes the colour, and every term, zero.
++	if (bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE) && omni_attenuation <= half(0.0)) {
++		return;
++	}
++#endif
+ 	hvec3 color = hvec3(omni_lights.data[idx].color * omni_attenuation);
+ 
+ 	light_compute_vertex(normal, light_rel_vec_norm, eye_vec, color, false, roughness,
+@@ -75,6 +81,12 @@
+ 	// This conversion to a highp float is crucial to prevent light leaking due to precision errors.
+ 	float spot_rim = max(1e-4, float(half(1.0) - scos) / float(half(1.0) - cone_angle));
+ 	spot_attenuation *= half(1.0 - pow(spot_rim, spot_lights.data[idx].cone_attenuation));
++#ifdef USING_MOBILE_RENDERER
++	// godot-patches/0014: a zero attenuation makes the colour, and every term, zero.
++	if (bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE) && spot_attenuation <= half(0.0)) {
++		return;
++	}
++#endif
+ 
+ 	hvec3 color = hvec3(spot_lights.data[idx].color * spot_attenuation);
+ 
+diff --git a/servers/rendering/renderer_rd/storage_rd/light_storage.cpp b/servers/rendering/renderer_rd/storage_rd/light_storage.cpp
+--- a/servers/rendering/renderer_rd/storage_rd/light_storage.cpp
++++ b/servers/rendering/renderer_rd/storage_rd/light_storage.cpp
+@@ -726,6 +726,14 @@
+ 
+ 	r_directional_light_soft_shadows = false;
+ 
++	// godot-patches/0014: Mobile (the forward-id renderer) leaves omni and spot lights that add
++	// nothing out of the buffer. Their pairing, and so each draw's pipeline, is unchanged.
++	const bool skip_unlit = forward_id_storage->uses_forward_ids() && GLOBAL_GET_CACHED(bool, "rendering/renderer/light_buffer_skips_unlit_mobile");
++	// Zero energy or a black colour: the light colour the shader gets is exactly zero.
++	auto light_is_unlit = [](const Light *p_light) {
++		return p_light->param[RSE::LIGHT_PARAM_ENERGY] == 0.0f || (p_light->color.r == 0.0f && p_light->color.g == 0.0f && p_light->color.b == 0.0f);
++	};
++
+ 	for (int i = 0; i < (int)p_lights.size(); i++) {
+ 		LightInstance *light_instance = light_instance_owner.get_or_null(p_lights[i]);
+ 		if (!light_instance) {
+@@ -884,6 +892,10 @@
+ 					}
+ 				}
+ 
++				if (skip_unlit && light_is_unlit(light)) {
++					continue;
++				}
++
+ 				omni_light_sort[omni_light_count].light_instance = light_instance;
+ 				omni_light_sort[omni_light_count].light = light;
+ 				omni_light_sort[omni_light_count].depth = distance;
+@@ -909,6 +921,10 @@
+ 					}
+ 				}
+ 
++				if (skip_unlit && light_is_unlit(light)) {
++					continue;
++				}
++
+ 				spot_light_sort[spot_light_count].light_instance = light_instance;
+ 				spot_light_sort[spot_light_count].light = light;
+ 				spot_light_sort[spot_light_count].depth = distance;
+diff --git a/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.cpp b/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.cpp
+--- a/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.cpp
++++ b/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.cpp
+@@ -121,6 +121,9 @@
+ 	ubo.flags = 0;
+ 
+ 	ubo.flags |= p_pancake_shadows ? SCENE_DATA_FLAGS_USE_PANCAKE_SHADOWS : 0;
++	ubo.flags |= (mobile_skip_flags & MOBILE_SKIP_SUN_SHADOW_BEYOND_FADE) ? SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_BEYOND_FADE : 0;
++	ubo.flags |= (mobile_skip_flags & MOBILE_SKIP_SUN_SHADOW_FACING_AWAY) ? SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_FACING_AWAY : 0;
++	ubo.flags |= (mobile_skip_flags & MOBILE_SKIP_LIGHT_OUT_OF_RANGE) ? SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE : 0;
+ 
+ 	RendererRD::MaterialStorage::store_soft_shadow_kernel(render_scene_render->directional_penumbra_shadow_kernel_get(), ubo.directional_penumbra_shadow_kernel);
+ 	RendererRD::MaterialStorage::store_soft_shadow_kernel(render_scene_render->directional_soft_shadow_kernel_get(), ubo.directional_soft_shadow_kernel);
+diff --git a/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.h b/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.h
+--- a/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.h
++++ b/servers/rendering/renderer_rd/storage_rd/render_scene_data_rd.h
+@@ -75,6 +75,13 @@
+ 	bool material_uv2_mode = false;
+ 	float emissive_exposure_normalization = 0.0;
+ 	bool shadow_pass = false;
++	// Mobile only (godot-patches/0014): the skips the renderer turns on, as MOBILE_SKIP_* bits.
++	uint32_t mobile_skip_flags = 0;
++	enum {
++		MOBILE_SKIP_SUN_SHADOW_BEYOND_FADE = 1 << 0,
++		MOBILE_SKIP_SUN_SHADOW_FACING_AWAY = 1 << 1,
++		MOBILE_SKIP_LIGHT_OUT_OF_RANGE = 1 << 2,
++	};
+ 
+ 	Size2 shadow_atlas_pixel_size;
+ 	Size2 directional_shadow_pixel_size;
+@@ -111,6 +118,10 @@
+ 		SCENE_DATA_FLAGS_USE_UV2_MATERIAL = 1 << 5,
+ 		SCENE_DATA_FLAGS_USE_PANCAKE_SHADOWS = 1 << 6,
+ 		SCENE_DATA_FLAGS_IN_SHADOW_PASS = 1 << 7, // Only used by Forward+ renderer.
++		// Mobile per-pixel skips (godot-patches/0014), set through mobile_skip_flags.
++		SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_BEYOND_FADE = 1 << 8,
++		SCENE_DATA_FLAGS_SUN_SHADOW_SKIP_FACING_AWAY = 1 << 9,
++		SCENE_DATA_FLAGS_LIGHT_SKIP_OUT_OF_RANGE = 1 << 10,
+ 		SCENE_DATA_FLAGS_MAX
+ 	};
+ 

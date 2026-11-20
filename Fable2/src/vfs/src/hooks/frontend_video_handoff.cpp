@@ -409,7 +409,20 @@ REX_EXTERN(rex_SwitchToThread) { // Lumen: SwitchToThread
   // Spend a long wait sleeping instead of yielding. Placed ahead of everything else in
   // this hook, including the native-passthrough early out, so the policy is not
   // conditional on the loose-asset backend.
-  refii::vfs::MaybeBackOffBeforeGuestYield(ctx.lr);
+  //
+  // The game thread's "no game tick due yet" wait (lr 0x82277348, in sub_82276D10) may sleep
+  // longer: REFII_TICK_WAIT_SLEEP_US (Android's android_guest_tick_wait_us), 500-8000 us, so a
+  // tick may start that much later. Only this site: the drain wait (0x822DFF2C) holds the
+  // GPU-access lock while it spins.
+  {
+    static const uint32_t tick_wait_lr = refii::guest::Address(0x82277348u);
+    static const uint32_t tick_wait_us = [] {
+      const char* text = std::getenv("REFII_TICK_WAIT_SLEEP_US");
+      const unsigned long parsed = text != nullptr ? std::strtoul(text, nullptr, 10) : 0ul;
+      return parsed >= 500ul && parsed <= 8000ul ? static_cast<uint32_t>(parsed) : 0u;
+    }();
+    refii::vfs::MaybeBackOffBeforeGuestYield(ctx.lr, ctx.lr == tick_wait_lr ? tick_wait_us : 0u);
+  }
 
   // PACING GLOBALS (IDA-proven, 2026-07-29). The drain spin's overdue test and its escape
   // budget both divide by flt_8336035C (XVIDEO_MODE.RefreshRate) and multiply by

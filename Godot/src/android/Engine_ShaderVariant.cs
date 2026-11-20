@@ -300,15 +300,19 @@ public static class Engine_ShaderVariant
     /// <summary>
     /// The text of the lite build <paramref name="path"/>: <paramref name="fullCode"/> (its full
     /// shader's) with the build's defines ahead of the body's #include, in order, then the process's
-    /// settings' defines and `lite_extra_defines`.
+    /// settings' defines and `lite_extra_defines`, and a tree build drawn flat (AndroidFlatLeaves).
     /// </summary>
-    public static string Compose(string fullCode, string path) => WithExtraDefines(Compose(
+    public static string Compose(string fullCode, string path) => Compose(WithExtraDefines(Compose(
         fullCode,
         path,
         NoBakedAoFor(Refii.Lighting.Engine_LevelAmbientOcclusion.BakedAoEnabled, Refii.Lighting.Engine_LightingFrame.ModernModel, FableNoBakedAoOn),
         NoStaticShadows.Value,
         Refii.AndroidRuntime.AndroidLightTablePacking.On,
-        Refii.AndroidRuntime.AndroidModernAmbientFold.On), ProcessExtraDefines.Value);
+        Refii.AndroidRuntime.AndroidModernAmbientFold.On), ProcessExtraDefines.Value), path, Refii.AndroidRuntime.AndroidFableAmbientOff.On);
+
+    /// <summary>The fable-model builds' `lite_fable_ambient_off` word (AndroidFableAmbientOff), then a tree build drawn flat.</summary>
+    private static string Compose(string code, string path, bool fableAmbientOff) => Refii.AndroidRuntime.AndroidFlatCutouts.ComposeDebug(Refii.AndroidRuntime.AndroidFlatLeaves.Compose(
+        Refii.AndroidRuntime.AndroidFableAmbientOff.Compose(code, fableAmbientOff, modernModel: false, modernBuild: FoldsAmbient(path)), path), path, Refii.AndroidRuntime.AndroidFlatCutouts.DebugOn);
 
     /// <summary>
     /// Whether the baked-AO helpers compile out (<see cref="NoBakedAo"/>): with baked AO off, or under the
@@ -344,10 +348,10 @@ public static class Engine_ShaderVariant
     /// <summary>This process's <see cref="FableNoBakedAoKey"/>; read once, as the variant is.</summary>
     public static bool FableNoBakedAoOn => FableNoBakedAoChosen.Value;
 
-    /// <summary>`lite_skip_black_lights`'s define, `lite_half_precision_lighting`'s, `lite_world_vertex`'s, `lite_fold_fable_model`'s, `lite_fold_modern_model`'s, `lite_fog`'s and `lite_lean_darkening`'s (AndroidLeanShading), `lite_lean_light_ao`'s and `lite_lean_frame_sign`'s (AndroidLeanTerms), the varyings' (AndroidLeanVaryings: `lite_trim_varyings` and its six neighbours), `lite_normal_maps`', `lite_ground_ao`'s (AndroidGroundShading), then `lite_extra_defines`.</summary>
+    /// <summary>`lite_skip_black_lights`'s define, `lite_half_precision_lighting`'s, `lite_world_vertex`'s, `lite_fold_fable_model`'s, `lite_fold_modern_model`'s, `lite_fog`'s and `lite_lean_darkening`'s (AndroidLeanShading), `lite_fog_trims`' (AndroidFogTrims), `lite_lean_light_ao`'s and `lite_lean_frame_sign`'s (AndroidLeanTerms), the varyings' (AndroidLeanVaryings: `lite_trim_varyings` and its six neighbours), `lite_normal_maps`', `lite_ground_ao`'s (AndroidGroundShading), `debug_cutouts`' (AndroidFlatCutouts), then `lite_extra_defines`.</summary>
     private static readonly Lazy<string[]> ProcessExtraDefines = new(() =>
         ProcessDefines(SkipBlackLightsOn, HalfPrecisionLightingOn,
-            LeverDefines(FoldFableModelOn, FoldModernModelOn, ModernAoAtDefaults()).Concat(Refii.AndroidRuntime.AndroidLeanShading.Defines()).Concat(Refii.AndroidRuntime.AndroidLeanTerms.Defines()).Concat(Refii.AndroidRuntime.AndroidLeanVaryings.Defines()).Concat(NormalMapDefines(NormalMapsOn)).Concat(Refii.AndroidRuntime.AndroidGroundShading.ProcessDefines()).Concat(ExtraDefines.Value), WorldVertexOn));
+            LeverDefines(FoldFableModelOn, FoldModernModelOn, ModernAoAtDefaults()).Concat(Refii.AndroidRuntime.AndroidLeanShading.Defines()).Concat(Refii.AndroidRuntime.AndroidFogTrims.Defines()).Concat(Refii.AndroidRuntime.AndroidLeanTerms.Defines()).Concat(Refii.AndroidRuntime.AndroidLeanVaryings.Defines()).Concat(NormalMapDefines(NormalMapsOn)).Concat(Refii.AndroidRuntime.AndroidGroundShading.ProcessDefines()).Concat(Refii.AndroidRuntime.AndroidFlatCutouts.DebugDefines(Refii.AndroidRuntime.AndroidFlatCutouts.DebugOn)).Concat(ExtraDefines.Value), WorldVertexOn));
 
     /// <summary>
     /// The defines of the shader levers that are settings of their own, in order, for the values given:

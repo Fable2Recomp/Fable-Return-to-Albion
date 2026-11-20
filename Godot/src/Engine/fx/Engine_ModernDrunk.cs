@@ -56,7 +56,7 @@ public static class Engine_ModernDrunk
         drawn += DrawView(1, split ? second!.Target : null, split && (drunk & 2u) != 0u ? 1 : 0);
         if (drawn > 0)
         {
-            Engine_FxDisplacement.NotifyActive();
+            Refii.AndroidRuntime.AndroidDisplacementGate.WakeDrunk();
         }
         Drawn = drawn;
     }

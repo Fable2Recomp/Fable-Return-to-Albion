@@ -129,9 +129,10 @@ public static class Engine_MdlAutoLod
 		GenerateFor(vertices, indexCount, surface, Far);
 
 	/// <summary><see cref="Generate"/> with the far levels stated rather than read from the setting.</summary>
-	internal static Engine_MdlSurfaceArrays.Levels? GenerateFor(ReadOnlySpan<Vector3> vertices, int indexCount, Godot.Collections.Array surface, bool far)
+	/// <param name="minIndices">The fewest indices a surface needs to get levels.</param>
+	internal static Engine_MdlSurfaceArrays.Levels? GenerateFor(ReadOnlySpan<Vector3> vertices, int indexCount, Godot.Collections.Array surface, bool far, int minIndices = 600)
 	{
-		if (indexCount < 600 || vertices.Length == 0)
+		if (indexCount < minIndices || vertices.Length == 0)
 		{
 			return null;
 		}

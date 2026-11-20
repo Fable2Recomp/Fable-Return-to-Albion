@@ -27,13 +27,23 @@ public static partial class Engine_MdlMaterial
     private const int FactNormal = 8, FactEmission = 16, FactOrm = 32, FactPremultiplied = 64, FactGrassBend = 128;
 
     /// <summary>The vegetation flags `lite_vegetation_folds` folds (Engine_ShaderSpecialisation.VegetationDefines).</summary>
-    private const int FactFoliage = 256, FactGrass = 512, FactFoliageNormals = 1024;
+    internal const int FactFoliage = 256, FactGrass = 512, FactFoliageNormals = 1024;
 
     /// <summary>A character's two-sided pass drawn with back faces culled (AndroidCharacterCull).</summary>
     private const int FactCullBack = 2048;
 
     /// <summary>A character's pass on its own build (AndroidCharacterShading).</summary>
-    private const int FactCharacter = 4096;
+    internal const int FactCharacter = 4096;
+
+    /// <summary>A pass with its alpha scissor on (cut-outs: leaf cards, railings, panes); AndroidVertexLitProps leaves it per-pixel.</summary>
+    internal const int FactAlphaCut = 8192;
+
+    /// <summary>A translucent (blended) pass; AndroidFlatCutouts leaves it its own light.</summary>
+    internal const int FactBlended = 16384;
+
+    /// <summary>A pass of a model with skinned parts (MdlInfo.SkinnedCount: a character), whatever the character
+    /// settings; the props' lighting shortcuts (AndroidVertexLitProps, AndroidFlatCutouts) leave it alone.</summary>
+    internal const int FactSkinned = 32768;
 
     /// <summary>The authored-PBR bit, the third of the shader-build bits above.</summary>
     private const int FactPbr = 4;
@@ -109,6 +119,7 @@ public static partial class Engine_MdlMaterial
             }
 
             int facts = shaded.GetMeta(LiteFactsMeta).AsInt32();
+            SetFacts(shaded, FactSkinned, info.SkinnedCount != 0);
             string currentPath = Engine_ShaderSpecialisation.PathOf(current);
             if (currentPath == Engine_ShaderFamily.StandardCutoutCulledPath)
             {
@@ -193,10 +204,61 @@ public static partial class Engine_MdlMaterial
         }
     }
 
+    /// <summary>
+    /// The props' lighting shortcuts a pass with these facts takes: `lite_vertex_lit_props` for a prop that is not
+    /// foliage, cut out, grass or a character's, `lite_flat_cutouts` for a prop's foliage or cut-out pass that is not
+    /// blended, grass or a character's. A character is any skinned model's pass, whatever its own settings. Also
+    /// `android_cutout_depth_prepass`'s marker (AndroidCutoutPrepass.Marks). Pure.
+    /// </summary>
+    private static string[] PropLightingDefines(string path, int facts, bool vertexLitOn, bool flatCutoutsOn, bool cutoutPrepassOn,
+        Refii.AndroidRuntime.AndroidCutoutPrepass.Scope cutoutPrepassScope)
+    {
+        bool cutout = (facts & (FactFoliage | FactAlphaCut)) != 0;
+        bool grass = (facts & FactGrass) != 0;
+        bool character = (facts & (FactCharacter | FactSkinned)) != 0;
+        var defines = new List<string>(1);
+        if (Refii.AndroidRuntime.AndroidVertexLitProps.Marks(path, foliage: cutout, grass: grass, character: character, on: vertexLitOn))
+        {
+            defines.Add(Refii.AndroidRuntime.AndroidVertexLitProps.Define);
+            if (Refii.AndroidRuntime.AndroidVertexLitProps.NoSpecularOn && (facts & FactPbr) == 0)
+            {
+                defines.Add(Refii.AndroidRuntime.AndroidVertexLitProps.NoSpecularDefine);
+            }
+        }
+
+        if (Refii.AndroidRuntime.AndroidFlatCutouts.Marks(path, cutout: cutout, blended: (facts & FactBlended) != 0, grass: grass, character: character, on: flatCutoutsOn) ||
+            Refii.AndroidRuntime.AndroidFlatCutouts.MarksSwaying(path, cutout: cutout, blended: (facts & FactBlended) != 0, grass: grass, character: character, on: Refii.AndroidRuntime.AndroidFlatCutouts.SwayingOn))
+        {
+            defines.Add(Refii.AndroidRuntime.AndroidFlatCutouts.Define);
+        }
+
+        if (Refii.AndroidRuntime.AndroidCutoutPrepass.Marks(path, cutout: cutout, grass: grass, blended: (facts & FactBlended) != 0, character: character,
+                on: cutoutPrepassOn, scope: cutoutPrepassScope))
+        {
+            defines.Add(Refii.AndroidRuntime.AndroidCutoutPrepass.Define);
+        }
+
+        return defines.ToArray();
+    }
+
     /// <summary>The defines this material's own facts allow (Engine_ShaderSpecialisation.FoldDefines).</summary>
     private static IEnumerable<string> SpecialisationDefines(ShaderMaterial pass, string path)
     {
         int facts = pass.GetMeta(LiteFactsMeta).AsInt32();
+
+        // `android_cutout_depth_prepass`'s census of what its marking reached (logcat; nothing while the key is off).
+        Refii.AndroidRuntime.AndroidCutoutPrepass.Note(path, cutout: (facts & (FactFoliage | FactAlphaCut)) != 0,
+            grass: (facts & FactGrass) != 0, blended: (facts & FactBlended) != 0,
+            character: (facts & (FactCharacter | FactSkinned)) != 0);
+        return SpecialisationDefines(facts, path,
+            Refii.AndroidRuntime.AndroidVertexLitProps.On, Refii.AndroidRuntime.AndroidFlatCutouts.On,
+            Refii.AndroidRuntime.AndroidCutoutPrepass.On, Refii.AndroidRuntime.AndroidCutoutPrepass.ChosenScope);
+    }
+
+    /// <summary>The defines a pass with these facts allows, with the props' lighting shortcuts and the cut-out pre-pass as given.</summary>
+    internal static IEnumerable<string> SpecialisationDefines(int facts, string path, bool vertexLitOn, bool flatCutoutsOn, bool cutoutPrepassOn = false,
+        Refii.AndroidRuntime.AndroidCutoutPrepass.Scope cutoutPrepassScope = Refii.AndroidRuntime.AndroidCutoutPrepass.Scope.All)
+    {
         string[] vegetation = Engine_ShaderSpecialisation.VegetationFolds
             ? Engine_ShaderSpecialisation.VegetationDefines(
                 foliage: (facts & FactFoliage) != 0,
@@ -208,6 +270,9 @@ public static partial class Engine_MdlMaterial
         {
             vegetation = [.. vegetation, Refii.AndroidRuntime.AndroidCharacterCull.Define];
         }
+
+        // `lite_vertex_lit_props`, `lite_flat_cutouts` and `android_cutout_depth_prepass`.
+        vegetation = [.. vegetation, .. PropLightingDefines(path, facts, vertexLitOn, flatCutoutsOn, cutoutPrepassOn, cutoutPrepassScope)];
 
         // A character's build (`android_character_lite` and its neighbours), and with the exact set at least the
         // folds that split no build: a character's builds are its own already.

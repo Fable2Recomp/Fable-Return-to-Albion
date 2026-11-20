@@ -3328,7 +3328,7 @@ public sealed partial class Engine_FxSystem
             data = new MeshInstanceData { MeshPath = va.MeshPath, Displacement = disp };
             meshOut[meshKey] = data;
         }
-        if (disp) Engine_FxDisplacement.NotifyActive();
+        if (disp) Refii.AndroidRuntime.AndroidDisplacementGate.WakeMeshParticle(this, va.MeshPath, _previousGlobal, ToGodot(pt.Pos), va.MeshScale * _sizeScale);
 
         float ms = vb is not null && vb.IsMesh ? va.MeshScale + ((vb.MeshScale - va.MeshScale) * w) : va.MeshScale;
         float s = ms * pt.FlickX * _sizeScale;

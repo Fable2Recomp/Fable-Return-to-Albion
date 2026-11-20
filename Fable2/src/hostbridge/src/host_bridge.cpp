@@ -16862,10 +16862,15 @@ void Fable2Initialized() {
     });
     const char* completion_env = std::getenv("REFII_COMPLETION_THREAD");
     if (completion_env == nullptr || std::string(completion_env) != "0") {
-        g_completion_thread = std::thread([]() {
+        // The poll period: 1 ms unless REFII_COMPLETION_PERIOD_MS (Android's
+        // android_guest_completion_ms) says 2-8. A longer one reports a completion that much later.
+        const char* period_env = std::getenv("REFII_COMPLETION_PERIOD_MS");
+        const unsigned long asked = period_env != nullptr ? std::strtoul(period_env, nullptr, 10) : 1ul;
+        const auto period = std::chrono::milliseconds(asked >= 1ul && asked <= 8ul ? asked : 1ul);
+        g_completion_thread = std::thread([period]() {
             while (!g_completion_stop.load(std::memory_order_relaxed)) {
                 SignalGuestFrameCompletions();
-                refii::PreciseSleepFor(std::chrono::milliseconds(1));
+                refii::PreciseSleepFor(period);
             }
         });
     }

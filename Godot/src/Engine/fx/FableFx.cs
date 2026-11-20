@@ -933,7 +933,7 @@ public partial class FableFx : Node3D
 		bool turned = !_emitted || cameraPos.DistanceSquaredTo(_emitPos) > 0.25f;
 		if (_system.LastSteps == 0 && !_system.LastRebased && !turned && (addMesh is null) == _emitAddNull && GuestDrawn == _emitGuest)
 		{
-			if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
+			if (_emitDispActive) Refii.AndroidRuntime.AndroidDisplacementGate.WakeEffect(this, CachedGlobalTransform, _dispMesh);
 			if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
 			if (fast) PublishStepAlphaFast();
 			FrameWork.Lap(4, ref lapAt);
@@ -969,7 +969,7 @@ public partial class FableFx : Node3D
 		_emitDispActive = _dispMesh is not null && _dispMesh.GetSurfaceCount() > 0;
 		_emitAddActive = !GuestDrawn && addMesh is not null && addMesh.GetSurfaceCount() > 0;
 		if (!fast) PublishStepAlpha();
-		if (_emitDispActive) Engine_FxDisplacement.NotifyActive();
+		if (_emitDispActive) Refii.AndroidRuntime.AndroidDisplacementGate.WakeEffect(this, CachedGlobalTransform, _dispMesh);
 		if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
 		if (fast) PublishStepAlphaFast();
 

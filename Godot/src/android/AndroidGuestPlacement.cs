@@ -35,18 +35,30 @@ namespace Refii.AndroidRuntime;
 /// no longer matches (Android resets a thread's mask when it moves the app between cpusets, as
 /// it does going to the background and back) is placed again, silently after the first time.
 /// None of it runs on Godot's main thread.</para>
-/// <para><c>android_host_off_prime</c> (separate, default off): every other thread of the process
+/// <para><c>android_host_off_prime</c> (separate, default on since 2026-11-19): every other thread of the process
 /// is kept off those cores, so the game thread has them to itself. Godot's main thread runs at
 /// the same nice -10, so when the scheduler puts it on cpu7 beside the guest the two share the
 /// core evenly, and a thread the game thread makes after it is placed inherits both its mask and
 /// its nice (Linux copies them at clone), so it lands on the one core the game thread needs. The
 /// same scan takes the prime cores out of each other thread's mask, leaving the rest of the mask
 /// as it was; a thread whose mask is the prime cores alone (the game thread's children) is given
-/// every other core. Their inherited nice is left as it is.</para>
+/// every other core. Their inherited nice is left as it is. Measured on a Galaxy S10e at the Oakfield
+/// pub (Low, 30 FPS, hot): on / off / on 14.90 / 13.57 / 14.88 game ticks a second (15 is full speed).
+/// Off, a guest thread the game thread wakes with SetEvent each frame was pinned to cpu7 beside it,
+/// and the long ticks spent a quarter of their time handing it the core.</para>
 /// </remarks>
 internal sealed class AndroidGuestPlacement
 {
     public const string Key = "android_guest_prime_core";
+
+    /// <summary>
+    /// The refii.toml key that moves the pinned game thread to whichever cluster's current frequency ceiling
+    /// (<c>scaling_max_freq</c>) is highest, looked at each scan, instead of the cluster rated fastest.
+    /// </summary>
+    /// <remarks>A Galaxy S10e under load caps its prime core (cpu7, rated 2.84 GHz) at 1.71 GHz for
+    /// minutes at a time while the guest falls to about half speed; the gold cores (rated 2.42 GHz) may
+    /// keep a higher ceiling then. Off by default (2026-11-18 experiment).</remarks>
+    public const string FollowCeilingKey = "android_guest_core_follow_ceiling";
 
     /// <summary>The refii.toml key that keeps every other thread off the prime cores.</summary>
     public const string OffPrimeKey = "android_host_off_prime";
@@ -79,12 +91,13 @@ internal sealed class AndroidGuestPlacement
         return cpus.Length == 0 ? null : MaskOf(cpus);
     });
 
-    private readonly int[] _prime;
+    private int[] _prime;
     private readonly ulong[] _wanted = new ulong[CpuSetWords];
     private readonly ulong[] _current = new ulong[CpuSetWords];
     private readonly ulong[] _others = new ulong[CpuSetWords];
     private readonly ulong[] _all = new ulong[CpuSetWords];
-    private readonly bool _pinGame, _offPrime;
+    private readonly bool _pinGame, _offPrime, _followCeiling;
+    private int _ceilingMoves;
     private readonly byte[] _comm = new byte[32];
     private readonly HashSet<int> _placed = new();
     private readonly HashSet<int> _seen = new();
@@ -109,8 +122,9 @@ internal sealed class AndroidGuestPlacement
     [DllImport("libc", EntryPoint = "prctl", SetLastError = true)]
     private static extern int Prctl(int option, byte[] name, nint arg3, nint arg4, nint arg5);
 
-    private AndroidGuestPlacement(int[] prime, IEnumerable<int> all, bool pinGame, bool offPrime)
+    private AndroidGuestPlacement(int[] prime, IEnumerable<int> all, bool pinGame, bool offPrime, bool followCeiling = false)
     {
+        _followCeiling = followCeiling;
         _prime = prime;
         foreach (int cpu in all)
         {
@@ -128,9 +142,20 @@ internal sealed class AndroidGuestPlacement
     public static bool Configured(IReadOnlyDictionary<string, string> values) =>
         Refii.Core.Engine_RefiiConfig.Bool(values, Key, false);
 
-    /// <summary>Whether refii.toml asks for the other threads off the prime cores; off when unset.</summary>
+    /// <summary>
+    /// Whether the game thread is pinned: the setting asks for it and the title is Fable 2. Pure.
+    /// </summary>
+    /// <remarks>Fable 3 names four threads "GameThread"; pinned together on a Snapdragon 8 Elite's two
+    /// prime cores they lose a race in Fable 3's own object worker (<c>sub_8238F9E8</c> calls a
+    /// registered object's slot-144 function while another thread tears it down). On a Galaxy S25+
+    /// a save crashed loading in about half of tries pinned, and in none of 8 unpinned (2026-11-18).
+    /// The pin was measured for Fable 2 only.</remarks>
+    public static bool PinsGameThread(bool configured, Refii.Core.Engine_Title title) =>
+        configured && title == Refii.Core.Engine_Title.Fable2;
+
+    /// <summary>Whether the other threads are kept off the prime cores; on unless refii.toml says false.</summary>
     public static bool OffPrimeConfigured(IReadOnlyDictionary<string, string> values) =>
-        Refii.Core.Engine_RefiiConfig.Bool(values, OffPrimeKey, false);
+        Refii.Core.Engine_RefiiConfig.Bool(values, OffPrimeKey, true);
 
     /// <summary>
     /// The mask a thread other than the game thread is given: its own without the prime cores, or,
@@ -170,7 +195,9 @@ internal sealed class AndroidGuestPlacement
     /// </summary>
     public static AndroidGuestPlacement? Start(IReadOnlyDictionary<string, string> values)
     {
-        bool pinGame = Configured(values), offPrime = OffPrimeConfigured(values);
+        bool pinGame = PinsGameThread(Configured(values), Refii.Core.Engine_Title.Active), offPrime = OffPrimeConfigured(values);
+        if (Configured(values) && !pinGame)
+            GD.Print($"[android] guest placement: {Key} is for Fable 2 only; {Refii.Core.Engine_Title.Active.Name}'s threads stay where the scheduler puts them");
         if (!Refii.Core.Engine_Platform.IsAndroid || !(pinGame || offPrime))
             return null;
         Dictionary<int, long> frequencies = ReadMaxFrequencies();
@@ -181,7 +208,8 @@ internal sealed class AndroidGuestPlacement
             return null;
         }
 
-        var placement = new AndroidGuestPlacement(prime, frequencies.Keys, pinGame, offPrime);
+        var placement = new AndroidGuestPlacement(prime, frequencies.Keys, pinGame, offPrime,
+            pinGame && Refii.Core.Engine_RefiiConfig.Bool(values, FollowCeilingKey, false));
         new Thread(placement.Run) { IsBackground = true, Name = "refii-placement" }.Start();
         return placement;
     }
@@ -290,7 +318,8 @@ internal sealed class AndroidGuestPlacement
     public object Report() => new
     {
         prime_cpus = Describe(_prime), game_thread = _pinGame, others_off_prime = _offPrime,
-        placements = Volatile.Read(ref _placements), moved_off_prime = Volatile.Read(ref _movedOff), last = _last,
+        placements = Volatile.Read(ref _placements), moved_off_prime = Volatile.Read(ref _movedOff),
+        follow_ceiling = _followCeiling, ceiling_moves = _ceilingMoves, last = _last,
     };
 
     /// <summary>Each CPU's <c>cpuinfo_max_freq</c> in kHz, for the CPUs that report one.</summary>
@@ -338,9 +367,54 @@ internal sealed class AndroidGuestPlacement
         }
     }
 
+    /// <summary>
+    /// The CPUs whose current frequency ceiling is the highest, ascending; none when every CPU shares it
+    /// (nothing to prefer) or none was read. Pure; the same rule as <see cref="PrimeCpus"/> on the ceilings.
+    /// </summary>
+    public static int[] FastestNow(IReadOnlyDictionary<int, long> ceilings) => PrimeCpus(ceilings);
+
+    /// <summary>Each CPU's current <c>scaling_max_freq</c> in kHz, for the CPUs that report one.</summary>
+    internal static Dictionary<int, long> ReadCeilings()
+    {
+        var ceilings = new Dictionary<int, long>();
+        for (int cpu = 0; cpu < CpuSetWords * 64; cpu++)
+        {
+            string path = $"{CpuRoot}/cpu{cpu}/cpufreq/scaling_max_freq";
+            if (!Directory.Exists($"{CpuRoot}/cpu{cpu}"))
+                break;
+            try
+            {
+                if (File.Exists(path) && long.TryParse(File.ReadAllText(path).Trim(), out long khz))
+                    ceilings[cpu] = khz;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
+
+        return ceilings;
+    }
+
+    /// <summary>With <see cref="FollowCeilingKey"/>, moves the wanted set to the cluster allowed to run fastest now.</summary>
+    private void FollowCeiling()
+    {
+        int[] now = FastestNow(ReadCeilings());
+        if (now.Length == 0 || now.AsSpan().SequenceEqual(_prime))
+            return;
+        Array.Clear(_wanted);
+        foreach (int cpu in now)
+            _wanted[cpu / 64] |= 1UL << (cpu % 64);
+        if (_ceilingMoves < 5)
+            GD.Print($"[android] guest GameThread follows the highest ceiling: {Describe(_prime)} -> {Describe(now)} ({FollowCeilingKey}; after 5, unlogged)");
+        _prime = now;
+        _ceilingMoves++;
+    }
+
     /// <summary>Places the game threads not yet placed, places again any the system moved, forgets the exited.</summary>
     private void Scan()
     {
+        if (_followCeiling && !_affinityRefused)
+            FollowCeiling();
         _seen.Clear();
         foreach (string directory in Directory.EnumerateDirectories(TaskRoot))
         {

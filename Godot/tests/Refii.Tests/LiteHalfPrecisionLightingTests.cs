@@ -136,6 +136,60 @@ public sealed class LiteHalfPrecisionLightingTests
         }
     }
 
+    /// <summary>The body of the first <c>float <paramref name="name"/>(...) { ... }</c> in <paramref name="code"/>,
+    /// braces matched; null when the build has no such function.</summary>
+    private static string? Body(string code, string name)
+    {
+        Match head = Regex.Match(code, @"\bfloat\s+" + name + @"\s*\([^(){};]*\)\s*\{");
+        if (!head.Success) return null;
+        int depth = 1;
+        for (int i = head.Index + head.Length; i < code.Length; i++)
+        {
+            if (code[i] == '{') depth++;
+            else if (code[i] == '}' && --depth == 0) return code[(head.Index + head.Length)..i];
+        }
+
+        return null;
+    }
+
+    /// <summary>The direct light's AO weight stays full precision in every build, both of its spellings
+    /// (upstream's and `lite_lean_light_ao`'s): relaxed, an Adreno 640 drew every sun- or moon-facing lite
+    /// surface pure white under the modern model (fable_lite_lighting.gdshaderinc, fable_direct_ao).</summary>
+    [TestCase]
+    public void TheDirectLightsAoWeightStaysFullPrecision()
+    {
+        foreach (string[] extra in new[]
+                 {
+                     new[] { Engine_ShaderVariant.Mediump },
+                     new[] { Engine_ShaderVariant.Mediump, Refii.AndroidRuntime.AndroidLeanTerms.LightAoDefine },
+                 })
+        {
+            int modernWithWeight = 0;
+            foreach ((string path, string active) in Builds(extra))
+            {
+                string label = $"{path} [{string.Join(',', extra)}]";
+                foreach (string function in new[] { "fable_direct_ao", "fable_direct_ao_for_light" })
+                {
+                    string? body = Body(active, function);
+                    if (body is null) continue;
+                    AssertThat(Regex.IsMatch(body, @"\b(?:mediump|lowp)\b"))
+                        .OverrideFailureMessage($"{label}: {function} relaxes its weight").IsFalse();
+                    if (function == "fable_direct_ao_for_light" && path.Contains("/lite/modern/", StringComparison.Ordinal)
+                        && !Regex.IsMatch(body.Trim(), @"^return\s+1\.0\s*;$"))
+                    {
+                        modernWithWeight++;
+                    }
+                }
+
+                // The rest of the lighting maths keeps its qualifiers: the fix is the weight alone.
+                AssertThat(Regex.IsMatch(active, @"\bmediump\b")).OverrideFailureMessage($"{label}: no qualifier left").IsTrue();
+            }
+
+            // Not vacuous: the modern builds compile the weight (the fable model's may compile it out).
+            AssertThat(modernWithWeight).OverrideFailureMessage(string.Join(',', extra)).IsGreater(0);
+        }
+    }
+
     /// <summary>Without the define (or the setting) no build carries a qualifier.</summary>
     [TestCase]
     public void OffByDefault()

@@ -17,10 +17,9 @@
 /// fable_direct_ao_for_light for a combined AO within [0, 1].
 float fable_direct_ao_for_light(float combined_ao, bool directional) {
 	if (directional) {
-		// fable_direct_ao: max(ao, 0) is ao.
-		FABLE_LITE_MP float w = max(0.0, min(1.0, FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT));
-		FABLE_LITE_MP float ao = combined_ao;
-		return mix(1.0, ao, w);
+		// fable_direct_ao: max(ao, 0) is ao. Full precision, as fable_direct_ao says.
+		float w = max(0.0, min(1.0, FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT));
+		return mix(1.0, combined_ao, w);
 	}
 	// The clamp of the AO to [0, 1] is the AO.
 	float occ = 1.0 - combined_ao;

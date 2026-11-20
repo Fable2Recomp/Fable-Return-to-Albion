@@ -172,6 +172,10 @@ public partial class AndroidGameHost : Node3D
                 Refii.Launcher.Core.RuntimeConfig.WriteValues(runtimeConfig, seeded, out _))
                 AndroidLauncherSettings.ShareWithOtherTitles(runtimeConfig, unseeded, seeded);
             _runtimeConfig = runtimeConfig;
+            // The native threads' waits, read as they first run, so before the guest boots.
+            foreach ((string name, string value) in AndroidIdleWaits.Environment(seeded))
+                SetEnvironment(name, value);
+            AndroidClothLand.Apply(seeded);
             _sunShadows.Apply(seeded, GetTree().Root);
             AddChild(new AndroidIdlePower { Name = "IdlePower", PauseNow = () => _pauseOnReturn = 0,
                 ScreenMinutes = Engine_RefiiConfig.Int(seeded, AndroidIdlePower.ScreenMinutesKey, AndroidIdlePower.DefaultScreenMinutes) });
@@ -215,6 +219,7 @@ public partial class AndroidGameHost : Node3D
         PauseOnReturn(delta);
         // Every frame, not only while a streamer is still loading: it stops processing once settled.
         Refii.Level.Engine_PropFarShading.Tick(this);
+        Refii.AndroidRuntime.AndroidTreeCards.Tick(this);
         Refii.AndroidRuntime.AndroidCharacterLevers.Tick(this);
         Refii.AndroidRuntime.AndroidEntityProps.Tick();
         try
@@ -677,6 +682,8 @@ public partial class AndroidGameHost : Node3D
                 GD.Print($"[android] root world render scale {_renderScale.Applied:P0}; canvas/UI viewports unchanged");
             ApplyTextureSampling(GetViewport(), settings);
             ApplyColourBuffer(GetViewport(), settings);
+            AndroidOpaqueOrder.ApplyFrontToBack(Engine_RefiiConfig.Bool(Engine_RefiiConfig.Read(out _), AndroidOpaqueOrder.FrontToBackKey, false));
+            AndroidEnginePatchSwitches.Apply(Engine_RefiiConfig.Read(out _));
             ApplyCanvasLean(settings);
             _sunShadows.Apply(Engine_RefiiConfig.Read(out _), GetTree().Root);
             Viewport lodViewport = GetViewport();

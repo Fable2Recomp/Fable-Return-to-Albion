@@ -167,7 +167,7 @@ public static class Engine_PropDrawRange
 		}
 
 		if (modelClass == PropModelClass.Tree && role != PropRole.Shadow &&
-			TreeBand(Scaled(range), role, hasLod) is { } band)
+			TreeBand(Scaled(range), role, hasLod, Engine_TreeReach.BillboardsDrawn) is { } band)
 		{
 			StampBillboard(node, Scaled(range), role, hasLod);
 			// Both tree shaders fade each placement themselves (the classic TreeDefines, the
@@ -322,7 +322,7 @@ public static class Engine_PropDrawRange
 	/// </summary>
 	private static void StampBillboard(GeometryInstance3D node, StatedRange r, PropRole role, bool hasLod)
 	{
-		if (!Refii.Models.Engine_ClassicBillboards.Available || role != (hasLod ? PropRole.Lod : PropRole.Main) ||
+		if (!Engine_TreeReach.BillboardsDrawn || role != (hasLod ? PropRole.Lod : PropRole.Main) ||
 			!float.IsFinite(r.Shadow) || r.Shadow <= 0f)
 		{
 			return;
@@ -340,8 +340,9 @@ public static class Engine_PropDrawRange
 	/// (the LOD's fade-in here deviates: see below).
 	/// A main model with no LOD model is, to the guest, drawn unfaded to its cull; here it takes
 	/// the LOD's linear fade-out at its reach instead of popping (no impostor follows it).
+	/// <paramref name="billboards"/>: cards draw the far trees (Engine_TreeReach.BillboardsDrawn).
 	/// </summary>
-	private static float[]? TreeBand(StatedRange r, PropRole role, bool hasLod)
+	internal static float[]? TreeBand(StatedRange r, PropRole role, bool hasLod, bool billboards)
 	{
 		if (!float.IsFinite(r.Draw) || !float.IsFinite(r.Lod) || !float.IsFinite(r.Shadow))
 		{
@@ -354,7 +355,7 @@ public static class Engine_PropDrawRange
 		// `sub_8220AF90` 0x8220B054..: fadeOut = sat(1 - (d - 0.875 F) / 0.125 F)); the billboard
 		// carries the placement from 0.75 F to the cull.
 		bool impostor = role == (hasLod ? PropRole.Lod : PropRole.Main);
-		if (Refii.Models.Engine_ClassicBillboards.Available && impostor && r.Shadow > 0f)
+		if (billboards && impostor && r.Shadow > 0f)
 		{
 			reach = r.Shadow;
 		}

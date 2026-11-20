@@ -129,10 +129,10 @@ public static class AndroidSettingsLayout
     /// docs/android.md's table does.</summary>
     public static string Summary(string preset) => GraphicsPresets.Canonical(preset) switch
     {
-        GraphicsPresets.Low => "40% resolution, no sun shadow, the nearest four lamps, trees to 300 m, half the undergrowth and the modern lighting, tuned for phones: the most frame rate.",
-        GraphicsPresets.Medium => "45% resolution, no sun shadow, more lamps and distance than Low.",
-        GraphicsPresets.High => "50% resolution, the sun's shadow where the area casts one, 16 lamps and three quarters of the undergrowth.",
-        GraphicsPresets.Ultra => "67% resolution, longer sun shadows, more model detail and distance, 32 lamps: for the fastest phones.",
+        GraphicsPresets.Low => "40% resolution, no sun shadow, the nearest four lamps, far trees as pictures, a quarter of the undergrowth and the modern lighting, tuned for phones: the most frame rate.",
+        GraphicsPresets.Medium => "45% resolution, no sun shadow, far trees as pictures, flat-lit hedges, more lamps and detail than Low.",
+        GraphicsPresets.High => "50% resolution, the sun's shadow where the area casts one, 16 lamps, far trees as pictures and three quarters of the undergrowth.",
+        GraphicsPresets.Ultra => "67% resolution, longer sun shadows, more model detail and distance, tree pictures only far away, 32 lamps: for the fastest phones.",
         _ => "A setting the preset decides was changed by hand.",
     };
 

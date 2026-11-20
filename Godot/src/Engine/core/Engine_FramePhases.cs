@@ -825,7 +825,7 @@ public sealed partial class Engine_FrameEndNode : Godot.Node
 		}
 		using (Engine_FramePhases.Measure("cloth_land"))
 		{
-			Refii.Physics.Engine_ClothBody.LandAll();
+			if (!Refii.AndroidRuntime.AndroidClothLand.AtPreDraw) Refii.Physics.Engine_ClothBody.LandAll();
 		}
 		Engine_FramePhases.MarkFrameEnd();
 		CallDeferred(DeferredMark);

@@ -11,6 +11,14 @@ includes = [
 
 longjmp_address = 0x82CAFA30
 setjmp_address = 0x83006C90
+# CR, CTR, XER and the reservation as C++ locals instead of ctx fields: about 10% fewer guest
+# cycles per tick on desktop and 20% on a Galaxy S10e (2026-11-19).
+# non_volatile_as_local stays off: with it, villagers get stuck walking in place.
+# skip_msr stays off: build_mfmsr omits writing the destination register when skip_msr = true.
+cr_as_local = true
+ctr_as_local = true
+xer_as_local = true
+reserved_as_local = true
  CreateFileA        = 0x82CC3490
  ReadFile           = 0x82CC3688
  WriteFile          = 0x82CC6FB8

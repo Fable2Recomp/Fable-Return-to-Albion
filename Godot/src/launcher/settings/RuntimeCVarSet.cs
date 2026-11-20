@@ -293,10 +293,7 @@ public static class RuntimeCVarsGodot
                 + "Buildings and large objects >=2.5m are excluded. 1 is default scale; higher values push "
                 + "culling further away; 0 disables size culling."),
 
-            new("occlusion_culling", DisplayCategory, RuntimeCVarType.Bool, "false",
-                "Experimental: skip drawing what the town's buildings hide, using each building's "
-                + "own solid walls as the occluder. Saves geometry in a dense town at the cost of "
-                + "some CPU on worker threads; windows and cutouts never hide anything. Read at launch."),
+            ..RuntimeCVarsAndroid.OcclusionCulling,
 
             new("render_scale_percent", DisplayCategory, RuntimeCVarType.Int, "100",
                 "Renders the 3D world at this percentage of the window and scales it up, "

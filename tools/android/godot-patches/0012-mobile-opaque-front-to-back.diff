@@ -1,0 +1,58 @@
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+index b30e19c..cc55fd1 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+@@ -2180,6 +2180,7 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const
+ 	Plane near_plane(-p_render_data->scene_data->cam_transform.basis.get_column(Vector3::AXIS_Z), p_render_data->scene_data->cam_transform.origin);
+ 	near_plane.d += p_render_data->scene_data->cam_projection.get_z_near();
+ 	float z_max = p_render_data->scene_data->cam_projection.get_z_far() - p_render_data->scene_data->cam_projection.get_z_near();
++	const bool opaque_front_to_back = GLOBAL_GET_CACHED(bool, "rendering/renderer/opaque_front_to_back_mobile");
+ 
+ 	RenderList *rl = &render_list[p_render_list];
+ 
+@@ -2211,6 +2212,12 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const
+ 			inst->depth = p_render_data->scene_data->cam_transform.origin.distance_to(center) - inst->sorting_offset;
+ 		}
+ 		uint32_t depth_layer = CLAMP(int(inst->depth * 16 / z_max), 0, 15);
++		// Half-octave bands from 2 m: nearer instances draw first, so a GPU that rejects hidden
++		// pixels by early depth test shades fewer of them; shader and material still group within a band.
++		uint32_t depth_band = 0;
++		if (opaque_front_to_back && inst->depth > 2.0) {
++			depth_band = CLAMP(int(Math::log2(inst->depth * 0.5) * 2.0) + 1, 1, 15);
++		}
+ 
+ 		uint32_t flags = inst->base_flags; //fill flags if appropriate
+ 
+@@ -2350,6 +2357,7 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const
+ 			}
+ 
+ 			surf->sort.depth_layer = depth_layer;
++			surf->sort.depth_band = depth_band;
+ 
+ 			surf = surf->next;
+ 		}
+@@ -3557,6 +3565,9 @@ void RenderForwardMobile::_update_shader_quality_settings() {
+ RenderForwardMobile::RenderForwardMobile() {
+ 	singleton = this;
+ 
++	// Opaque surfaces in front-to-back bands (see _fill_render_list). Off keeps the stock order.
++	GLOBAL_DEF("rendering/renderer/opaque_front_to_back_mobile", false);
++
+ 	disable_ubershaders = RD::get_singleton()->get_driver_workarounds().disable_ubershaders;
+ 	if (disable_ubershaders) {
+ 		print_verbose("Ubershaders: Disabled");
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h
+index 0b156b0..eb37f08 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h
+@@ -501,7 +501,9 @@ protected:
+ 				uint64_t material_id_hi : 8;
+ 
+ 				uint64_t material_id_lo : 24;
+-				uint64_t shader_id : 32;
++				uint64_t shader_id : 28;
++				// Front-to-back band above the shader (rendering/renderer/opaque_front_to_back_mobile), else 0.
++				uint64_t depth_band : 4;
+ 				uint64_t priority : 8;
+ 			};
+ 		} sort;

@@ -90,7 +90,7 @@ public partial class Engine_FxDepthCaptureEffect : CompositorEffect
 
     public Engine_FxDepthCaptureEffect()
     {
-        EffectCallbackType = EffectCallbackTypeEnum.PostOpaque;
+        EffectCallbackType = Refii.AndroidRuntime.AndroidDepthCapture.CallbackType(RenderingServer.GetCurrentRenderingMethod());
         RegisterGlobals();
         RenderingServer.CallOnRenderThread(Callable.From(Initialise));
     }

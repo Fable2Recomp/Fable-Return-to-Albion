@@ -83,7 +83,11 @@ public static class AndroidTranslucentPass
 
     /// <summary>This model's part of the shared material key (Engine_MdlMaterial.TryCreateShared).</summary>
     /// <remarks>Also split while `android_character_cull_back` is on (AndroidCharacterCull), or a character build
-    /// (AndroidCharacterShading), which draw a body's copy differently too.</remarks>
+    /// (AndroidCharacterShading), which draw a body's copy differently too, and while a prop lighting shortcut or
+    /// cut-out pre-pass is on (AndroidVertexLitProps, AndroidFlatCutouts, AndroidCutoutPrepass), which a body's copy
+    /// does not take.</remarks>
     public static string KeyPart(Refii.Models.MdlInfo info) =>
-        KeyPart(On.Value || AndroidCharacterCull.On || AndroidCharacterShading.On.Any, info.SkinnedCount);
+        KeyPart(On.Value || AndroidCharacterCull.On || AndroidCharacterShading.On.Any ||
+            AndroidVertexLitProps.On || AndroidFlatCutouts.On || AndroidFlatCutouts.SwayingOn ||
+            AndroidCutoutPrepass.On, info.SkinnedCount);
 }

@@ -414,6 +414,12 @@ void fragment() {
     vec2 base_uv_dx = dFdx(UV);
     vec2 base_uv_dy = dFdy(UV);
     vec3 geom_cross = cross(dFdx(VERTEX), dFdy(VERTEX));
+#if defined(FABLE_LITE_NM_DERIV) && !defined(FABLE_SPEC_NO_NORMAL_MAP)
+    // The phone's fast normal maps (standard_lite_normal_map) rebuild the frame from VERTEX's two
+    // derivatives: taken here with the rest, never inside the per-pixel `if (!should_discard)`.
+    vec3 lite_dp1 = dFdx(VERTEX);
+    vec3 lite_dp2 = dFdy(VERTEX);
+#endif
 
     ALBEDO = vec3(0.5);
     EMISSION = vec3(0.0);
@@ -435,7 +441,7 @@ void fragment() {
     // The tree fade, as an ordered 4x4 dither (Godot's own pattern style; the title's is a 2x2
     // alpha-to-mask). A copy past its band is wholly discarded. Not in FABLE_SOLID: a discard
     // there refuses the shared depth-only shadow material, and no culled surface has a band.
-#ifndef FABLE_SOLID
+#if !defined(FABLE_SOLID) && !defined(FABLE_DEBUG_CUTOUTS_OPAQUE)
     if (v_tree_fade < 0.999) {
         if (v_tree_fade <= fable_bayer_threshold(FRAGCOORD.xy)) {
             should_discard = true;
@@ -478,7 +484,7 @@ void fragment() {
     vec4 alb = textureGrad(albedo_tex, uv, base_uv_dx, base_uv_dy);
     // FABLE_SOLID: no discard either — the second thing that refuses the shared shadow material.
     // A culled material has an albedo without alpha, so its scissor is never on (see vertex()).
-#ifndef FABLE_SOLID
+#if !defined(FABLE_SOLID) && !defined(FABLE_DEBUG_CUTOUTS_OPAQUE)
     if (alpha_scissor_on && (alb.a < alpha_scissor_threshold ||
             (entity_no_alpha_depth && alpha_scissor_threshold > FABLE_TWIN_ALPHA_REF_FROM))) {
         should_discard = true;

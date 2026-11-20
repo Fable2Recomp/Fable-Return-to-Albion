@@ -13,6 +13,7 @@ namespace Refii.Launcher;
 public partial class LauncherApp
 {
     private AndroidPhoneLauncher? _phone;
+    private string? _apkBundle;
     private VBoxContainer? _phoneContainer;
     private GameScopeSelector? _phoneScope;
     private string _phoneStatus = "";
@@ -111,6 +112,7 @@ public partial class LauncherApp
         _infoTabs!.AddTab("Installation");
         _infoTabs.CurrentTab = _infoTabs.TabCount - 1;
         _settingsTitle!.Text = "Launch options";
+        AddPhoneDock();
         Resized += ApplyLayout;
         ApplyLayout();
         Resized += DrawPhoneGlyphs;
@@ -122,8 +124,77 @@ public partial class LauncherApp
                 "logs and saves, and send the file from your Download folder with what you were doing.");
         RefreshDebugDrawer();
         CallDeferred(MethodName.PlayEntrance);
-        _primaryButton.GrabFocus();
+        if (_launchDock == null) _primaryButton.GrabFocus();
         FetchGitHubData();
+    }
+
+    /// <summary>
+    /// The desktop's launch dock, a card per title side by side, in place of the single Play button
+    /// (<see cref="AndroidLauncherDock"/>).
+    /// </summary>
+    private void AddPhoneDock()
+    {
+        _primaryButton.Visible = false;
+        _progressTrack.Visible = false;
+        _progressClip.Visible = false;
+        _launchDock = new GameLaunchDock();
+        _actionPanel.AddChild(_launchDock);
+        _launchDock.Configure(_font, _buttonStyle, _infoStyle);
+        _launchDock.PrimaryActionRequested += OnPhoneDockPrimary;
+        _launchDock.OverflowActionRequested += OnPhoneDockOverflow;
+    }
+
+    /// <summary>A card's button: the other title is switched to first; Play or Build Game Code then runs as the single button did.</summary>
+    private void OnPhoneDockPrimary(Engine_Title title, TitleCardActionKind action)
+    {
+        if (_phone == null || _phone.IsInstalling) return;
+        if (title != Engine_Title.Active)
+        {
+            SwitchTitle(title);
+            if (title != Engine_Title.Active || _phone == null) return;
+            // Switched to, the card may turn out to be wrong: Play on code that is out of date, or Build Game
+            // Code on a build the installer kept. The card now says which, and the player chooses again.
+            if (action == TitleCardActionKind.Play && _phone.NeedsBuild) return;
+            if (action == TitleCardActionKind.BuildGameCode && !_phone.NeedsBuild) return;
+        }
+
+        PrimaryAndroid();
+    }
+
+    /// <summary>A card's menu: the drawer's Modding, Install and Saves tabs for that title. A phone has no data folder to open.</summary>
+    private void OnPhoneDockOverflow(Engine_Title title, TitleCardOverflowAction action)
+    {
+        switch (action)
+        {
+            case TitleCardOverflowAction.ManageMods: OpenDrawerToTab(1, title); break;
+            case TitleCardOverflowAction.ViewSaves: OpenDrawerToTab(3, title); break;
+            case TitleCardOverflowAction.ManageInstall:
+            case TitleCardOverflowAction.OpenDataFolder: OpenDrawerToTab(2, title); break;
+        }
+    }
+
+    /// <summary>Both cards from the phone's installer and each title's folder.</summary>
+    private void RefreshPhoneDock(bool running)
+    {
+        if (_launchDock == null || _phone == null) return;
+        string app = OS.GetUserDataDir();
+        // Read once: it hashes the APK's compiler bundle.
+        _apkBundle ??= AndroidPhoneLauncher.ApkBundleIdentity();
+        float fraction = AndroidLauncherProgress.Fraction(_phone.Status);
+        var states = new Dictionary<Engine_Title, TitleCardState>();
+        foreach (Engine_Title title in Engine_Title.All)
+        {
+            bool active = title == Engine_Title.Active;
+            AndroidLauncherDock.Install install = active
+                ? !_phone.HasPlayableInstall ? AndroidLauncherDock.Install.Missing
+                    : _phone.NeedsBuild ? AndroidLauncherDock.Install.NeedsBuild : AndroidLauncherDock.Install.Ready
+                : AndroidLauncherDock.InstallOf(app, title, _apkBundle);
+            states[title] = AndroidLauncherDock.State(title, active, running, install != AndroidLauncherDock.Install.Missing,
+                install == AndroidLauncherDock.Install.NeedsBuild, _phone.Status, fraction);
+        }
+
+        _launchDock.UpdateStates(states, showPipelineStrip: false, string.Empty, -1f, showBuildControls: false,
+            isPaused: false, isStopping: false);
     }
 
     /// <summary>The close crosses and the settings gear as drawn icons, at the size of their text (<see cref="AndroidLauncherGlyphs"/>).</summary>
@@ -242,6 +313,13 @@ public partial class LauncherApp
         if (_phoneScope != null) _phoneScope.Interactive = !running;
         _moddingPanel.SetScopeInteractive(!running);
         _savesPanel.SetScopeInteractive(!running);
+        if (_launchDock != null)
+        {
+            RefreshPhoneDock(running);
+            _warningLabel.Text = _phone.Status;
+            RefreshInfoBody();
+            return;
+        }
         _primaryButton.Text = AndroidLauncherProgress.Label(running, _phone.HasPlayableInstall, _phone.Status, _phone.NeedsBuild);
         _primaryButton.Disabled = running;
         _progressTrack.Visible = running;

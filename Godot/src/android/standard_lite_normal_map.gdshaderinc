@@ -5,7 +5,7 @@
 // tangent attribute, its varyings and Godot's own normal-map maths).
     float side = 1.0;
     if (!FABLE_FOLIAGE_NORMALS) {
-        side = fable_normal_side(NORMAL, VERTEX, VIEW);
+        side = fable_normal_side_precomputed(NORMAL, geom_cross, VIEW);
         NORMAL *= side;
 #if !defined(FABLE_SPEC_NO_NORMAL_MAP) && !defined(FABLE_LITE_NM_DERIV)
         BINORMAL *= side;
@@ -20,7 +20,7 @@
         // The frame kept live by a tilt far under a texel's worth; no fetch.
         mapped_view = normalize(NORMAL + ((TANGENT + BINORMAL) * 1e-4));
 #else
-        nm = texture(normal_tex, uv).rgb;
+        nm = textureGrad(normal_tex, uv, base_uv_dx, base_uv_dy).rgb;
 #ifndef FABLE_LITE_NM_DIRECT
         NORMAL_MAP = nm;
 #endif
@@ -33,10 +33,12 @@
         // So T is the u gradient (Schueler's cotangent t, the sign of D = dot(N, face) divided out)
         // normalised, B is cross(N, T) turned to the v gradient's side — the handedness the file's
         // w carries — and like BINORMAL above it takes the side test's sign.
-        vec3 dp1 = dFdx(VERTEX);
-        vec3 dp2 = dFdy(VERTEX);
-        vec2 duv1 = dFdx(uv);
-        vec2 duv2 = dFdy(uv);
+        // The derivatives come from the top of fragment() (shader-dxil-safety.md: none inside
+        // this per-pixel branch); a lite build has no parallax, so uv is UV and its are UV's.
+        vec3 dp1 = lite_dp1;
+        vec3 dp2 = lite_dp2;
+        vec2 duv1 = base_uv_dx;
+        vec2 duv2 = base_uv_dy;
         vec3 dp2perp = cross(dp2, NORMAL);
         vec3 dp1perp = cross(NORMAL, dp1);
         vec3 t = (dp2perp * duv1.x) + (dp1perp * duv2.x);

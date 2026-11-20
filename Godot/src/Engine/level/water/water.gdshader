@@ -112,6 +112,10 @@ uniform bool has_dome = false;
 varying vec3 v_local;
 varying vec3 v_eye_local;
 varying vec3 v_sun_local;
+#ifdef FABLE_WATER_ZENITH_VERTEX
+// `android_water_zenith_once` (android/AndroidWaterZenith.cs): the foam's zenith sky, the same for the whole frame.
+varying flat vec3 v_zenith;
+#endif
 
 float body_edge(vec2 p) {
 	if (!has_body_bounds) {
@@ -198,6 +202,11 @@ void vertex() {
 	// The glint is built against `v_local` and `v_eye_local`, so the sun has to be in the same
 	// space as they are. w = 0 — this is a direction, and the body's translation must not reach it.
 	v_sun_local = (inverse(MODEL_MATRIX) * vec4(fable_sun_toward, 0.0)).xyz;
+#ifdef FABLE_WATER_ZENITH_VERTEX
+	// dome_reflect(vec3(0.0, 1.0, 0.0)), written out: dome_reflect is defined below vertex().
+	v_zenith = has_dome ? fable_sky_overlaid(vec3(0.0, 1.0, 0.0), fable_sky_inscatter(
+		vec3(0.0, 0.0, 1.0), sun_engine, in_scatter_lut, beta_rayleigh, beta_mie, horizon_distance)) : sky_constant;
+#endif
 
 	if (!guest_water) {
 		vec2 sdir;
@@ -454,7 +463,11 @@ void fragment() {
 			float pattern = mix(f1, f0, clamp((band - 0.4) / 0.4, 0.0, 1.0));
 			float foam = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern)));
 
+#ifdef FABLE_WATER_ZENITH_VERTEX
+			vec3 zen = v_zenith;
+#else
 			vec3 zen = has_dome ? dome_reflect(vec3(0.0, 1.0, 0.0)) : sky_constant;
+#endif
 			vec3 foam_col = (zen * 0.75) + (fable_sun_colour * 0.30 * clamp(L.y * 2.0, 0.0, 1.0));
 			col = mix(col, foam_col, foam * 0.75);
 		}

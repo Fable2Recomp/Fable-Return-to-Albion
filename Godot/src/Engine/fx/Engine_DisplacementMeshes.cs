@@ -201,8 +201,10 @@ public static class Engine_DisplacementMeshes
                 if (visible)
                 {
                     // A skinned part's bounds follow its skeleton, which this does not know.
+                    if (held.Skinned && Refii.AndroidRuntime.AndroidDisplacementGate.TakesBody(held.Node, held.Mesh, held.Placed)) continue;
                     if (held.Skinned) shownSkinned++;
                     else shownStatic++;
+                    if (!held.Skinned) Refii.AndroidRuntime.AndroidDisplacementRect.NoteStatic(held.Bounds, held.Placed);
                 }
             }
         }
@@ -210,7 +212,9 @@ public static class Engine_DisplacementMeshes
         {
             Engine_FxDisplacement.NotifyActive();
         }
+        Refii.AndroidRuntime.AndroidDisplacementGate.HoldIfSeen();
         Engine_FxDisplacement.SleepUnseen(SeenBy);
+        Refii.AndroidRuntime.AndroidDisplacementGate.NoteStatic(shownStatic);
         if (shownStatic > 0)
         {
             Engine_FxDisplacement.NotifyStaticShown();

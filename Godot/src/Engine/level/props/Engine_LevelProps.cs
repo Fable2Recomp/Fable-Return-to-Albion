@@ -183,7 +183,7 @@ public static partial class Engine_LevelProps
         Dictionary<(Vector3I Cell, StatedRange? Range, byte Casting), List<int>> cells,
         PropBuildStats stats)
     {
-        if (block.ModelClass == PropModelClass.Tree)
+        if (block.ModelClass == PropModelClass.Tree || FoliageKeepsOwnCells(block))
         {
             return;
         }
@@ -1343,6 +1343,7 @@ public static partial class Engine_LevelProps
             stats.Blocks++;
         }
 
+        ReportFoliageThinning(level);
         if (editorHierarchy is not null)
         {
             foreach (KeyValuePair<uint, Node3D> kv in editorHierarchy.PrimaryRecordNodes)
@@ -2417,7 +2418,7 @@ public static partial class Engine_LevelProps
                     ?? string.Empty;
             }
             // Under classic the impostor follows the full model, as the title's does: no stand-in.
-            if (d.LodModelHash == 0 && !Refii.Models.Engine_ClassicBillboards.Available)
+            if (d.LodModelHash == 0 && Engine_TreeReach.PlacedTreeBorrowsFarModel)
             {
                 foreach (PropBlockBuild other in blocks.Values)
                 {

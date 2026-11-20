@@ -98,6 +98,41 @@ public static class AndroidOpaqueOrder
         }
     }
 
+    /// <summary>
+    /// The priority a cut-out surface built outside the model materials takes (the tree cards,
+    /// AndroidTreeCards), or null to leave it: the discard class's offset, as <see cref="Model"/> gives it.
+    /// </summary>
+    public static int? CutoutPriority => Read.Value.Discard != 0 ? Read.Value.Discard : null;
+
+    /// <summary>The refii.toml key of the front-to-back order (<see cref="ApplyFrontToBack"/>).</summary>
+    public const string FrontToBackKey = "android_opaque_front_to_back";
+
+    /// <summary>The engine setting godot-patches/0012 reads each frame; unknown to an engine without the patch.</summary>
+    public const string FrontToBackSetting = "rendering/renderer/opaque_front_to_back_mobile";
+
+    private static bool? _frontToBack;
+
+    /// <summary>
+    /// `android_opaque_front_to_back`: Godot Mobile's opaque pass drawn in front-to-back bands (half
+    /// octaves of distance from 2 m), shader and material grouped within a band, instead of by shader
+    /// and material alone. The same picture: an Adreno rejects a hidden pixel only when what hides it
+    /// drew first. Main thread; live. Does nothing on an engine without the patch.
+    /// </summary>
+    public static void ApplyFrontToBack(bool wanted)
+    {
+        if (_frontToBack == wanted)
+        {
+            return;
+        }
+
+        _frontToBack = wanted;
+        if (ProjectSettings.HasSetting(FrontToBackSetting))
+        {
+            ProjectSettings.SetSetting(FrontToBackSetting, wanted);
+            GD.Print($"[android] opaque pass front to back: {wanted}");
+        }
+    }
+
     /// <summary>Gives a terrain splat or page material the terrain priority.</summary>
     public static void Terrain(Material? material)
     {

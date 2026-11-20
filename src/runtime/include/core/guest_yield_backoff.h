@@ -26,7 +26,10 @@ namespace refii::vfs {
 // This only ADDS a delay: the guest's SwitchToThread still runs, so the yield and its
 // barrier keep their semantics. The guest's own loops keep their own exit conditions
 // and timeouts — this changes how the waiting is spent, never how long it lasts.
-void MaybeBackOffBeforeGuestYield(uint32_t lr);
+//
+// `max_sleep_us` raises the longest sleep for this call (0 keeps the 500 us ceiling); a
+// wait then ends up to that much later than its condition allows.
+void MaybeBackOffBeforeGuestYield(uint32_t lr, uint32_t max_sleep_us = 0u);
 
 // How many of those calls escalated to a sleep, process-wide. Reported by the spin probe
 // so one log line shows both the yield count and how much of it the back-off absorbed.

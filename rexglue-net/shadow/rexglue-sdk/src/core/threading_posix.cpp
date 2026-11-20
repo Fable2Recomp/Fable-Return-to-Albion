@@ -17,9 +17,13 @@ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only")
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <algorithm>
+#include <condition_variable>
 #include <deque>
+#include <mutex>
 #include <vector>
 #include <limits>
 #include <memory>
@@ -71,6 +75,65 @@ namespace rex::thread {
 
 namespace {
 void UnregisterSignalThread();
+
+// REFII SHADOW: BLOCKING GUEST WAITS (REFII_GUEST_WAIT_CHECK_MS, Android's
+// android_guest_wait_check_ms). By default an alertable wait, an alertable sleep and every
+// multi-object wait wake each millisecond to look for an APC or a signal, so an idle thread parked
+// in one (Fable 2's lhSyncEvent::Wait(INFINITE) is an alertable WaitForSingleObjectEx; the Audio
+// Worker's WaitAny is alertable) wakes ~850 times a second to find nothing. With 2-100 set, those
+// waits sleep until a handle they wait on changes state or an APC is queued for the thread, and
+// look again at most every that many milliseconds as a safety net (which also bounds how late a
+// mutant abandoned by an exiting owner is noticed). Unset or anything else: exactly the old
+// polling. Only the phone sets it; a desktop run may set it by hand for an A/B.
+std::chrono::milliseconds BlockingWaitCheck() {
+  static const std::chrono::milliseconds check = [] {
+    const char* text = std::getenv("REFII_GUEST_WAIT_CHECK_MS");
+    const unsigned long parsed = text != nullptr ? std::strtoul(text, nullptr, 10) : 0ul;
+    return std::chrono::milliseconds(parsed >= 2ul && parsed <= 100ul ? static_cast<long>(parsed)
+                                                                      : 0l);
+  }();
+  return check;
+}
+
+bool BlockingWaits() { return BlockingWaitCheck().count() > 0; }
+
+// How long a waiter on a mutant sleeps between looks at its owner's lifetime (Android).
+std::chrono::milliseconds MutantPollSlice() {
+  return BlockingWaits() ? BlockingWaitCheck() : std::chrono::milliseconds(1);
+}
+
+// One per thread: what a blocking multi-object wait or alertable sleep sleeps on. Each handle the
+// wait is registered with bumps `pokes` when its state changes (PosixConditionBase::NotifyWaiters);
+// an APC queued for the thread notifies `cond` (PosixCondition<Thread>::QueueUserCallback).
+struct WaitWaker {
+  std::mutex mutex;
+  std::condition_variable cond;
+  uint64_t pokes = 0;  // Guarded by mutex.
+
+  void Poke() {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++pokes;
+    cond.notify_all();
+  }
+
+  uint64_t Seen() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return pokes;
+  }
+
+  // Sleeps until poked past `seen`, `interrupt` is set, or `until`.
+  void WaitPast(uint64_t seen, const std::atomic<bool>* interrupt,
+                std::chrono::steady_clock::time_point until) {
+    std::unique_lock<std::mutex> lock(mutex);
+    cond.wait_until(lock, until, [&] {
+      return pokes != seen || (interrupt && interrupt->load(std::memory_order_acquire));
+    });
+  }
+};
+
+thread_local WaitWaker t_wait_waker;
+
+SleepResult BlockingAlertableSleep(std::chrono::microseconds duration);
 }
 
 #if REX_PLATFORM_ANDROID
@@ -231,6 +294,9 @@ void Sleep(std::chrono::microseconds duration) {
 thread_local bool alertable_state_ = false;
 bool DispatchCurrentThreadUserCallback();
 SleepResult AlertableSleep(std::chrono::microseconds duration) {
+  if (duration.count() > 0 && BlockingWaits()) {
+    return BlockingAlertableSleep(duration);
+  }
   alertable_state_ = true;
   auto deadline = std::chrono::steady_clock::now() + duration;
   while (true) {
@@ -241,6 +307,11 @@ SleepResult AlertableSleep(std::chrono::microseconds duration) {
     auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
       alertable_state_ = false;
+      // REFII SHADOW: a zero sleep gives up the rest of the time slice, as SleepEx(0, TRUE) does
+      // on Windows; without it a guest SleepEx(0, 1) loop never lets another thread in.
+      if (duration.count() <= 0) {
+        MaybeYield();
+      }
       return SleepResult::kSuccess;
     }
     auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now);
@@ -308,9 +379,14 @@ class PosixConditionBase {
   virtual ~PosixConditionBase() = default;
   virtual bool Signal() = 0;
 
-  virtual WaitResult Wait(std::chrono::milliseconds timeout) {
+  // REFII SHADOW: `interrupt` (a blocking alertable wait's pending-APC flag) also ends the wait,
+  // which then reports a timeout unless the object is signaled; null is the plain wait.
+  virtual WaitResult Wait(std::chrono::milliseconds timeout,
+                          const std::atomic<bool>* interrupt = nullptr) {
     bool executed;
-    auto predicate = [this] { return this->signaled(); };
+    auto predicate = [this, interrupt] {
+      return this->signaled() || (interrupt && interrupt->load(std::memory_order_acquire));
+    };
 #if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
     int lock_result = pthread_mutex_lock(native_mutex);
@@ -335,7 +411,7 @@ class PosixConditionBase {
                           : std::chrono::steady_clock::now() + timeout;
       while (!predicate() && std::chrono::steady_clock::now() < deadline) {
         cond_.wait_until(lock, std::min(deadline, std::chrono::steady_clock::now() +
-                                                   std::chrono::milliseconds(1)));
+                                                   MutantPollSlice()));
       }
       executed = predicate();
     } else {
@@ -345,6 +421,9 @@ class PosixConditionBase {
       } else {
         executed = cond_.wait_for(lock, timeout, predicate);
       }
+    }
+    if (interrupt) {
+      executed = this->signaled();  // An APC alone does not satisfy the wait.
     }
     if (executed) {
       bool was_abandoned = abandoned();
@@ -357,11 +436,13 @@ class PosixConditionBase {
 
   static std::pair<WaitResult, size_t> WaitMultiple(std::vector<PosixConditionBase*>&& handles,
                                                     bool wait_all,
-                                                    std::chrono::milliseconds timeout) {
+                                                    std::chrono::milliseconds timeout,
+                                                    const std::atomic<bool>* interrupt = nullptr,
+                                                    WaitWaker* waker = nullptr) {
     assert_true(!handles.empty());
 
-    if (handles.size() == 1) {
-      auto result = handles[0]->Wait(timeout);
+    if (handles.size() == 1 && waker == nullptr) {
+      auto result = handles[0]->Wait(timeout, interrupt);
       return std::make_pair(result, 0);
     }
 
@@ -371,6 +452,9 @@ class PosixConditionBase {
                         : start_time + timeout;
 
     while (true) {
+      // REFII SHADOW: with a waker (registered with every handle), read its count before
+      // looking, so any change after the look is a poke past it and cannot be slept through.
+      const uint64_t seen = waker ? waker->Seen() : 0u;
       size_t first_signaled = std::numeric_limits<size_t>::max();
       bool condition_met = false;
       bool all_locked = true;
@@ -459,6 +543,16 @@ class PosixConditionBase {
         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
       }
 
+      // REFII SHADOW: blocking waits (BlockingWaits) sleep until a handle changes state, an APC
+      // arrives (returned as a timeout for the alertable caller to run), or the safety check.
+      if (waker) {
+        if (interrupt && interrupt->load(std::memory_order_acquire)) {
+          return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+        }
+        waker->WaitPast(seen, interrupt, std::min(end_time, now + BlockingWaitCheck()));
+        continue;
+      }
+
       // // SLEEP FOR THE REAL REMAINDER, NOT ITS WHOLE MILLISECONDS. The alertable wrapper hands
       // // this loop one-millisecond slices, so `end_time - now` is under a millisecond on
       // // every pass but the first; cast to milliseconds that is zero, and sleep_for(0) is a
@@ -478,13 +572,38 @@ class PosixConditionBase {
     return const_cast<std::condition_variable&>(cond_).native_handle();
   }
 
+  // REFII SHADOW: a blocking multi-object wait registers its thread's waker for the wait's length
+  // (BlockingWaits); every state change that wakes this object's own waiters pokes it too.
+  void AddWaker(WaitWaker* waker) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    wakers_.push_back(waker);
+  }
+  void RemoveWaker(WaitWaker* waker) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = std::find(wakers_.begin(), wakers_.end(), waker);
+    if (it != wakers_.end()) {
+      wakers_.erase(it);
+    }
+  }
+  // What a blocking alertable wait on this object sleeps on, for QueueUserCallback to notify.
+  std::mutex& wait_mutex() { return mutex_; }
+  std::condition_variable& wait_cond() { return cond_; }
+
  protected:
   inline virtual bool signaled() const = 0;
   inline virtual void post_execution() = 0;
   virtual bool abandoned() const { return false; }
   virtual bool poll_owner_lifetime() const { return false; }
+  // Wakes this object's waiters; mutex_ held. With no waker registered, cond_.notify_all() alone.
+  void NotifyWaiters() {
+    cond_.notify_all();
+    for (WaitWaker* waker : wakers_) {
+      waker->Poke();
+    }
+  }
   std::condition_variable cond_;
   std::mutex mutex_;
+  std::vector<WaitWaker*> wakers_;  // Guarded by mutex_.
 };
 
 // There really is no native POSIX handle for a single wait/signal construct
@@ -517,7 +636,7 @@ class PosixCondition<Event> : public PosixConditionBase {
     } else {
       signal_ = true;
     }
-    cond_.notify_all();
+    NotifyWaiters();
     return true;
   }
 
@@ -526,9 +645,10 @@ class PosixCondition<Event> : public PosixConditionBase {
     signal_ = false;
   }
 
-  WaitResult Wait(std::chrono::milliseconds timeout) override {
+  WaitResult Wait(std::chrono::milliseconds timeout,
+                  const std::atomic<bool>* interrupt = nullptr) override {
     if (manual_reset_) {
-      return PosixConditionBase::Wait(timeout);
+      return PosixConditionBase::Wait(timeout, interrupt);
     }
 #if REX_PLATFORM_LINUX && !REX_PLATFORM_ANDROID
     auto native_mutex = static_cast<pthread_mutex_t*>(mutex_.native_handle());
@@ -552,12 +672,20 @@ class PosixCondition<Event> : public PosixConditionBase {
     auto handed = [this, ticket] {
       return std::find(granted_.begin(), granted_.end(), ticket) != granted_.end();
     };
+    // REFII SHADOW: a pending APC (interrupt) also ends the wait; it leaves the queue as a
+    // timeout does unless the signal was handed to it first.
+    auto ready = [&handed, interrupt] {
+      return handed() || (interrupt && interrupt->load(std::memory_order_acquire));
+    };
     bool executed;
     if (timeout == std::chrono::milliseconds::max()) {
-      cond_.wait(lock, handed);
+      cond_.wait(lock, ready);
       executed = true;
     } else {
-      executed = cond_.wait_for(lock, timeout, handed);
+      executed = cond_.wait_for(lock, timeout, ready);
+    }
+    if (interrupt) {
+      executed = handed();
     }
 
     if (executed) {
@@ -601,7 +729,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
       *out_previous_count = count_;
     }
     count_ += release_count;
-    cond_.notify_all();
+    NotifyWaiters();
     return true;
   }
 
@@ -635,7 +763,7 @@ class PosixCondition<Mutant> : public PosixConditionBase {
       --count_;
       // Free to be acquired by another thread
       if (count_ == 0) {
-        cond_.notify_all();
+        NotifyWaiters();
       }
       return true;
     }
@@ -674,7 +802,7 @@ class PosixCondition<Timer> : public PosixConditionBase {
   bool Signal() override {
     std::lock_guard<std::mutex> lock(mutex_);
     signal_ = true;
-    cond_.notify_all();
+    NotifyWaiters();
     return true;
   }
 
@@ -981,6 +1109,12 @@ class PosixCondition<Thread> : public PosixConditionBase {
       std::unique_lock<std::mutex> lock(callback_mutex_);
       user_callbacks_.push_back(std::move(callback));
       has_pending_user_callbacks_.store(true, std::memory_order_release);
+      // REFII SHADOW: a blocking alertable wait (BlockingWaits) sleeps on this; its predicate
+      // reads the flag just set, under the same mutex taken here, so the wake cannot be lost.
+      if (alert_mutex_ != nullptr) {
+        std::lock_guard<std::mutex> alert_lock(*alert_mutex_);
+        alert_cond_->notify_all();
+      }
     }
 
     // If the callback is queued on the current thread, don't self-signal.
@@ -1010,6 +1144,17 @@ class PosixCondition<Thread> : public PosixConditionBase {
       REXSYS_WARN("QueueUserCallback: signal delivery failed ({})", result);
     }
   }
+
+  // REFII SHADOW: set by this thread around a blocking alertable wait (BlockingWaits) to what the
+  // wait sleeps on, and cleared after; QueueUserCallback notifies it.
+  void SetAlertTarget(std::mutex* mutex, std::condition_variable* cond) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    alert_mutex_ = mutex;
+    alert_cond_ = cond;
+  }
+
+  // Whether an APC is queued: the interrupt a blocking alertable wait passes down.
+  const std::atomic<bool>* pending_user_callbacks() const { return &has_pending_user_callbacks_; }
 
   bool DispatchQueuedUserCallbacks() {
     if (!has_pending_user_callbacks_.load(std::memory_order_acquire)) {
@@ -1114,7 +1259,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
 
       exit_code_ = exit_code;
       signaled_ = true;
-      cond_.notify_all();
+      NotifyWaiters();
     }
     if (is_current_thread) {
       UnregisterSignalThread();
@@ -1189,6 +1334,8 @@ class PosixCondition<Thread> : public PosixConditionBase {
   mutable std::condition_variable state_signal_;
   std::deque<std::function<void()>> user_callbacks_;
   std::atomic<bool> has_pending_user_callbacks_{false};
+  std::mutex* alert_mutex_ = nullptr;               // Protected by callback_mutex_.
+  std::condition_variable* alert_cond_ = nullptr;  // Protected by callback_mutex_.
 #if REX_PLATFORM_ANDROID
   bool wait_resources_released_ = false;  // Protected by mutex_.
   // Name accessible via name() on Android before API 26 which added
@@ -1261,6 +1408,147 @@ std::chrono::milliseconds ComputeAlertableWaitTimeout(
   return std::min(remaining, kAlertablePollSlice);
 }
 
+// REFII SHADOW: BLOCKING WAITS (BlockingWaits; off unless REFII_GUEST_WAIT_CHECK_MS is set).
+
+// What is left until `deadline`, rounded UP to whole milliseconds, so a sub-millisecond
+// remainder sleeps once instead of returning at once and spinning (ComputeAlertableWaitTimeout
+// rounds down).
+std::chrono::milliseconds RemainingWaitTime(std::chrono::steady_clock::time_point deadline) {
+  if (deadline == std::chrono::steady_clock::time_point::max()) {
+    return std::chrono::milliseconds::max();
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (deadline <= now) {
+    return std::chrono::milliseconds::zero();
+  }
+  return std::chrono::ceil<std::chrono::milliseconds>(deadline - now);
+}
+
+// Keeps `waker` registered with every handle of a multi-object wait while it lasts.
+class WakerRegistration {
+ public:
+  WakerRegistration(const std::vector<PosixConditionBase*>& handles, WaitWaker* waker)
+      : handles_(handles), waker_(waker) {
+    for (PosixConditionBase* handle : handles_) {
+      handle->AddWaker(waker_);
+    }
+  }
+  ~WakerRegistration() {
+    for (PosixConditionBase* handle : handles_) {
+      handle->RemoveWaker(waker_);
+    }
+  }
+  WakerRegistration(const WakerRegistration&) = delete;
+  WakerRegistration& operator=(const WakerRegistration&) = delete;
+
+ private:
+  const std::vector<PosixConditionBase*>& handles_;
+  WaitWaker* waker_;
+};
+
+// Names what this thread's alertable wait sleeps on while it lasts, so an APC wakes it.
+class AlertTargetScope {
+ public:
+  AlertTargetScope(PosixCondition<Thread>* thread, std::mutex* mutex,
+                   std::condition_variable* cond)
+      : thread_(thread) {
+    if (thread_) {
+      thread_->SetAlertTarget(mutex, cond);
+    }
+  }
+  ~AlertTargetScope() {
+    if (thread_) {
+      thread_->SetAlertTarget(nullptr, nullptr);
+    }
+  }
+  AlertTargetScope(const AlertTargetScope&) = delete;
+  AlertTargetScope& operator=(const AlertTargetScope&) = delete;
+
+ private:
+  PosixCondition<Thread>* thread_;
+};
+
+// An alertable wait on one object: blocks on the object itself, ended early by an APC.
+WaitResult BlockingAlertableWait(PosixConditionBase& condition,
+                                 std::chrono::steady_clock::time_point deadline) {
+  while (true) {
+    // Also makes current_thread_condition_ for a thread rex did not create.
+    if (DispatchCurrentThreadUserCallback()) {
+      return WaitResult::kUserCallback;
+    }
+    if (HasAlertableTimeoutElapsed(deadline)) {
+      return WaitResult::kTimeout;
+    }
+    PosixCondition<Thread>* self = current_thread_condition_;
+    const auto slice = std::min(RemainingWaitTime(deadline), BlockingWaitCheck());
+    WaitResult result;
+    {
+      AlertTargetScope target(self, &condition.wait_mutex(), &condition.wait_cond());
+      result = condition.Wait(slice, self ? self->pending_user_callbacks() : nullptr);
+    }
+    if (result != WaitResult::kTimeout) {
+      return result;
+    }
+  }
+}
+
+// A multi-object wait, alertable or not: blocks on this thread's waker, which every handle and
+// (alertable) an APC pokes.
+std::pair<WaitResult, size_t> BlockingWaitMultiple(
+    const std::vector<PosixConditionBase*>& conditions, bool wait_all, bool is_alertable,
+    std::chrono::milliseconds timeout) {
+  WaitWaker* waker = &t_wait_waker;
+  WakerRegistration registration(conditions, waker);
+  if (!is_alertable) {
+    return PosixConditionBase::WaitMultiple(std::vector<PosixConditionBase*>(conditions), wait_all,
+                                            timeout, nullptr, waker);
+  }
+  const auto deadline = ComputeAlertableDeadline(timeout);
+  if (DispatchCurrentThreadUserCallback()) {
+    return std::make_pair(WaitResult::kUserCallback, size_t{0});
+  }
+  PosixCondition<Thread>* self = current_thread_condition_;
+  AlertTargetScope target(self, &waker->mutex, &waker->cond);
+  const std::atomic<bool>* interrupt = self ? self->pending_user_callbacks() : nullptr;
+  while (true) {
+    if (DispatchCurrentThreadUserCallback()) {
+      return std::make_pair(WaitResult::kUserCallback, size_t{0});
+    }
+    if (HasAlertableTimeoutElapsed(deadline)) {
+      return std::make_pair(WaitResult::kTimeout, size_t{0});
+    }
+    auto result = PosixConditionBase::WaitMultiple(std::vector<PosixConditionBase*>(conditions),
+                                                   wait_all, RemainingWaitTime(deadline),
+                                                   interrupt, waker);
+    if (result.first != WaitResult::kTimeout) {
+      return result;
+    }
+  }
+}
+
+// An alertable sleep: sleeps in one piece on this thread's waker, ended early by an APC.
+SleepResult BlockingAlertableSleep(std::chrono::microseconds duration) {
+  ScopedAlertableState alertable_state_guard(true);
+  const auto deadline = std::chrono::steady_clock::now() + duration;
+  WaitWaker* waker = &t_wait_waker;
+  if (DispatchCurrentThreadUserCallback()) {
+    return SleepResult::kAlerted;
+  }
+  PosixCondition<Thread>* self = current_thread_condition_;
+  AlertTargetScope target(self, &waker->mutex, &waker->cond);
+  const std::atomic<bool>* interrupt = self ? self->pending_user_callbacks() : nullptr;
+  while (true) {
+    if (DispatchCurrentThreadUserCallback()) {
+      return SleepResult::kAlerted;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      return SleepResult::kSuccess;
+    }
+    waker->WaitPast(waker->Seen(), interrupt, std::min(deadline, now + BlockingWaitCheck()));
+  }
+}
+
 }  // namespace
 
 // This wraps a condition object as our handle because posix has no single
@@ -1312,6 +1600,9 @@ WaitResult Wait(WaitHandle* wait_handle, bool is_alertable, std::chrono::millise
 
   ScopedAlertableState alertable_state_guard(true);
   auto deadline = ComputeAlertableDeadline(timeout);
+  if (BlockingWaits()) {
+    return BlockingAlertableWait(posix_wait_handle->condition(), deadline);
+  }
 
   while (true) {
     if (DispatchCurrentThreadUserCallback()) {
@@ -1345,6 +1636,9 @@ WaitResult SignalAndWait(WaitHandle* wait_handle_to_signal, WaitHandle* wait_han
 
   ScopedAlertableState alertable_state_guard(true);
   auto deadline = ComputeAlertableDeadline(timeout);
+  if (BlockingWaits()) {
+    return BlockingAlertableWait(posix_wait_handle_to_wait_on->condition(), deadline);
+  }
   while (true) {
     if (DispatchCurrentThreadUserCallback()) {
       return WaitResult::kUserCallback;
@@ -1370,6 +1664,19 @@ std::pair<WaitResult, size_t> WaitMultiple(WaitHandle* wait_handles[], size_t wa
       return std::make_pair(WaitResult::kFailed, 0);
     }
     conditions.push_back(&handle->condition());
+  }
+  if (BlockingWaits()) {
+    ScopedAlertableState alertable_state_guard(is_alertable);
+    if (conditions.size() == 1) {
+      // One handle waits on the object itself, as it always has (an auto-reset event's
+      // longest-waiter hand-off needs that).
+      if (!is_alertable) {
+        return std::make_pair(conditions[0]->Wait(timeout), size_t{0});
+      }
+      return std::make_pair(BlockingAlertableWait(*conditions[0], ComputeAlertableDeadline(timeout)),
+                            size_t{0});
+    }
+    return BlockingWaitMultiple(conditions, wait_all, is_alertable, timeout);
   }
   if (!is_alertable) {
     return PosixConditionBase::WaitMultiple(std::move(conditions), wait_all, timeout);
@@ -1652,7 +1959,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
     std::unique_lock<std::mutex> lock(thread->handle_.mutex_);
     thread->handle_.exit_code_ = 0;
     thread->handle_.signaled_ = true;
-    thread->handle_.cond_.notify_all();
+    thread->handle_.NotifyWaiters();
   }
 
   UnregisterSignalThread();

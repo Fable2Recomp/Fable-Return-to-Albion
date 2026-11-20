@@ -118,12 +118,14 @@ public static class Engine_PropFade
 		held.FadeIn = fadeIn;
 		held.FadeOut = fadeOut;
 		held.Centre = centre;
+		Refii.AndroidRuntime.AndroidShadowTwinDither.Band(node, fadeOut.X);
 	}
 
 	private static void StateAlpha(GeometryInstance3D node, float alpha)
 	{
 		node.SetInstanceShaderParameter(Alpha, alpha);
 		States.GetOrCreateValue(node).Alpha = alpha;
+		Refii.AndroidRuntime.AndroidShadowTwinDither.Alpha(node, alpha);
 	}
 
 	/// <summary>

@@ -1,0 +1,384 @@
+godot-patches/0017: a depth pre-pass for opaque cut-outs in the Mobile renderer.
+
+`rendering/renderer/cutout_depth_prepass_mobile` (0 off, the default; 1 GREATER_OR_EQUAL; 2 EQUAL; read each
+frame). An opaque-list surface whose shader declares `depth_prepass_alpha` and has a `discard` (and writes no
+ALPHA) is drawn twice in the opaque pass: first, before the whole opaque list, with its shadow version
+(MODE_RENDER_DEPTH: vertex stage, alpha fetch and discard; colour writes masked); then in the list's own order with
+its colour version and no depth write, compare GREATER_OR_EQUAL (the discard keeps the holes) or EQUAL. A discard
+without a depth write keeps the early depth test, so hidden layers are no longer shaded. The game sets the
+setting from `android_cutout_depth_prepass` and adds `depth_prepass_alpha` to the cut-out builds it chooses.
+RenderingDevice now accepts a fragment stage that leaves out a colour attachment whose writes the blend state
+masks off entirely (the depth-only version in the colour pass); every pipeline it accepted before is unchanged.
+The depth draws are added to the viewport's draw-call count (Mobile otherwise reports its visible instances there),
+and a `[cutout-prepass]` line every 10 s logs how many views drew a pre-pass and how many depth draws they had.
+
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+index fcdd085..fd8a2ca 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+@@ -31,6 +31,7 @@
+ #include "render_forward_mobile.h"
+ 
+ #include "core/config/project_settings.h"
++#include "core/os/os.h"
+ #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
+ #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
+ #include "servers/rendering/renderer_rd/storage_rd/mesh_storage.h"
+@@ -50,6 +51,39 @@
+ 
+ using namespace RendererSceneRenderImplementation;
+ 
++// godot-patches/0017: rendering/renderer/cutout_depth_prepass_mobile, 0 (off) to 2.
++static uint32_t _cutout_depth_prepass_setting() {
++	return uint32_t(CLAMP(GLOBAL_GET_CACHED(int, "rendering/renderer/cutout_depth_prepass_mobile"), 0, 2));
++}
++
++// godot-patches/0017: what the pre-pass drew, logged every 10 s while it runs ("[cutout-prepass]" in logcat).
++static void _cutout_depth_prepass_note(uint32_t p_mode, uint32_t p_depth_draws, uint32_t p_opaque_draws) {
++	static uint64_t window_start = 0;
++	static uint64_t views = 0;
++	static uint64_t depth_draws = 0;
++	static uint32_t most_depth_draws = 0;
++	static uint32_t most_opaque_draws = 0;
++	const uint64_t now = OS::get_singleton()->get_ticks_msec();
++	if (window_start == 0) {
++		window_start = now;
++	}
++	views++;
++	depth_draws += p_depth_draws;
++	if (p_depth_draws > most_depth_draws) {
++		most_depth_draws = p_depth_draws;
++		most_opaque_draws = p_opaque_draws;
++	}
++	if (now - window_start >= 10000) {
++		print_line(vformat("[cutout-prepass] mode %d (%s): %d views drew a depth pre-pass in %.1f s, %.1f depth draws a view; most %d depth draws in one view, of its %d opaque draws",
++				p_mode, p_mode == 2 ? "EQUAL" : "GREATER_OR_EQUAL", views, (now - window_start) / 1000.0, double(depth_draws) / double(views), most_depth_draws, most_opaque_draws));
++		window_start = now;
++		views = 0;
++		depth_draws = 0;
++		most_depth_draws = 0;
++		most_opaque_draws = 0;
++	}
++}
++
+ RendererRD::ForwardID RenderForwardMobile::ForwardIDStorageMobile::allocate_forward_id(RendererRD::ForwardIDType p_type) {
+ 	int32_t index = -1;
+ 	for (uint32_t i = 0; i < forward_id_allocators[p_type].allocations.size(); i++) {
+@@ -1275,9 +1309,38 @@ void RenderForwardMobile::_render_scene(RenderDataRD *p_render_data, const Color
+ 		}
+ 
+ 		if (render_list[RENDER_LIST_OPAQUE].elements.size() > 0) {
++			// godot-patches/0017: flagged cut-outs first as depth only (their discard kept), then the opaque list as
++			// always, those cut-outs without a depth write, so each covered pixel is shaded once instead of per layer.
++			const uint32_t cutout_prepass = (scene_state.used_cutout_prepass && p_render_data->scene_data->view_count == 1 && get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_DISABLED) ? _cutout_depth_prepass_setting() : 0;
++			if (cutout_prepass != 0) {
++				// The depth draws, counted into the viewport's draw calls (which Mobile otherwise sets to its visible
++				// instances) and noted for the log.
++				uint32_t depth_draws = 0;
++				const uint32_t opaque_count = render_list[RENDER_LIST_OPAQUE].elements.size();
++				for (uint32_t i = 0; i < opaque_count; i++) {
++					const GeometryInstanceSurfaceDataCache *surf = render_list[RENDER_LIST_OPAQUE].elements[i];
++					if ((surf->flags & GeometryInstanceSurfaceDataCache::FLAG_CUTOUT_DEPTH_PREPASS) && surf->owner->instance_count != 0) {
++						depth_draws++;
++					}
++				}
++				if (p_render_data->render_info) {
++					p_render_data->render_info->info[RSE::VIEWPORT_RENDER_INFO_TYPE_VISIBLE][RSE::VIEWPORT_RENDER_INFO_DRAW_CALLS_IN_FRAME] += depth_draws;
++				}
++				_cutout_depth_prepass_note(cutout_prepass, depth_draws, opaque_count);
++
++				RD::get_singleton()->draw_command_begin_label("Cutout Depth Pre-pass");
++				RenderListParameters prepass_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_CUTOUT_DEPTH_PREPASS, rp_uniform_set, base_specialization, false, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count);
++				prepass_params.framebuffer_format = fb_format;
++				prepass_params.subpass = RD::get_singleton()->draw_list_get_current_pass();
++				prepass_params.cutout_prepass = cutout_prepass;
++				_render_list(draw_list, fb_format, &prepass_params, 0, prepass_params.element_count);
++				RD::get_singleton()->draw_command_end_label();
++			}
++
+ 			RenderListParameters render_list_params(render_list[RENDER_LIST_OPAQUE].elements.ptr(), render_list[RENDER_LIST_OPAQUE].element_info.ptr(), render_list[RENDER_LIST_OPAQUE].elements.size(), reverse_cull, PASS_MODE_COLOR, rp_uniform_set, base_specialization, get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_WIREFRAME, Vector2(), p_render_data->scene_data->lod_distance_multiplier, p_render_data->scene_data->screen_mesh_lod_threshold, p_render_data->scene_data->view_count);
+ 			render_list_params.framebuffer_format = fb_format;
+ 			render_list_params.subpass = RD::get_singleton()->draw_list_get_current_pass(); // Should now always be 0.
++			render_list_params.cutout_prepass = cutout_prepass;
+ 
+ 			_render_list(draw_list, fb_format, &render_list_params, 0, render_list_params.element_count);
+ 		}
+@@ -2184,6 +2247,7 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const
+ 		scene_state.used_screen_texture = false;
+ 		scene_state.used_depth_texture = false;
+ 		scene_state.used_lightmap = false;
++		scene_state.used_cutout_prepass = false;
+ 	}
+ 	uint32_t lightmap_captures_used = 0;
+ 
+@@ -2335,6 +2399,9 @@ void RenderForwardMobile::_fill_render_list(RenderListType p_render_list, const
+ #endif
+ 				if (!force_alpha && (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE)) {
+ 					rl->add_element(surf);
++					if (p_render_list == RENDER_LIST_OPAQUE && (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_CUTOUT_DEPTH_PREPASS)) {
++						scene_state.used_cutout_prepass = true;
++					}
+ 				}
+ 				if (force_alpha || (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA)) {
+ 					render_list[RENDER_LIST_ALPHA].add_element(surf);
+@@ -2433,7 +2500,10 @@ void RenderForwardMobile::_render_list(RenderingDevice::DrawListID p_draw_list,
+ 		} break;
+ 		case PASS_MODE_MOTION_VECTORS: {
+ 			_render_list_template<PASS_MODE_MOTION_VECTORS>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
+-		}
++		} break;
++		case PASS_MODE_CUTOUT_DEPTH_PREPASS: {
++			_render_list_template<PASS_MODE_CUTOUT_DEPTH_PREPASS>(p_draw_list, p_framebuffer_Format, p_params, p_from_element, p_to_element);
++		} break;
+ 	}
+ }
+ 
+@@ -2485,6 +2555,13 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
+ 			continue;
+ 		}
+ 
++		if constexpr (p_pass_mode == PASS_MODE_CUTOUT_DEPTH_PREPASS) {
++			// godot-patches/0017: only the flagged cut-outs; the rest of the opaque list waits for the colour pass.
++			if (!(surf->flags & GeometryInstanceSurfaceDataCache::FLAG_CUTOUT_DEPTH_PREPASS)) {
++				continue;
++			}
++		}
++
+ 		SceneShaderForwardMobile::ShaderSpecialization pipeline_specialization = p_params->base_specialization;
+ 		pipeline_specialization.multimesh = bool(inst->flags_cache & INSTANCE_DATA_FLAG_MULTIMESH);
+ 		pipeline_specialization.multimesh_format_2d = bool(inst->flags_cache & INSTANCE_DATA_FLAG_MULTIMESH_FORMAT_2D);
+@@ -2506,6 +2583,12 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
+ 			shader = surf->shader_shadow;
+ 			mesh_surface = surf->surface_shadow;
+ 
++		} else if (p_pass_mode == PASS_MODE_CUTOUT_DEPTH_PREPASS) {
++			// godot-patches/0017: the surface's own material and mesh (not its shadow stand-ins); no lights are
++			// paired, so one depth pipeline serves every light count.
++			material_uniform_set = surf->material_uniform_set;
++			shader = surf->shader;
++			mesh_surface = surf->surface;
+ 		} else {
+ 			pipeline_specialization.use_light_projector = inst->use_projector;
+ 			pipeline_specialization.use_light_soft_shadows = inst->use_soft_shadow;
+@@ -2583,7 +2666,23 @@ void RenderForwardMobile::_render_list_template(RenderingDevice::DrawListID p_dr
+ 			} break;
+ 			case PASS_MODE_MOTION_VECTORS: {
+ 				pipeline_key.version = SceneShaderForwardMobile::SHADER_VERSION_MOTION_VECTORS_MULTIVIEW;
+-			}
++			} break;
++			case PASS_MODE_CUTOUT_DEPTH_PREPASS: {
++				// godot-patches/0017: the shadow version is the material's depth-only build (MODE_RENDER_DEPTH); its vertex
++				// stage is the colour version's and gl_Position is invariant, so both passes land on the same depth.
++				pipeline_key.version = SceneShaderForwardMobile::SHADER_VERSION_SHADOW_PASS;
++			} break;
++		}
++
++		// godot-patches/0017: the pre-pass's draw, or a flagged cut-out's colour draw after it.
++		if constexpr (p_pass_mode == PASS_MODE_CUTOUT_DEPTH_PREPASS) {
++			pipeline_key.cutout_prepass = SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_DEPTH;
++		} else if constexpr (p_pass_mode == PASS_MODE_COLOR) {
++			pipeline_key.cutout_prepass = (p_params->cutout_prepass != 0 && (surf->flags & GeometryInstanceSurfaceDataCache::FLAG_CUTOUT_DEPTH_PREPASS))
++					? (p_params->cutout_prepass == 2 ? SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_COLOR_EQUAL : SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_COLOR_GREATER_OR_EQUAL)
++					: SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_NONE;
++		} else {
++			pipeline_key.cutout_prepass = SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_NONE;
+ 		}
+ 
+ 		pipeline_key.framebuffer_format_id = framebuffer_format;
+@@ -2950,6 +3049,18 @@ void RenderForwardMobile::_geometry_instance_add_surface_with_material(GeometryI
+ 		flags |= GeometryInstanceSurfaceDataCache::FLAG_USES_PARTICLE_TRAILS;
+ 	}
+ 
++	// godot-patches/0017: an opaque cut-out that asks for a depth pre-pass. Its depth version (MODE_RENDER_DEPTH) must
++	// discard what its colour version discards: no ALPHA written (so USE_OPAQUE_PREPASS discards nothing), no alpha
++	// antialiasing, no stencil, no point size or trails.
++	{
++		const SceneShaderForwardMobile::ShaderData *sd = p_material->shader_data;
++		if (sd->uses_depth_prepass_alpha && sd->uses_discard && !sd->uses_alpha && !sd->uses_alpha_antialiasing &&
++				!sd->stencil_enabled && !sd->uses_point_size && !sd->uses_particle_trails && !sd->wireframe &&
++				(flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE)) {
++			flags |= GeometryInstanceSurfaceDataCache::FLAG_CUTOUT_DEPTH_PREPASS;
++		}
++	}
++
+ 	if (p_material->shader_data->stencil_enabled) {
+ 		if (p_material->shader_data->stencil_flags & SceneShaderForwardMobile::ShaderData::STENCIL_FLAG_READ) {
+ 			// Stencil materials which read from the stencil buffer must be in the alpha pass.
+@@ -3408,6 +3519,8 @@ void RenderForwardMobile::_mesh_compile_pipelines_for_surface(const SurfacePipel
+ 				const RD::DataFormat buffers_color_format = use_hdr ? RD::DATA_FORMAT_R16G16B16A16_SFLOAT : _render_buffers_get_preferred_color_format();
+ 				pipeline_key.version = SceneShaderForwardMobile::SHADER_VERSION_COLOR_PASS;
+ 				pipeline_key.framebuffer_format_id = _get_color_framebuffer_format_for_pipeline(buffers_color_format, buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), RD::TextureSamples(p_global.target_samples), use_vrs, use_post_pass, use_hdr, 1);
++				// godot-patches/0017: a flagged cut-out's colour draw has no depth write while the pre-pass is on.
++				pipeline_key.cutout_prepass = p_surface.cutout_prepass == 0 ? SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_NONE : (p_surface.cutout_prepass == 2 ? SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_COLOR_EQUAL : SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_COLOR_GREATER_OR_EQUAL);
+ 				_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
+ 
+ 				if (p_global.use_lightmaps && p_surface.can_use_lightmap) {
+@@ -3415,6 +3528,14 @@ void RenderForwardMobile::_mesh_compile_pipelines_for_surface(const SurfacePipel
+ 					_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
+ 				}
+ 
++				if (p_surface.cutout_prepass != 0) {
++					// godot-patches/0017: and its depth-only draw in the same framebuffer.
++					pipeline_key.version = SceneShaderForwardMobile::SHADER_VERSION_SHADOW_PASS;
++					pipeline_key.cutout_prepass = SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_DEPTH;
++					_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
++				}
++				pipeline_key.cutout_prepass = SceneShaderForwardMobile::ShaderData::CUTOUT_PREPASS_NONE;
++
+ 				if (multiview_enabled) {
+ 					// View count is assumed to be 2 as the configuration is dependent on the viewport. It's likely a safe assumption for stereo rendering.
+ 					const uint32_t view_count = 2;
+@@ -3478,6 +3599,7 @@ void RenderForwardMobile::_mesh_generate_all_pipelines_for_surface_cache(Geometr
+ 	surface.uses_transparent = uses_alpha_pass;
+ 	surface.uses_depth = (p_surface_cache->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE | GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW)) != 0;
+ 	surface.can_use_lightmap = p_surface_cache->owner->lightmap_instance.is_valid() || p_surface_cache->owner->lightmap_sh;
++	surface.cutout_prepass = (p_surface_cache->flags & GeometryInstanceSurfaceDataCache::FLAG_CUTOUT_DEPTH_PREPASS) ? _cutout_depth_prepass_setting() : 0;
+ 	_mesh_compile_pipelines_for_surface(surface, p_global, RSE::PIPELINE_SOURCE_SURFACE);
+ }
+ 
+@@ -3602,6 +3724,9 @@ RenderForwardMobile::RenderForwardMobile() {
+ 	GLOBAL_DEF("rendering/renderer/light_buffer_skips_unlit_mobile", false);
+ 	// The 3D depth buffer not written back when nothing after the 3D pass reads it (godot-patches/0016).
+ 	GLOBAL_DEF("rendering/renderer/depth_not_stored_mobile", false);
++	// Opaque cut-outs (depth_prepass_alpha and a discard) drawn depth-only first, then in colour without a depth
++	// write (godot-patches/0017): 0 off, 1 colour compare GREATER_OR_EQUAL, 2 colour compare EQUAL.
++	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/renderer/cutout_depth_prepass_mobile", PROPERTY_HINT_ENUM, "Off,Greater or Equal,Equal"), 0);
+ 
+ 	disable_ubershaders = RD::get_singleton()->get_driver_workarounds().disable_ubershaders;
+ 	if (disable_ubershaders) {
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h
+index eb37f08..df07af4 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h
+@@ -118,6 +118,8 @@ private:
+ 		PASS_MODE_DEPTH_MATERIAL,
+ 		// PASS_MODE_SDF,
+ 		PASS_MODE_MOTION_VECTORS,
++		// godot-patches/0017: flagged cut-outs of the opaque list, depth only, before the opaque pass.
++		PASS_MODE_CUTOUT_DEPTH_PREPASS,
+ 	};
+ 
+ 	struct RenderElementInfo;
+@@ -139,6 +141,8 @@ private:
+ 		RD::FramebufferFormatID framebuffer_format = 0;
+ 		uint32_t element_offset = 0;
+ 		uint32_t subpass = 0;
++		// godot-patches/0017: rendering/renderer/cutout_depth_prepass_mobile for this list (0 = off).
++		uint32_t cutout_prepass = 0;
+ 
+ 		RenderListParameters(GeometryInstanceSurfaceDataCache **p_elements, RenderElementInfo *p_element_info, int p_element_count, bool p_reverse_cull, PassMode p_pass_mode, RID p_render_pass_uniform_set, SceneShaderForwardMobile::ShaderSpecialization p_base_specialization, bool p_force_wireframe = false, const Vector2 &p_uv_offset = Vector2(), float p_lod_distance_multiplier = 0.0, float p_screen_mesh_lod_threshold = 0.0, uint32_t p_view_count = 1, uint32_t p_element_offset = 0) {
+ 			elements = p_elements;
+@@ -301,6 +305,7 @@ private:
+ 		bool used_depth_texture = false;
+ 		bool used_lightmap = false;
+ 		bool used_opaque_stencil = false;
++		bool used_cutout_prepass = false; // godot-patches/0017: the opaque list holds a flagged cut-out.
+ 
+ 		struct ShadowPass {
+ 			uint32_t element_from;
+@@ -479,6 +484,8 @@ protected:
+ 			FLAG_USES_DOUBLE_SIDED_SHADOWS = 32768,
+ 			FLAG_USES_PARTICLE_TRAILS = 65536,
+ 			FLAG_USES_STENCIL = 131072,
++			// godot-patches/0017: an opaque cut-out that asks for a depth pre-pass (depth_prepass_alpha and a discard).
++			FLAG_CUTOUT_DEPTH_PREPASS = 262144,
+ 		};
+ 
+ 		union {
+@@ -670,6 +677,7 @@ public:
+ 		bool uses_transparent = false;
+ 		bool uses_depth = false;
+ 		bool can_use_lightmap = false;
++		uint32_t cutout_prepass = 0; // godot-patches/0017: the setting's value when the surface is flagged, else 0.
+ 	};
+ 
+ 	struct GlobalPipelineData {
+diff --git a/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp
+index 0d598bf..b44542b 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.cpp
+@@ -423,6 +423,25 @@ void SceneShaderForwardMobile::ShaderData::_create_pipeline(PipelineKey p_pipeli
+ 		}
+ 	}
+ 
++	// godot-patches/0017: a cut-out drawn twice in the opaque pass (render_forward_mobile.cpp, cutout_depth_prepass_mobile).
++	if (p_pipeline_key.cutout_prepass == CUTOUT_PREPASS_DEPTH) {
++		// The shadow-pass version (MODE_RENDER_DEPTH) in the colour framebuffer: depth and the shader's discard only.
++		// The subpass has one colour attachment (the opaque colour pipelines' blend state), left unwritten.
++		blend_state = RD::PipelineColorBlendState::create_disabled(1);
++		RD::PipelineColorBlendState::Attachment &masked = blend_state.attachments.write[0];
++		masked.write_r = false;
++		masked.write_g = false;
++		masked.write_b = false;
++		masked.write_a = false;
++	} else if (p_pipeline_key.cutout_prepass == CUTOUT_PREPASS_COLOR_GREATER_OR_EQUAL || p_pipeline_key.cutout_prepass == CUTOUT_PREPASS_COLOR_EQUAL) {
++		// The pre-pass wrote this surface's depth. Without a depth write the shader's discard no longer forces a late
++		// depth test, so hidden layers are rejected before shading; the discard stays for the holes (GREATER_OR_EQUAL).
++		depth_stencil_state.enable_depth_write = false;
++		if (p_pipeline_key.cutout_prepass == CUTOUT_PREPASS_COLOR_EQUAL) {
++			depth_stencil_state.depth_compare_operator = RD::COMPARE_OP_EQUAL;
++		}
++	}
++
+ 	// Convert the specialization from the key to pipeline specialization constants.
+ 	Vector<RD::PipelineSpecializationConstant> specialization_constants;
+ 	RD::PipelineSpecializationConstant sc;
+diff --git a/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h b/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h
+index 78d7c94..50cddcd 100644
+--- a/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h
++++ b/servers/rendering/renderer_rd/forward_mobile/scene_shader_forward_mobile.h
+@@ -193,6 +193,14 @@ public:
+ 			STENCIL_COMPARE_MAX // Not an actual operator, just the amount of operators.
+ 		};
+ 
++		// godot-patches/0017: the pipelines of rendering/renderer/cutout_depth_prepass_mobile.
++		enum CutoutPrepass {
++			CUTOUT_PREPASS_NONE,
++			CUTOUT_PREPASS_DEPTH, // The depth-only draw (shadow-pass version) in the colour pass, colour writes masked.
++			CUTOUT_PREPASS_COLOR_GREATER_OR_EQUAL, // The colour draw after it: no depth write, the stock compare.
++			CUTOUT_PREPASS_COLOR_EQUAL, // The colour draw after it: no depth write, compare EQUAL.
++		};
++
+ 		struct PipelineKey {
+ 			RD::VertexFormatID vertex_format_id;
+ 			RD::FramebufferFormatID framebuffer_format_id;
+@@ -203,6 +211,8 @@ public:
+ 			uint32_t render_pass = 0;
+ 			uint32_t wireframe = false;
+ 			uint32_t ubershader = false;
++			// godot-patches/0017: a cut-out's depth pre-pass draw or its colour draw after one (CutoutPrepass).
++			uint32_t cutout_prepass = 0;
+ 
+ 			uint32_t hash() const {
+ 				uint32_t h = hash_murmur3_one_32(vertex_format_id);
+@@ -216,6 +226,7 @@ public:
+ 				h = hash_murmur3_one_32(render_pass, h);
+ 				h = hash_murmur3_one_32(wireframe, h);
+ 				h = hash_murmur3_one_32(ubershader, h);
++				h = hash_murmur3_one_32(cutout_prepass, h);
+ 				return hash_fmix32(h);
+ 			}
+ 		};
+diff --git a/servers/rendering/rendering_device.cpp b/servers/rendering/rendering_device.cpp
+index 7574038..df346ca 100644
+--- a/servers/rendering/rendering_device.cpp
++++ b/servers/rendering/rendering_device.cpp
+@@ -4851,7 +4851,17 @@ RID RenderingDevice::render_pipeline_create(RID p_shader, FramebufferFormatID p_
+ 				output_mask |= 1 << i;
+ 			}
+ 		}
+-		ERR_FAIL_COND_V_MSG(shader->fragment_output_mask != output_mask, RID(),
++		// godot-patches/0017: a fragment stage may leave out a colour attachment whose writes the blend state masks
++		// off entirely (Vulkan leaves such an attachment untouched): Mobile's cut-out depth pre-pass draws a depth-only
++		// version in the colour pass.
++		uint32_t masked_mask = 0;
++		for (int i = 0; i < pass.color_attachments.size() && i < p_blend_state.attachments.size(); i++) {
++			const PipelineColorBlendState::Attachment &attachment = p_blend_state.attachments[i];
++			if (pass.color_attachments[i] != ATTACHMENT_UNUSED && !attachment.write_r && !attachment.write_g && !attachment.write_b && !attachment.write_a) {
++				masked_mask |= 1 << i;
++			}
++		}
++		ERR_FAIL_COND_V_MSG((shader->fragment_output_mask & ~output_mask) != 0 || ((output_mask & ~shader->fragment_output_mask) & ~masked_mask) != 0, RID(),
+ 				"Mismatch fragment shader output mask (" + itos(shader->fragment_output_mask) + ") and framebuffer color output mask (" + itos(output_mask) + ") when binding both in render pipeline.");
+ 	}
+ 

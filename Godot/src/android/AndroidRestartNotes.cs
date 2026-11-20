@@ -26,7 +26,7 @@ public static class AndroidRestartNotes
     // next launch or start. A passing "waits for the next launch" or "on its next start" without either verb
     // is not the setting's own rule.
     private static readonly Regex NextStart = new(
-        @"\b(?:applies|apply|takes effect|take effect)\b[^.;]*?\bnext (?:launch|start|time the game starts)\b",
+        @"\b(?:applies|apply|takes effect|take effect)\b[^.;]*?\bnext (?:launch|start|time the game starts|time you start the game)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     /// <summary>Whether <paramref name="description"/> says its setting waits for the next start.</summary>

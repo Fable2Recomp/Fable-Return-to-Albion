@@ -534,7 +534,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         Vector3 dome = Engine_SkyFrame.ToDome(frame.SunDirection);
         if (Environment?.Sky?.SkyMaterial is ShaderMaterial material)
         {
-            if (Engine_SkyCosts.RadianceLean)
+            if (Engine_SkyCosts.RadianceLean || Refii.AndroidRuntime.AndroidSkyGlobals.Drives(material))
             {
                 _sunEngineMaterial = null;
             }

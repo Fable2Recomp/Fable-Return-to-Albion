@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 
 #include <fmt/format.h>
@@ -1006,6 +1007,17 @@ uint32_t XThread::SelfSuspend() {
 }
 #endif
 
+// REFII SHADOW: REFII_GUEST_SHORT_SLEEPS=1 (Android's android_guest_short_sleeps) makes a relative
+// wait under 1 ms sleep what was asked; by default it truncates to 0 ms, a yield or, alertable,
+// nothing. Off by default because it changes the guest's timing.
+static bool ShortGuestSleeps() {
+  static const bool enabled = [] {
+    const char* value = std::getenv("REFII_GUEST_SHORT_SLEEPS");
+    return value != nullptr && value[0] == '1';
+  }();
+  return enabled;
+}
+
 X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval) {
   int64_t timeout_ticks = interval;
   uint32_t timeout_ms;
@@ -1021,9 +1033,15 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
     timeout_ms = 0;
   }
   timeout_ms = chrono::Clock::ScaleGuestDurationMillis(timeout_ms);
+  const std::chrono::microseconds short_sleep(
+      timeout_ms == 0 && timeout_ticks < 0 && timeout_ticks > -10000 && ShortGuestSleeps()
+          ? -timeout_ticks / 10
+          : 0);
   CheckTitleTermination();
   if (alertable) {
-    auto result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
+    auto result = rex::thread::AlertableSleep(short_sleep.count() > 0
+                                                  ? short_sleep
+                                                  : std::chrono::microseconds(timeout_ms * 1000ull));
     CheckTitleTermination();
     switch (result) {
       default:
@@ -1033,7 +1051,9 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
         return X_STATUS_USER_APC;
     }
   } else {
-    if (timeout_ms == 0) {
+    if (short_sleep.count() > 0) {
+      rex::thread::Sleep(short_sleep);
+    } else if (timeout_ms == 0) {
       if (priority_ <= rex::thread::ThreadPriority::kBelowNormal) {
         rex::thread::Sleep(std::chrono::microseconds(100));
       } else {
