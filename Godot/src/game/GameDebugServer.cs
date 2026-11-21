@@ -2571,6 +2571,16 @@ public partial class GameDebugServer : Node
 					});
 				}
 
+				if (root.TryGetProperty("sources", out JsonElement wantSources) &&
+					wantSources.ValueKind == JsonValueKind.String)
+				{
+					return Ok(new Dictionary<string, object?>
+					{
+						["address"] = $"{address:X8}",
+						["sources"] = GameEntities.Current?.DescribeLocalSources(address, wantSources.GetString() ?? string.Empty),
+					});
+				}
+
 				if (root.TryGetProperty("bones", out JsonElement wantBones) &&
 					wantBones.ValueKind == JsonValueKind.True)
 				{

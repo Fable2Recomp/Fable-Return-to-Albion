@@ -109,6 +109,7 @@ public partial class GameDevMenu : CanvasLayer
 			Add(tab);
 		}
 
+		Add(new GameDevTabNetwork());
 		Add(new GameDevTabMemory());
 		Add(new GameDevTabMonitors());
 		Add(new GameDevTabScene());

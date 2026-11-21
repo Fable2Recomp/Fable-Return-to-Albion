@@ -2268,7 +2268,7 @@ public sealed class Engine_EntitySkeleton
 	/// parent walk can compose rotations the way the guest does, with a quaternion PRODUCT,
 	/// rather than by multiplying bases that carry scale.
 	/// </summary>
-	private static Quaternion GuestRotation(Quaternion rotation)
+	internal static Quaternion GuestRotation(Quaternion rotation)
 	{
 		float lengthSquared = rotation.LengthSquared();
 		Basis basis = float.IsFinite(lengthSquared) && lengthSquared > 1e-8f
@@ -2276,6 +2276,71 @@ public sealed class Engine_EntitySkeleton
 			: Basis.Identity;
 
 		return (MeshMap * basis * MeshMapInverse).GetRotationQuaternion();
+	}
+
+	/// <summary>
+	/// For the debug channel: per model bone whose name contains <paramref name="filter"/>, the
+	/// local rotation drawn, the `.mdl` rest, the guest's reference pose (skeleton+0x90, the pose
+	/// `sub_822351B0` copies at 0x822355C4 for a bone its clip lacks) and the guest's live pose made
+	/// local, each as degrees from the drawn rotation.
+	/// </summary>
+	public List<string> DescribeLocalSources(uint entity, string filter)
+	{
+		var rows = new List<string>();
+		HostBridge.BonePose? reference = HostBridge.GetEntityRestPose(entity);
+		Quaternion[]? referenceLocal = null;
+		if (reference is { } rest)
+		{
+			referenceLocal = new Quaternion[rest.BoneCount];
+			for (int g = 0; g < rest.BoneCount; ++g)
+			{
+				referenceLocal[g] = GuestRotation(rest.Rotation(g));
+			}
+		}
+
+		HostBridge.BonePose? live = HostBridge.GetEntityPose(entity);
+		Quaternion[]? liveLocal = null;
+		if (live is { Torn: false } pose)
+		{
+			liveLocal = new Quaternion[pose.BoneCount];
+			for (int g = 0; g < pose.BoneCount; ++g)
+			{
+				Quaternion own = GuestRotation(pose.Rotation(g));
+				int parent = pose.Parents[g];
+				liveLocal[g] = pose.IsModelSpace && parent >= 0 && parent < pose.BoneCount
+					? GuestRotation(pose.Rotation(parent)).Inverse() * own
+					: own;
+			}
+		}
+
+		static string Degrees(Quaternion a, Quaternion b) =>
+			$"{Mathf.RadToDeg(a.Normalized().AngleTo(b.Normalized())):0.0}";
+
+		for (int m = 0; m < _skeleton.GetBoneCount(); ++m)
+		{
+			string name = _skeleton.GetBoneName(m);
+			if (filter.Length != 0 && !name.Contains(filter, StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			Quaternion drawn = _skeleton.GetBonePoseRotation(m);
+			Quaternion mdl = _skeleton.GetBoneRest(m).Basis.GetRotationQuaternion();
+			int g = _modelToGuest[m];
+			string fromReference = referenceLocal is not null && g >= 0 && g < referenceLocal.Length
+				? Degrees(drawn, referenceLocal[g]) : "-";
+			string fromLive = liveLocal is not null && g >= 0 && g < liveLocal.Length
+				? Degrees(drawn, liveLocal[g]) : "-";
+			string referenceToLive = referenceLocal is not null && liveLocal is not null && g >= 0 &&
+				g < referenceLocal.Length && g < liveLocal.Length
+				? Degrees(referenceLocal[g], liveLocal[g]) : "-";
+			string mdlToLive = liveLocal is not null && g >= 0 && g < liveLocal.Length
+				? Degrees(mdl, liveLocal[g]) : "-";
+			rows.Add($"{m} '{name}' guest={g} drawn~mdl={Degrees(drawn, mdl)} drawn~ref={fromReference} " +
+				$"drawn~live={fromLive} ref~live={referenceToLive} mdl~live={mdlToLive}");
+		}
+
+		return rows;
 	}
 
 	private Quaternion[]? _rotation;

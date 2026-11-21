@@ -194,6 +194,67 @@ public static class NetBridge
 	private static List<Friend> _friends = new();
 	private static byte[] _friendsBytes = System.Array.Empty<byte>();
 
+	/// <summary>This node: its peer id, the shard it is in (empty outside one), its virtual address and the title.</summary>
+	public readonly record struct NetworkSelf(string PeerId, string ShardId, uint VirtualIp, uint TitleId);
+
+	/// <summary>A member of our shard. State: 0 offline, 1 online, 2 in game, 3 joinable.</summary>
+	public readonly record struct ShardMember(
+		string PeerId, string Name, bool IsFriend, int State, bool HasSession, string SessionId);
+
+	/// <summary>A peer holding a virtual address. Status: 0 idle, 1 pending, 2 connected, 3 lost.</summary>
+	public readonly record struct Link(
+		string PeerId,
+		string Name,
+		uint VirtualIp,
+		int Status,
+		bool Degraded,
+		bool ControlLinked,
+		bool IsFriend,
+		bool IsRelay,
+		uint RttMs);
+
+	/// <summary>The node's view of the network.</summary>
+	public sealed record NetworkView(NetworkSelf Self, List<ShardMember> Shard, List<Link> Links);
+
+	/// <summary>The node's own view of RexNet, or null with no node up.</summary>
+	public static NetworkView? Network()
+	{
+		string text;
+		lock (ReadLock)
+		{
+			int written = Read(RefiiNetNetwork);
+			if (written <= 0)
+			{
+				return null;
+			}
+
+			text = Encoding.UTF8.GetString(_readBuffer, 0, written);
+		}
+
+		NetworkSelf? self = null;
+		var shard = new List<ShardMember>();
+		var links = new List<Link>();
+		foreach (string line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+		{
+			string[] f = line.Split('\t');
+			switch (f[0])
+			{
+				case "self" when f.Length == 5:
+					self = new NetworkSelf(f[1], f[2], Num(f[3]), Num(f[4]));
+					break;
+				case "shard" when f.Length == 7:
+					shard.Add(new ShardMember(f[1], f[2], f[3] == "1", (int)Num(f[4]), f[5] == "1", f[6]));
+					break;
+				case "link" when f.Length == 10:
+					links.Add(new Link(
+						f[1], f[2], Num(f[3]), (int)Num(f[4]), f[5] == "1", f[6] == "1", f[7] == "1", f[8] == "1", Num(f[9])));
+					break;
+			}
+		}
+
+		return self is { } own ? new NetworkView(own, shard, links) : null;
+	}
+
 	public static List<Request> Requests()
 	{
 		var list = new List<Request>();
@@ -640,6 +701,9 @@ public static class NetBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiNetFriends(byte[] outText, uint capacity);
+
+	[DllImport(Library)]
+	private static extern uint RefiiNetNetwork(byte[] outText, uint capacity);
 
 	[DllImport(Library)]
 	private static extern int RefiiNetSetPlayerStatus([MarshalAs(UnmanagedType.LPUTF8Str)] string status);

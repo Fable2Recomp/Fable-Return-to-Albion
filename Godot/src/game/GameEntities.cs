@@ -7211,6 +7211,12 @@ public partial class GameEntities : Node3D
     /// question this answers is "the animator drove the rig, so why did nothing move" — by
     /// showing whether the bones moved and whether a mesh is bound to them at all.
     /// </summary>
+    /// <summary>For the debug channel: one rig's local rotations against the mdl rest, the guest reference and the guest live pose.</summary>
+    public List<string>? DescribeLocalSources(uint address, string filter) =>
+        _skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? skeleton)
+            ? skeleton.DescribeLocalSources(address, filter)
+            : null;
+
     public Dictionary<string, object?>? DescribeBones(uint address)
     {
         if (!_nodes.TryGetValue(address, out MeshInstance3D? node))

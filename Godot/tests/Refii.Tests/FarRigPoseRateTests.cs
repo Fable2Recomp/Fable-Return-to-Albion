@@ -164,6 +164,69 @@ public sealed class FarRigPoseRateTests
 	}
 
 	[TestCase]
+	public void ComputeFacialBoneMaskRecognizesHeadAnchoredMdlFacialBones()
+	{
+		string[] boneNames =
+		{
+			"Shadow_Hip",
+			"Shadow_Spine",
+			"Shadow_Head",
+			"Shadow_jaw",
+			"Shadow_L_Eye",
+			"Shadow_R_Eye",
+			"Shadow_L_lip_corner",
+			"Focal_Head",
+			"Shadow_Ponytail1",
+			"Shadow_Ponytail2",
+		};
+		int[] boneParents =
+		{
+			-1, // 0: Shadow_Hip
+			0,  // 1: Shadow_Spine
+			1,  // 2: Shadow_Head
+			2,  // 3: Shadow_jaw
+			2,  // 4: Shadow_L_Eye
+			2,  // 5: Shadow_R_Eye
+			3,  // 6: Shadow_L_lip_corner (child of jaw)
+			2,  // 7: Focal_Head (attachment dummy under head)
+			2,  // 8: Shadow_Ponytail1 (hair branch under head)
+			8,  // 9: Shadow_Ponytail2
+		};
+
+		bool[] mask = Refii.Animations.Engine_ClipAnimator.ComputeFacialBoneMask(
+			new Refii.Titles.Fable2.Fable2Rig(),
+			boneNames,
+			boneParents,
+			out int headBone,
+			out int faceRootBone,
+			out int jawBone,
+			out int leftEyeBone,
+			out int rightEyeBone);
+
+		AssertThat(headBone).IsEqual(2);
+		AssertThat(faceRootBone).IsEqual(-1);
+		AssertThat(jawBone).IsEqual(3);
+		AssertThat(leftEyeBone).IsEqual(4);
+		AssertThat(rightEyeBone).IsEqual(5);
+
+		// Head and spine are body/neck bones, not facial bones:
+		AssertThat(mask[0]).IsFalse();
+		AssertThat(mask[1]).IsFalse();
+		AssertThat(mask[2]).IsFalse();
+
+		// Jaw, eyes, and lip bones under Shadow_Head are marked facial:
+		AssertThat(mask[3]).IsTrue();
+		AssertThat(mask[4]).IsTrue();
+		AssertThat(mask[5]).IsTrue();
+		AssertThat(mask[6]).IsTrue();
+
+		// Attachment dummies and hair/ponytail branches under Shadow_Head are excluded:
+		AssertThat(mask[7]).IsFalse();
+		AssertThat(mask[8]).IsFalse();
+		AssertThat(mask[9]).IsFalse();
+	}
+
+	[TestCase]
 	public void ObservePropAndFreewheelDriveHostClockAutonomously()
 	{
 		var playhead = new Refii.Animations.Engine_ClipPlayhead();

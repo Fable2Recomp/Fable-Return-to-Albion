@@ -438,7 +438,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	private readonly HashSet<uint> _extraRunners = new();
 	private readonly List<Channel> _overlays = new();
 
-	/// <summary>The title's rigs: bones by role, the pick's rules. Read once, at construction.</summary>
+	/// <summary>The title's rigs: bones by role, the face, the pick's rules. Read once, at construction.</summary>
 	private readonly Engine_TitleRig _titleRig;
 
 	/// <summary>The title's hip bone (<see cref="Engine_TitleRig.RigRole.Hip"/>), or -1.</summary>
@@ -450,8 +450,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	/// <summary>The hip children an overlay rewrites, at most <see cref="HipChildSlots"/>, in the guest's bone order.</summary>
 	private readonly int[] _hipChildren = System.Array.Empty<int>();
 
-	/// <summary>Whether the rig has the title's jaw and an eye (<see cref="Engine_TitleRig.RigRole"/>).</summary>
-	private readonly bool _hasFace;
+	private int _headBone = -1;
+	private int _faceRootBone = -1;
+	private int _jawBone = -1;
+	private int _leftEyeBone = -1;
+	private int _rightEyeBone = -1;
+	private readonly bool _hasFacialRig;
+	private readonly bool[] _isFacialBone;
 	private ulong _lastFrameUsec;
 
 	/// <summary>True when this animator drives a character or creature rig rather than a simple prop (door, chest, clock, sign).</summary>
@@ -461,6 +466,117 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	/// leaf and per channel of every apply.
 	/// </remarks>
 	public bool IsCharacterRig => _isCharacterRig;
+
+	/// <summary>
+	/// The facial bones of a rig, as <paramref name="rig"/>'s face names them
+	/// (<see cref="Engine_TitleRig.FaceRig"/>): every bone under the face root, else the head, that
+	/// carries the face's prefix and hangs off no non-facial branch. All false, every bone -1, when
+	/// the title has no face.
+	/// </summary>
+	public static bool[] ComputeFacialBoneMask(
+		Engine_TitleRig rig,
+		ReadOnlySpan<string> boneNames,
+		ReadOnlySpan<int> boneParents,
+		out int headBone,
+		out int faceRootBone,
+		out int jawBone,
+		out int leftEyeBone,
+		out int rightEyeBone)
+	{
+		int bones = boneNames.Length;
+		var mask = new bool[bones];
+		headBone = -1;
+		faceRootBone = -1;
+		jawBone = -1;
+		leftEyeBone = -1;
+		rightEyeBone = -1;
+		if (rig.Face is not { } face)
+		{
+			return mask;
+		}
+
+		for (int b = 0; b < bones; ++b)
+		{
+			string name = boneNames[b];
+			if (rig.Is(name, Engine_TitleRig.RigRole.Head))
+			{
+				headBone = b;
+			}
+			else if (rig.Is(name, Engine_TitleRig.RigRole.FaceRoot))
+			{
+				faceRootBone = b;
+			}
+			else if (rig.Is(name, Engine_TitleRig.RigRole.Jaw))
+			{
+				jawBone = b;
+			}
+			else if (rig.Is(name, Engine_TitleRig.RigRole.LeftEye))
+			{
+				leftEyeBone = b;
+			}
+			else if (rig.Is(name, Engine_TitleRig.RigRole.RightEye))
+			{
+				rightEyeBone = b;
+			}
+		}
+
+		int facialAnchor = faceRootBone >= 0 ? faceRootBone : headBone;
+		if (facialAnchor < 0)
+		{
+			return mask;
+		}
+
+		for (int b = 0; b < bones; ++b)
+		{
+			if (b == headBone)
+			{
+				continue;
+			}
+
+			string boneName = boneNames[b];
+			if (!boneName.StartsWith(face.BonePrefix, StringComparison.OrdinalIgnoreCase) &&
+				b != faceRootBone)
+			{
+				continue;
+			}
+
+			bool underAnchor = false;
+			bool nonFacialBranch = false;
+			int p = b;
+			while (p >= 0 && p < boneParents.Length)
+			{
+				if (p == facialAnchor)
+				{
+					underAnchor = true;
+					break;
+				}
+
+				string pName = boneNames[p];
+				foreach (string branch in face.NonFacialBranches)
+				{
+					if (pName.Contains(branch, StringComparison.OrdinalIgnoreCase))
+					{
+						nonFacialBranch = true;
+						break;
+					}
+				}
+
+				if (nonFacialBranch)
+				{
+					break;
+				}
+
+				p = boneParents[p];
+			}
+
+			if (underAnchor && !nonFacialBranch)
+			{
+				mask[b] = true;
+			}
+		}
+
+		return mask;
+	}
 
 	private readonly bool _isCharacterRig;
 
@@ -516,10 +632,17 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			boneNames[b] = boneName;
 		}
 
-		_hasFace = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Jaw) >= 0 &&
-			(_titleRig.Bone(boneNames, Engine_TitleRig.RigRole.LeftEye) >= 0 ||
-			 _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.RightEye) >= 0);
-		_isCharacterRig = IsCharacterRigShape(_hasFace, bones);
+		_isFacialBone = ComputeFacialBoneMask(
+			_titleRig,
+			boneNames,
+			_parents,
+			out _headBone,
+			out _faceRootBone,
+			out _jawBone,
+			out _leftEyeBone,
+			out _rightEyeBone);
+		_hasFacialRig = _jawBone >= 0 && (_leftEyeBone >= 0 || _rightEyeBone >= 0);
+		_isCharacterRig = IsCharacterRigShape(_hasFacialRig, bones);
 
 		_hipBone = _titleRig.Bone(boneNames, Engine_TitleRig.RigRole.Hip);
 		_hipCompensates = HipCompensation(
@@ -1109,7 +1232,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		// Once their pose has been written to both the live skeleton and (when present) its shadow
 		// skeleton, and no channel's sampled time, weight, or list order has changed, folding on the
 		// ThreadPool and calling Write() at display rate produces zero bone changes.
-		if (_hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
+		if (!_hasFacialRig && _hasWritten && !_scaleDirty && !_hasMorph && _postKinds == 0 &&
 			_channels.Count == _writtenChannelCount && _channels.Count > 0 &&
 			!(Refii.Entities.Engine_ShadowSkeletons.WriteNow(_skeleton, out _) && _shadowStale))
 		{
@@ -1153,6 +1276,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		{
 			RefreshMorph(bones);
 			TakePostOps(frameDt);
+			TakeStatedFace(frameDt, bones);
 		}
 		else
 		{
@@ -1958,6 +2082,11 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			}
 
 			Quaternion rotation = _rotationWeight[b] > 0f ? _rotation[b].Normalized() : _restRotation[b];
+			if (_faceStated && _isFacialBone[b] && _faceHas[b])
+			{
+				rotation = _faceRotation[b];
+			}
+
 			Vector3 position = _positionWeight[b] > 1e-5f ? _position[b] / _positionWeight[b] : _restPosition[b];
 			_finalRotation[b] = rotation;
 			_finalPosition[b] = position;
@@ -2707,6 +2836,111 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		}
 
 		return applied;
+	}
+
+	/// <summary>Each facial bone's local rotation as the guest's published pose states it.</summary>
+	private Quaternion[] _faceRotation = System.Array.Empty<Quaternion>();
+
+	/// <summary>The latest stated rotation each <see cref="_faceRotation"/> entry eases to.</summary>
+	private Quaternion[] _faceTarget = System.Array.Empty<Quaternion>();
+
+	private bool[] _faceHas = System.Array.Empty<bool>();
+	private bool _faceStated;
+	private uint _faceFrame;
+	private uint _faceEntity;
+
+	/// <summary>
+	/// THE FACE IS THE GUEST'S PUBLISHED POSE. The pose block the guest composes for the entity
+	/// (<see cref="HostBridge.GetEntityPose"/>, model space) is what its mesh is skinned with and
+	/// what its eye models ride (`sub_82209480` reads the posed `Shadow_L_Eye` / `Shadow_R_Eye`), so a
+	/// facial bone's local rotation is that block's: conj(parent) ⊗ bone. Read once per guest
+	/// frame on the main thread and eased on the host clock between guest frames; a torn or
+	/// absent block keeps the last statement.
+	/// </summary>
+	private void TakeStatedFace(float dt, int bones)
+	{
+		if (!_hasFacialRig)
+		{
+			_faceStated = false;
+			return;
+		}
+
+		if (_faceRotation.Length != bones)
+		{
+			_faceRotation = new Quaternion[bones];
+			_faceTarget = new Quaternion[bones];
+			_faceHas = new bool[bones];
+			_faceStated = false;
+		}
+
+		uint guestFrame = Refii.Core.Engine_GuestFrame.Frame;
+		if (guestFrame == 0u || guestFrame != _faceFrame || _entity != _faceEntity)
+		{
+			_faceFrame = guestFrame;
+			if (_entity != _faceEntity)
+			{
+				_faceEntity = _entity;
+				_faceStated = false;
+				System.Array.Fill(_faceHas, false);
+			}
+
+			if (HostBridge.GetEntityPose(_entity) is { Torn: false, IsModelSpace: true } pose)
+			{
+				bool first = !_faceStated;
+				for (int b = 0; b < bones; ++b)
+				{
+					if (!_isFacialBone[b])
+					{
+						continue;
+					}
+
+					int g = b < _modelToGuest.Length ? _modelToGuest[b] : -1;
+					if (g <= 0 || g >= pose.BoneCount)
+					{
+						continue;
+					}
+
+					int parent = pose.Parents[g];
+					if (parent < 0 || parent >= pose.BoneCount)
+					{
+						continue;
+					}
+
+					Quaternion own = pose.Rotation(g);
+					Quaternion above = pose.Rotation(parent);
+					if (!own.IsFinite() || !above.IsFinite() || own.LengthSquared() < 1e-8f || above.LengthSquared() < 1e-8f)
+					{
+						continue;
+					}
+
+					Quaternion local = Refii.Entities.Engine_EntitySkeleton.GuestRotation(
+						above.Normalized().Inverse() * own.Normalized());
+					_faceTarget[b] = local;
+					if (first || !_faceHas[b])
+					{
+						_faceRotation[b] = local;
+					}
+
+					_faceHas[b] = true;
+				}
+
+				_faceStated = true;
+			}
+		}
+
+		if (!_faceStated || dt <= 0f)
+		{
+			return;
+		}
+
+		float blend = Mathf.Clamp(1f - Mathf.Exp(-18f * dt), 0f, 1f);
+		for (int b = 0; b < bones; ++b)
+		{
+			if (_faceHas[b])
+			{
+				_faceRotation[b] = _faceRotation[b].Slerp(_faceTarget[b], blend).Normalized();
+			}
+		}
 	}
 
 	/// <summary>The morph record, re-read every <see cref="MorphRefreshSeconds"/> on the main thread.</summary>
