@@ -1,5 +1,11 @@
-// The guest's element writers (attribute, flags, slide, text): each runs the original and tells
-// what it wrote (gui/gui_told_statements.h).
+// The guest's element writers (attribute, flags, slide): each runs the original and tells what it
+// wrote (gui/gui_told_statements.h). The text writers SetText (TU1 0x82425DD0 / disc 0x823F8268) and
+// SetTextFromTag (0x82425F40 / 0x823F83D8) are stated at their entries
+// (gui_headless_presentation.cpp RefiiHeadlessSetText / RefiiHeadlessSetTextFromTag): every
+// presentation is headless (CGameface vtable TU1 0x82002F68 / disc 0x82002F88 +28, whose create
+// `sub_82BBA588` / `sub_82BB3E88` is the only caller of the presentation allocator `sub_82BEDBC0` /
+// `sub_82BE75D8`), and a headless element's text holder +4 is 0, which the writers test before any
+// write (`lwz r11,4(r3)` / `beq` TU1 0x82425DFC, 0x82425F5C; disc 0x823F8294, 0x823F83F4).
 
 #include <cstdint>
 
@@ -10,8 +16,6 @@
 PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_SetElementAttribute);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiAttributeService_SetElementFlags);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiAnimation_GotoSlide);
-PPC_EXTERN_FUNC(__imp__rex_lhGuiElement_SetText);
-PPC_EXTERN_FUNC(__imp__rex_lhGuiElement_SetTextFromTag);
 
 /// The attribute writer — `(attrSvc, element, u32 id27, u32 valueBits)`; attribute-service
 /// vtable `0x820065C0` slot +0x48, also fed by the keyframe interpolator `sub_822846B0`.
@@ -58,35 +62,4 @@ REX_EXTERN(rex_lhGuiAnimation_GotoSlide) {
     refii::vfs::TellGotoSlideBegin();
     __imp__rex_lhGuiAnimation_GotoSlide(ctx, base);
     refii::vfs::TellGotoSlideEnd(base, told_service, told_element, told_slide, told_stated);
-}
-
-/// The text writer — `(element, ...)`. Text lives on the text record: `element+4` holder,
-/// `*holder` record, `record+140` live string; this marks it dirty (`record+144 = 1`, then
-/// `record+138`/`+136` once layout takes). The string is mutated in place and no presentation
-/// is recoverable from an element, so only the element address is told.
-REX_EXTERN(rex_lhGuiElement_SetText) {
-    REX_FUNC_PROLOGUE();
-
-    const uint32_t element = ctx.r3.u32;
-    __imp__rex_lhGuiElement_SetText(ctx, base);
-    refii::vfs::TellText(base, element);
-}
-
-/// The OTHER text writer — same record, but it takes a TAG and resolves it first.
-///
-/// `sub_82425F40(element, tag)` walks the identical chain (`element+4` holder, `*holder`
-/// record, `record+144 = 1`, store into `record+140`, then `record+138`/`+136`), and between
-/// the copy and the store it calls `sub_8230E0E8` @0x8230E0E8 — the Babel lookup — so what
-/// lands at `+140` is already TRANSLATED. The host needs no lookup of its own for these.
-///
-/// THE EXPRESSION WHEEL WRITES EVERY ONE OF ITS EIGHT TITLES THROUGH THIS ONE.
-/// `sub_826AC5F0` resolves `item<N>/Title` and calls it at 0x826ac704; `sub_826AB1F8` runs
-/// that for all eight sectors in the single frame the ring opens, so each sector's title is
-/// told here.
-REX_EXTERN(rex_lhGuiElement_SetTextFromTag) {
-    REX_FUNC_PROLOGUE();
-
-    const uint32_t element = ctx.r3.u32;
-    __imp__rex_lhGuiElement_SetTextFromTag(ctx, base);
-    refii::vfs::TellText(base, element);
 }

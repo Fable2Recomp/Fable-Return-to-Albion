@@ -370,6 +370,7 @@ public static class Engine_UiTemplateJson
 		screen.RevealedAccept = TextOr(record, "revealedAccept", screen.RevealedAccept);
 		screen.RevealedBack = TextOr(record, "revealedBack", screen.RevealedBack);
 		screen.FlipAction = TextOr(record, "flipAction", screen.FlipAction);
+		screen.RowAction = TextOr(record, "rowAction", screen.RowAction);
 		screen.ScrollContent = TextOr(record, "scrollContent", screen.ScrollContent);
 		screen.ScrollMask = TextOr(record, "scrollMask", screen.ScrollMask);
 		screen.ScrollBar = TextOr(record, "scrollBar", screen.ScrollBar);
@@ -623,6 +624,7 @@ public static class Engine_UiTemplateJson
 		PutFlag("restFromFile", screen.RestFromFile, false);
 		PutFlag("purse", screen.Purse, false);
 		PutFlag("commitsByHighlight", screen.CommitsByHighlight, false);
+		Put("rowAction", screen.RowAction);
 		Put("menuScript", screen.MenuScript);
 		if (full || screen.MenuScriptByMode.Count != 0)
 		{

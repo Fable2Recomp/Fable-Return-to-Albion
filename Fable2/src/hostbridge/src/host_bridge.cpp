@@ -849,6 +849,11 @@ REFII_HOST_ABI_EXPORT void RefiiHostConsentGive(uint32_t ticket, int32_t yes) { 
 /// meaningful while a menu is open.
 REFII_HOST_ABI_EXPORT int RefiiHostGetMenuOwner(void) { return refii_bridge_menu_owner_two() != 0 ? 2 : 1; }
 
+/// The player whose expression wheel is open, 0 for none, as the wheel's open and close state it
+/// (lhGuiManager OpenExpressionWheel TU1 0x8236F110 / disc 0x82337310, CloseExpressionWheel
+/// 0x8236F340 / 0x82337540; mod_events.cpp).
+REFII_HOST_ABI_EXPORT int RefiiHostGetExpressionWheelPlayer(void) { return refii_bridge_expression_wheel_player(); }
+
 REFII_HOST_ABI_EXPORT int RefiiHostTakeExitRefused(void) { return refii_bridge_take_exit_refused(); }
 
 /// The things whose use prompt answers player two this frame (coop_hero_hooks.cpp, the nearer
@@ -16277,7 +16282,8 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopFigures(uint32_t* out_words, uint
 /// The co-op screen's state, as words, for a host that draws the screen: [0] the left page's
 /// focused row (`+44`), [1] the left page accepted (`+48`), [2] the right page's focused row
 /// (`+156`), [3] the right page accepted (`+160`), [4] the save picker open (`+304`), [5] its
-/// cursor (`+392`), [6] its base card slot (`+396`), [7] the saves listed (`+404..+408`), [8] a
+/// cursor (`+392`), [6] 0 (the first card is stated: `@CoopPicker.Open`, gui_headless_presentation.cpp),
+/// [7] the saves listed (`+404..+408`), [8] a
 /// bit per save whose header parsed (`*(+452) + 40i + 24`; A is refused on the others at
 /// 0x82438DB4), [9] closing (`+268`). Verified against `sub_82434DD8` (the two row maps and
 /// their focus/accept words), `sub_8243B070` (base slot by count, the header walk) and
@@ -16311,7 +16317,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetCoopScreen(uint32_t* out_words, uint3
     out_words[3] = GuestByteAt(base, handler + 160u);
     out_words[4] = GuestByteAt(base, handler + 304u);
     out_words[5] = read32(handler + 392u);
-    out_words[6] = read32(handler + 396u);
     out_words[9] = GuestByteAt(base, handler + 268u);
 
     const uint32_t files_begin = read32(handler + 404u);
@@ -16449,6 +16454,110 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
     return screen_id;
 }
 
+/// THE WORLD ICONS AS THE GUEST STATES THEM: every row comes from the shared table
+/// (core/payload_bridge.h, src/runtime/src/core/stated_world_icons.cpp) that
+/// Fable2/src/vfs/src/hooks/world_icon_hooks.cpp fills at the icons' own entries — their Init, their
+/// SetType / SetColour / SetText, each Update the prompt manager runs, and the destructor. Nothing
+/// here reads guest memory, and nothing walks the manager's vector.
+///
+/// Two classes: the CWorldIcon3D sprites (property signs, income and gift gold, opinion splashes,
+/// quest markers, dog points, NPC status — drawn by Godot, the guest's `sub_82261B70` is off) and
+/// the pooled HUD-element icons (types 31-35/52-54, the prompts and player markers on the 16
+/// `WorldIconN` elements, whose element writes the element hooks state; only their world point and
+/// slot are taken here). A row is exported once its first Update ran (a pooled one once it was first
+/// placed), until the icon is destroyed.
+///
+/// Words per icon: type, texture, rgba, entity, persistent, flags, pool slot, OBJECT (the icon's
+/// identity for its lifetime). Values: anchor x y z, scale, seconds left, age. Text: title NUL
+/// opinion NUL, per icon in order. rgba is SetColour's (+62, +61, +60) with the opacity +160 as
+/// alpha; scale is the guest's own `sub_821AA758`. Flags: bit0 fading (+100), bit1 pooled, bit2
+/// player two's (its key ends "_P2": mod_events.cpp, the opinion icons asked in player two's scope).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_t word_capacity,
+                                                        float* values, uint32_t value_capacity,
+                                                        char* text, uint32_t text_capacity,
+                                                        uint32_t max_icons) {
+    constexpr uint32_t kWords = 8u;
+    constexpr uint32_t kValues = 6u;
+    constexpr uint32_t kMaxIcons = 1024u;
+    if (text != nullptr && text_capacity > 0u) {
+        text[0] = '\0';
+    }
+    if (words == nullptr || values == nullptr) {
+        return 0u;
+    }
+
+    thread_local std::vector<uint32_t> icons(kMaxIcons);
+    thread_local std::vector<uint32_t> table_words(kMaxIcons * REFII_WORLD_ICON_WORDS);
+    thread_local std::vector<float> table_values(kMaxIcons * REFII_WORLD_ICON_VALUES);
+    thread_local std::vector<char> table_text(256u * 1024u);
+    const uint32_t count = refii_bridge_world_icons_read(icons.data(), table_words.data(), table_values.data(),
+                                                         table_text.data(),
+                                                         static_cast<uint32_t>(table_text.size()), kMaxIcons);
+
+    uint32_t written = 0u;
+    uint32_t text_at = 0u;
+    const char* at = table_text.data();
+    for (uint32_t i = 0; i < count && written < max_icons; ++i) {
+        const uint32_t* tw = table_words.data() + (i * REFII_WORLD_ICON_WORDS);
+        const float* tv = table_values.data() + (i * REFII_WORLD_ICON_VALUES);
+        at += std::strlen(at) + 1u;  // the key
+        const char* title = at;
+        at += std::strlen(at) + 1u;
+        const char* opinion = at;
+        at += std::strlen(at) + 1u;
+        if ((tw[REFII_WORLD_ICON_FLAGS_WORD] & REFII_WORLD_ICON_VISIBLE) == 0u) {
+            continue;
+        }
+        const bool pooled = tw[0] == REFII_WORLD_ICON_CLASS_HUD_ELEMENT;
+        if (pooled) {
+            title = "";
+            opinion = "";
+        }
+        const uint32_t title_bytes = static_cast<uint32_t>(std::strlen(title)) + 1u;
+        const uint32_t opinion_bytes = static_cast<uint32_t>(std::strlen(opinion)) + 1u;
+        if ((written + 1u) * kWords > word_capacity || (written + 1u) * kValues > value_capacity ||
+            (text != nullptr && text_at + title_bytes + opinion_bytes > text_capacity)) {
+            break;
+        }
+
+        const uint32_t stated = tw[REFII_WORLD_ICON_FLAGS_WORD];
+        uint32_t* w = words + (written * kWords);
+        float* v = values + (written * kValues);
+        w[0] = tw[1];
+        w[1] = pooled ? 0u : tw[2];
+        w[2] = pooled ? 0xFFFFFFFFu : tw[3];
+        w[3] = tw[4];
+        w[4] = !pooled && (stated & REFII_WORLD_ICON_PERSISTENT) != 0u ? 1u : 0u;
+        w[5] = pooled ? 2u
+                      : ((stated & REFII_WORLD_ICON_FADING) != 0u ? 1u : 0u) | (tw[7] == 2u ? 4u : 0u);
+        w[6] = pooled ? tw[6] : 0xFFFFFFFFu;
+        w[7] = icons[i];
+        v[0] = tv[0];
+        v[1] = tv[1];
+        v[2] = tv[2];
+        v[3] = pooled ? 1.0f : tv[3];
+        v[4] = pooled ? 0.0f : tv[4];
+        v[5] = pooled ? 0.0f : tv[5];
+        if (text != nullptr) {
+            std::memcpy(text + text_at, title, title_bytes);
+            text_at += title_bytes;
+            std::memcpy(text + text_at, opinion, opinion_bytes);
+            text_at += opinion_bytes;
+        }
+        ++written;
+    }
+
+    // The population, once per change.
+    static uint32_t reported = 0xFFFFFFFFu;
+    if (written != reported) {
+        reported = written;
+        REXLOG_INFO("Refii world sprites: {} stated icon{} drawn of {} in the table", written,
+                    written == 1u ? "" : "s", count);
+    }
+
+    return written;
+}
+
 /// The WORLD ICON queue — the channel property income and every scripted `GUI.AddWorldIcon`
 /// travel on.
 ///
@@ -16469,196 +16578,6 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetUiPreviewObject(uint32_t* out_model_h
 ///
 /// Returns the number of records written; `out_flags` bit 0 is the master enable and bit 1
 /// is ShowIncomeIcon.
-/// The world-space icon class — property signs, income and gift gold, opinion splashes, quest
-/// markers, dog points, NPC status. `sub_823DDF90` files every request whose type is not one of
-/// 31-35/52-54 (the HUD-element kinds) as a 368-byte object of vtable 0x820028C4 and pushes
-/// `{obj, refblock}` (8 bytes) onto the manager's vector at `wim+4..wim+8` (0x823de288). The
-/// guest drew them through `sub_82261B70`, which is off; Godot draws the same objects.
-///
-/// Per object (base = obj; from `sub_82241AD8`/`sub_821DEDA0`/`sub_821AA758`/`sub_82261B70`):
-///   +20 type   +24 entity handle   +48 seconds left (frozen while +52 persistent)
-///   +56 size (per type)   +60..62 text colour as B,G,R bytes   +64 opacity ceiling
-///   +68 age   +100 fading   +112 resolved world point (`stvx128 v127, r28, r26` with r26=112,
-///   the +32 offset plus head height and stacking)   +128 texture hash   +132 hero distance²
-///   +140/+148 title/amount strings   +160 opacity, tweened between +156 and +164.
-///
-/// The drawn size is `+56 * curve(+132)` (`sub_821AA758`: >=300 -> 0.6; <100 -> 1 - d²/400;
-/// else 0.75 - 0.00075*(d²-100)), a `50*size` square; the quad's colour is (0.7,0.7,0.7,+160)
-/// and the text's is (+62,+61,+60)/255 with alpha +160. Published: rgba = R,G,B,A*255; the
-/// scale value is the composed size.
-///
-/// THE ANCHOR ENTITY IS BEHIND A HANDLE. `obj+24` is an embedded handle object — its first word
-/// is that class's vtable (0x82000B7C on every sprite, measured over 53 live ones) — and
-/// `obj+28` its block, whose first word is the entity (vtable 0x820A9B38, and `entity+4` points
-/// back at the block). Keying icons on `obj+24` folded every heart into one and every property
-/// sign into another.
-///
-/// Words per icon: type, texture, rgba, entity, persistent, flags, pool slot, OBJECT (the
-/// icon's identity for its lifetime). Values: anchor x y z, scale, seconds left, age. Text:
-/// title NUL opinion NUL, per icon in order.
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldSprites(uint32_t* words, uint32_t word_capacity,
-                                                        float* values, uint32_t value_capacity,
-                                                        char* text, uint32_t text_capacity,
-                                                        uint32_t max_icons) {
-    constexpr uint32_t kWords = 8u;
-    constexpr uint32_t kValues = 6u;
-    const uint32_t kSpriteVtable = refii::guest::Address(0x820028C4u);
-    // The POOLED class (types 31-35/52-54, drawn on the 16 `WorldIconN` HUD elements): its
-    // update projects `+112` (cached world anchor) plus `+144` (the lift putting the element's
-    // bottom on the anchor) and writes the element's position. Published as a world point so
-    // Godot projects it through ITS camera. Valid once the first update has run (`+160`
-    // cleared); `+128` = pool slot record.
-    const uint32_t kPooledVtable = refii::guest::Address(0x820DD0E0u);
-    const uint32_t kPoolBase = refii::guest::Address(0x8349BC80u);
-
-    auto* memory = SafeKernelMemory();
-    if (memory == nullptr) return 0;
-    uint8_t* base = memory->virtual_membase();
-    if (base == nullptr) return 0;
-
-    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
-    const auto readf = [base](uint32_t at) {
-        const uint32_t bits = GuestWordAt(base, at);
-        float out = 0.0f;
-        std::memcpy(&out, &bits, sizeof(out));
-        return out;
-    };
-    // EVERY BYTE THROUGH THE GUARD. This walk runs on the host thread while the guest may be
-    // tearing the region down (a fast travel answered in a menu box): the vector's entries go
-    // stale under it, and a raw `base[obj + N]` or a memcmp at a pointer read from such an
-    // entry faults on an unmapped page — an unhandled read of guest 0x9AC26D6D ended a
-    // player's run on 2026-10-25. GuestByteAt/CopyGuest zero-fill instead of faulting.
-    // D3D objects (the sprite class is `Render_AllocD3DObject(368)`) live in the guest's
-    // PHYSICAL heaps, above 0xC0000000, so the usual pointer ceiling does not apply.
-    const auto plausible = [](uint32_t a) { return a >= 0x10000u && a < 0xE0000000u; };
-
-    const uint32_t gui = read32(refii::guest::Address(0x83496B08u));
-    if (!plausible(gui) || read32(gui) != refii::guest::Address(0x82001610u)) return 0;
-    const uint32_t hud = read32(gui + 32u);
-    if (!plausible(hud)) return 0;
-    const uint32_t wim = read32(hud + 28u);
-    if (!plausible(wim)) return 0;
-
-    const uint32_t begin = read32(wim + 4u);
-    const uint32_t end = read32(wim + 8u);
-    if (!plausible(begin) || end < begin || (end - begin) > 8u * 512u) return 0;
-
-    uint32_t written = 0;
-    uint32_t text_at = 0;
-    const auto put_text = [&](const std::string& value) {
-        if (text == nullptr || text_capacity == 0) return;
-        for (char c : value) {
-            if (text_at + 1 >= text_capacity) break;
-            text[text_at++] = c;
-        }
-        if (text_at < text_capacity) text[text_at++] = '\0';
-    };
-
-    uint32_t entries = 0;
-    uint32_t other = 0;
-    uint32_t first_other_vtable = 0;
-    for (uint32_t at = begin; at < end && written < max_icons; at += 8u) {
-        const uint32_t obj = read32(at);
-        ++entries;
-        const uint32_t vtable = plausible(obj) ? read32(obj) : 0u;
-        if (vtable == kPooledVtable) {
-            if (GuestByteAt(base, obj + 160u) != 0u) continue;  // not yet updated: no anchor to publish
-            if ((written + 1u) * kWords > word_capacity || (written + 1u) * kValues > value_capacity) break;
-            const uint32_t slot_record = read32(obj + 128u);
-            uint32_t* w = words + written * kWords;
-            w[0] = read32(obj + 20u);
-            w[1] = 0u;
-            w[2] = 0xFFFFFFFFu;
-            // The prompted thing: the icon's weak reference at +24 (sub_828203B8, from the
-            // prompt's descriptor, sub_823DD1D0), whose block at +28 holds the entity first.
-            const uint32_t block = read32(obj + 28u);
-            w[3] = plausible(block) ? read32(block) : 0u;
-            w[4] = 0u;
-            w[5] = 2u;  // pooled
-            w[6] = slot_record >= kPoolBase ? (slot_record - kPoolBase) / 64u : 0xFFFFFFFFu;
-            w[7] = obj;
-            float* v = values + written * kValues;
-            v[0] = readf(obj + 112u) + readf(obj + 144u);
-            v[1] = readf(obj + 116u) + readf(obj + 148u);
-            v[2] = readf(obj + 120u) + readf(obj + 152u);
-            v[3] = 1.0f;
-            v[4] = 0.0f;
-            v[5] = 0.0f;
-            put_text(std::string());
-            put_text(std::string());
-            ++written;
-            continue;
-        }
-        if (vtable != kSpriteVtable) {
-            ++other;
-            if (first_other_vtable == 0) first_other_vtable = plausible(obj) ? read32(obj) : obj;
-            continue;
-        }
-        if ((written + 1u) * kWords > word_capacity || (written + 1u) * kValues > value_capacity) break;
-
-        uint32_t* w = words + written * kWords;
-        w[0] = read32(obj + 20u);
-        w[1] = read32(obj + 128u);
-        const float opacity = readf(obj + 160u);
-        const uint32_t alpha = opacity <= 0.0f ? 0u : opacity >= 1.0f ? 255u
-                                                  : static_cast<uint32_t>(opacity * 255.0f);
-        w[2] = (static_cast<uint32_t>(GuestByteAt(base, obj + 62u)) << 24) |
-               (static_cast<uint32_t>(GuestByteAt(base, obj + 61u)) << 16) |
-               (static_cast<uint32_t>(GuestByteAt(base, obj + 60u)) << 8) | alpha;
-        const uint32_t handle = read32(obj + 28u);
-        w[3] = plausible(handle) ? read32(handle) : 0u;
-        w[4] = GuestByteAt(base, obj + 52u);
-        // bit0 fading, bit1 pooled, bit2 player two's (its key, +16, ends "_P2": mod_events.cpp,
-        // the opinion icons asked in player two's scope).
-        const uint32_t key_rep = read32(obj + 16u);
-        const uint32_t key_chars = plausible(key_rep) ? read32(key_rep) : 0u;
-        const uint32_t key_length = plausible(key_rep) ? read32(key_rep + 4u) : 0u;
-        char key_tail[3] = {0, 0, 0};
-        const bool player_two = plausible(key_chars) && key_length >= 3u && key_length <= 512u &&
-                                CopyGuest(base, key_chars + key_length - 3u, key_tail, sizeof(key_tail)) &&
-                                std::memcmp(key_tail, "_P2", 3u) == 0;
-        w[5] = (GuestByteAt(base, obj + 100u) != 0u ? 1u : 0u) | (player_two ? 4u : 0u);
-        w[6] = 0xFFFFFFFFu;
-        w[7] = obj;
-
-        float* v = values + written * kValues;
-        v[0] = readf(obj + 112u);
-        v[1] = readf(obj + 116u);
-        v[2] = readf(obj + 120u);
-        const float d2 = readf(obj + 132u);
-        const float curve = d2 >= 300.0f ? 0.6f
-                          : d2 < 100.0f ? 1.0f - (d2 * 0.0025f)
-                                        : 0.75f - ((d2 - 100.0f) * 0.00075f);
-        v[3] = readf(obj + 56u) * curve;
-        v[4] = readf(obj + 48u);
-        v[5] = readf(obj + 68u);
-
-        // BOTH ARE WIDE. `sub_82824968`, the sprite's vtable slot, is exactly
-        // `sub_822B88A8(this + 140, title); sub_822B88A8(this + 148, amount);` — two LHString
-        // handles. The amount is the whole readout for a good or evil deed: `sub_828203B8`
-        // gives an amount-bearing type (1..21, 36..49, 54) the request's text as the AMOUNT and
-        // synthesises the title, and types 38/39 are given no title at all.
-        put_text(ReadGuestWideString(base, obj + 140u));
-        put_text(ReadGuestWideString(base, obj + 148u));
-        ++written;
-    }
-
-    // What the walk met, once per change: the split between the two classes and the vtable of
-    // whatever it declined.
-    static uint32_t reported_entries = 0xFFFFFFFFu;
-    static uint32_t reported_other = 0xFFFFFFFFu;
-    if (entries != reported_entries || other != reported_other) {
-        reported_entries = entries;
-        reported_other = other;
-        REXLOG_INFO("Refii world sprites: {} vector entr{} ({} sprite-class, {} other; first other "
-                    "vtable/ptr 0x{:08X}) at wim=0x{:08X} [0x{:08X}..0x{:08X})",
-                    entries, entries == 1 ? "y" : "ies", written, other, first_other_vtable, wim,
-                    begin, end);
-    }
-
-    return written;
-}
-
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetWorldIcons(uint32_t* out_flags, uint32_t* out_types,
                                                       uint32_t* out_entities, uint32_t max_icons) {
     if (out_flags != nullptr) *out_flags = 0;

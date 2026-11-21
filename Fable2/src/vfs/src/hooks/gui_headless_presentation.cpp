@@ -62,20 +62,16 @@
 // file element carries what the file authored, as a loaded one does, and the guest's own write and
 // its statement (the store's, gui_element_hooks.cpp) follow from that. A fileless element (no
 // table, or a name the file has not got) is given the attribute at the entry (RememberWrite), so
-// its write lands too; only when it has no room left is the write stated here from the arguments,
-// the opacity raw (SetOpacity scales its argument by 1024.0, `flt_82101240`, when the CURRENT
-// opacity is below 0.09765625, `flt_83319B60`, 0x824260e0..0x824260fc) with kScaledOpacity on the
-// id.
+// its write lands too; only when it has no room left is a position or rotation write stated here
+// from the arguments. SetOpacity's never is: the value it stores is the store's statement, and
+// with no room it stores nothing (RefiiHeadlessSetOpacity).
 //
-// THE FRONT END'S TEXTURE STAMPS. Its writers store a quad record's +512 inline (no setter) and
-// only through +4, so on a headless element they skip. Each is stated where it takes the element,
-// from the same element and hash it would store: the Load Game path's blank on every card
-// (`GUI_FrontendRoot_MenuActionDispatch` TU1 0x826e06cc / disc 0x826c8afc, and the main menu's
-// rebuild PopulateMainMenu 0x826e20f0 / disc 0x826ca550, where the disc build's inlined
-// `sub_82426798` returns; hash `dword_8349B600`), each save's screenshot (`sub_826E1408` 0x826e14b0
-// / disc `sub_826C9828` 0x826c98d0, r30 the hash), and the dialog's Y glyph (`sub_826E40E0`
-// 0x826e421c cancel `dword_8349B694` / 0x826e4284 `dword_8349B690`; disc `sub_826CB158` 0x826cb290 /
-// 0x826cb2f8).
+// THE FRONT END'S STATEMENTS. Its writers store a quad record's +512 inline (no setter) and only
+// through +4, so on a headless element they skip. The load fan's cards are stated at StampSaveCard
+// (`sub_826E1408` / disc `sub_826C9828`) as (save, card slot, texture), each save's screenshot
+// also as the element's texture where the stamp takes it (0x826e14b0 / disc 0x826c98d0, r30 the
+// hash); the dialog at OpenDialog (`sub_826E40E0` / disc `sub_826CB158`) as its texts, cancel and
+// Y glyph. See each.
 //
 // TEXTS. SetText (TU1 `sub_82425DD0`: r3 element, r4 presentation, r5 the text's handle) and
 // SetTextFromTag (`sub_82425F40`: r3 element, r4 the tag) store only through +4 and bail without
@@ -87,14 +83,18 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "vfs_hooks_private.h"
 #include "core/guest_build.h"
 #include "core/guest_state.h"
+#include "core/gui_native_calls.h"
 #include "core/headless_presentation.h"
 #include "core/payload_bridge_fable2.h"
 #include "gui/gui_told_statements.h"
@@ -169,7 +169,6 @@ constexpr refii::guest::Addr kAttrPositionZ{0x834BE524u};
 constexpr refii::guest::Addr kAttrRotationX{0x834BE528u};
 constexpr refii::guest::Addr kAttrRotationY{0x834BE52Cu};
 constexpr refii::guest::Addr kAttrRotationZ{0x834BE530u};
-constexpr uint32_t kScaledOpacity = 0x80000000u;  // the id's top bit: SetOpacity_p's raw argument
 
 constexpr refii::guest::Addr kCardBlankTexture{0x8349B600u};
 constexpr refii::guest::Addr kGlyphCancelTexture{0x8349B694u};
@@ -301,7 +300,7 @@ const refii::headless::GamefaceTable& Table() {
 }
 
 /// A wide string handle's units (`rep = *handle`, `*rep` the units, `rep+4` the length — the
-/// layout TellText reads at a record's +140).
+/// layout a text record holds at +140).
 std::vector<uint16_t> WideUnits(uint8_t* base, uint32_t handle) {
     std::vector<uint16_t> units;
     const uint32_t rep = Plausible(handle) ? LoadGuestU32(base, handle) : 0u;
@@ -327,6 +326,17 @@ std::atomic<uint64_t> g_inert_answers{0};
 std::atomic<uint64_t> g_textures_named{0};
 std::atomic<uint64_t> g_stated_writes{0};
 
+/// Inside the expression wheel's SetItem (rex_lhGuiExpressionWheel_SetItem), which states the item
+/// itself: its title's SetTextFromTag and its texture write are not told to the elements.
+thread_local bool t_wheel_item = false;
+
+/// Inside an entry that states its own element values (rex_lhGuiPauseRootScreen_SetMapKey,
+/// rex_lhGuiPickBox_SetIndex, rex_lhGuiLogbookScreen_FillExpression): its SetText /
+/// SetTextFromTag / SetTexture are not told to the elements; SetText's string is kept for the
+/// entry's statement.
+thread_local bool t_entry_states = false;
+thread_local std::vector<uint16_t> t_entry_text;
+
 void StateText(uint32_t element, const std::vector<uint16_t>& units) {
     if (!refii::headless::TellText(element, units)) {
         return;
@@ -343,6 +353,22 @@ void StateText(uint32_t element, const std::vector<uint16_t>& units) {
 PPCContext& ContextOf(PPCRegister& r3) {
     static_assert(offsetof(PPCContext, r3) == 0u, "r3 is PPCContext's first member");
     return reinterpret_cast<PPCContext&>(r3);
+}
+
+/// A text tag's string as the guest resolves it (SetTextFromTag TU1 0x82425F40 / disc 0x823F83D8),
+/// on a scratch frame below sp: copy (`sub_821F0240`), lookup (`sub_8230E0E8`, which frees the
+/// copy), then the wide string's dtor (`LHString_CCharString_CCharString_0`).
+std::vector<uint16_t> TagText(PPCContext& ctx, uint8_t* base, uint32_t tag) {
+    const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
+    const uint32_t copy = frame + 0x80u;
+    const uint32_t text = frame + 0x88u;
+    StoreGuestU32(base, copy, 0u);
+    StoreGuestU32(base, text, 0u);
+    const uint32_t copied = CallAt(ctx, base, frame, kCharStringCopy, copy, tag);
+    CallAt(ctx, base, frame, kTextLookup, text, copied);
+    std::vector<uint16_t> units = WideUnits(base, text);
+    CallAt(ctx, base, frame, kWideStringDtor, text);
+    return units;
 }
 
 }  // namespace
@@ -524,6 +550,12 @@ bool RefiiPresentationAttributeAbsent(PPCRegister& r3) {
 void RefiiHeadlessSetText(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
     (void)r4;
     uint8_t* base = RefiiGuestBase();
+    if (t_entry_states) {
+        if (base != nullptr && r5.u32 != 0u) {
+            t_entry_text = WideUnits(base, r5.u32);
+        }
+        return;
+    }
     uint32_t presentation = 0;
     uint32_t serial = 0;
     uint32_t id = 0;
@@ -543,22 +575,11 @@ void RefiiHeadlessSetTextFromTag(PPCRegister& r3, PPCRegister& r4) {
     uint32_t presentation = 0;
     uint32_t serial = 0;
     uint32_t id = 0;
-    if (base == nullptr || !Plausible(r3.u32) || !Plausible(r4.u32) ||
+    if (t_wheel_item || t_entry_states || base == nullptr || !Plausible(r3.u32) || !Plausible(r4.u32) ||
         !refii::headless::ElementKey(r3.u32, &presentation, &serial, &id)) {
         return;
     }
-    PPCContext& ctx = ContextOf(r3);
-    const uint32_t element = r3.u32;
-    const uint32_t frame = (ctx.r1.u32 - 0x100u) & ~0xFu;
-    const uint32_t copy = frame + 0x80u;
-    const uint32_t text = frame + 0x88u;
-    StoreGuestU32(base, copy, 0u);
-    StoreGuestU32(base, text, 0u);
-    const uint32_t copied = CallAt(ctx, base, frame, kCharStringCopy, copy, r4.u32);
-    CallAt(ctx, base, frame, kTextLookup, text, copied);
-    const std::vector<uint16_t> units = WideUnits(base, text);
-    CallAt(ctx, base, frame, kWideStringDtor, text);
-    StateText(element, units);
+    StateText(r3.u32, TagText(ContextOf(r3), base, r4.u32));
 }
 
 // The quad readers' joins: `r` is the record a kind-2 node gave, 0 when the element has none — a
@@ -589,10 +610,10 @@ namespace {
 
 /// One attribute write stated for a headless element from a setter's arguments (only when the
 /// element had no room to carry it — see EXISTENCE-CHECKED WRITES).
-void StateAttribute(uint8_t* base, uint32_t element, uint32_t attribute_global, uint32_t flags, float value) {
+void StateAttribute(uint8_t* base, uint32_t element, uint32_t attribute_global, float value) {
     uint32_t bits = 0;
     std::memcpy(&bits, &value, sizeof bits);
-    if (refii::headless::TellAttribute(element, LoadGuestU32(base, attribute_global) | flags, bits)) {
+    if (refii::headless::TellAttribute(element, LoadGuestU32(base, attribute_global), bits)) {
         const uint64_t n = ++g_stated_writes;
         if (Milestone(n)) {
             REXLOG_INFO("Refii headless presentation: element 0x{:08X} had no room for attribute 0x{:07X}; the "
@@ -603,23 +624,28 @@ void StateAttribute(uint8_t* base, uint32_t element, uint32_t attribute_global, 
 }
 
 /// An existence-checked setter's entry: a fileless headless element is given the attributes the
-/// setter names (its own write then lands, and the store states it); with no room, the write is
-/// stated here.
-void RememberOrState(uint32_t element, const refii::guest::Addr (&globals)[3], const float (&values)[3],
-                     size_t count, uint32_t flags) {
-    uint8_t* base = RefiiGuestBase();
-    if (base == nullptr || !Plausible(element)) {
-        return;
-    }
+/// setter names, so its own write lands and the store states it (kNoRoom when it has no room).
+refii::headless::Memory Remember(uint8_t* base, uint32_t element, const refii::guest::Addr (&globals)[3],
+                                 const float (&values)[3], size_t count) {
     uint32_t ids[3] = {};
     for (size_t i = 0; i < count; ++i) {
         ids[i] = LoadGuestU32(base, globals[i]) & kAttributeIdMask;
     }
-    if (refii::headless::RememberWrite(base, element, ids, values, count) != refii::headless::Memory::kNoRoom) {
+    return refii::headless::RememberWrite(base, element, ids, values, count);
+}
+
+/// Remember, and with no room the write is stated here from the setter's arguments.
+void RememberOrState(uint32_t element, const refii::guest::Addr (&globals)[3], const float (&values)[3],
+                     size_t count) {
+    uint8_t* base = RefiiGuestBase();
+    if (base == nullptr || !Plausible(element)) {
+        return;
+    }
+    if (Remember(base, element, globals, values, count) != refii::headless::Memory::kNoRoom) {
         return;
     }
     for (size_t i = 0; i < count; ++i) {
-        StateAttribute(base, element, globals[i], flags, values[i]);
+        StateAttribute(base, element, globals[i], values[i]);
     }
 }
 
@@ -632,7 +658,7 @@ void RefiiHeadlessSetPosition(PPCRegister& r3, PPCRegister& r4, PPCRegister& f1,
     }
     static const refii::guest::Addr kIds[3] = {kAttrPositionX, kAttrPositionY, kAttrPositionZ};
     const float values[3] = {static_cast<float>(f1.f64), static_cast<float>(f2.f64), static_cast<float>(f3.f64)};
-    RememberOrState(r3.u32, kIds, values, 3u, 0u);
+    RememberOrState(r3.u32, kIds, values, 3u);
 }
 
 // SetRotation's entry (TU1 0x824254C8, disc 0x823F7960): r3 element, r4 presentation, f1..f3.
@@ -642,17 +668,22 @@ void RefiiHeadlessSetRotation(PPCRegister& r3, PPCRegister& r4, PPCRegister& f1,
     }
     static const refii::guest::Addr kIds[3] = {kAttrRotationX, kAttrRotationY, kAttrRotationZ};
     const float values[3] = {static_cast<float>(f1.f64), static_cast<float>(f2.f64), static_cast<float>(f3.f64)};
-    RememberOrState(r3.u32, kIds, values, 3u, 0u);
+    RememberOrState(r3.u32, kIds, values, 3u);
 }
 
-// SetOpacity's entry (TU1 0x82426078, disc 0x823F8510): r3 element, r4 presentation, f1.
+// SetOpacity's entry (TU1 0x82426078, disc 0x823F8510): r3 element, r4 presentation, f1. Nothing is
+// stated here: the value SetOpacity stores — f1, x1024 (0x824260FC / 0x823F8594) when the current
+// opacity is below 0.09765625 — reaches the host through the store it calls, SetElementAttribute
+// (vf +0x48 at 0x82426120 / 0x823F85B8). With no room the element holds no opacity, the current read
+// (0x824260D0 / 0x823F8568) fails and the setter returns at 0x824260DC / 0x823F8574: it stores nothing.
 void RefiiHeadlessSetOpacity(PPCRegister& r3, PPCRegister& r4, PPCRegister& f1) {
-    if (r4.u32 == 0u) {
+    uint8_t* base = RefiiGuestBase();
+    if (r4.u32 == 0u || base == nullptr || !Plausible(r3.u32)) {
         return;
     }
     static const refii::guest::Addr kIds[3] = {kAttrOpacity, kAttrOpacity, kAttrOpacity};
     const float values[3] = {static_cast<float>(f1.f64), 0.0f, 0.0f};
-    RememberOrState(r3.u32, kIds, values, 1u, kScaledOpacity);
+    Remember(base, r3.u32, kIds, values, 1u);
 }
 
 // SetActive (TU1 `sub_82284210`, disc `sub_82283D80`): r3 element, r4 presentation, r5 the bool.
@@ -676,29 +707,156 @@ void StateTexture(uint32_t element, uint32_t hash) {
 
 }  // namespace
 
-// A save's screenshot (`sub_826E1408`): r3 the element, r30 the hash.
-void RefiiHeadlessStampTexture(PPCRegister& element, PPCRegister& hash) { StateTexture(element.u32, hash.u32); }
+namespace {
 
-// The load cards' blank (the dispatch's Load Game path): r3 the element.
-void RefiiHeadlessStampCardBlank(PPCRegister& element) {
-    uint8_t* base = RefiiGuestBase();
-    if (base != nullptr) {
-        StateTexture(element.u32, LoadGuestU32(base, kCardBlankTexture));
+/// The portrait the StampSaveCard call in flight on this thread stamped, 0 for none.
+thread_local bool t_stamping_card = false;
+thread_local uint32_t t_card_portrait = 0u;
+
+std::atomic<uint64_t> g_cards_stated{0};
+std::atomic<uint64_t> g_dialogs_stated{0};
+
+/// A wide LHString handle's text (WideUnits) as UTF-8.
+std::string Utf8(const std::vector<uint16_t>& units) {
+    std::string text;
+    text.reserve(units.size());
+    for (size_t i = 0; i < units.size(); ++i) {
+        uint32_t c = units[i];
+        if (c == 0u) {
+            break;
+        }
+        if (c >= 0xD800u && c < 0xDC00u && i + 1u < units.size() && units[i + 1u] >= 0xDC00u &&
+            units[i + 1u] < 0xE000u) {
+            c = 0x10000u + ((c - 0xD800u) << 10) + (units[++i] - 0xDC00u);
+        }
+        if (c < 0x80u) {
+            text.push_back(static_cast<char>(c));
+        } else if (c < 0x800u) {
+            text.push_back(static_cast<char>(0xC0u | (c >> 6)));
+            text.push_back(static_cast<char>(0x80u | (c & 0x3Fu)));
+        } else if (c < 0x10000u) {
+            text.push_back(static_cast<char>(0xE0u | (c >> 12)));
+            text.push_back(static_cast<char>(0x80u | ((c >> 6) & 0x3Fu)));
+            text.push_back(static_cast<char>(0x80u | (c & 0x3Fu)));
+        } else {
+            text.push_back(static_cast<char>(0xF0u | (c >> 18)));
+            text.push_back(static_cast<char>(0x80u | ((c >> 12) & 0x3Fu)));
+            text.push_back(static_cast<char>(0x80u | ((c >> 6) & 0x3Fu)));
+            text.push_back(static_cast<char>(0x80u | (c & 0x3Fu)));
+        }
+    }
+    return text;
+}
+
+std::string Hex(uint32_t value) {
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", value);
+    return hex;
+}
+
+void PostFrontEnd(const char* name, std::initializer_list<std::string> arguments) {
+    refii::vfs::GuiNativeCall call;
+    call.name = name;
+    for (const std::string& value : arguments) {
+        refii::vfs::GuiNativeArgument argument;
+        argument.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        argument.text = value;
+        call.arguments.push_back(std::move(argument));
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+}
+
+}  // namespace
+
+// A save's screenshot, inside StampSaveCard (TU1 `sub_826E1408` 0x826e14b0, disc `sub_826C9828`
+// 0x826c98d0): r3 the card's element, r30 the hash `sub_824714E8` derived (0x826e1478).
+void RefiiHeadlessStampTexture(PPCRegister& element, PPCRegister& hash) {
+    if (t_stamping_card) {
+        t_card_portrait = hash.u32;
+    }
+    StateTexture(element.u32, hash.u32);
+}
+
+// THE LOAD FAN'S CARDS. StampSaveCard (TU1 `sub_826E1408`, disc `sub_826C9828`): r3 the front-end
+// root, r4 the save's index (into root+84 / disc root+72), r5 the user, r6 the card slot, the index
+// into the card element names `dword_8349B5C8` (disc 0x8349B048). Its one caller is the dispatch's
+// Load Game path, once per save 0 .. min(count, 6) - 1 with r6 = index + root+0x4C (TU1 0x826e0734
+// .. 0x826e0748; disc root+0x40, 0x826c8b64 .. 0x826c8b78), right after it set every card 1..6 to
+// the blank `dword_8349B600` (TU1 0x826e06ac .. 0x826e070c; disc `dword_8349B080`, 0x826c8adc ..
+// 0x826c8b3c). It stamps the save's screenshot only for a loadable record (`+24`, 0x826e1448 / disc
+// 0x826c9868) with a nonzero hash (0x826e1480 / 0x826c98a0). Stated after the call as
+// `@FrontEnd.SaveCard` (index, slot, texture hash): the stamped portrait, else the blank.
+PPC_EXTERN_FUNC(__imp__rex_lhGui_FrontendRoot_StampSaveCard);
+REX_EXTERN(rex_lhGui_FrontendRoot_StampSaveCard) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t index = ctx.r4.u32;
+    const uint32_t slot = ctx.r6.u32;
+    t_stamping_card = true;
+    t_card_portrait = 0u;
+    __imp__rex_lhGui_FrontendRoot_StampSaveCard(ctx, base);
+    t_stamping_card = false;
+    const uint32_t texture = t_card_portrait != 0u ? t_card_portrait : LoadGuestU32(base, kCardBlankTexture);
+    PostFrontEnd("@FrontEnd.SaveCard", {std::to_string(index), std::to_string(slot), Hex(texture)});
+    const uint64_t n = ++g_cards_stated;
+    if (Milestone(n)) {
+        REXLOG_INFO("Refii front end: save {} stated on card {}, texture 0x{:08X}{} (#{})", index, slot, texture,
+                    t_card_portrait != 0u ? "" : " (blank)", n);
     }
 }
 
-// The dialog's Y glyph (`sub_826E40E0`), cancel and other: r30 the element.
-void RefiiHeadlessStampGlyphCancel(PPCRegister& element) {
-    uint8_t* base = RefiiGuestBase();
-    if (base != nullptr) {
-        StateTexture(element.u32, LoadGuestU32(base, kGlyphCancelTexture));
+// THE CO-OP SAVE PICKER'S FAN. Its opener (TU1 `sub_8243B070`, disc `sub_8247C328`; one caller, the
+// co-op screen's input handler `sub_82438CF8` 0x82439430): r3 the screen. With a profile (+292 != -1)
+// and a save listed (+404..+408, 0x8243b0a0) it builds the cards' texts (`sub_8243B678`), sets +396,
+// the card the first save sits on, by the count: 1-2 saves card 3, 3-4 card 2, else card 1
+// (0x8243b1fc..0x8243b224, disc 0x8247c4b4..0x8247c4dc), and stamps cards 1..6 through `sub_8243B520`
+// / disc `sub_8247C7D8` (save k - first's screenshot, else the blank; 0x8243b2b4 / 0x8243b2d4, disc
+// 0x8247c56c / 0x8247c58c — each portrait stated by RefiiHeadlessInlineTexture). Stated after the
+// call as `@CoopPicker.Open` (screen, first card, saves): the first card is the opener's own result,
+// taken from +396 after it returned; nothing is stated when its gate turned it away.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiCoopScreen_OpenSavePicker);
+REX_EXTERN(rex_lhGuiCoopScreen_OpenSavePicker) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t screen = ctx.r3.u32;
+    __imp__rex_lhGuiCoopScreen_OpenSavePicker(ctx, base);
+    if (!Plausible(screen) || LoadGuestU32(base, screen + 292u) == 0xFFFFFFFFu) {
+        return;
     }
+    const uint32_t saves = (LoadGuestU32(base, screen + 408u) - LoadGuestU32(base, screen + 404u)) / 4u;
+    const uint32_t first = LoadGuestU32(base, screen + 396u);
+    if (saves == 0u || saves > 4096u) {
+        return;
+    }
+    PostFrontEnd("@CoopPicker.Open", {Hex(screen), std::to_string(first), std::to_string(saves)});
+    REXLOG_INFO("Refii co-op picker: opened by 0x{:08X}, {} save(s) from card {}", screen, saves, first);
 }
 
-void RefiiHeadlessStampGlyphOther(PPCRegister& element) {
-    uint8_t* base = RefiiGuestBase();
-    if (base != nullptr) {
-        StateTexture(element.u32, LoadGuestU32(base, kGlyphOtherTexture));
+// THE FRONT END'S DIALOG. OpenDialog (TU1 `sub_826E40E0`, disc `sub_826CB158`) is vtable slot
+// +0x20 of the title (0x820D09C4 / disc 0x820CD110) and, through `sub_826E1C50` 0x826e1c6c (disc
+// `sub_826CA068` 0x826ca084), of the main-menu root (0x820D0934 / disc 0x820CD524): r3 the owner,
+// r4 the OK text -> `dialog.Group.OK` (0x826e4158 / 0x826cb1cc), r5 the body ->
+// `dialog.Group.yousure` (0x826e4180 / 0x826cb1f4), r6 allow-cancel (`clrlwi r11,r28,24`
+// 0x826e41d4 / 0x826cb248). Set: `dialog.Group.cancel` = tag "GUI_BUTTONS_CANCEL" through
+// `sub_8230E0E8` (0x826e41e0 .. 0x826e4210 / 0x826cb254 .. 0x826cb284) and
+// `dialog.Group.icon_button_y` = `dword_8349B694` "art\gui\persistant\abyx.tex" (0x826e4250 /
+// disc `dword_8349B0EC` 0x826cb2c4). Clear: the empty wide string (0x826e4268 / 0x826cb2dc) and
+// `dword_8349B690` "art\gui\frames\blank.tex" (0x826e42b8 / disc `dword_8349B0E8` 0x826cb32c).
+// Stated after the call as `@FrontEnd.Dialog` (owner, OK, body, allow-cancel, cancel tag, glyph
+// hash); the texts are read before it.
+PPC_EXTERN_FUNC(__imp__rex_lhGui_FrontendRoot_OpenDialog);
+REX_EXTERN(rex_lhGui_FrontendRoot_OpenDialog) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t owner = ctx.r3.u32;
+    const std::string ok = Utf8(WideUnits(base, ctx.r4.u32));
+    const std::string body = Utf8(WideUnits(base, ctx.r5.u32));
+    const bool allow_cancel = (ctx.r6.u32 & 0xFFu) != 0u;
+    __imp__rex_lhGui_FrontendRoot_OpenDialog(ctx, base);
+    const uint32_t glyph = LoadGuestU32(base, allow_cancel ? kGlyphCancelTexture : kGlyphOtherTexture);
+    PostFrontEnd("@FrontEnd.Dialog", {Hex(owner), ok, body, allow_cancel ? "1" : "0",
+                                      allow_cancel ? "GUI_BUTTONS_CANCEL" : "", Hex(glyph)});
+    const uint64_t n = ++g_dialogs_stated;
+    if (Milestone(n)) {
+        REXLOG_INFO("Refii front end: dialog stated by 0x{:08X}, {} cancel, glyph 0x{:08X}, body '{}' (#{})", owner,
+                    allow_cancel ? "with" : "no", glyph, body, n);
     }
 }
 
@@ -746,13 +904,67 @@ constexpr uint32_t kStackName = 0x50u;
 // r4 the element; it bails on the element's missing node (0x82425bc4..cc), so the texture is
 // stated here — the world icons' art (`sub_82825358` 0x828253d4).
 void RefiiHeadlessSetTextureByName(PPCRegister& r3, PPCRegister& r4) {
+    if (t_entry_states) {
+        return;
+    }
     StateNamedTexture(ContextOf(r3), RefiiGuestBase(), r4.u32, r3.u32);
 }
 
-// The expression wheel's item (`sub_826AC5F0` 0x826AC708, disc `sub_8258FD30` 0x8258FE48): the
-// record setter on r29's node with the name in r28.
-void RefiiHeadlessTextureNamed(PPCRegister& r3, PPCRegister& element, PPCRegister& name) {
-    StateNamedTexture(ContextOf(r3), RefiiGuestBase(), element.u32, name.u32);
+namespace {
+
+std::atomic<uint64_t> g_wheel_items_stated{0};
+
+/// A CCharString's bytes (`rep = *handle`, `*rep` the chars, `rep+4` the length).
+std::string CharStringText(uint8_t* base, uint32_t handle) {
+    std::string text;
+    const uint32_t rep = Plausible(handle) ? LoadGuestU32(base, handle) : 0u;
+    const uint32_t data = Plausible(rep) ? LoadGuestU32(base, rep) : 0u;
+    if (!Plausible(data)) {
+        return text;
+    }
+    const uint32_t length = std::min(LoadGuestU32(base, rep + 4u), kMaxTextUnits);
+    text.reserve(length);
+    for (uint32_t i = 0; i < length; ++i) {
+        const char c = static_cast<char>(base[data + i]);
+        if (c == '\0') {
+            break;
+        }
+        text.push_back(c);
+    }
+    return text;
+}
+
+}  // namespace
+
+// THE EXPRESSION WHEEL'S ITEM. SetItem (TU1 `sub_826AC5F0`, disc `sub_8258FD30`): r3 the wheel, r4
+// the ring's element path (CCharString: `dword_8349AD28` "wheelmenu.icons.icons.menu.item" from
+// `sub_826AB1F8`, `unk_8349AD2C` "...submenu.item" from `sub_826ABCD0`; disc `sub_8258E938` /
+// `sub_8258F410`), r5 the texture's name (CCharString, `<name>.tex`), r6 the title's tag
+// (CCharString), r7 the item slot (0..7: 6 and 7 the fixed slots, `li r7,6` 0x826ab628, `li r7,7`
+// 0x826ab7cc / 0x826ac5a4; disc 0x8258ed68, 0x8258ef0c, 0x8258fce4). It resolves `<path><slot>`
+// (`sub_8234ECC0` "%d", 0x826ac610) and under it `expressions` and `Title`
+// (`GuiElement_Resolve_p` 0x826ac69c / 0x826ac6e4), sets the title from the tag
+// (`lhGuiElement_SetTextFromTag` 0x826ac704 / disc 0x8258fe44) and the texture on `expressions`
+// (`sub_8286DDC0` 0x826ac724 / disc `sub_82814D30` 0x8258fe64). Stated before the call as
+// `@ExpressionWheel.Item` (path, slot, title, texture hash, tag): the title is the guest's lookup
+// of the tag, the hash the one the texture write stores (TextureHashOfName).
+PPC_EXTERN_FUNC(__imp__rex_lhGuiExpressionWheel_SetItem);
+REX_EXTERN(rex_lhGuiExpressionWheel_SetItem) {
+    REX_FUNC_PROLOGUE();
+    const std::string path = CharStringText(base, ctx.r4.u32);
+    const uint32_t slot = ctx.r7.u32;
+    const std::string tag = CharStringText(base, ctx.r6.u32);
+    const std::string title = Plausible(ctx.r6.u32) ? Utf8(TagText(ctx, base, ctx.r6.u32)) : std::string();
+    const uint32_t texture = Plausible(ctx.r5.u32) ? TextureHashOfName(ctx, base, ctx.r5.u32) : 0u;
+    PostFrontEnd("@ExpressionWheel.Item", {path, std::to_string(slot), title, Hex(texture), tag});
+    t_wheel_item = true;
+    __imp__rex_lhGuiExpressionWheel_SetItem(ctx, base);
+    t_wheel_item = false;
+    const uint64_t n = ++g_wheel_items_stated;
+    if (Milestone(n)) {
+        REXLOG_INFO("Refii expression wheel: item {} of '{}' stated, title '{}' ({}), texture 0x{:08X} (#{})", slot,
+                    path, title, tag, texture, n);
+    }
 }
 
 // The d-pad quick slots (`sub_823D2C98` 0x823D30D4, disc `sub_824069F0` 0x82406E2C): the slot
@@ -779,4 +991,138 @@ void RefiiHudChargeImage(PPCRegister& r3, PPCRegister& r4, PPCRegister& r1) {
         return;
     }
     RefiiGuiStateImage(r4.u32, TextureHashOfName(ContextOf(r3), base, r1.u32 + kStackName));
+}
+
+namespace {
+
+// The legend rows' element names (static inits `sub_8325BB70` / `sub_8325BBB0`; disc `unk_83497CC4`
+// / `unk_83497CC8`) and the pickbox's text child (`sub_8326C250`; disc `unk_8349C140`), CCharStrings.
+constexpr refii::guest::Addr kMapKeyName{0x8349AC0Cu};   // "Foreground.Pages.Contents.MiniMap.Legend.Fixed.KeyName"
+constexpr refii::guest::Addr kMapKeyImage{0x8349AC10u};  // "...Legend.Fixed.KeyImage"
+constexpr refii::guest::Addr kPickBoxText{0x8349C384u};  // ".grp.text"
+
+std::atomic<uint64_t> g_map_keys_stated{0};
+std::atomic<uint64_t> g_pickboxes_stated{0};
+std::atomic<uint64_t> g_expressions_filled{0};
+
+/// Each pickbox's text element path, as its Init named it.
+std::mutex g_pickbox_mutex;
+std::unordered_map<uint32_t, std::string> g_pickbox_paths;
+
+/// Runs an entry whose own element writes are stated by the hook: their told statements are
+/// dropped and SetText's string is returned.
+template <typename Original>
+std::string RunStating(PPCContext& ctx, uint8_t* base, Original original) {
+    const bool outer = t_entry_states;
+    t_entry_states = true;
+    t_entry_text.clear();
+    original(ctx, base);
+    t_entry_states = outer;
+    return Utf8(t_entry_text);
+}
+
+}  // namespace
+
+// THE PAUSE MAP'S LEGEND ROW. SetMapKey (TU1 `sub_826A3AC8`, disc `sub_8240FE80`): r3 the pause
+// root, r4 the presentation, r5 the row (1-based), r6 the label's tag (CCharString; the call
+// destroys it, 0x826a3bd0), r7 the address of the icon's resource hash. Its one caller, the legend
+// fill `sub_826A3658` (disc `sub_8240FA10`), names nine rows by literal tag and hash
+// (`dword_8349AC14`..`dword_8349AC3C`, disc `dword_83497CCC`..`dword_83497CF4`) and advances the
+// row only on a 1. It resolves `<KeyName><row>` and `<KeyImage><row>` (`sub_8234ECC0` "%d",
+// 0x826a3afc / 0x826a3b1c) and, only with both: shows them (`sub_82426260` 0x826a3b48 /
+// 0x826a3b88), sets the label from the tag (lookup `sub_8230E0E8` 0x826a3b60, SetText 0x826a3b70;
+// disc 0x8240ff28) and stores *r7 as the image's texture (0x826a3bc0, disc 0x8240ff78), returning
+// 1. The fill hides the rows past the last (0x826a3a10 / 0x826a3a84). Stated after the call as
+// `@PauseMap.Key` (presentation, row, label path, image path, text, hash, tag) when it returned 1.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPauseRootScreen_SetMapKey);
+REX_EXTERN(rex_lhGuiPauseRootScreen_SetMapKey) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t presentation = ctx.r4.u32;
+    const uint32_t row = ctx.r5.u32;
+    const std::string tag = CharStringText(base, ctx.r6.u32);
+    const uint32_t hash = Plausible(ctx.r7.u32) ? LoadGuestU32(base, ctx.r7.u32) : 0u;
+    const std::string text = RunStating(ctx, base, __imp__rex_lhGuiPauseRootScreen_SetMapKey);
+    if ((ctx.r3.u32 & 0xFFu) == 0u) {
+        return;
+    }
+    const std::string number = std::to_string(row);
+    const std::string label = CharStringText(base, kMapKeyName) + number;
+    const std::string image = CharStringText(base, kMapKeyImage) + number;
+    PostFrontEnd("@PauseMap.Key", {Hex(presentation), number, label, image, text, Hex(hash), tag});
+    const uint64_t n = ++g_map_keys_stated;
+    if (Milestone(n)) {
+        REXLOG_INFO("Refii pause legend: row {} stated '{}' ({}), icon 0x{:08X} (#{})", row, text, tag, hash, n);
+    }
+}
+
+// THE PICKBOX'S ELEMENT. Init (TU1 `sub_82881FD0`, disc `sub_828860E8`; the pickbox vtable's slot
+// 0, 0x820E0BD0): r3 the pickbox, r5 its path (CCharString). It empties the options (+48..+52),
+// resolves `<path>` + ".grp.text" (`lhCharString_CtorConcat` 0x82882084, disc 0x8288619c) in the
+// pickbox's presentation (+4) into +40 (0x82882090) and sets +12 (0x828820a4), returning 1. Its
+// paths are globals: the co-op screen's `Foreground.RightPage.Pickbox.pickbox1..3` and the options
+// pages'. Stated after the call as `@PickBox.Init` (pickbox, text path) when it returned 1; every
+// SetIndex on the pickbox is stated under that path.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPickBox_Init);
+REX_EXTERN(rex_lhGuiPickBox_Init) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t pickbox = ctx.r3.u32;
+    const std::string path = CharStringText(base, ctx.r5.u32) + CharStringText(base, kPickBoxText);
+    __imp__rex_lhGuiPickBox_Init(ctx, base);
+    if ((ctx.r3.u32 & 0xFFu) == 0u) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_pickbox_mutex);
+        g_pickbox_paths[pickbox] = path;
+    }
+    PostFrontEnd("@PickBox.Init", {Hex(pickbox), path});
+}
+
+// THE PICKBOX'S CHOICE. SetIndex (TU1 `sub_828821D0`, disc `sub_828862E8`): r3 the pickbox, r4 the
+// index. With +12 set and options at +48..+52 it wraps the index (past the end to 0, below 0 to the
+// last; 0x82882230..0x82882260), stores it at +36 (0x82882264) and hands option[index]
+// (`add r5,r10,r11` 0x82882298) to SetText on the text element +40 (0x8288229c, disc 0x828863b4),
+// returning 1. Callers: the co-op screen's henchman rows (`sub_82435FC0`, `sub_82436178`,
+// `sub_82436360`, `sub_82436F38`, `sub_8243A8F0`), the options pages (`sub_829BE2C0` ..
+// `sub_829C1370`) and its own left/right (`sub_828820B0`). Stated after the call as `@PickBox.Set`
+// (pickbox, text path, index, text) when it returned 1: the option SetText was handed.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiPickBox_SetIndex);
+REX_EXTERN(rex_lhGuiPickBox_SetIndex) {
+    REX_FUNC_PROLOGUE();
+    const uint32_t pickbox = ctx.r3.u32;
+    const int32_t index = static_cast<int32_t>(ctx.r4.u32);
+    const std::string text = RunStating(ctx, base, __imp__rex_lhGuiPickBox_SetIndex);
+    if ((ctx.r3.u32 & 0xFFu) == 0u) {
+        return;
+    }
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(g_pickbox_mutex);
+        const auto found = g_pickbox_paths.find(pickbox);
+        if (found != g_pickbox_paths.end()) {
+            path = found->second;
+        }
+    }
+    PostFrontEnd("@PickBox.Set", {Hex(pickbox), path, std::to_string(index), text});
+    const uint64_t n = ++g_pickboxes_stated;
+    if (Milestone(n)) {
+        REXLOG_INFO("Refii pickbox: 0x{:08X} '{}' set to {} '{}' (#{})", pickbox, path.empty() ? "(no Init seen)" : path,
+                    index, text, n);
+    }
+}
+
+// THE LOGBOOK'S EXPRESSION PAGE. FillExpression (TU1 `sub_829BCDF0`, disc `sub_828D61D0`): r3 the
+// screen, r4 the row (type, id). On type 61 (0x829bce10) it looks the id up (`sub_821DA348`
+// 0x829bce1c) and writes the record's `NameTag` (0x829bce94), `IconGraphic` (GuiElement_SetTexture
+// 0x829bcee8, disc 0x828d62c8) and `ExpressionDescriptionTextTag` (0x829bcf38), then the effects
+// (`sub_829BCF98`). Godot draws the same record from the row it states (Engine_UiLogbookPage), so
+// nothing written inside is told to the elements.
+PPC_EXTERN_FUNC(__imp__rex_lhGuiLogbookScreen_FillExpression);
+REX_EXTERN(rex_lhGuiLogbookScreen_FillExpression) {
+    REX_FUNC_PROLOGUE();
+    RunStating(ctx, base, __imp__rex_lhGuiLogbookScreen_FillExpression);
+    const uint64_t n = ++g_expressions_filled;
+    if (Milestone(n)) {
+        REXLOG_INFO("Refii logbook: expression page filled by the guest, untold (#{})", n);
+    }
 }

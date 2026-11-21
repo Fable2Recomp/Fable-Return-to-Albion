@@ -11,9 +11,9 @@ using Refii.Ui;
 /// the hero/henchman choice, the hidden sliders and save picker) stays there.
 ///
 /// <list type="bullet">
-/// <item>PICKBOXES (`sub_82881F58`): caption = the option at the widget's index (+36) in its
-/// table, offset by the child base (pb1 `6·child`, pb2 `7·childLevel`, pb3 `10·childLevel`); the
-/// frame on the widget's own slide (+28: 1 normal, 2 focused, 3 disabled).</item>
+/// <item>PICKBOXES (`sub_82881F58`): the caption is the option SetIndex (`sub_828821D0`) handed
+/// the box's text element, as stated (<see cref="Engine_UiPickBoxes"/>); the frame on the
+/// widget's own slide (+28: 1 normal, 2 focused, 3 disabled).</item>
 /// <item>BUTTONS (`sub_82439988`, verified): with L = the right player signed in,
 /// r = 0 unless (`!f297 || f298 && S==2`) and a right save user, then 2 if L, else 1 in local
 /// co-op; q = `S==2 && !L && (!f297 || f298)`. `RightPage.buttons` slide = L ? (r==2 &amp;&amp; !s &amp;&amp;
@@ -29,30 +29,6 @@ using Refii.Ui;
 /// </summary>
 public static class Engine_UiCoopPage
 {
-	private static readonly string[] Pickbox1 =
-	{
-		"GUI_SCREEN_COOP_FEMALE_NEUTRAL", "GUI_SCREEN_COOP_FEMALE_GOOD", "GUI_SCREEN_COOP_FEMALE_EVIL",
-		"GUI_SCREEN_COOP_MALE_NEUTRAL", "GUI_SCREEN_COOP_MALE_GOOD", "GUI_SCREEN_COOP_MALE_EVIL",
-		"TEXT_CHARACTER_OCCUPATION_CHILD_MALE", "TEXT_CHARACTER_OCCUPATION_CHILD_FEMALE",
-	};
-
-	private static readonly string[] Pickbox2 =
-	{
-		"GUI_SCREEN_COOP_LONGSWORD", "GUI_SCREEN_COOP_CUTLASS", "GUI_SCREEN_COOP_KATANA",
-		"GUI_SCREEN_COOP_CLEAVER", "GUI_SCREEN_COOP_HAMMER", "GUI_SCREEN_COOP_AXE",
-		"GUI_SCREEN_COOP_MACE", "INV_ITEM_WEAPON_WOODEN_SWORD_NAME",
-	};
-
-	private static readonly string[] Pickbox3 =
-	{
-		"GUI_SCREEN_COOP_CLOCKWORK_PISTOL", "GUI_SCREEN_COOP_FLINTLOCK_PISTOL",
-		"GUI_SCREEN_COOP_MULTIBARREL_PISTOL", "GUI_SCREEN_COOP_CLOCKWORK_RIFLE",
-		"GUI_SCREEN_COOP_FLINTLOCK_RIFLE", "GUI_SCREEN_COOP_MULTIBARREL_RIFLE",
-		"GUI_SCREEN_COOP_BLUNDERBUSS", "GUI_SCREEN_COOP_HEAVY_CROSSBOW",
-		"GUI_SCREEN_COOP_LIGHT_CROSSBOW", "GUI_SCREEN_COOP_REPEATER_CROSSBOW",
-		"INV_ITEM_WEAPON_PISTOL_CHILD_NAME",
-	};
-
 	private const string Right = "Foreground.RightPage.";
 
 	private const string Left = "Foreground.LeftPage.";
@@ -96,20 +72,13 @@ public static class Engine_UiCoopPage
 			return said;
 		}
 
-		// The pickboxes.
-		(string[] Table, int Base)[] boxes =
-		{
-			(Pickbox1, coop.Child ? 6 : 0),
-			(Pickbox2, coop.ChildLevel ? 7 : 0),
-			(Pickbox3, coop.ChildLevel ? 10 : 0),
-		};
+		// The pickboxes: each caption as SetIndex stated it, under the text element Init named.
 		for (int k = 0; k < 3; ++k)
 		{
-			int index = boxes[k].Base + coop.PickSelected[k];
 			string path = $"{Right}Pickbox.pickbox{k + 1}";
-			if (index >= 0 && index < boxes[k].Table.Length)
+			if (Engine_UiPickBoxes.Caption(path + ".grp.text") is { } caption)
 			{
-				said.Values[path + ".grp.text"] = Text(strings, boxes[k].Table[index]);
+				said.Values[path + ".grp.text"] = caption;
 			}
 
 			if (coop.PickState[k] is >= 1 and <= 3)

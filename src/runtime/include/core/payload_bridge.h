@@ -573,7 +573,8 @@ int32_t refii_bridge_classic_particle_read(uint32_t id, uint32_t* out_meta, floa
 // - an icon stated: its Init, Update or ring tick returned. `visible` is the Update's own argument
 //   (1 drawn, 0 hidden this tick), -1 to keep the last one (an Init or ring tick: not drawn until
 //   an Update says so). Words: REFII_WORLD_ICON_CLASS_*, type, texture id, colour 0xRRGGBBAA,
-//   entity, flags (REFII_WORLD_ICON_*; bit 31 is the table's), ring progress 0..300, player.
+//   entity, flags (REFII_WORLD_ICON_*; bit 31 is the table's), ring progress 0..300 (Fable 2: a
+//   pooled icon's slot, else 0xFFFFFFFF), player.
 //   Values: anchor x y z, scale, seconds left, age, ring speed, 0. Text: name NUL title NUL
 //   opinion, `text_length` bytes.
 // - an icon removed: the registry erased it, or it was destroyed.

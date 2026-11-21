@@ -8,23 +8,12 @@ namespace Refii.Tests.Ui;
 
 /// <summary>
 /// The screens stand without a guest sample (piece D of the UI cut): a headless presentation is
-/// joined to its stated screen by the manager's slot, the existence-checked SetOpacity's raw
-/// argument is scaled by the guest's own rule host-side, decorated labels come from the stated
+/// joined to its stated screen by the manager's slot, decorated labels come from the stated
 /// g_Menu rows at every depth, and a presentation's one live text is the one it was told.
 /// </summary>
 [TestSuite]
 public sealed class HeadlessStandTests
 {
-	/// <summary>`sub_82426078`: ×1024 when the element's current opacity is below 0.09765625 (`flt_83319B60`).</summary>
-	[TestCase]
-	public void SetOpacityScalesOnlyBelowTheThreshold()
-	{
-		AssertThat(Engine_UiSlideStatements.SetOpacityValue(0.5f, 0f)).IsEqual(512f);
-		AssertThat(Engine_UiSlideStatements.SetOpacityValue(0.05f, 0.09f)).IsEqual(0.05f * 1024f);
-		AssertThat(Engine_UiSlideStatements.SetOpacityValue(40f, 0.09765625f)).IsEqual(40f);
-		AssertThat(Engine_UiSlideStatements.SetOpacityValue(40f, 100f)).IsEqual(40f);
-	}
-
 	/// <summary>A stated screen stands as a showing, contributing registry entry.</summary>
 	[TestCase]
 	public void StatedEntryIsShowing()

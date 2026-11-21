@@ -96,6 +96,12 @@ public partial class GameUi : Node, IGameTitleUi
 	/// </summary>
 	private readonly Engine_UiGuiNatives _guiNatives = new();
 
+	/// <summary>The front end's load cards and dialog as its own entries stated them.</summary>
+	private readonly Engine_FrontEndStated _frontEndStated = new();
+	private readonly Engine_UiWheelItems _wheelItems = new(line => GD.Print(line));
+	private readonly Engine_UiPauseMapKey _pauseMapKey = new();
+	private int _wheelItemsTexturesGeneration = -1;
+
 	/// <summary>
 	/// The display boxes and counters as the guest's `GUI.*` calls stated them. Owned state, not
 	/// a mirror: nothing is read back out of the guest's queues and lifetimes age on our clock.
@@ -286,6 +292,7 @@ public partial class GameUi : Node, IGameTitleUi
 		RetireDrawn("the guest left the game");
 		Refii.Mods.ModScreen.Release();
 		Engine_UiModalText.Clear();
+		Engine_UiNumericRender.Clear();
 		Engine_UiDisplayBoxes.Clear();
 
 		// The HUD's feed is its address; with it at 0 the icons and the piece gate stop, and a
@@ -318,6 +325,7 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		_boxes.Clear();
+		LeaveGuiNativeModels();
 		_menuModel.Reset();
 		_menuModelSeenLive.Clear();
 		HasInGameUi = false;
@@ -468,6 +476,15 @@ public partial class GameUi : Node, IGameTitleUi
 		_hostPageBook.Action = command =>
 			Engine_UiHostBoxes.Answer(command == Engine_UiHostBoxPage.AcceptCommand);
 		RegisterCommands();
+		// The front end's statements route from the start: the in-game routes wait for the HUD.
+		_guiNatives.Register("@FrontEnd.SaveCard", _frontEndStated.SaveCard);
+		_guiNatives.Register("@FrontEnd.Dialog", _frontEndStated.OpenDialog);
+		_guiNatives.Register("@CoopPicker.Open", StateCoopPickerOpen);
+		_guiNatives.Register("@ExpressionWheel.Item", _wheelItems.State);
+		_guiNatives.Register("@PauseMap.Key", _pauseMapKey.State);
+		_guiNatives.Register("@PickBox.Init", Engine_UiPickBoxes.Init);
+		_guiNatives.Register("@PickBox.Set", Engine_UiPickBoxes.Set);
+		_guiNatives.Register("ShowCreditsScreen", StartCreditsRoll);
 		_showing = Screen;
 
 		BuildAchievementToast();
@@ -1000,32 +1017,27 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private string? _guestDialogShownText;
 
-	/// <summary>
-	/// The told sequence at the last frame no guest dialog was raised: the raise's three texts
-	/// are told after it (<see cref="FrontEndDialogText"/>).
-	/// </summary>
-	private ulong _guestDialogSince;
+	/// <summary>The statement the shown dialog was drawn from; a later raise takes only a newer one.</summary>
+	private ulong _guestDialogShownSequence;
+
+	private ulong _guestDialogClosedAt;
+
+	private bool _guestDialogUnstatedReported;
 
 	/// <summary>
 	/// THE FRONT END'S OWN DIALOG. The guest raises it itself — Load Game with no saves or a
 	/// refused save, a co-op or network failure arriving on the menu or the title, Downloadable
-	/// Content with nobody signed in — through `sub_826E40E0`, which writes the three
-	/// `dialog.Group` texts and waits in its dialog mode for the owner's own accept. The host's
-	/// warning box shows the guest's strings, and A/B go back through `FrontEndDialog:36/37`.
-	/// The host's own refusals never raise it, so the two cannot stand together.
+	/// Content with nobody signed in — through OpenDialog (`sub_826E40E0`, disc `sub_826CB158`),
+	/// and waits in its dialog mode for the owner's own accept. The host's warning box draws the
+	/// owner's statement of that call (Engine_FrontEndStated.Dialog), and A/B go back through
+	/// `FrontEndDialog:36/37`. The host's own refusals never raise it, so the two cannot stand
+	/// together.
 	/// </summary>
 	private bool DriveGuestDialog()
 	{
-		// Raised or not is read whether or not the UI is revealed, so a raise made before the
-		// reveal keeps its texts.
 		Fable2UiSource.FrontEndDialogState? raised = !HostBridge.IsInGame
 			? Fable2UiSource.Active.GetFrontEndDialog()
 			: null;
-		if (raised is null)
-		{
-			_guestDialogSince = Engine_UiSlideStatements.Sequence;
-		}
-
 		Fable2UiSource.FrontEndDialogState? up = IsRevealed ? raised : null;
 		if (up is not { } dialog)
 		{
@@ -1033,6 +1045,7 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				_guestDialogShown = false;
 				_guestDialogShownText = null;
+				_guestDialogClosedAt = _guestDialogShownSequence;
 				if (_warningView is not null)
 				{
 					_warningView.Visible = false;
@@ -1060,18 +1073,33 @@ public partial class GameUi : Node, IGameTitleUi
 			return false;
 		}
 
-		string body = FrontEndDialogText(dialog.Presentation, "yousure", _guestDialogSince);
-		string accept = FrontEndDialogText(dialog.Presentation, "OK", _guestDialogSince);
-		string cancel = FrontEndDialogText(dialog.Presentation, "cancel", _guestDialogSince);
-		string signature = $"{body}\u0001{accept}\u0001{cancel}\u0001{dialog.AllowCancel}";
+		// The raise's own statement: OpenDialog states before the owner sets +57 (`sub_826E1C50`
+		// 0x826e1c78, `sub_826E3580` 0x826e3704), so one drawn from an earlier raise is never taken.
+		if (_frontEndStated.LastDialog is not { } stated || stated.Owner != dialog.Owner ||
+			stated.Sequence <= _guestDialogClosedAt)
+		{
+			if (!_guestDialogUnstatedReported)
+			{
+				_guestDialogUnstatedReported = true;
+				GD.Print($"[game-ui] front-end dialog raised by 0x{dialog.Owner:X8} with no statement yet");
+			}
+
+			return true;
+		}
+
+		_guestDialogUnstatedReported = false;
+		string signature = $"{stated.Sequence}";
 		if (signature != _guestDialogShownText)
 		{
 			_guestDialogShownText = signature;
-			_warningView.Show(_presentation?.Theme, body, accept.Length > 0 ? accept : "GUI_OK",
-				twoButton: dialog.AllowCancel, cancelTag: dialog.AllowCancel && cancel.Length > 0 ? cancel : null);
+			_guestDialogShownSequence = stated.Sequence;
+			_warningView.Show(_presentation?.Theme, stated.Body, stated.Ok.Length > 0 ? stated.Ok : "GUI_OK",
+				twoButton: stated.AllowCancel,
+				cancelTag: stated.CancelTag.Length > 0 ? stated.CancelTag : null,
+				glyph: stated.Glyph != Engine_FrontEndWarning.BlankGlyph);
 			_warningView.AcceptOpens = null;
-			GD.Print($"[game-ui] front-end dialog raised by the guest — '{body}' " +
-				$"({(dialog.AllowCancel ? "two" : "one")}-button) — {_warningView.LastReport}");
+			GD.Print($"[game-ui] front-end dialog stated by 0x{stated.Owner:X8} — '{stated.Body}' " +
+				$"({(stated.AllowCancel ? "two" : "one")}-button, glyph 0x{stated.Glyph:X8}) — {_warningView.LastReport}");
 		}
 
 		if (!_guestDialogShown && _menuView is { Visible: true })
@@ -1092,36 +1120,13 @@ public partial class GameUi : Node, IGameTitleUi
 			{
 				Engine_UiSource.Current.PostFrontEndAction("FrontEndDialog:36");
 			}
-			else if (clicked < 0 && dialog.AllowCancel)
+			else if (clicked < 0 && stated.AllowCancel)
 			{
 				Engine_UiSource.Current.PostFrontEndAction("FrontEndDialog:37");
 			}
 		}
 
 		return true;
-	}
-
-	/// <summary>
-	/// One of the dialog's three texts as the guest TOLD it (Engine_UiFrontEndScreens.DialogText):
-	/// `OK` at 0x826e4158, `yousure` at 0x826e4180, `cancel` at 0x826e4210 / 0x826e4278 (disc
-	/// `sub_826CB158` the same). <paramref name="since"/> keeps an earlier raise's texts out.
-	/// </summary>
-	private string FrontEndDialogText(uint presentation, string leaf, ulong since)
-	{
-		foreach (Engine_UiModel.Presentation p in Engine_UiSource.Current.GetPresentations())
-		{
-			if (p.Address != presentation)
-			{
-				continue;
-			}
-
-			string name = System.IO.Path.GetFileNameWithoutExtension(p.Name.Replace('\\', '/'));
-			return _presentation?.DocumentFor(name) is { } document
-				? Engine_UiFrontEndScreens.DialogText(document, presentation, leaf, since)
-				: string.Empty;
-		}
-
-		return string.Empty;
 	}
 
 	/// <summary>
@@ -2786,11 +2791,11 @@ public partial class GameUi : Node, IGameTitleUi
 	private int _menuOwnerSaid;
 
 	/// <summary>
-	/// The expression wheel's owner as the guest states it: `sub_826A9A60` stores the opener's
-	/// player id at wheel+24, the wheel being `*(*(GUI+32)+60)` with GUI at 0x83496B08. 1 when
-	/// unread.
+	/// The expression wheel's owner: the player its last open stated
+	/// (<see cref="Fable2Bridge.GetExpressionWheelPlayer"/>), kept through the close so a closing
+	/// wheel stays in its owner's half. 1 until a wheel has opened.
 	/// </summary>
-	private static readonly uint[] WheelOwnerChain = { 32u, 60u, 24u };
+	private int _wheelOwner = 1;
 
 	private int _wheelSectorTwo = -1;
 
@@ -2831,21 +2836,15 @@ public partial class GameUi : Node, IGameTitleUi
 		return best;
 	}
 
-	private static int ExpressionWheelOwner()
+	private int ExpressionWheelOwner()
 	{
-		System.Span<uint> word = stackalloc uint[1];
-		uint at = HostBridge.GuestAddress(0x83496B08u);
-		foreach (uint offset in WheelOwnerChain)
+		int stated = Fable2Bridge.GetExpressionWheelPlayer();
+		if (stated != 0)
 		{
-			if (at == 0u || HostBridge.Peek(at, word) != 1 || word[0] < 0x10000u)
-			{
-				return 1;
-			}
-
-			at = word[0] + offset;
+			_wheelOwner = stated == 2 ? 2 : 1;
 		}
 
-		return HostBridge.Peek(at, word) == 1 && word[0] < 0x10000u ? (int)word[0] == 2 ? 2 : 1 : 1;
+		return _wheelOwner;
 	}
 
 	/// <summary>
@@ -3210,31 +3209,50 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private readonly System.Collections.Generic.List<UiNode> _creditSlots = new();
 
+	/// <summary>Screen 29 was up last frame.</summary>
+	private bool _creditsWasUp;
+
+	/// <summary>
+	/// `GUI.ShowCreditsScreen` (TU1 `sub_82307488`, no arguments): SetScreen 29 and
+	/// EnterGuiModeQuiet, whose entry of screen 29 (0x82370168) is the roll's start
+	/// (`sub_826B79D8`: text group `GUI_CREDITS` (`dword_8349AF04`), 24 rows parked). The call is
+	/// the roll's clock.
+	/// </summary>
+	private void StartCreditsRoll(Engine_UiModel.GuiNativeCall call)
+	{
+		_creditsOpenedMs = Time.GetTicksMsec();
+		_credits.Clear();
+		_creditSlots.Clear();
+		GD.Print("[game-ui] credits: GUI.ShowCreditsScreen states the roll's start");
+	}
+
 	/// <summary>
 	/// The end credits — screen 29 up — rolled by the guest's rule from the `GUI_CREDITS` group
-	/// (<see cref="Engine_UiCreditsRoll.Roll"/>), on a clock started when the screen opened.
+	/// (<see cref="Engine_UiCreditsRoll.Roll"/>), on the clock `GUI.ShowCreditsScreen` started.
+	/// The screen leaving (the guest's own close at the last line, `sub_826B7D00` 0x826b7e3c, or a
+	/// skip) ends it.
 	/// </summary>
 	private void DriveCreditsRoll()
 	{
 		_creditLines.Clear();
 		bool up = HostBridge.IsInGame && HostBridge.GetPauseState() is { ScreenId: CreditsScreenId };
-		if (!up)
+		if (!up && _creditsWasUp)
 		{
 			_creditsOpenedMs = 0;
 		}
-		else if (_presentation?.Strings is { } strings &&
+
+		_creditsWasUp = up;
+		if (up && _creditsOpenedMs != 0 && _presentation?.Strings is { } strings &&
 			_presentation.DocumentFor(Engine_UiCreditsRoll.Presentation) is { } document)
 		{
-			if (_creditsOpenedMs == 0)
+			if (_creditSlots.Count == 0)
 			{
-				_creditsOpenedMs = Time.GetTicksMsec();
 				_credits.Clear();
 				foreach (uint key in strings.GroupMembers("GUI_CREDITS"))
 				{
 					_credits.Add(strings.TryGetString(key, out string line) ? line : string.Empty);
 				}
 
-				_creditSlots.Clear();
 				foreach (UiNode node in document.Nodes)
 				{
 					if (node.Type == BgfElementType.Text)
@@ -3593,7 +3611,8 @@ public partial class GameUi : Node, IGameTitleUi
 	private System.Collections.Generic.Dictionary<int, Vector2>? _pooledCanvas;
 
 	/// <summary>
-	/// Feeds the world-space icons from the guest's live vector, projected through the world
+	/// Feeds the world-space icons the guest states (RefiiHostGetWorldSprites: each icon's Init,
+	/// Updates and destructor, world_icon_hooks.cpp), projected through the world
 	/// camera onto the HUD canvas. The anchor is guest space; entities go through the same
 	/// handedness flip `Engine_MdlPlacement.FromGuest` applies to their transforms.
 	/// </summary>
@@ -4481,6 +4500,7 @@ public partial class GameUi : Node, IGameTitleUi
 			ApplyHudSlideOverrides(stated, HudLocalPlayer);
 
 			_statedPlays = statedPlays;
+			StateJobMultiplier(_hudStand);
 			long standBegan = System.Diagnostics.Stopwatch.GetTimestamp();
 			_hudStand.Stand(_hudAddress, stated, _hudResolve?.Drawn,
 				HudBehaviourClock.ElapsedMilliseconds,
@@ -4531,9 +4551,11 @@ public partial class GameUi : Node, IGameTitleUi
 				// THE ART: the textures told to the HUD's elements, under a mod's icon overrides.
 				if (cadence || _hud.LiveTextures is null || _hudTexturesGeneration != _hudStand.Generation ||
 					_hudOverrideGeneration != Engine_UiHudOverrides.Generation ||
-					_hudRegistryTexturesGeneration != _hud.Values.RegistryGeneration || ModWheelIconsStale)
+					_hudRegistryTexturesGeneration != _hud.Values.RegistryGeneration || ModWheelIconsStale ||
+					_wheelItemsTexturesGeneration != _wheelItems.Generation)
 				{
 					_hudRegistryTexturesGeneration = _hud.Values.RegistryGeneration;
+					_wheelItemsTexturesGeneration = _wheelItems.Generation;
 					_hud.LiveTextures = ModWheelIcons(doc, HudTextures(_hudStand));
 				}
 
@@ -4545,9 +4567,9 @@ public partial class GameUi : Node, IGameTitleUi
 					_hud.LiveTransform = held.Transforms(_hud.LiveTransform);
 				}
 
-				// AND THE ELEMENT TEXT, for the expression wheel's titles — the guest writes them onto
-				// the elements (`sub_826AB1F8`), not into the text registry.
-				_hud.LiveTexts = ModWheelTexts(doc, _hudStand.Texts);
+				// AND THE ELEMENT TEXT, with the expression wheel's titles as its SetItem states them
+				// (Engine_UiWheelItems), under the mods' wheel entries.
+				_hud.LiveTexts = ModWheelTexts(doc, _wheelItems.Texts(doc.Document, _hudStand.Texts));
 
 				bool[] shown = Buffer(ref _hudShown, count);
 				for (int i = 0; i < count; ++i)
@@ -5145,14 +5167,15 @@ public partial class GameUi : Node, IGameTitleUi
 
 				if (onRoot)
 				{
-					// THE PAGE IS THE GUEST'S STATEMENTS — the readouts, the quest lines, the legend,
-					// the map image and its turn, every show and hide. The hero's and dog's tokens
-					// and the projection of the guest's quest markers are Engine_UiPauseMinimap's.
+					// THE PAGE IS THE GUEST'S STATEMENTS — the readouts, the quest lines, the map
+					// image and its turn, every show and hide. The legend's rows are SetMapKey's
+					// (`@PauseMap.Key`, Engine_UiPauseMapKey). The hero's and dog's tokens and the
+					// projection of the guest's quest markers are Engine_UiPauseMinimap's.
 					Engine_UiPauseMinimap.Statements minimap = Engine_UiPauseMinimap.State(
 						_pauseBook.AuthoredPosition(Engine_UiPauseMinimap.MapImagePath),
 						HostBridge.GetMapMarkers());
-					_pauseBook.HostValues = null;
-					_pauseBook.HostTextures = null;
+					_pauseBook.HostValues = _pauseMapKey.Texts(_pauseAddress);
+					_pauseBook.HostTextures = _pauseMapKey.Textures(_pauseAddress);
 					_pauseBook.HostPositions = minimap.Positions;
 					_pauseBook.HostRotations = minimap.Rotations;
 					_pauseBook.HostActive = minimap.Active;
@@ -7362,6 +7385,7 @@ public partial class GameUi : Node, IGameTitleUi
 		// to happen every frame, in this order. A predicate published before the tick would
 		// answer with last frame's fill percent.
 		_widgets.Tick(delta);
+		StepMiniGameTally();
 		foreach (string sound in _widgets.TakeSounds())
 		{
 			_screens.PlaySound(sound);
@@ -7997,19 +8021,23 @@ public partial class GameUi : Node, IGameTitleUi
 
 			_loadFanEmpty.Clear();
 
-			// THE PORTRAITS, taken from the guest rather than from the file.
-			//
-			// Every card in `frontendmainmenu.bgf` is authored with the same placeholder back,
-			// and the guest stamps the real screenshot's texture HASH into each card's
-			// `screenshot` element as it builds the list. Without this the fan draws six
-			// identical blank cards, which is what a run showed.
-			System.Collections.Generic.List<Texture2D?> portraits = ReadCardPortraits();
+			// THE CARDS AS STATED: StampSaveCard (`sub_826E1408`, disc `sub_826C9828`) runs for
+			// saves 0 .. min(count, 6) - 1 before `screen+24 = 5` (0x826E07E0), each stating the
+			// card it is on and the texture it carries (Engine_FrontEndStated.Card).
+			int stamped = System.Math.Min(cards.Count, Engine_FrontEndSaveCards.MaxCards);
+			if (_frontEndStated.CardsSince(_saveCardsClosedAt, stamped) is not { } stated)
+			{
+				if (!_saveCardsUnstatedReported)
+				{
+					_saveCardsUnstatedReported = true;
+					GD.Print($"[game-ui] the guest is in its save carousel with {cards.Count} save(s) " +
+						"and not every card stated yet");
+				}
 
-			// Save i is stamped onto card `base + i`, not card i+1: the guest first resets all
-			// six portraits to the card back (0x826E06AC..0x826E070C), then writes save i into
-			// slot `i + screen+76` (`add r6, r31, r11` at 0x826E0744). Reading card i+1 gave a
-			// two-save fan the two reset backs.
-			int firstCard = Engine_FrontEndSaveCards.BaseSlotFor(cards.Count) - 1;
+				return true;
+			}
+
+			_saveCardsUnstatedReported = false;
 			var saves = new System.Collections.Generic.List<Engine_FrontEndSaveCards.Save>();
 			// THE FILE NAMES, the guest's own vector the index commits by (ABI 218): the export
 			// copy is named by them. A save's mods are told on the page that opens when it is
@@ -8017,15 +8045,15 @@ public partial class GameUi : Node, IGameTitleUi
 			_saveCardNames = Fable2Bridge.GetSaveCardNames();
 			for (int i = 0; i < cards.Count; ++i)
 			{
-				int card = firstCard + i;
 				saves.Add(new Engine_FrontEndSaveCards.Save(
 					cards[i].Description,
-					card < portraits.Count ? portraits[card] : null));
+					i < stated.Count ? CardTexture(stated[i].Texture) : null));
 			}
 
-			OpenSaveCards(saves);
-			GD.Print($"[game-ui] the guest opened the load fan with {cards.Count} save(s), " +
-				$"its cursor at {guestCursor} — {_saveCardView.Describe()}");
+			_saveCardsOpenedAt = _frontEndStated.Sequence;
+			OpenSaveCards(saves, stated[0].Slot);
+			GD.Print($"[game-ui] the guest opened the load fan with {cards.Count} save(s) from card " +
+				$"{stated[0].Slot}, its cursor at {guestCursor} — {_saveCardView.Describe()}");
 		}
 
 		// WHAT THE FAN IS BEING TOLD, reported when it changes — the gender card's diagnostic,
@@ -8086,47 +8114,22 @@ public partial class GameUi : Node, IGameTitleUi
 		return true;
 	}
 
+	/// <summary>The fan opened from statements up to here; a later opening takes only newer ones.</summary>
+	private ulong _saveCardsOpenedAt;
+
+	private ulong _saveCardsClosedAt;
+
+	private bool _saveCardsUnstatedReported;
+
 	/// <summary>
-	/// Each save card's portrait, in card order, as the guest TOLD it: the Load Game path stamps
-	/// the blank on every card (0x826e06cc) and each save's screenshot (`sub_826E1408`
-	/// 0x826e14b0), stated as texture statements to the front end's presentation
-	/// (gui_headless_presentation.cpp, RefiiHeadlessStampTexture). The six `screenshot` elements
-	/// of `frontendmainmenu` are the cards' — the file's only six — in walk order, which is card
-	/// order. A card told nothing, a hash the name table does not know or a texture the banks do
-	/// not carry keeps the artist's placeholder (null).
+	/// A stated card texture: the save's screenshot or the guest's blank, by resource hash. A hash
+	/// the name table does not know or a texture the banks do not carry keeps the artist's
+	/// placeholder (null).
 	/// </summary>
-	private System.Collections.Generic.List<Texture2D?> ReadCardPortraits()
-	{
-		var portraits = new System.Collections.Generic.List<Texture2D?>();
-		uint presentation = HostBridge.FrontEndPresentation();
-		if (_presentation?.TextureNames is not { } names || presentation == 0 ||
-			_presentation.DocumentFor(Engine_UiFrontEndScreens.PresentationFor(
-				Engine_UiModel.FrontEndScreen.MainMenu) ?? string.Empty) is not { } screen)
-		{
-			return portraits;
-		}
-
-		var told = new System.Collections.Generic.Dictionary<int, uint>();
-		foreach ((int ordinal, uint hash) in Engine_UiSlideStatements.TexturesSince(
-			presentation, screen.Nodes[0].Element.NameHash, 0))
-		{
-			told[ordinal] = hash;
-		}
-
-		foreach (int ordinal in Engine_FrontEndSaveCards.PortraitOrdinals(screen))
-		{
-			Texture2D? texture = null;
-			if (told.TryGetValue(ordinal, out uint hash) && hash != 0 &&
-				names.TryResolve(hash, out string path))
-			{
-				texture = _presentation.LoadTexture(path);
-			}
-
-			portraits.Add(texture);
-		}
-
-		return portraits;
-	}
+	private Texture2D? CardTexture(uint hash) =>
+		hash != 0 && _presentation?.TextureNames is { } names && names.TryResolve(hash, out string path)
+			? _presentation.LoadTexture(path)
+			: null;
 
 	/// <summary>
 	/// Puts the fan up with the guest's own enumerated list, and takes the rows down.
@@ -8136,14 +8139,14 @@ public partial class GameUi : Node, IGameTitleUi
 	/// across them, and no shipped slide parks the menu anywhere this could reuse.
 	/// </summary>
 	private void OpenSaveCards(
-		System.Collections.Generic.List<Engine_FrontEndSaveCards.Save> saves)
+		System.Collections.Generic.List<Engine_FrontEndSaveCards.Save> saves, int firstSlot)
 	{
 		if (_saveCardView is null)
 		{
 			return;
 		}
 
-		_saveCardView.SetSaves(saves);
+		_saveCardView.SetSaves(saves, firstSlot);
 		_saveCardView.Visible = true;
 
 		if (_menuView is not null)
@@ -8164,6 +8167,7 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		_saveCardView.Visible = false;
+		_saveCardsClosedAt = _saveCardsOpenedAt;
 
 		// Not over the gender card, and not over the running game. The menu comes back only if
 		// it is what the player would be looking at.
@@ -9467,6 +9471,9 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 
 		System.Array.Copy(stand.Textures, _hudTextures, stand.Count);
+
+		// The expression wheel's item icons, as its SetItem states them (Engine_UiWheelItems).
+		_wheelItems.Textures(stand.Screen.Document, _hudTextures);
 
 		// AND THE IMAGE REGISTRY'S NAMES (`ImageName`, registry 12): an element the guest gave no
 		// texture of its own wears the texture its name was last given — the spell charges'

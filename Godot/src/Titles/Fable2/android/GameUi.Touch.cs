@@ -60,12 +60,12 @@ public partial class GameUi
 	public static bool ExpressionWheelOpen { get; private set; }
 
 	/// <summary>
-	/// What the touch controls follow on the HUD each frame it is drawn: the guest's wheel flag
-	/// (<see cref="ExpressionWheelOpen"/>) and, on the phone, the item slots (<see cref="HudItemSlots"/>).
+	/// What the touch controls follow on the HUD each frame it is drawn: the wheel the guest states
+	/// open (<see cref="ExpressionWheelOpen"/>) and, on the phone, the item slots (<see cref="HudItemSlots"/>).
 	/// </summary>
 	private void FollowTouchHud()
 	{
-		ExpressionWheelOpen = Fable2Input.QuickWheelHeld && GuestExpressionWheelOpen();
+		ExpressionWheelOpen = Fable2Input.QuickWheelHeld && Fable2Bridge.GetExpressionWheelPlayer() != 0;
 		if (Engine_Platform.IsAndroid)
 		{
 			FollowItemSlots();

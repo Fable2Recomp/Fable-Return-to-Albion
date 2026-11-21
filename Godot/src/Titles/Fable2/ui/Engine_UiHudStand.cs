@@ -18,10 +18,12 @@ using Refii.Ui;
 /// <item>DRAW BITS: on, except where the guest told `active = false`; a told `active = true` is the
 /// later `setActive` over a slide's entry (<see cref="SwitchedOn"/>).</item>
 /// <item>OPACITY, POSITION, SCALE: the playing tracks and every told attribute write, in the
-/// playback's store (<see cref="Animated"/>) — SetOpacity's raw argument scaled by the guest's rule
-/// over the element's current value. The meters' components stand at `goToTime(trunc(pct × 10))`
-/// (`sub_823FDFF8`), the meter registry's own scrub.</item>
+/// playback's store (<see cref="Animated"/>). The meters' components stand at
+/// `goToTime(trunc(pct × 10))` (`sub_823FDFF8`), the meter registry's own scrub.</item>
 /// <item>TEXTS and TEXTURES: the last told to each element since the presentation was first seen.</item>
+/// <item>STATED ELEMENTS: an element whose slide or text a `GUI` native's arguments state
+/// (<see cref="StateSlide"/>, <see cref="StateText"/>) takes those, and the guest's own writes of
+/// that slide or text to it are dropped.</item>
 /// </list>
 /// </summary>
 public sealed class Engine_UiHudStand
@@ -117,6 +119,10 @@ public sealed class Engine_UiHudStand
 			_textureGeneration = ulong.MaxValue;
 			System.Array.Clear(Texts);
 			System.Array.Clear(Textures);
+			foreach ((int ordinal, string? text) in _statedTexts)
+			{
+				Texts[ordinal] = text;
+			}
 		}
 
 		bool restChanged = _rest.Length != Count;
@@ -157,6 +163,29 @@ public sealed class Engine_UiHudStand
 	public static bool PlaysMeter(Engine_UiBindings.Binding binding) =>
 		binding.Kind == Engine_UiBindings.Kind.Meter && !Engine_UiBindings.IsLayoutMeter(binding.Name);
 
+	/// <summary>The element at a dotted name path under the file's root (`Layer.JobMultiplier`), or -1.</summary>
+	public int Find(string path)
+	{
+		if (Count == 0)
+		{
+			return -1;
+		}
+
+		UiNode node = Screen.Nodes[0];
+		foreach (string name in path.Split('.'))
+		{
+			UiNode? child = node.Children.Find(c => c.Name == name);
+			if (child is null)
+			{
+				return -1;
+			}
+
+			node = child;
+		}
+
+		return node.Ordinal;
+	}
+
 	/// <summary>Restarts every component, as a HUD presentation coming back does.</summary>
 	public void Reset()
 	{
@@ -166,7 +195,60 @@ public sealed class Engine_UiHudStand
 	}
 
 	private Engine_UiSlideStatements.Told? Told(int ordinal) =>
-		Engine_UiSlideStatements.Of(Presentation, RootHash, ordinal);
+		_statedSlides.TryGetValue(ordinal, out Engine_UiSlideStatements.Told? stated)
+			? stated
+			: Engine_UiSlideStatements.Of(Presentation, RootHash, ordinal);
+
+	/// <summary>Per stated element, the slide Godot entered it on last (null before the first).</summary>
+	private readonly Dictionary<int, Engine_UiSlideStatements.Told?> _statedSlides = new();
+
+	/// <summary>Per stated element, the text Godot gave it last (null before the first).</summary>
+	private readonly Dictionary<int, string?> _statedTexts = new();
+
+	/// <summary>
+	/// Takes <paramref name="ordinal"/>'s slide from Godot from now on: the guest's own entries,
+	/// plays and pauses of it are dropped.
+	/// </summary>
+	public void OwnSlide(int ordinal)
+	{
+		if (ordinal >= 0 && ordinal < Count)
+		{
+			_statedSlides.TryAdd(ordinal, null);
+		}
+	}
+
+	/// <summary>Takes <paramref name="ordinal"/>'s text from Godot from now on: the guest's own writes of it are dropped.</summary>
+	public void OwnText(int ordinal)
+	{
+		if (ordinal >= 0 && ordinal < Count && _statedTexts.TryAdd(ordinal, null))
+		{
+			Texts[ordinal] = null;
+			++Generation;
+		}
+	}
+
+	/// <summary>
+	/// Enters an owned element on <paramref name="slide"/> at t = 0 with the record's pause, as the
+	/// guest's `lhGuiElement_GoToSlide` (`sub_82426BA8`) does — each statement a fresh entry.
+	/// </summary>
+	public void StateSlide(int ordinal, int slide)
+	{
+		if (_statedSlides.ContainsKey(ordinal) && slide > 0)
+		{
+			_statedSlides[ordinal] = new Engine_UiSlideStatements.Told(slide, Engine_UiSlideStatements.Stamp(), null, 0);
+		}
+	}
+
+	/// <summary>Gives an owned element its text.</summary>
+	public void StateText(int ordinal, string text)
+	{
+		if (_statedTexts.ContainsKey(ordinal) && Texts[ordinal] != text)
+		{
+			_statedTexts[ordinal] = text;
+			Texts[ordinal] = text;
+			++Generation;
+		}
+	}
 
 	private void Timed(long now)
 	{
@@ -177,13 +259,6 @@ public sealed class Engine_UiHudStand
 			if (write.IsActive)
 			{
 				_playback.TellActive(write.Ordinal, write.Value != 0, write.Sequence);
-			}
-			else if ((write.Attribute & Engine_UiSlideStatements.ScaledOpacity) != 0)
-			{
-				float raw = System.BitConverter.UInt32BitsToSingle(write.Value);
-				float value = Engine_UiSlideStatements.SetOpacityValue(raw, CurrentOpacity(write.Ordinal));
-				_playback.Tell(write.Ordinal, write.Attribute & ~Engine_UiSlideStatements.ScaledOpacity,
-					System.BitConverter.SingleToUInt32Bits(value), write.Sequence);
 			}
 			else
 			{
@@ -198,18 +273,6 @@ public sealed class Engine_UiHudStand
 				_playback.GoToTime(ordinal, (int)(System.Math.Clamp(percent, 0f, 100f) * 10f), now);
 			}
 		}
-	}
-
-	/// <summary>An element's opacity (0..100) as the stand holds it: its store, else the file's.</summary>
-	private float CurrentOpacity(int ordinal)
-	{
-		if (ordinal < 0 || ordinal >= Count)
-		{
-			return 100f;
-		}
-
-		float held = _playback.Values[(ordinal * Engine_UiSlidePlayback.Channels) + (int)Engine_UiSlidePlayback.Channel.Opacity];
-		return !float.IsNaN(held) ? held : Screen.Nodes[ordinal].Opacity;
 	}
 
 	private void StandTransforms()
@@ -253,7 +316,7 @@ public sealed class Engine_UiHudStand
 		{
 			foreach ((int ordinal, string text) in Engine_UiSlideStatements.TextsSince(Presentation, RootHash, _toldSeen))
 			{
-				if (ordinal >= 0 && ordinal < Count && Texts[ordinal] != text)
+				if (ordinal >= 0 && ordinal < Count && !_statedTexts.ContainsKey(ordinal) && Texts[ordinal] != text)
 				{
 					Texts[ordinal] = text;
 					++Generation;

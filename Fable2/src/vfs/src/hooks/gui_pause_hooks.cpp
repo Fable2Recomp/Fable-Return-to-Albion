@@ -19,14 +19,14 @@
 //
 // THE INLINE TEXTURE STORES. Three writers set a quad record's texture (`+0x200`, with the dirty
 // byte `+0x224`) only through the element's `+4` node, which a headless element does not have, so
-// they skip. Each is stated where it has the element and the hash:
+// they skip. Two are stated where they have the element and the hash:
 //   the pause map image (`sub_826A19E0` 0x826A21C4, disc `sub_8240DD98` 0x8240E57C): r31 the
 //     element, the hash at sp+0x58 (`stw r3, 0x110+var_B8(r1)` 0x826a1d94 / 0x8240e14c after
 //     `rex_lhResourceName_ComputeHash`, refined by `sub_826A4388` through its address);
-//   each legend icon (`sub_826A3AC8` 0x826A3B8C, disc `sub_8240FE80` 0x8240FF44): r29 the
-//     KeyImage element, the hash at *r27 (`lwz r9, 0(r27)` 0x826a3bbc / 0x8240ff74);
 //   each co-op save card's portrait (`sub_8243B520` 0x8243B57C, disc `sub_8247C7D8` 0x8247C834):
 //     r31 the card's screenshot element, the hash at *r29 (0x8243b5ac / 0x8247c864).
+// The third, each legend row's icon, is its call's argument: SetMapKey (`sub_826A3AC8`, disc
+// `sub_8240FE80`) is stated at its entry (gui_headless_presentation.cpp, `@PauseMap.Key`).
 
 #include <cstdint>
 #include <cstring>
@@ -111,7 +111,7 @@ bool RefiiPauseMarker(PPCRegister& r4, PPCRegister& r5) {
     return true;
 }
 
-// The legend icon and the co-op card portrait: the element, and the address of the hash.
+// The co-op card portrait: the element, and the address of the hash.
 void RefiiHeadlessInlineTexture(PPCRegister& element, PPCRegister& hash_at) {
     uint8_t* base = RefiiGuestBase();
     if (base == nullptr || !Plausible(hash_at.u32)) {

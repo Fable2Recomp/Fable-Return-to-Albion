@@ -189,6 +189,11 @@ void refii_bridge_menu_settle(void);
 // payload once per guest tick, read by the host bridge (RefiiHostGetMenuOwner).
 void refii_bridge_set_menu_owner_two(int32_t two);
 int32_t refii_bridge_menu_owner_two(void);
+// The player whose expression wheel is open (the record id its open stated), 0 for none: set and
+// cleared by the open / close hooks (mod_events.cpp), read by the host
+// (RefiiHostGetExpressionWheelPlayer).
+void refii_bridge_set_expression_wheel_player(int32_t player);
+int32_t refii_bridge_expression_wheel_player(void);
 // A region exit refused `player` (1 or 2) because their partner was out of range (the travel
 // rule, coop_hero_hooks.cpp). Once per approach; read-and-cleared by the host
 // (RefiiHostTakeExitRefused) as a mask, bit 0 player one, bit 1 player two.
@@ -321,6 +326,12 @@ void refii_bridge_set_stated_highlight(uint32_t screen, int32_t event_type, int3
 /// Copies the statement out; false when none stands.
 bool refii_bridge_get_stated_highlight(uint32_t* screen, int32_t* event_type, int32_t* id,
                                        char* name, char* label, uint32_t capacity);
+/// The name the guest spawned the row with id `id` under, among the LAST rows it spawned: the
+/// trailing run of the capture whose event type is `event_type`. The furniture screen's list is
+/// spawned onto the capture without a population boundary (its rows follow the previous
+/// screen's), so its rows are that trailing run and are not keyed by screen. False when none.
+bool refii_bridge_menu_last_spawned_row_name(int32_t event_type, uint32_t id, char* name,
+                                             uint32_t capacity);
 /// The fold depth of Godot's list for one screen (TU1 in-game id, or 1010 the front end's main
 /// menu): how many open folders the highlighted row sits below the root. 0 clears. The guest's
 /// `g_Menu:IsHighlightedItemAtRoot()` readers answer "at root" for depth 0 or none stated.

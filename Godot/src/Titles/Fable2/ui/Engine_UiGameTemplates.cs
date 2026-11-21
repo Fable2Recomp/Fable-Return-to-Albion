@@ -1138,7 +1138,7 @@ public static class Engine_UiGameTemplates
       "ownsList": true,
       "restFromFile": true,
       "purse": true,
-      "commitsByHighlight": true,
+      "rowAction": "Furniture:upgrade:{id}",
       "previewAnchor": "Foreground.Book.Pages.Page1.Contents.ModelHider.model_proxy.model",
       "provider": "item-book",
       "presentation": "upgradefurniture",
@@ -1251,9 +1251,6 @@ public static class Engine_UiGameTemplates
       "wideRight": [
         "Foreground.Book",
         "Foreground.Mask"
-      ],
-      "guestTextUnits": [
-        "ExpressionsPage.Contents.Icon"
       ],
       "statFields": [
         {
@@ -1965,8 +1962,9 @@ public static class Engine_UiGameTemplates
     "11": {
       "name": "minigamecompleted",
       "restFromFile": true,
+      "provider": "minigame",
       "ownsRevealedInput": true,
-      "revealedAccept": "screen:dismiss",
+      "revealedAccept": "minigame:confirm",
       "presentation": "minigamecompleted",
       "chrome": [
         "paperbox",

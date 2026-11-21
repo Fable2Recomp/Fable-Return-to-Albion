@@ -40,16 +40,19 @@ public static class Engine_UiModalText
 
 	private static uint _adjusterId;
 
+	private static uint _adjusterWidget;
+
 	private static Engine_UiGuiBoxes.AdjusterState? _adjuster;
 
 	/// <summary>
 	/// The router adjuster's numbers as `sub_8236FCA8` was handed them — value, min, max, step,
-	/// flags (1 money, 2 percent, 4 sign). The value is the open's until the widget tells its own
-	/// (Engine_UiNumericSurface reads the told value text).
+	/// flags (1 money, 2 percent, 4 sign) — and its widget `gui28[16]`, whose renders state the value
+	/// from then on (<see cref="Engine_UiNumericRender"/>).
 	/// </summary>
-	public static void StatedAdjuster(uint id, int value, int min, int max, int step, int flags)
+	public static void StatedAdjuster(uint id, int value, int min, int max, int step, int flags, uint widget)
 	{
 		_adjusterId = id;
+		_adjusterWidget = widget;
 		_adjuster = new Engine_UiGuiBoxes.AdjusterState(min, max, step, flags & 3, (flags & 4) != 0)
 		{
 			Value = value,
@@ -59,4 +62,7 @@ public static class Engine_UiModalText
 	/// <summary>The router adjuster the latch names, or null when its open was not stated.</summary>
 	public static Engine_UiGuiBoxes.AdjusterState? Adjuster(uint id) =>
 		_adjuster is not null && _adjusterId == id ? _adjuster : null;
+
+	/// <summary>The widget of the router adjuster the latch names, 0 when its open was not stated.</summary>
+	public static uint AdjusterWidget(uint id) => _adjuster is not null && _adjusterId == id ? _adjusterWidget : 0u;
 }

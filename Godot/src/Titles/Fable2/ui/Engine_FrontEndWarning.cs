@@ -51,6 +51,12 @@ public partial class Engine_FrontEndWarning : Node3D
 	/// <summary>The Y-button glyph, which the two-button form swaps for `abyx.tex`.</summary>
 	public const string IconName = "icon_button_y";
 
+	/// <summary>
+	/// The glyph the one-button form stamps: `dword_8349B690` (disc `dword_8349B0E8`), the
+	/// resource hash of `art\gui\frames\blank.tex` (static init 0x83264F00..0x83264F24).
+	/// </summary>
+	public static readonly uint BlankGlyph = Refii.Core.Engine_GameHash.ResourcePath(@"art\gui\frames\blank.tex");
+
 	/// <summary>True when the group was found and cloned, rather than stood in for.</summary>
 	public bool HasShippedArt { get; private set; }
 
@@ -185,13 +191,16 @@ public partial class Engine_FrontEndWarning : Node3D
 	/// problem — so this says which, instead of leaving the next run to guess.
 	/// </summary>
 	/// <param name="cancelTag">
-	/// Label for the second button, or null to leave the file's own. The guest never re-texts it
-	/// — every shipped two-button box means the same thing by it — but a host-authored box can
-	/// offer something else there, and the glyph beside it is already Y.
+	/// Label for the second button, or null to leave the file's own: the guest's
+	/// `GUI_BUTTONS_CANCEL` (0x826e41ec), or a host-authored box's own.
+	/// </param>
+	/// <param name="glyph">
+	/// Whether `icon_button_y` carries a glyph — the guest's stamp is `abyx.tex` or the blank
+	/// (<see cref="BlankGlyph"/>); null follows <paramref name="twoButton"/>.
 	/// </param>
 	public void Show(
 		Engine_UiTheme? theme, string bodyTag, string buttonTag, bool twoButton,
-		string? cancelTag = null)
+		string? cancelTag = null, bool? glyph = null)
 	{
 		Node3D? group = GetNodeOrNull<Node3D>("Group");
 
@@ -213,7 +222,7 @@ public partial class Engine_FrontEndWarning : Node3D
 		// The second button and its glyph exist only in the two-button form. Hidden rather than
 		// removed: the same clone is reused for every warning, and the next one may want them.
 		SetShown(group, CancelName, twoButton);
-		SetShown(group, IconName, twoButton);
+		SetShown(group, IconName, glyph ?? twoButton);
 
 		AllowCancel = twoButton;
 		Visible = true;

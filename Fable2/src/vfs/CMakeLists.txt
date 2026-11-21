@@ -108,6 +108,8 @@ set(REFII_VFS_PPC_HOOK_SOURCES
     # Gameface presentations built headless: the guest keeps its UI objects, Godot draws.
     ${REFII_VFS_ROOT}/src/hooks/gui_headless_presentation.cpp
     ${REFII_VFS_ROOT}/src/hooks/gui_element_hooks.cpp
+    # The world icons, stated at their Init, Updates and destructor into the shared table.
+    ${REFII_VFS_ROOT}/src/hooks/world_icon_hooks.cpp
     # The pub-game pump with the Scaleform module taken out, once Godot claims the games.
     ${REFII_VFS_ROOT}/src/hooks/pubgame_pump.cpp
     ${REFII_VFS_ROOT}/src/hooks/babel_text_hooks.cpp

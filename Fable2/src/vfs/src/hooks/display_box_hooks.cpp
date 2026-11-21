@@ -32,6 +32,9 @@ namespace refii::vfs {
 std::string ReadStatedWideLhString(uint8_t* base, uint32_t handle);
 }  // namespace refii::vfs
 
+PPC_EXTERN_FUNC(__imp__rex_lhGuiNumericAdjuster_Render);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiGamerCard_SetName);
+
 namespace {
 
 /// The open byte every handler gates on — `lbz r11, 0xC(r3)`; Open sets it at 0x823cec7c,
@@ -79,9 +82,10 @@ namespace {
 /// The modal router's opener states its box: kind (2 message, 3 query, 5 adjuster), the modal id
 /// the answer is keyed on, and the TEXT, read from the opener's own argument — the string the
 /// guest then writes into `Group.QueryBox.Text` / the message box's text — so the host draws the
-/// box from the call, not from the presentation it fills.
+/// box from the call, not from the presentation it fills. An adjuster adds its numbers and its
+/// widget's address, hex — the key its renders are stated under (`@Adjuster.Render`).
 void StateModal(uint32_t kind, uint32_t id, const std::string& text,
-                std::initializer_list<int32_t> numbers = {}) {
+                std::initializer_list<int32_t> numbers = {}, uint32_t widget = 0u) {
     refii::vfs::GuiNativeCall call;
     call.name = "@Modal.Open";
     const auto add = [&call](std::string value) {
@@ -95,6 +99,11 @@ void StateModal(uint32_t kind, uint32_t id, const std::string& text,
     add(text);
     for (const int32_t number : numbers) {
         add(std::to_string(number));
+    }
+    if (widget != 0u) {
+        char hex[9];
+        std::snprintf(hex, sizeof hex, "%08X", widget);
+        add(hex);
     }
     refii::vfs::PostGuiNativeCall(std::move(call));
 }
@@ -121,8 +130,8 @@ REX_EXTERN(rex_lhGuiManager_OpenModal) {
 // The numeric adjuster's opener `sub_8236FCA8(gui28, text, modalId, value, min, max, step, flags)`
 // (disc `sub_82337EA0`; 0x8236fcb4..0x8236fde4): mode 5 and the id at +44, the text into
 // `Group.QueryBox.Text`, the numbers into the widget at `*(gui28+0x40)` (+0x2C value, +0x20 min,
-// +0x24 max, +0x28 step, +0x1C flags: 1 money, 2 percent, 4 sign). Stated whole, so the host
-// steps, formats and gates the arrows by the widget's own rules (`sub_826B8CF0`, `sub_826B8BB0`).
+// +0x24 max, +0x28 step, +0x1C flags: 1 money, 2 percent, 4 sign). The widget is `gui28[16]`
+// (`lwz` at 0x8236fd68 / disc 0x82337f60), stated with the numbers: its renders key on it.
 REX_EXTERN(rex_lhGuiManager_OpenNumericAdjuster) {
     const uint32_t owner = ctx.r3.u32;
     const uint32_t text = ctx.r4.u32;
@@ -136,8 +145,37 @@ REX_EXTERN(rex_lhGuiManager_OpenNumericAdjuster) {
     const std::string said = opens ? refii::vfs::ReadStatedWideLhString(base, text) : std::string();
     __imp__rex_lhGuiManager_OpenNumericAdjuster(ctx, base);
     if (opens && refii::vfs::LoadGuestU32(base, owner + 40u) == 5u) {
-        StateModal(5u, id, said, {value, minimum, maximum, step, flags});
+        StateModal(5u, id, said, {value, minimum, maximum, step, flags},
+                   refii::vfs::LoadGuestU32(base, owner + 0x40u));
     }
+}
+
+// The adjuster widget's render `sub_826B8BB0(widget)` (disc `sub_8240CA98`), r3 the widget: the one
+// writer of its value text, called by the router's opener (0x8236fde8, 0x8236fe00, 0x8236fe08 / disc
+// 0x82337fe0, 0x82337ff8, 0x82338000), the display box's Open (0x823cf750 / 0x823bdd90) and both
+// steps (0x826b8db4, 0x826b8e94 / 0x8240cc9c, 0x8240cd7c). It reads flags +0x1C (0x826b8bd4 /
+// 0x8240cabc: 4 a `+` on a positive value, 1 money, else 2 a `%`), value +0x2C (0x826b8c04 /
+// 0x8240caec), min +0x20 (0x826b8c80 / 0x8240cb68), step +0x28 (0x826b8c88 / 0x8240cb70) and max
+// +0x24 (0x826b8ca8 / 0x8240cb90); the arrow at +0x10 stands while value - min >= step, the one at
+// +0xC while max - value >= step. Stated `@Adjuster.Render <widget> value min max step flags`.
+REX_EXTERN(rex_lhGuiNumericAdjuster_Render) {
+    const uint32_t widget = ctx.r3.u32;
+    refii::vfs::GuiNativeCall call;
+    call.name = "@Adjuster.Render";
+    const auto add = [&call](std::string value) {
+        refii::vfs::GuiNativeArgument argument;
+        argument.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+        argument.text = std::move(value);
+        call.arguments.push_back(std::move(argument));
+    };
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", widget);
+    add(hex);
+    for (const uint32_t at : {0x2Cu, 0x20u, 0x24u, 0x28u, 0x1Cu}) {
+        add(std::to_string(static_cast<int32_t>(refii::vfs::LoadGuestU32(base, widget + at))));
+    }
+    refii::vfs::PostGuiNativeCall(std::move(call));
+    __imp__rex_lhGuiNumericAdjuster_Render(ctx, base);
 }
 
 // MessageBox::Open — stated after the guest's own Open, so the presentation exists and the open
@@ -281,13 +319,15 @@ REX_EXTERN(rex_lhQueryBox_Close) {
 // +56, max +60, step +64, value +68 and flags +52 (1 money, 2 percent, 4 sign); Open
 // `sub_823CF6B8` formats it (`sub_826B8BB0(box+24)`) and writes `box+8`; Close `sub_823CF7F0`
 // (disc 0x823BDCF8 / 0x823BDE30). Fields: value, min, max, step, flags — the order `@Modal.Open`
-// states the router's.
+// states the router's — then the widget `box+24`, hex, that Open renders (0x823cf750 / 0x823bdd90).
 REX_EXTERN(rex_lhNumericAdjusterBox_Open) {
     const uint32_t box = ctx.r3.u32;
     __imp__rex_lhNumericAdjusterBox_Open(ctx, base);
+    char widget[9];
+    std::snprintf(widget, sizeof widget, "%08X", box + 24u);
     StateDisplay(base, "@DisplayBox.Open", box, kAdjusterKind,
                  {Signed(base, box + 68u), Signed(base, box + 56u), Signed(base, box + 60u),
-                  Signed(base, box + 64u), Signed(base, box + 52u)});
+                  Signed(base, box + 64u), Signed(base, box + 52u), std::string(widget)});
 }
 
 REX_EXTERN(rex_lhNumericAdjusterBox_Close) {
@@ -398,6 +438,33 @@ REX_EXTERN(rex_lhMenuBox_Populate) {
     if ((ctx.r3.u32 & 0xFFu) != 0u) {
         StateMenuBoxOpen(base, box);
     }
+}
+
+// The Orb box's player card `sub_823DB850(box, xuid, name)` (disc `sub_8240BA80`): r3 the menu-box
+// controller, r4 the XUID, r5 the NAME — an lhCharString (`mr r30, r5` 0x823db868 / 0x8240ba98),
+// copied (0x823db8d0 / 0x8240bb00) into the card ctor's r9 (`sub_8281E7B8` 0x823db914 / disc
+// `sub_82840878` 0x8240bb44), which assigns it to `card+4` (0x8281e820 / 0x828408e0): the text the
+// card's fill `sub_8281F010` writes into its gamertag element (0x8281f164). The only caller, the Orb
+// open `sub_823DB968` (0x823dba34 / 0x8240bc64), passes the empty string (0x834A5E78 / 0x834A5B6C).
+// Stated `@GamerCard.Name <box> <name>`. The score (`card+44`) is no argument: the card reads it
+// from its profile read (`sub_8281EF80` 0x8281eff0, setting 0x10040006).
+REX_EXTERN(rex_lhGuiGamerCard_SetName) {
+    const uint32_t box = ctx.r3.u32;
+    const std::string name = refii::vfs::ReadGuestLhString(base, ctx.r5.u32);
+    __imp__rex_lhGuiGamerCard_SetName(ctx, base);
+    refii::vfs::GuiNativeCall call;
+    call.name = "@GamerCard.Name";
+    refii::vfs::GuiNativeArgument address;
+    address.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+    char hex[9];
+    std::snprintf(hex, sizeof hex, "%08X", box);
+    address.text = hex;
+    call.arguments.push_back(std::move(address));
+    refii::vfs::GuiNativeArgument said;
+    said.kind = refii::vfs::GuiNativeArgument::Kind::kString;
+    said.text = name;
+    call.arguments.push_back(std::move(said));
+    refii::vfs::PostGuiNativeCall(std::move(call));
 }
 
 // The menu box's close is hooked once, by the mod events (mod_events.cpp rex_lhMenuBox_Close), which

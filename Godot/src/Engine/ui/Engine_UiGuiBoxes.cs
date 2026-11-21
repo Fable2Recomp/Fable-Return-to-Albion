@@ -241,16 +241,25 @@ public sealed class Engine_UiGuiBoxes
 	}
 
 	/// <summary>
-	/// The job multiplier — the `x N` on the HUD. The argument is the value, not an index:
-	/// `sub_823CAC20` compares magnitude against the cached one and `sprintf("%d")`s it onto
-	/// `JobMultiplier.Group.Text`. The root element's slide depends on how the value moved: 1 zero
-	/// to non-zero, 2 increase (with `SE_GUI_MULTIPLIER_UP`), 3 decrease. `TurnJobMulitplierOff`
-	/// fires 4 or 5 on its own boolean and clears the cached value.
+	/// The job multiplier — the `x N` on the HUD (`GUI+80+20`, the level at `+16`). The argument is
+	/// the value, not an index: `SetJobMultiplierLevel` (TU1 0x82306B18 → `sub_823CAC20`, disc
+	/// 0x82908740 → `sub_82819740`) does nothing for the held value (0x823CAC40 / 0x82819760), else
+	/// writes `<gold_img>` + `%d` onto `JobMultiplier.Group.Text` (0x823CAC84 / 0x828197A4) and plays
+	/// the root's slide by how the value moved: 1 from zero (0x823CACC0 / 0x828197E0), 2 up with
+	/// `SE_GUI_MULTIPLIER_UP` (0x823CACFC / 0x8281981C), 3 down (0x823CAD38 / 0x82819858).
+	/// `TurnJobMulitplierOff` (0x82306B78 / 0x829087A0) plays 4 or 5 on its boolean and clears the
+	/// level, nothing at level 0 (0x82306BB0 / 0x829087D8).
 	/// </summary>
 	public int JobMultiplier { get; private set; }
 
-	/// <summary>How the multiplier last moved: 0 none, 1 appeared, 2 up, 3 down.</summary>
+	/// <summary>How the multiplier last moved: 0 none, 1 appeared, 2 up, 3 down, 4/5 off.</summary>
 	public int JobMultiplierSlide { get; private set; }
+
+	/// <summary>The text the last level change wrote onto `JobMultiplier.Group.Text`, empty before one.</summary>
+	public string JobMultiplierText { get; private set; } = string.Empty;
+
+	/// <summary>Bumped by every move, so a repeated slide (two increases) is a fresh entry.</summary>
+	public ulong JobMultiplierMoves { get; private set; }
 
 	/// <summary>`GUI.SetJobMultiplierLevel(value)`.</summary>
 	public void SetJobMultiplier(int value)
@@ -264,6 +273,17 @@ public sealed class Engine_UiGuiBoxes
 		// and counts as an increase.
 		JobMultiplierSlide = JobMultiplier == 0 ? 1 : (uint)value > (uint)JobMultiplier ? 2 : 3;
 		JobMultiplier = value;
+		JobMultiplierText = "<gold_img>" + value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+		++JobMultiplierMoves;
+		++Generation;
+	}
+
+	/// <summary>A new in-game GUI: no level, nothing written yet.</summary>
+	public void ResetJobMultiplier()
+	{
+		JobMultiplier = 0;
+		JobMultiplierSlide = 0;
+		JobMultiplierText = string.Empty;
 		++Generation;
 	}
 
@@ -277,6 +297,7 @@ public sealed class Engine_UiGuiBoxes
 
 		JobMultiplier = 0;
 		JobMultiplierSlide = flag ? 4 : 5;
+		++JobMultiplierMoves;
 		++Generation;
 	}
 
@@ -393,27 +414,6 @@ public sealed class Engine_UiGuiBoxes
 		public int Value { get; set; }
 
 		public bool CanIncrease => Max - Value >= Increment;
-
-		/// <summary>
-		/// The value in the widget's rendered text (`sub_826B8BB0`: an optional `+`, the number,
-		/// a money token or `%`), or null when it carries no number.
-		/// </summary>
-		public static int? ParseDisplay(string rendered)
-		{
-			var digits = new System.Text.StringBuilder(rendered.Length);
-			foreach (char c in rendered)
-			{
-				if (char.IsAsciiDigit(c) || (c == '-' && digits.Length == 0))
-				{
-					digits.Append(c);
-				}
-			}
-
-			return int.TryParse(digits.ToString(), System.Globalization.NumberStyles.AllowLeadingSign,
-				System.Globalization.CultureInfo.InvariantCulture, out int value)
-				? value
-				: null;
-		}
 
 		public bool CanDecrease => Value - Min >= Increment;
 

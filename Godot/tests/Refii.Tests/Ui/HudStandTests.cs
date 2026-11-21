@@ -62,31 +62,31 @@ public sealed class HudStandTests
 	}
 
 	/// <summary>
-	/// SetOpacity's raw argument (the scaled flag) is scaled by the guest's rule over the element's
-	/// current opacity (`sub_82426078`): ×1024 below 0.09765625, as given otherwise.
+	/// An element whose text a native's arguments state takes Godot's text: the guest's own writes
+	/// to it are dropped, before and after, and every other element still takes the guest's.
 	/// </summary>
 	[TestCase]
-	public void ScaledOpacityTakesTheCurrentValue()
+	public void AStatedTextDropsTheGuestsWrites()
 	{
 		const uint Presentation = 0x4D120000u;
 		Engine_UiScreen screen = Synthetic();
 		uint root = Root(screen);
-		uint opacity = Engine_GameHash.AttributeId("opacity");
 		var stand = new Engine_UiHudStand(screen);
+		int caption = stand.Find("Layer.Caption");
+		AssertThat(caption).IsEqual(3);
+		AssertThat(stand.Find("Layer.Missing")).IsEqual(-1);
 
-		// Authored 100: the raw 40 stands.
-		Engine_UiSlideStatements.Apply(3u, Presentation, root, 2u, opacity | Engine_UiSlideStatements.ScaledOpacity,
-			BitConverter.SingleToUInt32Bits(40f));
+		stand.OwnText(caption);
+		Engine_UiSlideStatements.ApplyText(Presentation, root, 3u, "guest");
+		Engine_UiSlideStatements.ApplyText(Presentation, root, 2u, "badge");
+		stand.StateText(caption, "<gold_img>5");
 		stand.Stand(Presentation, null, null, 0);
-		int at = (2 * Engine_UiSlidePlayback.Channels) + (int)Engine_UiSlidePlayback.Channel.Opacity;
-		AssertThat(stand.Animated[at]).IsEqual(40f);
+		AssertThat(stand.Texts[3]).IsEqual("<gold_img>5");
+		AssertThat(stand.Texts[2]).IsEqual("badge");
 
-		// Now 0: the next raw 0.05 is scaled by 1024.
-		Engine_UiSlideStatements.Apply(3u, Presentation, root, 2u, opacity, BitConverter.SingleToUInt32Bits(0f));
-		Engine_UiSlideStatements.Apply(3u, Presentation, root, 2u, opacity | Engine_UiSlideStatements.ScaledOpacity,
-			BitConverter.SingleToUInt32Bits(0.05f));
+		Engine_UiSlideStatements.ApplyText(Presentation, root, 3u, "guest again");
 		stand.Stand(Presentation, null, null, 16);
-		AssertThat(stand.Animated[at]).IsEqualApprox(51.2f, 0.001f);
+		AssertThat(stand.Texts[3]).IsEqual("<gold_img>5");
 	}
 
 	/// <summary>A presentation first seen takes everything told to it; another starts clean.</summary>

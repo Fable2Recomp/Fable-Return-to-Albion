@@ -24,7 +24,7 @@ namespace Refii.Ui;
 /// <remarks>
 /// <para>SIZED BY THE GAME'S OWN DISTANCE CURVE (<see cref="DistanceSize"/>): the guest sizes a
 /// world sprite by <c>+56 * curve(+132)</c>, +132 its squared distance to the hero
-/// (<c>sub_821AA758</c>, read in host_bridge.cpp RefiiHostGetWorldSprites) — the curve here is
+/// (<c>sub_821AA758</c>, called for each game icon by world_icon_hooks.cpp) — the curve here is
 /// that one, fed the viewing camera's squared distance to the anchor.</para>
 /// <para>PER PLAYER: a marker names player 1 or 2, or 0 for every player; a view composes the
 /// markers its player sees (<see cref="ShownTo"/>), and a shared couch screen shows both players'.

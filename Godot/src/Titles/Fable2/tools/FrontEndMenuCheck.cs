@@ -542,7 +542,8 @@ public partial class FrontEndMenuCheck : Engine_UiPresentationHost
 			saves.Add(new Engine_FrontEndSaveCards.Save($"Save {i + 1} — stand-in, no guest"));
 		}
 
-		_saveCards.SetSaves(saves);
+		// No guest states a first card here: the stand-ins start at card 1.
+		_saveCards.SetSaves(saves, 1);
 		_saveCards.Reset();
 		_saveCards.Visible = true;
 

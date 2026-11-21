@@ -539,11 +539,16 @@ with the root.
   the game's own row, and the pause list's labels skip it. It needs no `"hostOnly"`. A patch entry
   that keeps the name and event of the row it replaces (a new tag, icon or `when`) is still the
   game's row.
-- The shipped **options**, **upgradefurniture** and **decoration** screens carry
+- The shipped **options** and **decoration** screens carry
   `"commitsByHighlight": true` (a screens-record flag, default false): on such a screen a press
   puts the game's own menu cursor on the row and sends the game's A, instead of pushing the row's
   identity. A mod's row on one of these screens therefore needs a `command` (a host action), or a
   name the game's own list also carries.
+- A screens record's `"rowAction"` is the verb a press on any of its rows runs, `{id}` replaced by
+  the row's full id; a row's own `command` wins. The shipped **upgradefurniture** screen states
+  `"Furniture:upgrade:{id}"`: its rows are levels, and `Furniture:upgrade:<level>` upgrades the
+  targeted piece through the game's own transaction (the hero's unlock card is taken, the house
+  value and the hero's properties restated, `furniture_upgraded` raised).
 - `Mod:lua:<function>[:<arg>]` calls a global Lua function — a name or a dotted path
   (`my_mod_menu.give_gold`), looked up, never compiled — in the game VM on the next guest tick,
   protected, as `function(arg, e)`: `arg` is everything after the second colon (`nil` when there

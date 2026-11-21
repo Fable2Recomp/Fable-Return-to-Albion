@@ -31,6 +31,16 @@ public static class Engine_UiFurniturePage
 {
 	public const uint ScreenId = 26;
 
+	/// <summary>The verb prefix the guest-tick pump answers — see `DispatchFurnitureAction`.</summary>
+	public const string FurnitureAction = "Furniture:";
+
+	/// <summary>
+	/// The screen's row action (<see cref="Engine_UiScreenTemplate.RowAction"/>): the row's level,
+	/// upgraded through `sub_826B6A18`'s own transaction (`RefiiFurnitureUpgrade`), never its
+	/// highlight read.
+	/// </summary>
+	public const string UpgradeAction = FurnitureAction + "upgrade:" + Engine_UiScreenTemplate.RowIdToken;
+
 	private const string Page1 = "Foreground.Book.Pages.Page1.Contents.";
 
 	private const string Page2 = "Foreground.Book.Pages.Page2.Contents.";

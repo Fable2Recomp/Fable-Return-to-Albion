@@ -349,6 +349,37 @@ public static class Engine_UiLogbookPage
 		return values;
 	}
 
+	private const string ExpressionIcon = "ExpressionsPage.Contents.Icon";
+
+	/// <summary>
+	/// THE EXPRESSION'S ICON — the fill `sub_829BCDF0` (disc `sub_828D61D0`) looks the row's id up
+	/// (`sub_821DA348` 0x829bce1c, the record hash as in <see cref="Values"/>) and hands the record's
+	/// `IconGraphic` string to `GuiElement_SetTexture` (0x829bcee8), which stores the resource hash
+	/// of its lower-cased text (`sub_8286DDC0`). Empty for any other row: the guest leaves the icon.
+	/// </summary>
+	public static IReadOnlyDictionary<string, uint> Textures(Engine_UiExpandableMenu.Item? row)
+	{
+		var textures = new Dictionary<string, uint>(1);
+		if (row is null || row.EventType != ExpressionsEventType || Engine_GameGdb.Database is not { } multi)
+		{
+			return textures;
+		}
+
+		uint id = ((uint)row.IdHigh << 16) | ((uint)row.IdLow & 0xFFFFu);
+		if (!multi.TryLookup(id, out GdbCursor at) && !Engine_GameGdb.TryLookup(row.Name ?? string.Empty, out at))
+		{
+			return textures;
+		}
+
+		string icon = Text(multi, at, "IconGraphic");
+		if (icon.Length != 0)
+		{
+			textures[ExpressionIcon] = Refii.Core.Engine_GameHash.ResourcePath(icon);
+		}
+
+		return textures;
+	}
+
 	private const int EffectSlots = 4;
 
 	/// <summary>The 21 opinion fields of an expression's `Effects` component, with their display tags (`0x83253A88` / `0x83253C68`, same order).</summary>

@@ -20,6 +20,8 @@ public static class Fable2UiVerbs
 		"a world-map sale row's answer", Engine_UiVerbs.Anywhere);
 	public static readonly Engine_UiVerb Ability = new(Engine_UiAbilitySource.AbilityAction, "Ability:learn|unlearn:<1..14>",
 		"buys one level of an ability through the guest's own purchase, or gives one back through its own unlearn (the row's Y asks first)", Engine_UiVerbs.Anywhere);
+	public static readonly Engine_UiVerb Furniture = new(Engine_UiFurniturePage.FurnitureAction, "Furniture:upgrade:<level>",
+		"upgrades the targeted furniture to a level through the furniture screen's own transaction (unlock card, value, properties)", Engine_UiVerbs.Anywhere);
 	public static readonly Engine_UiVerb Shop = new(Fable2MenuSources.ShopAction, "Shop:buy|sell:<ticket>",
 		"a shop row's transaction: the row pushed at the shop screen's own handler by its ticket (30 buys, 31 sells), which asks its own confirm", Engine_UiVerbs.Anywhere);
 	public static readonly Engine_UiVerb PropertyRepair = new(Engine_UiPropertySource.RepairAction, "PropertyRepair:<uid>",
@@ -40,12 +42,17 @@ public static class Fable2UiVerbs
 		"player two leaves the co-op game, or the online host kicks them", Engine_UiVerbs.PauseOnly);
 	public static readonly Engine_UiVerb PauseOwned = new(Engine_PauseMenu.OwnedCommandPrefix, "PauseOwned:<id>",
 		"the old spelling of Screen:open:<id>", Engine_UiVerbs.Anywhere);
+	public static readonly Engine_UiVerb MiniGameConfirm = new(MiniGameConfirmCommand, MiniGameConfirmCommand,
+		"A on the minigame tally: its rows finish counting, and the press goes on to the tally's own handler, which closes it once its rows have", Engine_UiVerbs.GuestScreen);
+
+	/// <summary>The minigame tally's A (screen 11's `revealedAccept`).</summary>
+	public const string MiniGameConfirmCommand = "minigame:confirm";
 
 	/// <summary>Every verb Fable 2 adds to the shell's.</summary>
 	public static readonly IReadOnlyList<Engine_UiVerb> All = new[]
 	{
-		Inventory, Quest, Sale, Ability, Shop, PropertyRepair, PropertyRepairAll, Partner, ModBuy,
-		PauseTab, PauseSaving, PauseQuit, PauseCoop, PauseOwned,
+		Inventory, Quest, Sale, Ability, Furniture, Shop, PropertyRepair, PropertyRepairAll, Partner, ModBuy,
+		PauseTab, PauseSaving, PauseQuit, PauseCoop, PauseOwned, MiniGameConfirm,
 	};
 
 	/// <summary>The handlers for the rows' verbs; the pause levers are registered by the pause book.</summary>
@@ -134,6 +141,7 @@ public static class Fable2UiVerbs
 		set.Register(Fable2UiVerbs.Quest, pump);
 		set.Register(Fable2UiVerbs.Sale, pump);
 		set.Register(Fable2UiVerbs.Ability, pump);
+		set.Register(Fable2UiVerbs.Furniture, pump);
 
 		// `Shop:buy|sell:<ticket>` — the shop screen's handler `sub_826AE5C0` acts on the PUSHED
 		// row: it caches the event's id at screen+396 and its confirm's YES re-reads it

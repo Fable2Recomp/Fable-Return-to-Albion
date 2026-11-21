@@ -25,6 +25,10 @@ public static class Fable2PageProviders
 	public const string InfoCard = "infocard";
 	public const string Multiplayer = "multiplayer";
 	public const string Coop = "coop";
+	public const string MiniGame = "minigame";
+
+	/// <summary>The `GUI` natives' widget model the minigame tally draws from — set by the shell.</summary>
+	public static Engine_UiGuiWidgets? Widgets { get; set; }
 
 	/// <summary>
 	/// Whether player two is currently standing in their OWN hero's body rather than the
@@ -84,6 +88,7 @@ public static class Fable2PageProviders
 		Engine_UiPageProviders.RegisterShipped(InfoCard, new InfoCardProvider());
 		Engine_UiPageProviders.RegisterShipped(Multiplayer, new MultiplayerProvider());
 		Engine_UiPageProviders.RegisterShipped(Coop, new CoopProvider());
+		Engine_UiPageProviders.RegisterShipped(MiniGame, new MiniGameProvider());
 	}
 
 	/// <summary>
@@ -464,6 +469,9 @@ public static class Fable2PageProviders
 
 		public IReadOnlyDictionary<string, Vector3> Positions(in Engine_UiPageContext page) =>
 			Engine_UiLogbookPage.Positions(page.Row, page.Hero);
+
+		public IReadOnlyDictionary<string, uint> Textures(in Engine_UiPageContext page) =>
+			Engine_UiLogbookPage.Textures(page.Row);
 	}
 
 	/// <summary>
@@ -523,6 +531,64 @@ public static class Fable2PageProviders
 	{
 		"Foreground.Book.Pages.Page1", "Foreground.Book.Pages.Page2",
 	};
+
+	/// <summary>
+	/// The minigame tally (screen 11), filled whenever it draws from what `TurnOnMiniGameComplete` and
+	/// `AddAmountToMiniGameComplete` state (<see cref="Engine_UiGuiWidgets"/>). `Title` and
+	/// `Select.Select` bind `MiniGameTitle` / `MiniGameButton`; `Amounts.Amount{n}` toggles on
+	/// `MiniGameAmount{n}`, slide 2 `On` for a claimed row and 1 `Off` for a free one
+	/// (`lhGuiRegistry_SetToggle` 0x823FE898 / disc 0x8257B458 enters 2 for on, 1 for off), its `Name`
+	/// the row's label and its `Amount` the `%d` of what the row shows (`sub_823CD790` 0x823CD7A4,
+	/// disc `sub_8258C6C8` 0x8258C6DC).
+	/// </summary>
+	private sealed class MiniGameProvider : Engine_UiPageProvider
+	{
+		public bool FillsOnDraw => true;
+
+		private static string RowPath(int row, string field) =>
+			"Amounts.Amount" + (row + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + field;
+
+		public IReadOnlyDictionary<string, string> Values(in Engine_UiPageContext page)
+		{
+			if (Widgets is not { } widgets)
+			{
+				return NoValues;
+			}
+
+			var values = new Dictionary<string, string>
+			{
+				["Title"] = widgets.MiniGameTitle,
+				["Select.Select"] = widgets.MiniGameButton,
+			};
+			IReadOnlyList<Engine_UiGuiWidgets.MiniGameRow> rows = widgets.MiniGame;
+			for (int i = 0; i < Engine_UiGuiWidgets.MiniGameRows; ++i)
+			{
+				bool claimed = i < rows.Count;
+				values[RowPath(i, ".Name")] = claimed ? rows[i].Label : string.Empty;
+				values[RowPath(i, ".Amount")] = claimed
+					? rows[i].Displayed.ToString(System.Globalization.CultureInfo.InvariantCulture)
+					: string.Empty;
+			}
+
+			return values;
+		}
+
+		public IReadOnlyDictionary<string, int> Slides(in Engine_UiPageContext page)
+		{
+			if (Widgets is not { } widgets)
+			{
+				return NoSlides;
+			}
+
+			var slides = new Dictionary<string, int>();
+			for (int i = 0; i < Engine_UiGuiWidgets.MiniGameRows; ++i)
+			{
+				slides[RowPath(i, string.Empty)] = i < widgets.MiniGame.Count ? 2 : 1;
+			}
+
+			return slides;
+		}
+	}
 
 	/// <summary>The quest box (screen 5): a box page, filled whenever it draws, from the box's own
 	/// Open — see <see cref="Engine_UiQuestBoxPage"/>.</summary>

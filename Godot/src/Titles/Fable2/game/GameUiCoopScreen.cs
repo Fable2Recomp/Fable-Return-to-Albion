@@ -39,6 +39,25 @@ public partial class GameUi
 	/// <summary>How many of the fan's portraits had resolved when it was last filled.</summary>
 	private int _coopSaveCardsPortraits;
 
+	/// <summary>
+	/// The picker's last stated open (`@CoopPicker.Open`, gui_headless_presentation.cpp): the card
+	/// its first save sits on and how many saves it listed. The opener sets the first card from the
+	/// count alone (TU1 0x8243b1fc..0x8243b224), so a statement for the same count answers any open.
+	/// </summary>
+	private (int FirstCard, int Saves)? _coopPickerStated;
+
+	/// <summary>`@CoopPicker.Open`: screen (hex), first card, saves.</summary>
+	private void StateCoopPickerOpen(Engine_UiModel.GuiNativeCall call)
+	{
+		if (int.TryParse(call.Argument(1).Text, System.Globalization.NumberStyles.Integer,
+				System.Globalization.CultureInfo.InvariantCulture, out int first) &&
+			int.TryParse(call.Argument(2).Text, System.Globalization.NumberStyles.Integer,
+				System.Globalization.CultureInfo.InvariantCulture, out int saves))
+		{
+			_coopPickerStated = (first, saves);
+		}
+	}
+
 	/// <summary>Player one's screen row, shown on the couch.</summary>
 	private Engine_UiCoopModeRow? _coopModeRow;
 
@@ -199,9 +218,14 @@ public partial class GameUi
 			return;
 		}
 
-		int baseSlot = read.PickerBaseSlot is >= 1 and <= Engine_FrontEndSaveCards.MaxCards
-			? read.PickerBaseSlot
-			: Engine_FrontEndSaveCards.BaseSlotFor(read.Saves.Count);
+		// The first card the picker's opener stated for this many saves; until it has, the fan waits.
+		if (_coopPickerStated is not { } stated || stated.Saves != read.Saves.Count ||
+			stated.FirstCard is not (>= 1 and <= Engine_FrontEndSaveCards.MaxCards))
+		{
+			return;
+		}
+
+		int baseSlot = stated.FirstCard;
 		var saves = new List<Engine_FrontEndSaveCards.Save>();
 		int portraits = 0;
 		for (int i = 0; i < read.Saves.Count && i < Engine_FrontEndSaveCards.MaxCards; ++i)

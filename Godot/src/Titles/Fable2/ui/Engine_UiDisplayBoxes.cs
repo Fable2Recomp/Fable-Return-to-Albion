@@ -166,11 +166,28 @@ public static class Engine_UiDisplayBoxes
 	/// <summary>The menu box stated open, null once its close is stated.</summary>
 	public static MenuBox? Menu { get; private set; }
 
-	/// <summary>The populate stated the box — again on a row's enable, so a repeat replaces it.</summary>
+	/// <summary>The populate stated the box — again on a row's enable, so a repeat replaces it and
+	/// keeps the card's stated name.</summary>
 	public static void MenuOpened(uint address, Engine_UiGuiBoxes.MenuBoxModel model, bool card)
 	{
-		Menu = new MenuBox(address, model, card);
+		Menu = new MenuBox(address, model, card)
+		{
+			GamerName = card && Menu is { } open && open.Address == address ? open.GamerName : null,
+		};
 		++Generation;
+	}
+
+	/// <summary>
+	/// The Orb's player card stated its name (`sub_823DB850` r5, after the box's populate): the text
+	/// its fill writes into the card's gamertag element.
+	/// </summary>
+	public static void GamerCardNamed(uint address, string name)
+	{
+		if (Menu is { } menu && menu.Address == address)
+		{
+			Menu = menu with { GamerName = name };
+			++Generation;
+		}
 	}
 
 	/// <summary>The close stated the box down.</summary>
