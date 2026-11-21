@@ -10,7 +10,8 @@
 #   every night         if main moved since the last one: build, and replace the "nightly"
 #                       pre-release with that build (NIGHTLY DEV BUILD, dated, with its commits)
 #   tag beta-N or vN    build, then a DRAFT pre-release named for the tag: beta-7 is "Beta 7"
-#   manual run          from the Actions tab, on any branch; artifacts only
+#   manual run          from the Actions tab: builds, and publishes the same "nightly"
+#                       pre-release unless "publish" is unticked
 name: Build
 
 on:
@@ -22,6 +23,11 @@ on:
     # 03:00 UTC. A schedule runs on the default branch only.
     - cron: '0 3 * * *'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this build as the nightly dev build
+        type: boolean
+        default: true
 
 # A newer push to the same pull request or branch replaces the run in progress. Tag builds are
 # never cancelled.
@@ -267,10 +273,10 @@ jobs:
             --notes "$title, built from ${GITHUB_SHA::9}. Release configuration: Linux and Windows, x86_64 and ARM64."
 
   # The nightly dev build: one rolling pre-release under the tag "nightly", replaced by each
-  # night's build and titled so it cannot be taken for a beta.
+  # night's build, or by a manual run, and titled so it cannot be taken for a beta.
   nightly:
     name: Nightly dev build
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish)
     needs: [linux, windows]
     runs-on: ubuntu-24.04
     permissions:

@@ -401,14 +401,6 @@ public partial class LauncherApp
     private static string PhoneTitleLabel(Engine_Title title) =>
         Engine_Platform.IsAndroid && title == Engine_Title.Fable3 ? title.Name + " (experimental)" : title.Name;
 
-    /// <summary>The title's info tabs, without Change Log and Credits on a phone while online metadata is off.</summary>
-    /// <remarks>Both are read from GitHub, and with <c>EnableOnlineMetadata</c> off they are never fetched,
-    /// so each only ever said "Failed to load ... Check network connection", which sent a player
-    /// looking for a network fault. The phone's drawer then holds its Installation tab alone.</remarks>
-    private static IReadOnlyList<LauncherInfoTab> PhoneInfoTabs(IReadOnlyList<LauncherInfoTab> tabs) =>
-        !Engine_Platform.IsAndroid || Ini.GetBool("EnableOnlineMetadata", false, "Github") ? tabs
-            : tabs.Where(tab => tab.Source is not (LauncherInfoSource.ProjectChangeLog or LauncherInfoSource.ProjectContributors)).ToList();
-
     /// <summary>Shows the Android installation progress log in the info drawer's Installation tab.</summary>
     /// <returns>False when another tab, or the desktop, is showing.</returns>
     private bool ShowAndroidInstallationLog()

@@ -25,12 +25,32 @@ public static class Ini
         LoadFromLines(text.Replace("\r\n", "\n").Split('\n'), writePath);
     }
 
+    /// <summary>
+    /// The app's own values, under the player's: what a key reads when the player's file does not
+    /// state it. The bundled config is loaded here on every start and is never written to the
+    /// player's file (<see cref="Save"/> writes <see cref="Sections"/> alone), so a project fact
+    /// that changes with a build — the repository the news is read from, whether it is read —
+    /// reaches an install that already has a config, and a key the player has set still wins.
+    /// </summary>
+    private static readonly Dictionary<string, Dictionary<string, string>> Defaults = new(StringComparer.Ordinal);
+
+    /// <summary>Replaces the app's own values (<see cref="Defaults"/>) with <paramref name="text"/>'s.</summary>
+    public static void LoadDefaultsFromText(string text)
+    {
+        Defaults.Clear();
+        ParseInto(Defaults, text.Replace("\r\n", "\n").Split('\n'));
+    }
+
     private static void LoadFromLines(IEnumerable<string> lines, string writePath)
     {
         _loadedPath = writePath;
         Sections.Clear();
         _loaded = true;
+        ParseInto(Sections, lines);
+    }
 
+    private static void ParseInto(Dictionary<string, Dictionary<string, string>> target, IEnumerable<string> lines)
+    {
         string section = string.Empty;
         foreach (string rawLine in lines)
         {
@@ -59,10 +79,10 @@ public static class Ini
                 continue;
             }
 
-            if (!Sections.TryGetValue(section, out Dictionary<string, string>? bucket))
+            if (!target.TryGetValue(section, out Dictionary<string, string>? bucket))
             {
                 bucket = new Dictionary<string, string>(StringComparer.Ordinal);
-                Sections[section] = bucket;
+                target[section] = bucket;
             }
 
             bucket[key] = value;
@@ -87,15 +107,36 @@ public static class Ini
             return value;
         }
 
+        if (Defaults.TryGetValue(section, out Dictionary<string, string>? defaults) &&
+            defaults.TryGetValue(key, out string? stated) &&
+            !string.IsNullOrEmpty(stated))
+        {
+            return stated;
+        }
+
         return fallback;
     }
 
     public static IReadOnlyDictionary<string, string> GetSection(string section)
     {
         EnsureLoaded();
-        return Sections.TryGetValue(section, out Dictionary<string, string>? bucket)
-            ? bucket
-            : new Dictionary<string, string>(StringComparer.Ordinal);
+        bool hasOwn = Sections.TryGetValue(section, out Dictionary<string, string>? bucket);
+        if (!Defaults.TryGetValue(section, out Dictionary<string, string>? defaults))
+        {
+            return hasOwn ? bucket! : new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        // The app's values with the player's over them.
+        var merged = new Dictionary<string, string>(defaults, StringComparer.Ordinal);
+        if (hasOwn)
+        {
+            foreach ((string key, string value) in bucket!)
+            {
+                merged[key] = value;
+            }
+        }
+
+        return merged;
     }
 
     public static bool GetBool(string key, bool fallback, string section)

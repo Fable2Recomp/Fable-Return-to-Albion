@@ -21,11 +21,8 @@ public static class PatchSource
     public static string GetPatchesLocation() =>
         Ini.GetString(
             "PatchesLocation",
-            "https://raw.githubusercontent.com/Fable2Recomp/Fable2Remake/main/src/hooks.cpp",
+            "https://raw.githubusercontent.com/Fable2Recomp/Fable-Return-to-Albion/main/src/hooks.cpp",
             "Github");
-
-    public static bool OnlineMetadataEnabled() =>
-        Ini.GetBool("EnableOnlineMetadata", false, "Github");
 
     public static List<Patch> ParseResponse(string responseData)
     {

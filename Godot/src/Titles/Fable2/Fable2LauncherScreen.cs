@@ -54,7 +54,7 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 
 	private static readonly LauncherLink[] Links =
 	{
-		new("Fable: Return to Albion", "https://github.com/Fable2Recomp/Fable2Remake"),
+		new("Fable: Return to Albion", "https://github.com/Fable2Recomp/Fable-Return-to-Albion"),
 	};
 
 	public override IReadOnlyList<LauncherLink> AboutLinks => Links;

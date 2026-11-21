@@ -47,6 +47,7 @@ public partial class LauncherApp : Control
 	private readonly List<LauncherLink> _aboutLinks = new();
 
 	private bool _commitsLoading = true;
+
 	private bool _commitsLoaded;
 	private List<GitCommit> _commits = new();
 
@@ -75,7 +76,9 @@ public partial class LauncherApp : Control
 	/// <summary>Whether the launcher is currently stood down for a running game.</summary>
 	private bool _standingDownForGame;
 	private UpdateChecker _updates = null!;
-	private Dictionary<string, string> _latestVersions = new();
+
+	/// <summary>Why the last update did not finish; empty after a clean one or before any.</summary>
+	private string _updateError = string.Empty;
 	private Font? _font;
 
 	private SmartStyle _menuStyle = null!;
@@ -224,6 +227,11 @@ public partial class LauncherApp : Control
 		_patches = new Patches();
 		_launch = new LaunchController(_patches);
 		_updates = new UpdateChecker();
+		if (UpdateChecker.CanUpdate)
+		{
+			ReleaseInstaller.RemoveLeftovers(Platform.GetExecutableDirectory());
+		}
+
 		InitPatches();
 
 		BindNodes();
@@ -460,28 +468,25 @@ public partial class LauncherApp : Control
 
 	private const string BundledConfig = "res://assets/launcher/config.cfg";
 
+	/// <summary>
+	/// The player's config over the bundled one. The bundled file is the app's own values and is
+	/// read on every start, never copied into the player's: it was only ever read when the player
+	/// had no file yet, so an install that already had one never saw its <c>[Github]</c> section
+	/// at all — the news was off and reported as a network failure.
+	/// </summary>
 	private void LoadLauncherConfig()
 	{
-		string writePath = Path.Combine(LauncherPaths.GetLauncherDataDirectory(), "config.cfg");
-
-		if (File.Exists(writePath))
-		{
-			Ini.Load(writePath);
-			return;
-		}
-
 		if (Godot.FileAccess.FileExists(BundledConfig))
 		{
 			using Godot.FileAccess file =
 				Godot.FileAccess.Open(BundledConfig, Godot.FileAccess.ModeFlags.Read);
 			if (file is not null)
 			{
-				Ini.LoadFromText(file.GetAsText(), writePath);
-				return;
+				Ini.LoadDefaultsFromText(file.GetAsText());
 			}
 		}
 
-		Ini.Load(writePath);
+		Ini.Load(Path.Combine(LauncherPaths.GetLauncherDataDirectory(), "config.cfg"));
 	}
 
 	private const string TitleSection = "Launcher";
@@ -1194,6 +1199,13 @@ public partial class LauncherApp : Control
 			_reinstallPanel.CompileShadersRequested += StartShaderBuild;
 			_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
 			_reinstallPanel.UninstallRequested += OnUninstallTitle;
+			_reinstallPanel.UpdateChannelChanged += channel =>
+			{
+				ReleaseUpdates.Channel = channel;
+				StartUpdateCheck("Update check: ", ask: false);
+			};
+			_reinstallPanel.UpdateCheckRequested += () => StartUpdateCheck("Update check: ", ask: false);
+			_reinstallPanel.UpdateInstallRequested += StartUpdateInstall;
 		}
 
 		ApplyScale();
@@ -1317,7 +1329,7 @@ public partial class LauncherApp : Control
 	/// <summary>The info drawer's tabs from the active title's screen; the drawer shows the first.</summary>
 	private void ApplyInfoTabs()
 	{
-		_infoTabList = PhoneInfoTabs(_screen.InfoTabs);
+		_infoTabList = _screen.InfoTabs;
 		_infoTabs.ClearTabs();
 		foreach (LauncherInfoTab tab in _infoTabList)
 		{
@@ -1741,19 +1753,27 @@ public partial class LauncherApp : Control
 		if (_phone != null) { RefreshAndroidState(); return; }
 
 		bool installedBuildExists = Installer.InstalledBuildExists();
-		bool canDownloadBuild = ManagedDownloads.HasDownloadSource();
-		bool updateAvailable = _updates.UpdateAvailable;
+		// An update never stands in for Play: it is offered beside it (the Install tab, and a
+		// question when one is found), so a player can always start the build they have.
+		const bool canDownloadBuild = false;
+		const bool updateAvailable = false;
 		bool isoInProgress = _pipeline.Running;
 
-		if (_downloadProgress is not null && _downloadProgress.IsComplete &&
-			!_downloadProgress.HasError)
+		// A finished update leaves the frame's state: a failure keeps its reason for the Install tab.
+		if (_downloadProgress is { IsComplete: true } finished)
 		{
+			_updateError = finished.HasError ? finished.GetErrorMessage() : string.Empty;
+			if (finished.HasError)
+			{
+				Log("The update failed: " + _updateError);
+			}
+
 			_downloadProgress = null;
 		}
 
 		bool downloadInProgress = _downloadProgress is not null && !_downloadProgress.IsComplete;
 		string downloadLabel = downloadInProgress
-			? ManagedDownloader.BuildProgressButtonLabel(_downloadProgress!)
+			? ReleaseInstaller.BuildProgressButtonLabel(_downloadProgress!)
 			: string.Empty;
 		bool gameIsRunning = _launch.GameIsRunning;
 		_lastGameRunning = gameIsRunning;
@@ -1952,6 +1972,11 @@ public partial class LauncherApp : Control
 				(_pipeline.LastErrorTitle is null || _pipeline.LastErrorTitle == scoped);
 
 			_reinstallPanel.Refresh(running, _launch.GameIsRunning);
+			bool updating = _downloadProgress is not null;
+			_reinstallPanel.SetUpdateState(
+				DescribeUpdateState(updating),
+				installs: !updating && _updates.UpdateAvailable,
+				enabled: UpdateChecker.CanUpdate && !updating && !running && !_launch.GameIsRunning);
 			_reinstallPanel.SetBuildControls(
 				runningForScoped && _pipeline.Control is not null,
 				_pipeline.Control?.IsPaused ?? false,
@@ -2057,11 +2082,7 @@ public partial class LauncherApp : Control
 
 	private async void InitPatches()
 	{
-		string? response = null;
-		if (PatchSource.OnlineMetadataEnabled())
-		{
-			response = await GitHubApi.HttpGetAsync(PatchSource.GetPatchesLocation());
-		}
+		string? response = await GitHubApi.HttpGetAsync(PatchSource.GetPatchesLocation());
 
 		_patches.Init(response);
 		CallDeferred(nameof(ShowPatchesWindowIfAny));
@@ -2081,14 +2102,6 @@ public partial class LauncherApp : Control
 
 	private async void FetchGitHubData()
 	{
-		if (!Ini.GetBool("EnableOnlineMetadata", false, "Github"))
-		{
-			_commitsLoading = false;
-			_contributorsLoading = false;
-			RefreshInfoBody();
-			return;
-		}
-
 		string repo = GitHubApi.GetRepositoryName();
 		string branch = GitHubApi.GetRepositoryBranch();
 
@@ -2125,7 +2138,7 @@ public partial class LauncherApp : Control
 				break;
 
 			case TitleCardActionKind.DownloadRuntime:
-				StartBuildDownload();
+				StartUpdateInstall();
 				break;
 
 			case TitleCardActionKind.Play:
@@ -2211,13 +2224,6 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		if (ManagedDownloads.HasDownloadSource() &&
-			(!Installer.InstalledBuildExists() || _updates.UpdateAvailable))
-		{
-			StartBuildDownload();
-			return;
-		}
-
 		if (_launch.GameIsRunning)
 		{
 			Log("A game session is already running.");
@@ -2294,7 +2300,12 @@ public partial class LauncherApp : Control
 		RefreshState();
 	}
 
-	private async void StartUpdateCheck(string logPrefix)
+	/// <summary>
+	/// Looks at the project's releases for the chosen channel's newest build. Run on every start
+	/// and whenever the player asks or changes channel; <paramref name="ask"/> offers the update
+	/// when one is found.
+	/// </summary>
+	private async void StartUpdateCheck(string logPrefix, bool ask = true)
 	{
 		UpdateCheckResult? result = await _updates.CheckAsync(logPrefix);
 		if (result is null)
@@ -2302,33 +2313,89 @@ public partial class LauncherApp : Control
 			return;
 		}
 
-		_latestVersions = result.LatestVersions;
 		if (result.Message.Length != 0)
 		{
 			Log(result.Message);
 		}
 
 		RefreshState();
+		if (ask && result.UpdateAvailable && result.Latest is { } build && !Unattended)
+		{
+			AskChoice($"{build.Title} is available",
+				$"A newer build is published on the {ReleaseUpdates.ChannelName(ReleaseUpdates.Channel)} channel. " +
+				"Updating downloads it and replaces the app's own files; your game data, saves and settings are kept. " +
+				"The channel is chosen on the Install tab.",
+				new ChoiceDialog.Choice("Update now", StartUpdateInstall),
+				new ChoiceDialog.Choice("Later", () => { }));
+		}
 	}
 
-	private void StartBuildDownload()
+	/// <summary>What the Install tab says about the app's own updates.</summary>
+	private string DescribeUpdateState(bool updating)
 	{
-		_downloadProgress = _updates.StartDownload(_latestVersions, savedAnyVersion =>
+		if (!UpdateChecker.CanUpdate)
 		{
-			CallDeferred(MethodName.OnBuildDownloadFinished, savedAnyVersion);
-		});
+			return "This build is not updated by the launcher.";
+		}
 
-		RefreshState();
+		if (updating)
+		{
+			return ReleaseInstaller.BuildProgressButtonLabel(_downloadProgress!).Replace('\n', ' ');
+		}
+
+		if (_updateError.Length != 0)
+		{
+			return "The update failed: " + _updateError;
+		}
+
+		string channel = ReleaseUpdates.ChannelName(ReleaseUpdates.Channel);
+		if (_updates.Latest is not { } latest)
+		{
+			return _updates.Reached
+				? $"No {channel} is published for this platform yet."
+				: "The project's releases have not been reached.";
+		}
+
+		return _updates.UpdateAvailable
+			? $"{latest.Title} is available."
+			: $"Up to date: {latest.Title}.";
 	}
 
-	private void OnBuildDownloadFinished(bool savedAnyVersion)
+	/// <summary>Downloads and installs the newest build found, then offers the restart that loads it.</summary>
+	private void StartUpdateInstall()
 	{
-		if (!savedAnyVersion)
+		if (_downloadProgress is not null || _pipeline.Running || _launch.GameIsRunning)
 		{
-			StartUpdateCheck("Post-download check: ");
+			Log("An update waits for the running game or build to finish.");
+			return;
+		}
+
+		_updateError = string.Empty;
+		_downloadProgress = _updates.StartDownload(() => CallDeferred(MethodName.OnUpdateInstalled));
+		if (_downloadProgress is null)
+		{
+			Log("There is no update to install.");
 		}
 
 		RefreshState();
+	}
+
+	private void OnUpdateInstalled()
+	{
+		string title = _updates.Latest?.Title ?? "The update";
+		Log($"{title} is installed. Restart the launcher to use it.");
+		RefreshState();
+		AskChoice($"{title} is installed",
+			"The new build is in place. The launcher restarts to load it; the game code is rebuilt for it the next time you play.",
+			new ChoiceDialog.Choice("Restart now", RestartLauncher),
+			new ChoiceDialog.Choice("Later", () => { }));
+	}
+
+	/// <summary>Starts the installed executable again and leaves this one.</summary>
+	private void RestartLauncher()
+	{
+		OS.CreateProcess(OS.GetExecutablePath(), OS.GetCmdlineArgs());
+		GetTree().Quit();
 	}
 
 	private void UpdateArtCredit()

@@ -25,7 +25,7 @@ public static class GitHubApi
     }
 
     public static string GetRepositoryName() =>
-        Ini.GetString("Name", "Fable2Recomp/Fable2Remake", "Github");
+        Ini.GetString("Name", "Fable2Recomp/Fable-Return-to-Albion", "Github");
 
     public static string GetRepositoryBranch() =>
         Ini.GetString("Branch", "main", "Github");
@@ -39,7 +39,7 @@ public static class GitHubApi
     }
 
     public static string GetProjectPage() =>
-        Ini.GetString("ProjectPage", "https://github.com/Fable2Recomp/Fable2Remake", "About");
+        Ini.GetString("ProjectPage", "https://github.com/Fable2Recomp/Fable-Return-to-Albion", "About");
 
     public static async Task<List<GitCommit>?> FetchCommitsAsync(string repo, string branch)
     {
@@ -131,41 +131,6 @@ public static class GitHubApi
         }
 
         return contributors;
-    }
-
-    public static async Task<string> FetchLatestCommitShaForFileAsync(
-        string repo, string branch, string filePath)
-    {
-        string url = "https://api.github.com/repos/" + repo +
-                     "/commits?sha=" + Uri.EscapeDataString(branch) +
-                     "&path=" + Uri.EscapeDataString(filePath) +
-                     "&per_page=1";
-
-        string? json = await GetStringAsync(url).ConfigureAwait(false);
-        if (json is null)
-        {
-            return string.Empty;
-        }
-
-        try
-        {
-            using JsonDocument document = JsonDocument.Parse(json);
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                return string.Empty;
-            }
-
-            foreach (JsonElement element in document.RootElement.EnumerateArray())
-            {
-                return ReadString(element, "sha");
-            }
-        }
-        catch (JsonException)
-        {
-            return string.Empty;
-        }
-
-        return string.Empty;
     }
 
     public static Task<string?> HttpGetAsync(string url) => GetStringAsync(url);

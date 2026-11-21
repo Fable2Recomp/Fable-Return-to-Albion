@@ -1,195 +1,182 @@
 using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Text;
+using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 
 namespace Refii.Launcher.Core;
 
-public sealed class ManagedDownloadFile
+/// <summary>Which of the project's published builds the launcher keeps the install on.</summary>
+public enum UpdateChannel
 {
-	public string RepositoryRelativePath = string.Empty;
-	public string LocalRelativePath = string.Empty;
-	public string VersionKey = string.Empty;
+	/// <summary>The newest numbered release (a beta).</summary>
+	Release,
+
+	/// <summary>The rolling nightly dev build.</summary>
+	Nightly,
 }
 
-public static class ManagedDownloads
+/// <summary>
+/// One published build for this platform: the release it belongs to and the package to download.
+/// </summary>
+/// <param name="Tag">The release's tag (<c>beta-7</c>, <c>nightly</c>).</param>
+/// <param name="Title">The release's name as published ("Beta 7"); the tag when it has none.</param>
+/// <param name="AssetName">The package's file name.</param>
+/// <param name="AssetUrl">Where the package downloads from.</param>
+/// <param name="AssetSize">The package's size in bytes, 0 when not stated.</param>
+/// <param name="AssetUpdatedAt">When the package was uploaded, as GitHub states it (ISO 8601).</param>
+public sealed record ReleaseBuild(
+	string Tag, string Title, string AssetName, string AssetUrl, long AssetSize, string AssetUpdatedAt)
 {
-	public static string GetConfigSuffix() =>
-		OperatingSystem.IsWindows() ? "Windows" : "Linux";
-
-	public static string GetPlatformAwareString(string key, string defaultValue, string section)
-	{
-		string platformValue = Ini.GetString(key + GetConfigSuffix(), string.Empty, section);
-		if (platformValue.Length != 0)
-		{
-			return platformValue;
-		}
-
-		string genericValue = Ini.GetString(key, string.Empty, section);
-		if (genericValue.Length != 0)
-		{
-			return genericValue;
-		}
-
-		return defaultValue.Length == 0 ? string.Empty : Ini.GetString(key, defaultValue, section);
-	}
-
-	private static string GetManagedFilesConfigValue()
-	{
-		if (!Ini.GetBool("EnableDownload", false, "Github"))
-		{
-			return string.Empty;
-		}
-
-		string configured = GetPlatformAwareString("ManagedFiles", string.Empty, "Github");
-		if (configured.Length != 0)
-		{
-			return configured;
-		}
-
-		return GetPlatformAwareString("ExeRelativePath", string.Empty, "Github");
-	}
-
-	public static List<ManagedDownloadFile> GetManagedDownloadFiles()
-	{
-		var files = new List<ManagedDownloadFile>();
-		string value = GetManagedFilesConfigValue();
-		if (value.Length == 0)
-		{
-			return files;
-		}
-
-		foreach (string entry in value.Split(';'))
-		{
-			ManagedDownloadFile file = Parse(entry);
-			if (file.RepositoryRelativePath.Length != 0 && file.LocalRelativePath.Length != 0)
-			{
-				files.Add(file);
-			}
-		}
-
-		return files;
-	}
-
-	private static ManagedDownloadFile Parse(string entry)
-	{
-		var file = new ManagedDownloadFile();
-
-		int separator = entry.IndexOf('|');
-		if (separator < 0)
-		{
-			file.RepositoryRelativePath = entry.Trim();
-			file.LocalRelativePath = Path.GetFileName(file.RepositoryRelativePath);
-		}
-		else
-		{
-			file.RepositoryRelativePath = entry[..separator].Trim();
-			file.LocalRelativePath = entry[(separator + 1)..].Trim();
-		}
-
-		file.VersionKey = file.LocalRelativePath.Replace('\\', '/');
-		return file;
-	}
-
-	public static bool HasDownloadSource() => GetManagedDownloadFiles().Count != 0;
-
-	public static bool CanCheckForUpdates() => GetManagedDownloadFiles().Count != 0;
-
-	public static string BuildRawDownloadUrl(string repositoryRelativePath) =>
-		"https://github.com/" + GitHubApi.GetRepositoryName() + "/raw/" +
-		GitHubApi.GetRepositoryBranch() + "/" + repositoryRelativePath;
-
-	public static string GetInstalledManagedFilePath(ManagedDownloadFile file) =>
-		Path.Combine(Platform.GetExecutableDirectory(), file.LocalRelativePath);
+	/// <summary>
+	/// What identifies this build among every build of its channel: the nightly's tag is reused
+	/// each night, so the tag alone does not.
+	/// </summary>
+	public string Stamp => Tag + "@" + AssetUpdatedAt;
 }
 
-public static class VersionManager
+/// <summary>
+/// THE UPDATE'S CONTRACT. The project publishes its builds as GitHub releases: numbered betas, and
+/// one rolling pre-release under the tag <c>nightly</c> (.github/workflows/build.yml), each
+/// carrying one package per platform named <c>&lt;app&gt;-&lt;platform&gt;-&lt;arch&gt;.zip</c>.
+/// The player picks a channel; the launcher takes that channel's newest build for this machine
+/// and extracts it over the install (<see cref="Refii.Launcher.Updates.ReleaseInstaller"/>).
+/// </summary>
+public static class ReleaseUpdates
 {
-	private static string GetVersionFilePath() =>
-		Path.Combine(
-			Installer.GetInstallBasePath(),
-			Ini.GetString("VersionFile", "version.txt", "Game"));
+	/// <summary>The tag the rolling nightly dev build is published under.</summary>
+	public const string NightlyTag = "nightly";
 
-	public static bool VersionFileExists() => File.Exists(GetVersionFilePath());
+	private const string Section = "Updates";
 
-	public static Dictionary<string, string> LoadSavedVersions()
+	/// <summary>The channel the player chose; the numbered releases until they choose.</summary>
+	public static UpdateChannel Channel
 	{
-		var versions = new Dictionary<string, string>(StringComparer.Ordinal);
-		string path = GetVersionFilePath();
-		if (!File.Exists(path))
+		get => string.Equals(Ini.GetString("Channel", "release", Section), "nightly", StringComparison.OrdinalIgnoreCase)
+			? UpdateChannel.Nightly
+			: UpdateChannel.Release;
+		set
 		{
-			return versions;
-		}
-
-		foreach (string rawLine in File.ReadLines(path))
-		{
-			string line = rawLine.Trim();
-			if (line.Length == 0)
-			{
-				continue;
-			}
-
-			int equals = line.IndexOf('=');
-			if (equals < 0)
-			{
-				versions[string.Empty] = line;
-				continue;
-			}
-
-			versions[line[..equals].Trim()] = line[(equals + 1)..].Trim();
-		}
-
-		return versions;
-	}
-
-	public static string LoadSavedVersion()
-	{
-		Dictionary<string, string> versions = LoadSavedVersions();
-		return versions.TryGetValue(string.Empty, out string? value) ? value : string.Empty;
-	}
-
-	public static void SaveCurrentVersions(IReadOnlyDictionary<string, string> versions)
-	{
-		string path = GetVersionFilePath();
-		try
-		{
-			string? parent = Path.GetDirectoryName(path);
-			if (!string.IsNullOrEmpty(parent))
-			{
-				Directory.CreateDirectory(parent!);
-			}
-
-			var builder = new StringBuilder();
-			foreach ((string key, string value) in versions)
-			{
-				if (key.Length == 0)
-				{
-					builder.Append(value).Append('\n');
-				}
-				else
-				{
-					builder.Append(key).Append('=').Append(value).Append('\n');
-				}
-			}
-
-			File.WriteAllText(path, builder.ToString(), new UTF8Encoding(false));
-		}
-		catch (Exception)
-		{
+			Ini.SetString("Channel", value == UpdateChannel.Nightly ? "nightly" : "release", Section);
+			Ini.Save();
 		}
 	}
 
-	public static void SaveCurrentVersion(string commitSha) =>
-		SaveCurrentVersions(new Dictionary<string, string> { [string.Empty] = commitSha });
+	/// <summary>The <see cref="ReleaseBuild.Stamp"/> of the build the launcher last installed; empty before the first.</summary>
+	public static string InstalledStamp
+	{
+		get => Ini.GetString("Installed", string.Empty, Section);
+		set
+		{
+			Ini.SetString("Installed", value, Section);
+			Ini.Save();
+		}
+	}
 
-	public static void RemoveVersionFile()
+	/// <summary>The channel as the player reads it.</summary>
+	public static string ChannelName(UpdateChannel channel) =>
+		channel == UpdateChannel.Nightly ? "Nightly dev build" : "Release (beta)";
+
+	/// <summary>How this machine's package name ends: <c>-linux-x86_64.zip</c>, <c>-windows-arm64.zip</c>.</summary>
+	public static string AssetSuffix() =>
+		AssetSuffix(OperatingSystem.IsWindows(), RuntimeInformation.ProcessArchitecture == Architecture.Arm64);
+
+	/// <inheritdoc cref="AssetSuffix()"/>
+	public static string AssetSuffix(bool windows, bool arm64) =>
+		"-" + (windows ? "windows" : "linux") + "-" + (arm64 ? "arm64" : "x86_64") + ".zip";
+
+	/// <summary>The releases listing the channels are read from.</summary>
+	public static string ReleasesUrl(string repository) =>
+		"https://api.github.com/repos/" + repository + "/releases?per_page=30";
+
+	/// <summary>
+	/// The channel's newest build for a machine, from GitHub's releases listing (newest first):
+	/// the release tagged <see cref="NightlyTag"/> for the nightly channel, the first other
+	/// release for the release channel, skipping a draft and a release with no package whose
+	/// name ends in <paramref name="assetSuffix"/>. Null when the listing holds none.
+	/// </summary>
+	public static ReleaseBuild? Pick(string releasesJson, UpdateChannel channel, string assetSuffix)
 	{
 		try
 		{
-			File.Delete(GetVersionFilePath());
+			using JsonDocument document = JsonDocument.Parse(releasesJson);
+			if (document.RootElement.ValueKind != JsonValueKind.Array)
+			{
+				return null;
+			}
+
+			foreach (JsonElement release in document.RootElement.EnumerateArray())
+			{
+				string tag = Text(release, "tag_name");
+				bool nightly = string.Equals(tag, NightlyTag, StringComparison.Ordinal);
+				if (tag.Length == 0 || nightly != (channel == UpdateChannel.Nightly) || Flag(release, "draft"))
+				{
+					continue;
+				}
+
+				if (!release.TryGetProperty("assets", out JsonElement assets) || assets.ValueKind != JsonValueKind.Array)
+				{
+					continue;
+				}
+
+				foreach (JsonElement asset in assets.EnumerateArray())
+				{
+					string name = Text(asset, "name");
+					string url = Text(asset, "browser_download_url");
+					if (url.Length == 0 || !name.EndsWith(assetSuffix, StringComparison.OrdinalIgnoreCase))
+					{
+						continue;
+					}
+
+					string title = Text(release, "name");
+					long size = asset.TryGetProperty("size", out JsonElement stated) && stated.ValueKind == JsonValueKind.Number
+						? stated.GetInt64()
+						: 0L;
+					return new ReleaseBuild(tag, title.Length != 0 ? title : tag, name, url, size, Text(asset, "updated_at"));
+				}
+			}
 		}
-		catch (Exception)
+		catch (JsonException)
 		{
 		}
+
+		return null;
 	}
+
+	/// <summary>How much later than the install's own build a package must be to count as another build.</summary>
+	/// <remarks>A package is uploaded minutes after its executable is linked, by the same run.</remarks>
+	public static readonly TimeSpan SameBuildWindow = TimeSpan.FromHours(2);
+
+	/// <summary>
+	/// Whether <paramref name="build"/> is not the build installed. An install the launcher has
+	/// updated before knows its stamp exactly. One that was unpacked by hand has none, and is
+	/// compared by time: the package against the install's executable
+	/// (<paramref name="installedBuildTimeUtc"/>), newer when it is later by more than
+	/// <see cref="SameBuildWindow"/>, and unknown times count as newer.
+	/// </summary>
+	public static bool IsNewer(ReleaseBuild build, string installedStamp, DateTime? installedBuildTimeUtc)
+	{
+		if (installedStamp.Length != 0)
+		{
+			return !string.Equals(build.Stamp, installedStamp, StringComparison.Ordinal);
+		}
+
+		if (installedBuildTimeUtc is not { } installed ||
+			!DateTime.TryParse(build.AssetUpdatedAt, CultureInfo.InvariantCulture,
+				DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out DateTime published))
+		{
+			return true;
+		}
+
+		return published - installed > SameBuildWindow;
+	}
+
+	private static string Text(JsonElement element, string name) =>
+		element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement value) &&
+		value.ValueKind == JsonValueKind.String
+			? value.GetString() ?? string.Empty
+			: string.Empty;
+
+	private static bool Flag(JsonElement element, string name) =>
+		element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out JsonElement value) &&
+		value.ValueKind == JsonValueKind.True;
 }
