@@ -488,7 +488,7 @@ public static class Engine_LevelLighting
 			new Refii.Fx.Engine_FxDepthCaptureEffect { View = view },
 		};
 		if (!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
-		    string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal))
+			string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal))
 		{
 			effects.Add(new Engine_ScreenSpaceAoEffect { View = view });
 		}

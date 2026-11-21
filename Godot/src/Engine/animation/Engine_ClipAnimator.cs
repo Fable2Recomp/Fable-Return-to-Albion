@@ -1276,13 +1276,14 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 		{
 			RefreshMorph(bones);
 			TakePostOps(frameDt);
-			TakeStatedFace(frameDt, bones);
 		}
 		else
 		{
 			_hasMorph = false;
 			_postKinds = 0;
 		}
+
+		TakeStatedPose(frameDt, bones);
 		_foldBones = bones;
 		_foldPairAt = pairAt;
 		_foldAlpha = alpha;
@@ -2850,22 +2851,26 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 	private uint _faceEntity;
 
 	/// <summary>
-	/// THE FACE IS THE GUEST'S PUBLISHED POSE. The pose block the guest composes for the entity
-	/// (<see cref="HostBridge.GetEntityPose"/>, model space) is what its mesh is skinned with and
-	/// what its eye models ride (`sub_82209480` reads the posed `Shadow_L_Eye` / `Shadow_R_Eye`), so a
-	/// facial bone's local rotation is that block's: conj(parent) ⊗ bone. Read once per guest
-	/// frame on the main thread and eased on the host clock between guest frames; a torn or
-	/// absent block keeps the last statement.
+	/// WHAT THE GUEST'S PUBLISHED POSE STATES THAT NO CLIP HERE CARRIES, read once per guest frame
+	/// on the main thread (<see cref="HostBridge.GetEntityPose"/>):
+	/// <para>THE SCALE LANES, on every rig. A clip's scale is not sampled here; the bone's scale is
+	/// the pose block's own lane (+0x20), which the skin binds with (<see cref="SkinScale"/>). The
+	/// rig pairs it with its record (<see cref="Refii.Entities.Engine_EntitySkeleton.TakeStatedLanes"/>),
+	/// so a lane the pose feed captured before the clips took the rig over is not kept after the
+	/// guest's has moved on — a Demon Door's head is 0.1 deep asleep and 1 awake.</para>
+	/// <para>THE FACE, on a facial rig. The block is what the mesh is skinned with and what the eye
+	/// models ride (`sub_82209480` reads the posed `Shadow_L_Eye` / `Shadow_R_Eye`), so a facial
+	/// bone's local rotation is that block's: conj(parent) ⊗ bone, eased on the host clock between
+	/// guest frames.</para>
+	/// A torn or absent block keeps the last statement.
 	/// </summary>
-	private void TakeStatedFace(float dt, int bones)
+	private void TakeStatedPose(float dt, int bones)
 	{
 		if (!_hasFacialRig)
 		{
 			_faceStated = false;
-			return;
 		}
-
-		if (_faceRotation.Length != bones)
+		else if (_faceRotation.Length != bones)
 		{
 			_faceRotation = new Quaternion[bones];
 			_faceTarget = new Quaternion[bones];
@@ -2884,7 +2889,13 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 				System.Array.Fill(_faceHas, false);
 			}
 
-			if (HostBridge.GetEntityPose(_entity) is { Torn: false, IsModelSpace: true } pose)
+			HostBridge.BonePose? stated = HostBridge.GetEntityPose(_entity);
+			if (stated is { Torn: false } lanes)
+			{
+				Rig?.TakeStatedLanes(_entity, lanes);
+			}
+
+			if (_hasFacialRig && stated is { Torn: false, IsModelSpace: true } pose)
 			{
 				bool first = !_faceStated;
 				for (int b = 0; b < bones; ++b)
@@ -2928,7 +2939,7 @@ public sealed class Engine_ClipAnimator : System.Threading.IThreadPoolWorkItem, 
 			}
 		}
 
-		if (!_faceStated || dt <= 0f)
+		if (!_hasFacialRig || !_faceStated || dt <= 0f)
 		{
 			return;
 		}

@@ -2581,6 +2581,18 @@ public partial class GameDebugServer : Node
 					});
 				}
 
+				if (root.TryGetProperty("skinning", out JsonElement wantSkinning) &&
+					wantSkinning.ValueKind == JsonValueKind.String)
+				{
+					// `{"op":"entity","addr":"...","skinning":"<bone>"}`: the rig skinned from Godot's own
+					// arrays against that bone carrying the mesh rigidly ("" for the bind position).
+					return Ok(new Dictionary<string, object?>
+					{
+						["address"] = $"{address:X8}",
+						["skinning"] = GameEntities.Current?.DescribeSkinning(address, wantSkinning.GetString() ?? string.Empty),
+					});
+				}
+
 				if (root.TryGetProperty("bones", out JsonElement wantBones) &&
 					wantBones.ValueKind == JsonValueKind.True)
 				{

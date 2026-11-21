@@ -1529,6 +1529,43 @@ public sealed class Engine_EntitySkeleton
 	}
 
 	/// <summary>
+	/// Takes the scale lanes of a pose the caller has already read, for a rig the clips drive: the
+	/// pose feed (<see cref="Follow(uint, bool)"/>) is the only other reader, and it stops once the
+	/// animator takes the rig, so the lanes it left would otherwise stand for good. Same lanes,
+	/// same permutation and same pairing as the feed's; a torn pose, another rig's bone count or a
+	/// vector the guest has not written yet states nothing.
+	/// </summary>
+	public void TakeStatedLanes(uint entity, HostBridge.BonePose pose)
+	{
+		if (pose.Torn || pose.BoneCount != _guestBones || (pose.Space != 1 && pose.Space != 2))
+		{
+			return;
+		}
+
+		if (_newestScale.Length != _rig.BoneCount)
+		{
+			_newestScale = new Vector3[_rig.BoneCount];
+			System.Array.Fill(_newestScale, Vector3.One);
+		}
+
+		for (int m = 0; m < _modelToGuest.Length && m < _newestScale.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g < 0 || g >= pose.BoneCount)
+			{
+				continue;
+			}
+
+			// Permuted into the mesh's axes, never swizzled: see ToGodot.
+			Vector3 guestScale = pose.Scale(g);
+			var scale = new Vector3(guestScale.X, guestScale.Z, guestScale.Y);
+			_newestScale[m] = scale.IsFinite() ? scale : Vector3.One;
+		}
+
+		TakeFoldedLanes(entity);
+	}
+
+	/// <summary>
 	/// Pairs the newest lanes with the record the guest folded into them (<see cref="FoldedRecord"/>).
 	/// The record is read only while lanes moved or a pairing waits, so a settled rig reads nothing.
 	/// </summary>
