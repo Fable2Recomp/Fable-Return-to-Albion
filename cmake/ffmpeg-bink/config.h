@@ -42,3 +42,10 @@
 
 #undef CONFIG_XMA2_DECODER
 #define CONFIG_XMA2_DECODER 1
+
+// WMAv2, which src/xmadecode reaches as ff_wmav2_decoder for the game's WMA banks. wmadec.c is
+// in the SDK's subset on every architecture, but its generated configs switch the decoder on
+// for x86_64 only: the aarch64 ones (Windows and Linux) leave it 0, and the symbol is then
+// compiled out and the link fails. Stated here so every architecture carries it.
+#undef CONFIG_WMAV2_DECODER
+#define CONFIG_WMAV2_DECODER 1

@@ -2,7 +2,8 @@
 #
 # No game data is needed: the recompiled game code is built on the player's machine from their own
 # copy, so this is the host, the launcher and the bundled toolchain only. The default CMake target
-# compiles the natives, runs the tests, exports the Godot app and writes the zip to out/package/.
+# compiles the natives, exports the Godot app and writes the zip to out/package/ (the tests it
+# also runs on a developer's machine are skipped here: REFII_NO_TESTS).
 # Every platform builds natively on a runner of its own architecture, in the Release configuration.
 #
 #   pull request        build all four, keep the zips as run artifacts
@@ -30,6 +31,11 @@ concurrency:
 
 permissions:
   contents: read
+
+# The unit and feature tests are a developer's gate, run by every local build; here they are
+# skipped, so four cold runners do not each spend their time on the same suite.
+env:
+  REFII_NO_TESTS: '1'
 
 jobs:
   # Whether there is anything to build. Only the nightly asks: it is skipped when the "nightly"

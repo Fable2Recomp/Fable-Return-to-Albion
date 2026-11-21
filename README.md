@@ -205,7 +205,7 @@ Refii includes a content-addressed incremental build cache engine (`tools/build_
 | :--- | :--- |
 | `REFII_NO_BUILD_CACHE=1` | Disables the content-addressed test and packaging cache, forcing a completely fresh export, staging, and zip cycle. |
 | `REFII_FORCE_TESTS=1` | Forces all unit and feature tests to execute, bypassing cached test pass stamps even when source inputs have not changed. |
-| `REFII_NO_TESTS=1` | Rapid prototyping bypass: skips running GdUnit4 automated tests during MSBuild (`dotnet build Godot/refii-launcher.csproj -p:REFII_NO_TESTS=1`). |
+| `REFII_NO_TESTS=1` | Rapid prototyping bypass: skips running GdUnit4 automated tests during MSBuild (`dotnet build Godot/refii-launcher.csproj -p:REFII_NO_TESTS=1`) and, set in the environment, before packaging. The automated GitHub builds set it; local builds leave it unset and run the tests. |
 
 ### Automated Testing
 
