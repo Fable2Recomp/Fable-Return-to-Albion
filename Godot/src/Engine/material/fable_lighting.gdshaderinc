@@ -486,16 +486,14 @@ float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
 	float b01 = (1.0 - f.x) * f.y;
 	float b11 = f.x * f.y;
 
-	float w00 = b00 * hw00;
-	float w10 = b10 * hw10;
-	float w01 = b01 * hw01;
-	float w11 = b11 * hw11;
-	float sum_w = w00 + w10 + w01 + w11;
-
-	float matched_ao = (w00 * t00.g + w10 * t10.g + w01 * t01.g + w11 * t11.g) / max(sum_w, 1e-4);
-	float max_hw = max(max(hw00, hw10), max(hw01, hw11));
-	float fade = max_hw * smoothstep(0.0, 0.12, sum_w);
-	float ground_contact_ao = mix(1.0, matched_ao, fade);
+	float sum_w = b00 * hw00 + b10 * hw10 + b01 * hw01 + b11 * hw11;
+	float occ00 = (1.0 - t00.g) * hw00;
+	float occ10 = (1.0 - t10.g) * hw10;
+	float occ01 = (1.0 - t01.g) * hw01;
+	float occ11 = (1.0 - t11.g) * hw11;
+	float bilin_occ = b00 * occ00 + b10 * occ10 + b01 * occ01 + b11 * occ11;
+	float boost = mix(1.18, 1.0, min(sum_w, 1.0));
+	float ground_contact_ao = max(1.0 - bilin_occ * boost, 0.08);
 	return vertex_ao * min(inst_ao, ground_contact_ao);
 }
 #endif
@@ -533,16 +531,21 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 		return vertex_ao * inst_ao;
 	}
 
-	float abs_ny = max(0.0, min(1.0, abs(world_normal.y)));
-	float horiz_share = smoothstep(0.15, 0.65, abs_ny);
+	// Downward-facing undersides (eaves, archway soffits, carriage chassis bottoms) must never receive upward ground walk_ao.
+	float down_reject = smoothstep(-0.45, -0.05, world_normal.y);
+	if (down_reject <= 0.001) {
+		return vertex_ao * inst_ao;
+	}
+	float up_ny = max(0.0, min(1.0, world_normal.y));
+	float horiz_share = smoothstep(0.15, 0.65, up_ny);
 	vec2 n_xz = vec2(world_normal.x, world_normal.z);
 	float n_xz_len = length(n_xz);
-	// Offset outward from vertical bases (at least 1.75 ground-AO texels or 18 cm) so walls, crates,
-	// gravestones, fence plinths, and statue hems sample exterior floor contact outside their footprint.
+	// Offset outward from vertical bases (~1.15 ground-AO texels, 9..14 cm) so walls, crates, fence plinths,
+	// and statue bases sample adjacent floor contact without overshooting narrow 22 cm stone steps.
 	vec2 texel_metres = vec2(
 		1.0 / max(fable_terrain_ao_height.z * fable_terrain_ao_rect.z, 2.0),
 		1.0 / max(fable_terrain_ao_height.w * fable_terrain_ao_rect.w, 2.0));
-	vec2 outward_reach = max(texel_metres * 1.75, vec2(0.18));
+	vec2 outward_reach = min(max(texel_metres * 1.15, vec2(0.09)), vec2(0.14));
 	vec2 sample_xz = world_pos.xz;
 	if (n_xz_len > 1e-3) {
 		sample_xz += (n_xz / n_xz_len) * outward_reach * (1.0 - 0.65 * horiz_share);
@@ -577,9 +580,9 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 	float h11 = min_h + (t11.b * 255.0 + t11.a * 65280.0) * h_scale;
 
 	// Signed elevation above support floor: reject taps that jumped onto a ledge >26 cm above this fragment,
-	// and give vertical object bases a natural 3..45 cm grounded plinth gradient.
+	// and blend per-tap occlusion strictly bilinearly (C0 continuous across height steps, zero texel stamps).
 	float inner_h = mix(0.03, 0.05, horiz_share);
-	float outer_h = mix(0.45, 0.36, horiz_share);
+	float outer_h = mix(0.42, 0.32, horiz_share);
 	float dy00 = world_pos.y - h00;
 	float dy10 = world_pos.y - h10;
 	float dy01 = world_pos.y - h01;
@@ -595,18 +598,15 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 	float b01 = (1.0 - f.x) * f.y;
 	float b11 = f.x * f.y;
 
-	float w00 = b00 * hw00;
-	float w10 = b10 * hw10;
-	float w01 = b01 * hw01;
-	float w11 = b11 * hw11;
-	float sum_w = w00 + w10 + w01 + w11;
-
-	float matched_ao = (w00 * t00.g + w10 * t10.g + w01 * t01.g + w11 * t11.g) / max(sum_w, 1e-4);
+	float sum_w = b00 * hw00 + b10 * hw10 + b01 * hw01 + b11 * hw11;
+	float occ00 = (1.0 - t00.g) * hw00;
+	float occ10 = (1.0 - t10.g) * hw10;
+	float occ01 = (1.0 - t01.g) * hw01;
+	float occ11 = (1.0 - t11.g) * hw11;
+	float bilin_occ = (b00 * occ00 + b10 * occ10 + b01 * occ01 + b11 * occ11) * down_reject;
+	float boost = mix(1.22, 1.0, min(sum_w, 1.0));
 	float min_wall_floor = mix(0.18, 0.05, horiz_share);
-	matched_ao = max(matched_ao, min_wall_floor);
-	float max_hw = max(max(hw00, hw10), max(hw01, hw11));
-	float fade = max_hw * smoothstep(0.0, 0.10, sum_w);
-	float ground_contact_ao = mix(1.0, matched_ao, fade);
+	float ground_contact_ao = max(1.0 - bilin_occ * boost, min_wall_floor);
 	return vertex_ao * min(inst_ao, ground_contact_ao);
 }
 

@@ -50,11 +50,20 @@ void main() {
 		return;
 	}
 
-	// Minimum-delta plane slope (dz/dx, dz/dy in linear metres per output pixel) so grazing walls filter smoothly.
+	// 2nd-order affine-planar slope (dz/dx, dz/dy in linear metres per output pixel) so grazing eaves and chamfers filter smoothly.
 	float d_l = texelFetch(depth_tex, max(px - ivec2(1, 0), ivec2(0)), 0).r;
 	float d_r = texelFetch(depth_tex, min(px + ivec2(1, 0), out_max), 0).r;
 	float d_u = texelFetch(depth_tex, max(px - ivec2(0, 1), ivec2(0)), 0).r;
 	float d_d = texelFetch(depth_tex, min(px + ivec2(0, 1), out_max), 0).r;
+	float d_l2 = texelFetch(depth_tex, max(px - ivec2(2, 0), ivec2(0)), 0).r;
+	float d_r2 = texelFetch(depth_tex, min(px + ivec2(2, 0), out_max), 0).r;
+	float d_u2 = texelFetch(depth_tex, max(px - ivec2(0, 2), ivec2(0)), 0).r;
+	float d_d2 = texelFetch(depth_tex, min(px + ivec2(0, 2), out_max), 0).r;
+
+	float err_l = d_l > 1e-6 ? min(abs(d_c - d_l), d_l2 > 1e-6 ? abs((2.0 * d_l - d_l2) - d_c) : 1e9) : 1e9;
+	float err_r = d_r > 1e-6 ? min(abs(d_r - d_c), d_r2 > 1e-6 ? abs((2.0 * d_r - d_r2) - d_c) : 1e9) : 1e9;
+	float err_u = d_u > 1e-6 ? min(abs(d_c - d_u), d_u2 > 1e-6 ? abs((2.0 * d_u - d_u2) - d_c) : 1e9) : 1e9;
+	float err_d = d_d > 1e-6 ? min(abs(d_d - d_c), d_d2 > 1e-6 ? abs((2.0 * d_d - d_d2) - d_c) : 1e9) : 1e9;
 
 	float z_l = d_l > 1e-6 ? linearize_depth(d_l) : z_c;
 	float z_r = d_r > 1e-6 ? linearize_depth(d_r) : z_c;
@@ -65,8 +74,8 @@ void main() {
 	float dz_l = z_c - z_l;
 	float dz_d = z_d - z_c;
 	float dz_u = z_c - z_u;
-	float dz_dx = (d_r > 1e-6 && (d_l <= 1e-6 || abs(dz_r) < abs(dz_l))) ? dz_r : (d_l > 1e-6 ? dz_l : 0.0);
-	float dz_dy = (d_d > 1e-6 && (d_u <= 1e-6 || abs(dz_d) < abs(dz_u))) ? dz_d : (d_u > 1e-6 ? dz_u : 0.0);
+	float dz_dx = (d_r > 1e-6 && (d_l <= 1e-6 || err_r < err_l)) ? dz_r : (d_l > 1e-6 ? dz_l : 0.0);
+	float dz_dy = (d_d > 1e-6 && (d_u <= 1e-6 || err_d < err_u)) ? dz_d : (d_u > 1e-6 ? dz_u : 0.0);
 
 	ivec2 trace_size = ivec2(params.sizes.xy);
 	ivec2 trace_max = trace_size - ivec2(1);
@@ -76,6 +85,8 @@ void main() {
 	float inv_plane_tol = 1.0 / max(0.025, z_c * 0.015);
 	float sum_ao = 0.0;
 	float sum_w = 0.0;
+	float best_dz = 1e9;
+	float nearest_ao = 1.0;
 
 	for (int dy = -2; dy <= 2; ++dy) {
 		int ty = clamp(tp_center.y + dy, 0, trace_max.y);
@@ -101,12 +112,18 @@ void main() {
 			float ao_tap = texelFetch(raw_ao_tex, tp_tap, 0).r;
 			sum_ao += ao_tap * w;
 			sum_w += w;
+
+			float abs_dz = abs(z_tap - z_c);
+			if (abs_dz < best_dz) {
+				best_dz = abs_dz;
+				nearest_ao = ao_tap;
+			}
 		}
 	}
 
-	float filtered = sum_w > 1e-4 ? (sum_ao / sum_w) : 1.0;
-	// Sub-texel thin features (1px wires/tips between half-res trace centers) fade cleanly to 1.0 rather than haloing.
+	float filtered = sum_w > 1e-4 ? (sum_ao / sum_w) : nearest_ao;
+	// Narrow 1..2px chamfers between half-res trace centers fall back to nearest depth-matched tap rather than flashing 1.0 white.
 	float confidence = clamp(sum_w * 6.0, 0.0, 1.0);
-	float final_ao = mix(1.0, filtered, confidence);
+	float final_ao = mix(nearest_ao, filtered, confidence);
 	imageStore(out_ao_image, px, vec4(final_ao, 0.0, 0.0, 0.0));
 }

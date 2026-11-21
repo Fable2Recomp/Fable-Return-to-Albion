@@ -78,32 +78,32 @@ public partial class Engine_ScreenSpaceAoEffect : CompositorEffect
 	private readonly byte[] _blurBytes = new byte[BlurParamsBytes];
 
 	/// <summary>
-	/// Resolves trace and output resolution scaling from <paramref name="terrainAoResolution"/>:
+	/// Resolves trace and output resolution and ray counts from <paramref name="terrainAoResolution"/>.
+	/// <paramref name="fullSize"/> is already Godot's internal 3D render size (including FSR / 3D scale),
+	/// so all presets run 1:1 at <paramref name="fullSize"/> and scale quality via horizon sample density:
 	/// <list type="bullet">
-	/// <item><description><c>&lt;= 2048</c> (Low / Performance): half-res trace, half-res output, 2 directions x 3 steps.</description></item>
-	/// <item><description><c>4096</c> (Balanced): half-res trace + full-res depth-guided bilateral upsample, 3 directions x 4 steps.</description></item>
-	/// <item><description><c>&gt;= 8192</c> (High / Ultra): full-res trace + full-res bilateral filter, 3 directions x 4 steps.</description></item>
+	/// <item><description><c>&lt;= 2048</c> (Low / Performance): 1:1 internal 3D resolution, 2 directions x 3 steps (6 horizon pairs).</description></item>
+	/// <item><description><c>4096</c> (Balanced): 1:1 internal 3D resolution, 3 directions x 4 steps (12 horizon pairs).</description></item>
+	/// <item><description><c>&gt;= 8192</c> (High / Quality): 1:1 internal 3D resolution, 4 directions x 5 steps (20 horizon pairs).</description></item>
 	/// </list>
 	/// </summary>
 	public static (Vector2I TraceSize, Vector2I OutSize, int Directions, int Steps) ResolveQualityTier(
 		Vector2I fullSize,
 		int terrainAoResolution)
 	{
-		int w = Math.Max(1, fullSize.X);
-		int h = Math.Max(1, fullSize.Y);
-		Vector2I half = new(Math.Max(1, (w + 1) / 2), Math.Max(1, (h + 1) / 2));
+		Vector2I full = new(Math.Max(1, fullSize.X), Math.Max(1, fullSize.Y));
 
 		if (terrainAoResolution <= 2048)
 		{
-			return (half, half, 2, 3);
+			return (full, full, 2, 3);
 		}
 
 		if (terrainAoResolution <= 4096)
 		{
-			return (half, new Vector2I(w, h), 3, 4);
+			return (full, full, 3, 4);
 		}
 
-		return (new Vector2I(w, h), new Vector2I(w, h), 3, 4);
+		return (full, full, 4, 5);
 	}
 
 	public static void RegisterGlobals()

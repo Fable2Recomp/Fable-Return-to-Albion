@@ -1461,27 +1461,32 @@ public static class Engine_LevelAmbientOcclusion
 							float curY = hasGhf ? (ghfY - 0.60f) : (bvhMinY - 0.25f);
 							float maxScanY = bvhMaxY + 0.50f;
 
+							bool ProbeFloorAt(float px, float pz, float candFloorY)
+							{
+								return localBvh.TraceClosestHit(
+									new Vector3(px, candFloorY + 0.16f, pz),
+									Vector3.Down, 0.0f, 0.32f, out _, out Vector3 nf, archMask, archExpected) && MathF.Abs(nf.Y) >= 0.62f;
+							}
+
 							bool HasContinuous2DFloor(float candFloorY)
 							{
-								const float probeR = 1.15f;
-								bool hitPx = localBvh.TraceClosestHit(
-									new Vector3(worldX + probeR, candFloorY + 0.40f, worldZ),
-									Vector3.Down, 0.0f, 0.85f, out _, out Vector3 npx, archMask, archExpected) && MathF.Abs(npx.Y) >= 0.55f;
-								bool hitNx = !hitPx && localBvh.TraceClosestHit(
-									new Vector3(worldX - probeR, candFloorY + 0.40f, worldZ),
-									Vector3.Down, 0.0f, 0.85f, out _, out Vector3 nnx, archMask, archExpected) && MathF.Abs(nnx.Y) >= 0.55f;
-								if (!hitPx && !hitNx)
+								const float r1 = 0.32f;
+								const float r2 = 0.64f;
+								bool px1 = ProbeFloorAt(worldX + r1, worldZ, candFloorY);
+								bool nx1 = ProbeFloorAt(worldX - r1, worldZ, candFloorY);
+								bool spanX = (px1 && nx1)
+									|| (px1 && ProbeFloorAt(worldX + r2, worldZ, candFloorY))
+									|| (nx1 && ProbeFloorAt(worldX - r2, worldZ, candFloorY));
+								if (!spanX)
 								{
 									return false;
 								}
 
-								bool hitPz = localBvh.TraceClosestHit(
-									new Vector3(worldX, candFloorY + 0.40f, worldZ + probeR),
-									Vector3.Down, 0.0f, 0.85f, out _, out Vector3 npz, archMask, archExpected) && MathF.Abs(npz.Y) >= 0.55f;
-								bool hitNz = !hitPz && localBvh.TraceClosestHit(
-									new Vector3(worldX, candFloorY + 0.40f, worldZ - probeR),
-									Vector3.Down, 0.0f, 0.85f, out _, out Vector3 nnz, archMask, archExpected) && MathF.Abs(nnz.Y) >= 0.55f;
-								return hitPz || hitNz;
+								bool pz1 = ProbeFloorAt(worldX, worldZ + r1, candFloorY);
+								bool nz1 = ProbeFloorAt(worldX, worldZ - r1, candFloorY);
+								return (pz1 && nz1)
+									|| (pz1 && ProbeFloorAt(worldX, worldZ + r2, candFloorY))
+									|| (nz1 && ProbeFloorAt(worldX, worldZ - r2, candFloorY));
 							}
 
 							for (int stepIdx = 0; stepIdx < 8; stepIdx++)

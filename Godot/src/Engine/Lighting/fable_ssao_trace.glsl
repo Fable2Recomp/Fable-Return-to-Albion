@@ -126,26 +126,39 @@ void main() {
 		return;
 	}
 
-	// Reconstruct crisp face normal using minimum-delta depth pairs so silhouettes and cutouts never smear normals.
+	// Reconstruct crisp face normal using 2nd-order affine raw-depth planarity so grazing eaves,
+	// narrow chamfers, and silhouettes never pick across-corner depth jumps or smear normals.
 	ivec2 fp_l = max(fp - ivec2(1, 0), ivec2(0));
 	ivec2 fp_r = min(fp + ivec2(1, 0), depth_max);
 	ivec2 fp_u = max(fp - ivec2(0, 1), ivec2(0));
 	ivec2 fp_d = min(fp + ivec2(0, 1), depth_max);
+	ivec2 fp_l2 = max(fp - ivec2(2, 0), ivec2(0));
+	ivec2 fp_r2 = min(fp + ivec2(2, 0), depth_max);
+	ivec2 fp_u2 = max(fp - ivec2(0, 2), ivec2(0));
+	ivec2 fp_d2 = min(fp + ivec2(0, 2), depth_max);
 
 	float d_l = texelFetch(depth_tex, fp_l, 0).r;
 	float d_r = texelFetch(depth_tex, fp_r, 0).r;
 	float d_u = texelFetch(depth_tex, fp_u, 0).r;
 	float d_d = texelFetch(depth_tex, fp_d, 0).r;
+	float d_l2 = texelFetch(depth_tex, fp_l2, 0).r;
+	float d_r2 = texelFetch(depth_tex, fp_r2, 0).r;
+	float d_u2 = texelFetch(depth_tex, fp_u2, 0).r;
+	float d_d2 = texelFetch(depth_tex, fp_d2, 0).r;
 
-	vec3 p_l = d_l > 1e-6 ? reconstruct_view_pos(fp_l, d_l) : p_c;
-	vec3 p_r = d_r > 1e-6 ? reconstruct_view_pos(fp_r, d_r) : p_c;
-	vec3 p_u = d_u > 1e-6 ? reconstruct_view_pos(fp_u, d_u) : p_c;
-	vec3 p_d = d_d > 1e-6 ? reconstruct_view_pos(fp_d, d_d) : p_c;
+	float err_l = d_l > 1e-6 ? min(abs(d_c - d_l), d_l2 > 1e-6 ? abs((2.0 * d_l - d_l2) - d_c) : 1e9) : 1e9;
+	float err_r = d_r > 1e-6 ? min(abs(d_r - d_c), d_r2 > 1e-6 ? abs((2.0 * d_r - d_r2) - d_c) : 1e9) : 1e9;
+	float err_u = d_u > 1e-6 ? min(abs(d_c - d_u), d_u2 > 1e-6 ? abs((2.0 * d_u - d_u2) - d_c) : 1e9) : 1e9;
+	float err_d = d_d > 1e-6 ? min(abs(d_d - d_c), d_d2 > 1e-6 ? abs((2.0 * d_d - d_d2) - d_c) : 1e9) : 1e9;
 
-	bool use_r = (d_r > 1e-6) && ((d_l <= 1e-6) || abs(p_r.z - p_c.z) < abs(p_c.z - p_l.z));
-	bool use_d = (d_d > 1e-6) && ((d_u <= 1e-6) || abs(p_d.z - p_c.z) < abs(p_c.z - p_u.z));
-	vec3 dp_dx = use_r ? (p_r - p_c) : (p_c - p_l);
-	vec3 dp_dy = use_d ? (p_d - p_c) : (p_c - p_u);
+	bool use_r = (d_r > 1e-6) && ((d_l <= 1e-6) || err_r < err_l);
+	bool use_d = (d_d > 1e-6) && ((d_u <= 1e-6) || err_d < err_u);
+	vec3 dp_dx = use_r
+		? (reconstruct_view_pos(fp_r, d_r) - p_c)
+		: (d_l > 1e-6 ? (p_c - reconstruct_view_pos(fp_l, d_l)) : vec3(1e-4, 0.0, 0.0));
+	vec3 dp_dy = use_d
+		? (reconstruct_view_pos(fp_d, d_d) - p_c)
+		: (d_u > 1e-6 ? (p_c - reconstruct_view_pos(fp_u, d_u)) : vec3(0.0, -1e-4, 0.0));
 
 	vec3 n_raw = cross(dp_dy, dp_dx);
 	float n_len_sq = dot(n_raw, n_raw);

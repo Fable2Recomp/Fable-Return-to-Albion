@@ -1017,22 +1017,31 @@ float eval_hemisphere_ao(int cell_ao_root, int tx, int ty, vec3 world_pos, vec3 
 	return raw_ao;
 }
 
+bool probe_floor_at(int ao_root, float px, float pz, float cand_y) {
+	float d;
+	vec3 n;
+	return trace_closest_hit(ao_root, 4u, vec3(px, cand_y + 0.16, pz), vec3(0.0, -1.0, 0.0), 0.0, 0.32, 6u, 4u, d, n) && abs(n.y) >= 0.62;
+}
+
 bool has_continuous_2d_floor(int ao_root, float wx, float wz, float cand_y) {
 	if (ao_root < 0) {
 		return false;
 	}
-	const float probe_r = 1.15;
-	vec3 down_dir = vec3(0.0, -1.0, 0.0);
-	float d;
-	vec3 n;
-	bool hit_px = trace_closest_hit(ao_root, 4u, vec3(wx + probe_r, cand_y + 0.40, wz), down_dir, 0.0, 0.85, 6u, 4u, d, n) && abs(n.y) >= 0.55;
-	bool hit_nx = !hit_px && trace_closest_hit(ao_root, 4u, vec3(wx - probe_r, cand_y + 0.40, wz), down_dir, 0.0, 0.85, 6u, 4u, d, n) && abs(n.y) >= 0.55;
-	if (!hit_px && !hit_nx) {
+	const float r1 = 0.32;
+	const float r2 = 0.64;
+	bool px1 = probe_floor_at(ao_root, wx + r1, wz, cand_y);
+	bool nx1 = probe_floor_at(ao_root, wx - r1, wz, cand_y);
+	bool span_x = (px1 && nx1)
+		|| (px1 && probe_floor_at(ao_root, wx + r2, wz, cand_y))
+		|| (nx1 && probe_floor_at(ao_root, wx - r2, wz, cand_y));
+	if (!span_x) {
 		return false;
 	}
-	bool hit_pz = trace_closest_hit(ao_root, 4u, vec3(wx, cand_y + 0.40, wz + probe_r), down_dir, 0.0, 0.85, 6u, 4u, d, n) && abs(n.y) >= 0.55;
-	bool hit_nz = !hit_pz && trace_closest_hit(ao_root, 4u, vec3(wx, cand_y + 0.40, wz - probe_r), down_dir, 0.0, 0.85, 6u, 4u, d, n) && abs(n.y) >= 0.55;
-	return hit_pz || hit_nz;
+	bool pz1 = probe_floor_at(ao_root, wx, wz + r1, cand_y);
+	bool nz1 = probe_floor_at(ao_root, wx, wz - r1, cand_y);
+	return (pz1 && nz1)
+		|| (pz1 && probe_floor_at(ao_root, wx, wz + r2, cand_y))
+		|| (nz1 && probe_floor_at(ao_root, wx, wz - r2, cand_y));
 }
 
 void main() {

@@ -387,14 +387,14 @@ public sealed class LevelAmbientOcclusionTests
 	[TestCase]
 	public void LevelAmbientOcclusion_SteppedPlinthAndCrateTop_AnchorsWalkHeightOnSupportFloor()
 	{
-		// Flat 17x17 terrain grid from local (0, 0) to (16, 16) (Spacing = 1.0m, Y = 0).
-		const int gridW = 17;
-		const int gridH = 17;
+		// Flat 65x65 terrain grid from local (0, 0) to (16, 16) (Spacing = 0.25m, Y = 0).
+		const int gridW = 65;
+		const int gridH = 65;
 		var ghf = new GhfHeights
 		{
 			Width = gridW,
 			Height = gridH,
-			Spacing = 1.0f,
+			Spacing = 0.25f,
 			OriginX = 0.0f,
 			OriginZ = 0.0f,
 			Values = new float[gridW * gridH],
@@ -407,8 +407,14 @@ public sealed class LevelAmbientOcclusionTests
 		AddBoxTriangles(tris, new Vector3(-6.0f, -0.10f, 2.0f), new Vector3(-2.0f, 0.60f, 6.0f));
 		AddBoxTriangles(tris, new Vector3(-4.4f,  1.05f, 3.6f), new Vector3(-3.6f, 2.60f, 4.4f));
 
-		// 2. Isolated 0.8m x 0.8m crate sitting on terrain at local X=12, Z=12 (world -12, 0..1.10, 12).
-		AddBoxTriangles(tris, new Vector3(-12.4f, 0.02f, 11.6f), new Vector3(-11.6f, 1.10f, 12.4f));
+		// 2. Narrow 1.10m x 1.50m pig-statue pedestal at local X=[8.45..9.55] (world [-9.55..-8.45]), Z=[3.25..4.75], Y = 1.55m,
+		//    with a narrow 8cm decorative frieze shelf at Z=[3.15..3.25], Y = 1.30m (25cm below top) and pig belly at Y = 1.95..3.10m.
+		AddBoxTriangles(tris, new Vector3(-9.55f, -0.10f, 3.25f), new Vector3(-8.45f, 1.55f, 4.75f));
+		AddBoxTriangles(tris, new Vector3(-9.55f,  1.22f, 3.15f), new Vector3(-8.45f, 1.30f, 3.25f));
+		AddBoxTriangles(tris, new Vector3(-9.25f,  1.95f, 3.65f), new Vector3(-8.75f, 3.10f, 4.35f));
+
+		// 3. Isolated 0.55m x 0.55m crate/trough sitting on terrain at local X=12, Z=12 (world [-12.275..-11.725], 0.02..1.10, [11.725..12.275]).
+		AddBoxTriangles(tris, new Vector3(-12.275f, 0.02f, 11.725f), new Vector3(-11.725f, 1.10f, 12.275f));
 
 		var worldBvh = new Engine_LevelShadowMaps.BvhTree(tris);
 		StaticAoContainer baked = Engine_LevelAmbientOcclusion.BakeFromBvh(
@@ -419,7 +425,7 @@ public sealed class LevelAmbientOcclusionTests
 			primaryTerrain: ghf,
 			read: _ => null);
 
-		float DecodeWalkHeight(int localX, int localZ)
+		float DecodeWalkHeight(float localX, float localZ)
 		{
 			int tx = (int)MathF.Round((localX / 16.0f) * (baked.TerrainWidth - 1));
 			int ty = (int)MathF.Round((localZ / 16.0f) * (baked.TerrainHeight - 1));
@@ -429,11 +435,19 @@ public sealed class LevelAmbientOcclusionTests
 		}
 
 		// Under the statue belly at local (4, 4), walkY must capture the 0.60m plinth top (neither dropping to 0.0m nor jumping to 2.60m).
-		float plinthWalkY = DecodeWalkHeight(4, 4);
+		float plinthWalkY = DecodeWalkHeight(4.0f, 4.0f);
 		AssertThat(MathF.Abs(plinthWalkY - 0.60f)).IsLess(0.08f);
 
-		// Inside the 0.8m crate at local (12, 12), walkY must stay anchored on 0.0m terrain instead of jumping to the 1.10m crate lid!
-		float crateWalkY = DecodeWalkHeight(12, 12);
+		// At the center of the 1.10m-wide pig-statue pedestal at local (9.0, 4.0), walkY must capture 1.55m with zero center hole!
+		float narrowPedestalCenterWalkY = DecodeWalkHeight(9.0f, 4.0f);
+		AssertThat(MathF.Abs(narrowPedestalCenterWalkY - 1.55f)).IsLess(0.08f);
+
+		// On the narrow 8cm decorative frieze shelf 25cm below the pedestal top at local (9.0, 3.20), walkY must stay on 0.0m terrain!
+		float friezeShelfWalkY = DecodeWalkHeight(9.0f, 3.20f);
+		AssertThat(MathF.Abs(friezeShelfWalkY - 0.0f)).IsLess(0.08f);
+
+		// Inside the 0.55m crate at local (12, 12), walkY must stay anchored on 0.0m terrain instead of jumping to the 1.10m crate lid!
+		float crateWalkY = DecodeWalkHeight(12.0f, 12.0f);
 		AssertThat(MathF.Abs(crateWalkY - 0.0f)).IsLess(0.08f);
 	}
 
@@ -442,24 +456,29 @@ public sealed class LevelAmbientOcclusionTests
 	{
 		(Vector2I lowTrace, Vector2I lowOut, int lowDirs, int lowSteps) =
 			Engine_ScreenSpaceAoEffect.ResolveQualityTier(new Vector2I(2560, 1440), 2048);
-		AssertThat(lowTrace).IsEqual(new Vector2I(1280, 720));
-		AssertThat(lowOut).IsEqual(new Vector2I(1280, 720));
+		AssertThat(lowTrace).IsEqual(new Vector2I(2560, 1440));
+		AssertThat(lowOut).IsEqual(new Vector2I(2560, 1440));
 		AssertThat(lowDirs).IsEqual(2);
 		AssertThat(lowSteps).IsEqual(3);
 
 		(Vector2I balTrace, Vector2I balOut, int balDirs, int balSteps) =
 			Engine_ScreenSpaceAoEffect.ResolveQualityTier(new Vector2I(2560, 1440), 4096);
-		AssertThat(balTrace).IsEqual(new Vector2I(1280, 720));
+		AssertThat(balTrace).IsEqual(new Vector2I(2560, 1440));
 		AssertThat(balOut).IsEqual(new Vector2I(2560, 1440));
 		AssertThat(balDirs).IsEqual(3);
 		AssertThat(balSteps).IsEqual(4);
 
+		(Vector2I fsrTrace, Vector2I fsrOut, _, _) =
+			Engine_ScreenSpaceAoEffect.ResolveQualityTier(new Vector2I(1355, 831), 4096);
+		AssertThat(fsrTrace).IsEqual(new Vector2I(1355, 831));
+		AssertThat(fsrOut).IsEqual(new Vector2I(1355, 831));
+
 		(Vector2I highTrace, Vector2I highOut, int highDirs, int highSteps) =
-			Engine_ScreenSpaceAoEffect.ResolveQualityTier(new Vector2I(2560, 1440), 8192);
-		AssertThat(highTrace).IsEqual(new Vector2I(2560, 1440));
-		AssertThat(highOut).IsEqual(new Vector2I(2560, 1440));
-		AssertThat(highDirs).IsEqual(3);
-		AssertThat(highSteps).IsEqual(4);
+			Engine_ScreenSpaceAoEffect.ResolveQualityTier(new Vector2I(3840, 2160), 8192);
+		AssertThat(highTrace).IsEqual(new Vector2I(3840, 2160));
+		AssertThat(highOut).IsEqual(new Vector2I(3840, 2160));
+		AssertThat(highDirs).IsEqual(4);
+		AssertThat(highSteps).IsEqual(5);
 
 		string root = GodotRoot();
 		string projectGodot = File.ReadAllText(Path.Combine(root, "project.godot"));
@@ -469,10 +488,16 @@ public sealed class LevelAmbientOcclusionTests
 
 		string traceGlsl = File.ReadAllText(Path.Combine(root, "src/Engine/Lighting/fable_ssao_trace.glsl"));
 		string blurGlsl = File.ReadAllText(Path.Combine(root, "src/Engine/Lighting/fable_ssao_blur.glsl"));
+		string lightingInc = File.ReadAllText(Path.Combine(root, "src/Engine/material/fable_lighting.gdshaderinc"));
 		AssertThat(traceGlsl.Contains("safe_w", StringComparison.Ordinal)).IsTrue();
 		AssertThat(blurGlsl.Contains("safe_w", StringComparison.Ordinal)).IsTrue();
 		AssertThat(traceGlsl.Contains("texelFetch(depth_tex", StringComparison.Ordinal)).IsTrue();
 		AssertThat(blurGlsl.Contains("texelFetch(raw_ao_tex", StringComparison.Ordinal)).IsTrue();
+		AssertThat(traceGlsl.Contains("err_l", StringComparison.Ordinal)).IsTrue();
+		AssertThat(blurGlsl.Contains("nearest_ao", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("down_reject", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("bilin_occ", StringComparison.Ordinal)).IsTrue();
+		AssertThat(lightingInc.Contains("max_hw", StringComparison.Ordinal)).IsFalse();
 
 		// Verify split-seam concave vs convex corners and cross-part overhanging eave composite self-AO
 		var splitSeamGeo = new MdlGeometry
