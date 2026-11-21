@@ -1017,6 +1017,33 @@ float eval_hemisphere_ao(int cell_ao_root, int tx, int ty, vec3 world_pos, vec3 
 	return raw_ao;
 }
 
+bool probe_floor_at(int ao_root, float px, float pz, float cand_y) {
+	float d;
+	vec3 n;
+	return trace_closest_hit(ao_root, 4u, vec3(px, cand_y + 0.16, pz), vec3(0.0, -1.0, 0.0), 0.0, 0.32, 6u, 4u, d, n) && abs(n.y) >= 0.62;
+}
+
+bool has_continuous_2d_floor(int ao_root, float wx, float wz, float cand_y) {
+	if (ao_root < 0) {
+		return false;
+	}
+	const float r1 = 0.32;
+	const float r2 = 0.64;
+	bool px1 = probe_floor_at(ao_root, wx + r1, wz, cand_y);
+	bool nx1 = probe_floor_at(ao_root, wx - r1, wz, cand_y);
+	bool span_x = (px1 && nx1)
+		|| (px1 && probe_floor_at(ao_root, wx + r2, wz, cand_y))
+		|| (nx1 && probe_floor_at(ao_root, wx - r2, wz, cand_y));
+	if (!span_x) {
+		return false;
+	}
+	bool pz1 = probe_floor_at(ao_root, wx, wz + r1, cand_y);
+	bool nz1 = probe_floor_at(ao_root, wx, wz - r1, cand_y);
+	return (pz1 && nz1)
+		|| (pz1 && probe_floor_at(ao_root, wx, wz + r2, cand_y))
+		|| (nz1 && probe_floor_at(ao_root, wx, wz - r2, cand_y));
+}
+
 void main() {
 	int tx = int(gl_GlobalInvocationID.x) + push.col_offset;
 	int local_y = int(gl_GlobalInvocationID.y);
@@ -1056,6 +1083,8 @@ void main() {
 	float walk_y = ghf_y;
 	float raw_walk_ao = 1.0;
 	bool found_arch = false;
+	bool has_sealed_floor = false;
+	float sealed_floor_y = ghf_y;
 
 	float cur_y = has_ghf ? (ghf_y - 0.60) : (bvh_min_y - 0.25);
 	float max_scan_y = bvh_max_y + 0.50;
@@ -1081,6 +1110,15 @@ void main() {
 				continue;
 			}
 
+			bool elevated_above_support = (has_ghf && in_ghf && cand_y > ghf_y + 0.45) ||
+				(has_sealed_floor && cand_y > sealed_floor_y + 0.35);
+			if (elevated_above_support && !has_continuous_2d_floor(cell_ao_root, world_x, world_z, cand_y)) {
+				// Reject isolated crate lids, fence pillar caps, gravestone tops, and statue heads
+				// so walk_y stays on the underlying terrain or architectural plaza support floor.
+				cur_y = cand_y + 0.04;
+				continue;
+			}
+
 			vec3 up_n = cand_n.y < 0.0 ? -cand_n : cand_n;
 			int head_root = narrow_local_root(
 				cell_ao_root,
@@ -1100,7 +1138,11 @@ void main() {
 			float head_dist = 1.80;
 			vec3 head_n = vec3(0.0, 1.0, 0.0);
 			trace_closest_hit(head_root, 6u, vec3(world_x, cand_y + 0.03, world_z), up_dir, 0.0, 1.80, 4u, 4u, head_dist, head_n);
-			if (head_dist < 0.35) {
+			if (head_dist < 0.22) {
+				if (!has_sealed_floor) {
+					has_sealed_floor = true;
+					sealed_floor_y = cand_y;
+				}
 				cur_y = cand_y + 0.015 + head_dist;
 				continue;
 			}
@@ -1114,8 +1156,18 @@ void main() {
 				break;
 			}
 
+			if (!has_sealed_floor) {
+				has_sealed_floor = true;
+				sealed_floor_y = cand_y;
+			}
 			cur_y = cand_y + 0.015 + head_dist;
 		}
+	}
+
+	if (!found_arch && has_sealed_floor) {
+		walk_y = sealed_floor_y;
+		raw_walk_ao = push.min_ao;
+		found_arch = true;
 	}
 
 	float raw_terrain_ao = 1.0;

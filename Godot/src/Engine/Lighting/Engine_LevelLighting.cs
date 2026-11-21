@@ -487,6 +487,11 @@ public static class Engine_LevelLighting
 		{
 			new Refii.Fx.Engine_FxDepthCaptureEffect { View = view },
 		};
+		if (!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
+		    string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal))
+		{
+			effects.Add(new Engine_ScreenSpaceAoEffect { View = view });
+		}
 		if (Refii.Models.Engine_ClassicMaterial.Active)
 		{
 			// The classic look's screen-space sun shadow mask, between the depth prepass and the
@@ -537,6 +542,9 @@ public static class Engine_LevelLighting
 						break;
 					case Refii.Fx.Engine_FxDepthCaptureEffect depthCapture:
 						depthCapture.ReleaseNow(releaseStaticFallbacks);
+						break;
+					case Engine_ScreenSpaceAoEffect ssaoEffect:
+						ssaoEffect.ReleaseNow(releaseStaticFallbacks);
 						break;
 					case Refii.Models.Engine_ClassicScreenShadow classicShadow:
 						classicShadow.ReleaseNow(releaseStaticFallbacks);
@@ -672,8 +680,31 @@ public static class Engine_LevelLighting
 
 	private static int _lastSsaoQualityTier = -1;
 
+	/// <summary>
+	/// Whether the Forward+ <see cref="Engine_ScreenSpaceAoEffect"/> PreOpaque GTAO pass should run this frame.
+	/// </summary>
+	public static bool ShouldRunCustomScreenSpaceAo() =>
+		!Refii.Core.Engine_AppRoot.IsTestHost &&
+		!Refii.Models.Engine_ClassicMaterial.Active &&
+		!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
+		string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal) &&
+		(SsaoOverride ?? (Engine_LightingFrame.ModernModel &&
+			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
+			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f));
+
 	private static void ConfigureScreenSpaceAo(Godot.Environment environment, bool unified)
 	{
+		// On Forward+, Engine_ScreenSpaceAoEffect runs unified dual-scale GTAO in PreOpaque and folds
+		// directly into combined_ao (covering custom light(), EMISSION, depth_prepass_alpha cutouts,
+		// and Debug View 11). Disable Godot's opaque-only Environment SSAO so GPU work is never duplicated.
+		if (!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
+		    string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal))
+		{
+			Engine_ScreenSpaceAoEffect.RegisterGlobals();
+			if (environment.SsaoEnabled) environment.SsaoEnabled = false;
+			return;
+		}
+
 		bool enableSsao = SsaoOverride ?? (unified &&
 			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
 			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f &&

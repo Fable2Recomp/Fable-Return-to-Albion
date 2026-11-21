@@ -143,10 +143,8 @@ void fragment() {
 			micro_ao = mix(1.0, ndotn * ndotn, 0.35 * fable_unified);
 		}
 		float ground_ao = fable_evaluate_prop_baked_ao_normal(1.0, fable_world, mapped_world);
-		float combined_ao = mix(
-			max(micro_ao, 0.0),
-			fable_apply_ao_strength(max(micro_ao, 0.0) * max(ground_ao, 0.0)),
-			step(0.5, fable_unified));
+		float screen_ao = mix(1.0, fable_sample_screen_ao(SCREEN_UV, CAMERA_VISIBLE_LAYERS), 0.75);
+		float combined_ao = fable_combine_ao(micro_ao, ground_ao, screen_ao);
 		v_combined_ao = combined_ao;
 
 		// Suppress Godot's default 0.5 dielectric Fresnel sheen across stacked shells so shadowed fur stays shadowed.
