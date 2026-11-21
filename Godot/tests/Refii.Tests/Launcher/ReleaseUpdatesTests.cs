@@ -125,7 +125,8 @@ public class ReleaseUpdatesTests
             string[] recorded = File.ReadAllLines(
                 Path.Combine(ReleaseInstaller.WorkDirectory(install), ReleaseInstaller.ManifestName));
             AssertThat(recorded.Length).IsEqual(2);
-            AssertThat(Directory.GetFiles(install, "*-update", SearchOption.AllDirectories).Length).IsEqual(0);
+            // Nothing of the staging or the backup outlives a finished update.
+            AssertThat(Directory.GetFileSystemEntries(ReleaseInstaller.WorkDirectory(install)).Length).IsEqual(1);
 
             string empty = Package(scratch, "empty.zip", ("loose.txt", "no top folder"));
             AssertThat(ReleaseInstaller.Extract(empty, install).Length).IsGreater(0);
@@ -138,6 +139,109 @@ public class ReleaseUpdatesTests
                 Directory.Delete(scratch, recursive: true);
             }
         }
+    }
+
+    [TestCase]
+    public void AFailedApplyPutsThePreviousBuildBack()
+    {
+        string scratch = Path.Combine(Path.GetTempPath(), "refii-update-" + Path.GetRandomFileName());
+        string install = Path.Combine(scratch, "install");
+        try
+        {
+            Directory.CreateDirectory(install);
+            string first = Package(scratch, "first.zip",
+                ("App/a.bin", "a one"), ("App/sdk/dropped.txt", "dropped one"), ("App/z.bin", "z one"));
+            AssertThat(ReleaseInstaller.Extract(first, install)).IsEqual(string.Empty);
+
+            // The second package's last file cannot land: a folder the player made has its name.
+            Directory.CreateDirectory(Path.Combine(install, "zz-blocked"));
+            File.WriteAllText(Path.Combine(install, "zz-blocked", "keep.txt"), "the player's");
+            string second = Package(scratch, "second.zip",
+                ("App/a.bin", "a two"), ("App/new.bin", "new two"), ("App/z.bin", "z two"), ("App/zz-blocked", "in the way"));
+            string error = ReleaseInstaller.Extract(second, install);
+
+            AssertThat(error).Contains("previous build was put back");
+            AssertThat(File.ReadAllText(Path.Combine(install, "a.bin"))).IsEqual("a one");
+            AssertThat(File.ReadAllText(Path.Combine(install, "z.bin"))).IsEqual("z one");
+            AssertThat(File.ReadAllText(Path.Combine(install, "sdk", "dropped.txt"))).IsEqual("dropped one");
+            AssertThat(File.Exists(Path.Combine(install, "new.bin"))).IsFalse();
+            AssertThat(File.ReadAllText(Path.Combine(install, "zz-blocked", "keep.txt"))).IsEqual("the player's");
+            string work = ReleaseInstaller.WorkDirectory(install);
+            AssertThat(File.ReadAllLines(Path.Combine(work, ReleaseInstaller.ManifestName)).Length).IsEqual(3);
+            AssertThat(Directory.GetFileSystemEntries(work).Length).IsEqual(1);
+
+            // The install still updates once nothing is in the way.
+            Directory.Delete(Path.Combine(install, "zz-blocked"), recursive: true);
+            AssertThat(ReleaseInstaller.Extract(second, install)).IsEqual(string.Empty);
+            AssertThat(File.ReadAllText(Path.Combine(install, "a.bin"))).IsEqual("a two");
+            AssertThat(File.Exists(Path.Combine(install, "sdk", "dropped.txt"))).IsFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+            {
+                Directory.Delete(scratch, recursive: true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void AnApplyCutShortIsUndoneAtTheNextStart()
+    {
+        string scratch = Path.Combine(Path.GetTempPath(), "refii-update-" + Path.GetRandomFileName());
+        string install = Path.Combine(scratch, "install");
+        try
+        {
+            // The state a power cut leaves: the plan written, one file swapped, one added, one
+            // moved to the backup with nothing yet in its place, one still staged.
+            string work = ReleaseInstaller.WorkDirectory(install);
+            string backup = Path.Combine(work, "backup-12345678");
+            Directory.CreateDirectory(Path.Combine(backup, "sdk"));
+            Directory.CreateDirectory(Path.Combine(work, "staged"));
+            File.WriteAllText(Path.Combine(install, "a.bin"), "a two");
+            File.WriteAllText(Path.Combine(backup, "a.bin"), "a one");
+            File.WriteAllText(Path.Combine(install, "new.bin"), "new two");
+            File.WriteAllText(Path.Combine(backup, "sdk", "b.txt"), "b one");
+            File.WriteAllText(Path.Combine(work, "staged", "late.bin"), "late two");
+            File.WriteAllText(Path.Combine(install, "mine.txt"), "the player's");
+            File.WriteAllLines(Path.Combine(work, ReleaseInstaller.ManifestName), new[] { "a.bin", "sdk/b.txt" });
+            File.WriteAllLines(Path.Combine(work, ReleaseInstaller.PlanName),
+                new[] { "backup-12345678", "=a.bin", "+new.bin", "=sdk/b.txt", "+late.bin" });
+
+            AssertThat(ReleaseInstaller.Recover(install)).Contains("put back");
+
+            AssertThat(File.ReadAllText(Path.Combine(install, "a.bin"))).IsEqual("a one");
+            AssertThat(File.ReadAllText(Path.Combine(install, "sdk", "b.txt"))).IsEqual("b one");
+            AssertThat(File.Exists(Path.Combine(install, "new.bin"))).IsFalse();
+            AssertThat(File.Exists(Path.Combine(install, "late.bin"))).IsFalse();
+            AssertThat(File.ReadAllText(Path.Combine(install, "mine.txt"))).IsEqual("the player's");
+            AssertThat(Directory.GetFileSystemEntries(work).Length).IsEqual(1);
+            // Nothing left to settle: a second start says nothing and changes nothing.
+            AssertThat(ReleaseInstaller.Recover(install)).IsEqual(string.Empty);
+            AssertThat(File.ReadAllText(Path.Combine(install, "a.bin"))).IsEqual("a one");
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+            {
+                Directory.Delete(scratch, recursive: true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void WhatWouldStopAnUpdateIsNamed()
+    {
+        AssertThat(ReleaseInstaller.SpaceError(500L << 20, 100L << 20)).Contains("Not enough free disk space");
+        AssertThat(ReleaseInstaller.SpaceError(500L << 20, 600L << 20)).IsEqual(string.Empty);
+        // A system that does not state its free space does not block the update.
+        AssertThat(ReleaseInstaller.SpaceError(500L << 20, null)).IsEqual(string.Empty);
+
+        // GitHub's refusal of an unsigned client past its hourly allowance is told apart from any other.
+        AssertThat(GitHubApi.DescribeFailure(403, "0", "1795000000")).Contains("hourly request limit");
+        AssertThat(GitHubApi.DescribeFailure(429, "0", "")).Contains("within the hour");
+        AssertThat(GitHubApi.DescribeFailure(403, "12", "1795000000")).Contains("HTTP 403");
+        AssertThat(GitHubApi.DescribeFailure(404, "", "")).Contains("404");
     }
 
     private static string Package(string directory, string name, params (string Path, string Text)[] files)

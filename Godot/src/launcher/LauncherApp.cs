@@ -15,10 +15,13 @@ public partial class LauncherApp : Control
 {
 	private const float ArtCreditHeight = 26.0f;
 
-	private static readonly string[] DebugTabs =
-	{
-		"Settings", "Modding", "Install", "Saves",
-	};
+	/// <summary>
+	/// The drawer's tabs. Updates is last, and absent where the launcher does not update the app
+	/// (a phone's package, the editor), so the indices before it are the same everywhere.
+	/// </summary>
+	private static readonly string[] DebugTabs = UpdateChecker.CanUpdate
+		? new[] { "Settings", "Modding", "Install", "Saves", "Updates" }
+		: new[] { "Settings", "Modding", "Install", "Saves" };
 	private static readonly string[] FileMenuItems =
 	{
 		"Set Shared Install Folder",
@@ -79,6 +82,7 @@ public partial class LauncherApp : Control
 
 	/// <summary>Why the last update did not finish; empty after a clean one or before any.</summary>
 	private string _updateError = string.Empty;
+	private string _recoveredUpdate = string.Empty;
 	private Font? _font;
 
 	private SmartStyle _menuStyle = null!;
@@ -124,6 +128,7 @@ public partial class LauncherApp : Control
 	private ModdingPanel _moddingPanel = null!;
 	private ReinstallPanel _reinstallPanel = null!;
 	private SavesPanel _savesPanel = null!;
+	private UpdatePanel _updatePanel = null!;
 	private GameLaunchDock? _launchDock;
 	private Refii.Core.Engine_Title _selectedManageTitle = Refii.Core.Engine_Title.Fable2;
 	private bool _lastPipelineStripVisible;
@@ -229,7 +234,7 @@ public partial class LauncherApp : Control
 		_updates = new UpdateChecker();
 		if (UpdateChecker.CanUpdate)
 		{
-			ReleaseInstaller.RemoveLeftovers(Platform.GetExecutableDirectory());
+			_recoveredUpdate = ReleaseInstaller.Recover(Platform.GetExecutableDirectory());
 		}
 
 		InitPatches();
@@ -264,6 +269,11 @@ public partial class LauncherApp : Control
 		if (!Engine.IsEditorHint())
 		{
 			FetchGitHubData();
+			if (_recoveredUpdate.Length != 0)
+			{
+				Log(_recoveredUpdate);
+			}
+
 			StartUpdateCheck("Update check: ");
 		}
 	}
@@ -309,6 +319,12 @@ public partial class LauncherApp : Control
 			SizeFlagsHorizontal = _reinstallPanel.SizeFlagsHorizontal, SizeFlagsVertical = _reinstallPanel.SizeFlagsVertical,
 		};
 		_reinstallPanel.AddSibling(_savesPanel);
+		_updatePanel = new UpdatePanel
+		{
+			Name = "UpdatePanel", Visible = false,
+			SizeFlagsHorizontal = _reinstallPanel.SizeFlagsHorizontal, SizeFlagsVertical = _reinstallPanel.SizeFlagsVertical,
+		};
+		_savesPanel.AddSibling(_updatePanel);
 	}
 
 	private static bool IsExportedBuild() => OS.HasFeature("template");
@@ -714,6 +730,7 @@ public partial class LauncherApp : Control
 		_moddingPanel.Configure(null, body, _infoStyle);
 		if (!ScaleAndroidInstallation(body)) _reinstallPanel.Configure(null, body, _infoStyle);
 		_savesPanel.Configure(null, body, _infoStyle);
+		_updatePanel.Configure(null, body, _infoStyle);
 		ScaleFonts(_settingsPanel, body);
 		ScaleFonts(_moddingPanel, body);
 		ScaleFonts(_reinstallPanel, body);
@@ -915,6 +932,7 @@ public partial class LauncherApp : Control
 			1 => _moddingPanel,
 			2 => (Control?)_phone ?? _reinstallPanel,
 			3 => _savesPanel,
+			4 => _updatePanel,
 			_ => _settingsPanel,
 		};
 
@@ -1199,13 +1217,13 @@ public partial class LauncherApp : Control
 			_reinstallPanel.CompileShadersRequested += StartShaderBuild;
 			_reinstallPanel.BuildModernizedAssetsRequested += StartAssetPrebuild;
 			_reinstallPanel.UninstallRequested += OnUninstallTitle;
-			_reinstallPanel.UpdateChannelChanged += channel =>
+			_updatePanel.ChannelChanged += channel =>
 			{
 				ReleaseUpdates.Channel = channel;
 				StartUpdateCheck("Update check: ", ask: false);
 			};
-			_reinstallPanel.UpdateCheckRequested += () => StartUpdateCheck("Update check: ", ask: false);
-			_reinstallPanel.UpdateInstallRequested += StartUpdateInstall;
+			_updatePanel.CheckRequested += () => StartUpdateCheck("Update check: ", ask: false);
+			_updatePanel.InstallRequested += StartUpdateInstall;
 		}
 
 		ApplyScale();
@@ -1753,13 +1771,13 @@ public partial class LauncherApp : Control
 		if (_phone != null) { RefreshAndroidState(); return; }
 
 		bool installedBuildExists = Installer.InstalledBuildExists();
-		// An update never stands in for Play: it is offered beside it (the Install tab, and a
+		// An update never stands in for Play: it is offered beside it (the Updates tab, and a
 		// question when one is found), so a player can always start the build they have.
 		const bool canDownloadBuild = false;
 		const bool updateAvailable = false;
 		bool isoInProgress = _pipeline.Running;
 
-		// A finished update leaves the frame's state: a failure keeps its reason for the Install tab.
+		// A finished update leaves the frame's state: a failure keeps its reason for the Updates tab.
 		if (_downloadProgress is { IsComplete: true } finished)
 		{
 			_updateError = finished.HasError ? finished.GetErrorMessage() : string.Empty;
@@ -1953,6 +1971,7 @@ public partial class LauncherApp : Control
 		bool isModding = tab == "Modding";
 		bool isReinstall = tab == "Install";
 		bool isSaves = tab == "Saves";
+		bool isUpdates = tab == "Updates";
 
 		_settingsPanel.Visible = isSettings;
 		_moddingPanel.Visible = isModding;
@@ -1961,6 +1980,17 @@ public partial class LauncherApp : Control
 		if (isSaves)
 		{
 			_savesPanel.Refresh(_launch.GameIsRunning);
+		}
+
+		_updatePanel.Visible = isUpdates;
+		if (isUpdates)
+		{
+			bool updating = _downloadProgress is not null;
+			_updatePanel.SetState(
+				DescribeUpdateState(updating),
+				DescribeInstalledBuild(),
+				installs: !updating && _updates.UpdateAvailable,
+				enabled: !updating && !_pipeline.Running && !_launch.GameIsRunning);
 		}
 
 		if (isReinstall)
@@ -1972,11 +2002,6 @@ public partial class LauncherApp : Control
 				(_pipeline.LastErrorTitle is null || _pipeline.LastErrorTitle == scoped);
 
 			_reinstallPanel.Refresh(running, _launch.GameIsRunning);
-			bool updating = _downloadProgress is not null;
-			_reinstallPanel.SetUpdateState(
-				DescribeUpdateState(updating),
-				installs: !updating && _updates.UpdateAvailable,
-				enabled: UpdateChecker.CanUpdate && !updating && !running && !_launch.GameIsRunning);
 			_reinstallPanel.SetBuildControls(
 				runningForScoped && _pipeline.Control is not null,
 				_pipeline.Control?.IsPaused ?? false,
@@ -2324,20 +2349,25 @@ public partial class LauncherApp : Control
 			AskChoice($"{build.Title} is available",
 				$"A newer build is published on the {ReleaseUpdates.ChannelName(ReleaseUpdates.Channel)} channel. " +
 				"Updating downloads it and replaces the app's own files; your game data, saves and settings are kept. " +
-				"The channel is chosen on the Install tab.",
+				"The channel is chosen on the Updates tab.",
 				new ChoiceDialog.Choice("Update now", StartUpdateInstall),
 				new ChoiceDialog.Choice("Later", () => { }));
 		}
 	}
 
-	/// <summary>What the Install tab says about the app's own updates.</summary>
+	/// <summary>The build the launcher last installed, as the Updates tab states it.</summary>
+	private static string DescribeInstalledBuild()
+	{
+		string stamp = ReleaseUpdates.InstalledStamp;
+		int at = stamp.IndexOf('@');
+		return at <= 0
+			? "Installed: a build the launcher has not updated yet."
+			: $"Installed: {stamp[..at]}, published {stamp[(at + 1)..]}.";
+	}
+
+	/// <summary>What the Updates tab says the last look at the releases found.</summary>
 	private string DescribeUpdateState(bool updating)
 	{
-		if (!UpdateChecker.CanUpdate)
-		{
-			return "This build is not updated by the launcher.";
-		}
-
 		if (updating)
 		{
 			return ReleaseInstaller.BuildProgressButtonLabel(_downloadProgress!).Replace('\n', ' ');
@@ -2348,12 +2378,19 @@ public partial class LauncherApp : Control
 			return "The update failed: " + _updateError;
 		}
 
+		if (_recoveredUpdate.Length != 0 && !_updates.UpdateAvailable)
+		{
+			return _recoveredUpdate;
+		}
+
 		string channel = ReleaseUpdates.ChannelName(ReleaseUpdates.Channel);
 		if (_updates.Latest is not { } latest)
 		{
 			return _updates.Reached
 				? $"No {channel} is published for this platform yet."
-				: "The project's releases have not been reached.";
+				: _updates.Failure.Length != 0
+					? "The project's releases could not be read. " + _updates.Failure
+					: "The project's releases have not been read yet.";
 		}
 
 		return _updates.UpdateAvailable
@@ -2382,6 +2419,7 @@ public partial class LauncherApp : Control
 
 	private void OnUpdateInstalled()
 	{
+		_updates.MarkInstalled();
 		string title = _updates.Latest?.Title ?? "The update";
 		Log($"{title} is installed. Restart the launcher to use it.");
 		RefreshState();

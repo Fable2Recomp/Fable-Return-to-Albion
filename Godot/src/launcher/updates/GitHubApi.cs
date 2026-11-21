@@ -153,22 +153,56 @@ public static class GitHubApi
         }
     }
 
-    private static async Task<string?> GetStringAsync(string url)
+    private static async Task<string?> GetStringAsync(string url) =>
+        (await GetAsync(url).ConfigureAwait(false)).Body;
+
+    /// <summary>
+    /// One GET: the body, or null with the reason it was not served, worded for the player.
+    /// </summary>
+    public static async Task<(string? Body, string Failure)> GetAsync(string url)
     {
         try
         {
             using HttpResponseMessage response = await Client.GetAsync(url).ConfigureAwait(false);
-            if (!response.IsSuccessStatusCode)
+            if (response.IsSuccessStatusCode)
             {
-                return null;
+                return (await response.Content.ReadAsStringAsync().ConfigureAwait(false), string.Empty);
             }
 
-            return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            return (null, DescribeFailure(
+                (int)response.StatusCode, Header(response, "X-RateLimit-Remaining"), Header(response, "X-RateLimit-Reset")));
         }
-        catch (Exception)
+        catch (TaskCanceledException)
         {
-            return null;
+            return (null, "GitHub did not answer in time.");
         }
+        catch (Exception exception)
+        {
+            return (null, "GitHub could not be reached (" + exception.Message + ").");
+        }
+    }
+
+    private static string Header(HttpResponseMessage response, string name) =>
+        response.Headers.TryGetValues(name, out IEnumerable<string>? values) ? string.Join(",", values) : string.Empty;
+
+    /// <summary>
+    /// Why GitHub refused a request. An unsigned client gets 60 API requests an hour per network
+    /// address; past that GitHub answers 403 or 429 with <c>X-RateLimit-Remaining: 0</c> and the
+    /// time the allowance returns in <c>X-RateLimit-Reset</c> (seconds since 1970, UTC).
+    /// </summary>
+    public static string DescribeFailure(int status, string remaining, string reset)
+    {
+        if ((status == 403 || status == 429) && remaining.Trim() == "0")
+        {
+            string when = long.TryParse(reset.Trim(), out long seconds)
+                ? " It is available again at " + DateTimeOffset.FromUnixTimeSeconds(seconds).ToLocalTime().ToString("HH:mm") + "."
+                : " It is available again within the hour.";
+            return "GitHub's hourly request limit for this network is used up." + when;
+        }
+
+        return status == 404
+            ? "GitHub has no such page for this project (HTTP 404)."
+            : "GitHub refused the request (HTTP " + status + ").";
     }
 
     private static JsonElement Child(JsonElement element, string name) =>

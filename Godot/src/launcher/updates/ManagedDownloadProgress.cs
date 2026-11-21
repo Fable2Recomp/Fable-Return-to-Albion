@@ -66,32 +66,46 @@ public sealed class ManagedDownloadProgress
 }
 
 /// <summary>
-/// Downloads a published build's package and extracts it over the install.
+/// Downloads a published build's package and installs it over the app, all of it or none of it.
 /// </summary>
 /// <remarks>
 /// <para>THE PACKAGE IS THE APP, NOT THE PLAYER'S DATA. It holds the executable, <c>bin/</c>,
 /// <c>sdk/</c> and the bundled files under one top folder; the game data, saves, caches and
-/// settings a player has are not in it, so extracting it writes none of them.</para>
+/// settings a player has are not in it, so installing it writes none of them.</para>
+/// <para>STAGED, THEN APPLIED. The whole package is first extracted to
+/// <c>cache/update/staged</c>; until that has succeeded the app is untouched, so a damaged
+/// package, a full disk or a dropped connection costs nothing. Applying is renames only: each
+/// file being replaced or dropped moves into a backup folder and the staged file moves into its
+/// place. A file the system holds (the running launcher, on Windows) can still be renamed, so
+/// nothing is overwritten in place.</para>
+/// <para>ANY FAILURE PUTS THE OLD BUILD BACK. The plan is written before the first rename
+/// (<see cref="PlanName"/>): the backup folder, and for every file whether it replaces one or is
+/// new. Rolling back deletes the new files and returns the backup, and is safe to repeat. A plan
+/// still present at start means the apply was cut short, and <see cref="Recover"/> rolls it back
+/// then.</para>
 /// <para>ONLY WHAT A PACKAGE PUT THERE IS EVER REMOVED. The files a package installs are recorded
-/// (<see cref="ManifestName"/>); the next update deletes the recorded files its own package no
+/// (<see cref="ManifestName"/>); the next update drops the recorded files its own package no
 /// longer has, and nothing else. An install with no record yet (unpacked by hand) loses only
 /// <c>bin/recompile</c>, whose include folders are numbered by order and must not be mixed
 /// across builds.</para>
-/// <para>A FILE IN USE IS MOVED ASIDE. The launcher is running from the files being replaced.
-/// Each new file is written beside its target and renamed over it; where the system refuses
-/// that for a loaded file (Windows), the old one is renamed out of the way first and deleted at
-/// the next start (<see cref="RemoveLeftovers"/>).</para>
 /// </remarks>
 public static class ReleaseInstaller
 {
 	/// <summary>The record of the files the last package installed, one relative path a line.</summary>
 	public const string ManifestName = "package-files.txt";
 
-	/// <summary>The files an update moved aside because the system held them, one path a line.</summary>
-	private const string LeftoversName = "leftovers.txt";
+	/// <summary>
+	/// The apply in progress: the backup folder's name, then one line per package file,
+	/// <c>+path</c> for a file the install did not have and <c>=path</c> for one it replaces.
+	/// </summary>
+	public const string PlanName = "applying.txt";
 
-	private const string AsideSuffix = ".old-update";
-	private const string NewSuffix = ".new-update";
+	/// <summary>Free space an update leaves on the disk beyond what it writes.</summary>
+	public const long SpaceMargin = 64L << 20;
+
+	private const string PendingManifestName = ManifestName + ".new";
+	private const string StagedName = "staged";
+	private const string BackupPrefix = "backup-";
 
 	private static readonly HttpClient Client = CreateClient();
 
@@ -103,7 +117,7 @@ public static class ReleaseInstaller
 		return client;
 	}
 
-	/// <summary>Where the download and the install's record are kept: <c>&lt;install&gt;/cache/update</c>.</summary>
+	/// <summary>Where the download, the staged files, the backup and the install's record are kept: <c>&lt;install&gt;/cache/update</c>.</summary>
 	public static string WorkDirectory(string installRoot) => Path.Combine(installRoot, "cache", "update");
 
 	public static string BuildProgressButtonLabel(ManagedDownloadProgress progress)
@@ -122,7 +136,7 @@ public static class ReleaseInstaller
 	}
 
 	/// <summary>
-	/// Downloads <paramref name="build"/>'s package and extracts it over <paramref name="installRoot"/>
+	/// Downloads <paramref name="build"/>'s package and installs it over <paramref name="installRoot"/>
 	/// on a worker; <paramref name="onSuccess"/> runs once every file is in place.
 	/// </summary>
 	public static void InstallAsync(
@@ -134,9 +148,19 @@ public static class ReleaseInstaller
 			string package = Path.Combine(work, build.AssetName + ".download");
 			try
 			{
-				Directory.CreateDirectory(work);
-				Interlocked.Exchange(ref progress.TotalBytes, build.AssetSize);
-				string error = await DownloadAsync(build.AssetUrl, package, progress).ConfigureAwait(false);
+				// What would stop the install is found before the download, not after it.
+				string error = WriteError(installRoot);
+				if (error.Length == 0)
+				{
+					error = SpaceError(build.AssetSize + SpaceMargin, FreeBytes(installRoot));
+				}
+
+				if (error.Length == 0)
+				{
+					Interlocked.Exchange(ref progress.TotalBytes, build.AssetSize);
+					error = await DownloadAsync(build, package, progress).ConfigureAwait(false);
+				}
+
 				if (error.Length == 0)
 				{
 					progress.Extracting = true;
@@ -153,7 +177,7 @@ public static class ReleaseInstaller
 			catch (Exception exception)
 			{
 				TryDelete(package);
-				Fail(progress, exception.Message);
+				Fail(progress, Explain(exception));
 				return;
 			}
 
@@ -169,13 +193,13 @@ public static class ReleaseInstaller
 		progress.IsComplete = true;
 	}
 
-	private static async Task<string> DownloadAsync(string url, string path, ManagedDownloadProgress progress)
+	private static async Task<string> DownloadAsync(ReleaseBuild build, string path, ManagedDownloadProgress progress)
 	{
 		using HttpResponseMessage response = await Client.GetAsync(
-			url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+			build.AssetUrl, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
 		if (!response.IsSuccessStatusCode)
 		{
-			return "HTTP " + (int)response.StatusCode + " for " + url;
+			return "The download was refused (HTTP " + (int)response.StatusCode + ").";
 		}
 
 		if (response.Content.Headers.ContentLength is { } length && length > 0)
@@ -183,24 +207,28 @@ public static class ReleaseInstaller
 			Interlocked.Exchange(ref progress.TotalBytes, length);
 		}
 
-		await using Stream source = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
-		await using var destination = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
-		var buffer = new byte[1 << 16];
 		long downloaded = 0;
-		while (true)
+		await using (Stream source = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
+		await using (var destination = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
 		{
-			int read = await source.ReadAsync(buffer).ConfigureAwait(false);
-			if (read <= 0)
+			var buffer = new byte[1 << 16];
+			while (true)
 			{
-				break;
-			}
+				int read = await source.ReadAsync(buffer).ConfigureAwait(false);
+				if (read <= 0)
+				{
+					break;
+				}
 
-			await destination.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
-			downloaded += read;
-			Interlocked.Exchange(ref progress.BytesDownloaded, downloaded);
+				await destination.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+				downloaded += read;
+				Interlocked.Exchange(ref progress.BytesDownloaded, downloaded);
+			}
 		}
 
-		return string.Empty;
+		return build.AssetSize > 0 && downloaded != build.AssetSize
+			? "The download ended early (" + Size(downloaded) + " of " + Size(build.AssetSize) + "). Try again."
+			: string.Empty;
 	}
 
 	/// <summary>
@@ -221,30 +249,102 @@ public static class ReleaseInstaller
 		return relative.Length != 0 && SafePath.IsSafeRelativePath(relative, out _) ? relative : string.Empty;
 	}
 
+	/// <summary>Why <paramref name="installRoot"/> cannot take an update, or empty when it can be written.</summary>
+	public static string WriteError(string installRoot)
+	{
+		try
+		{
+			Directory.CreateDirectory(WorkDirectory(installRoot));
+			string probe = Path.Combine(installRoot, ".write-check-" + Guid.NewGuid().ToString("N"));
+			File.WriteAllBytes(probe, Array.Empty<byte>());
+			File.Delete(probe);
+			return string.Empty;
+		}
+		catch (Exception)
+		{
+			return "The app's folder cannot be written to (" + installRoot + "). " +
+				"Move the app to a folder you own, or give yourself write access to it.";
+		}
+	}
+
+	/// <summary>The space free for <paramref name="path"/>'s disk; null when the system does not say.</summary>
+	public static long? FreeBytes(string path)
+	{
+		try
+		{
+			string full = Path.GetFullPath(path);
+			string name = OperatingSystem.IsWindows() ? Path.GetPathRoot(full) ?? full : full;
+			return new DriveInfo(name).AvailableFreeSpace;
+		}
+		catch (Exception)
+		{
+			return null;
+		}
+	}
+
+	/// <summary>The refusal when <paramref name="free"/> is known and under <paramref name="needed"/>; empty otherwise.</summary>
+	public static string SpaceError(long needed, long? free) =>
+		free is { } available && available < needed
+			? "Not enough free disk space: the update needs " + Size(needed) + " and " + Size(available) + " is free."
+			: string.Empty;
+
+	private static string Size(long bytes) =>
+		bytes >= 1L << 30 ? (bytes / (double)(1L << 30)).ToString("0.0") + " GB" : (bytes / (double)(1L << 20)).ToString("0") + " MB";
+
+	private static string Explain(Exception exception) => exception switch
+	{
+		InvalidDataException => "The update package is damaged. Try again.",
+		UnauthorizedAccessException => "A file in the app's folder could not be written: " + exception.Message,
+		_ => exception.Message,
+	};
+
 	/// <summary>
-	/// Extracts the package at <paramref name="packagePath"/> over <paramref name="installRoot"/>,
-	/// removes what the previous package installed and this one does not have, and records this
-	/// package's files. Returns an error, or empty.
+	/// Installs the package at <paramref name="packagePath"/> over <paramref name="installRoot"/>:
+	/// stages every file, then swaps them in, dropping what the previous package installed and
+	/// this one does not have. Returns an error, or empty; after an error the install holds the
+	/// build it held before.
 	/// </summary>
 	public static string Extract(string packagePath, string installRoot, ManagedDownloadProgress? progress = null)
 	{
 		string root = Path.GetFullPath(installRoot);
 		string work = WorkDirectory(root);
-		Directory.CreateDirectory(work);
-		string manifestPath = Path.Combine(work, ManifestName);
-		var installed = new List<string>();
-		var aside = new List<string>();
-
-		using (ZipArchive archive = ZipFile.OpenRead(packagePath))
+		string blocked = WriteError(root);
+		if (blocked.Length != 0)
 		{
+			return blocked;
+		}
+
+		Recover(root, removeDownloads: false);
+		string planPath = Path.Combine(work, PlanName);
+		if (File.Exists(planPath))
+		{
+			return "An earlier update could not be undone yet. Restart the launcher, then update again.";
+		}
+
+		string staged = Path.Combine(work, StagedName);
+		var installed = new List<string>();
+		try
+		{
+			using ZipArchive archive = ZipFile.OpenRead(packagePath);
 			var entries = new List<(ZipArchiveEntry Entry, string Relative)>();
+			var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+			long size = 0;
 			foreach (ZipArchiveEntry entry in archive.Entries)
 			{
 				string relative = InstallPath(entry.FullName);
-				if (relative.Length != 0)
+				if (relative.Length == 0 || !seen.Add(relative))
 				{
-					entries.Add((entry, relative));
+					continue;
 				}
+
+				string destination = Path.GetFullPath(Path.Combine(root, relative));
+				if (!SafePath.IsSafeDestinationUnderBase(destination, root, out string unsafeReason))
+				{
+					return unsafeReason;
+				}
+
+				entries.Add((entry, relative));
+				size += entry.Length;
 			}
 
 			if (entries.Count == 0)
@@ -252,30 +352,22 @@ public static class ReleaseInstaller
 				return "The update package holds no files.";
 			}
 
+			string space = SpaceError(size + SpaceMargin, FreeBytes(root));
+			if (space.Length != 0)
+			{
+				return space;
+			}
+
 			if (progress is not null)
 			{
 				Volatile.Write(ref progress.TotalFiles, entries.Count);
 			}
 
-			if (!File.Exists(manifestPath))
-			{
-				// No record of what the last package installed: the one folder that must not
-				// carry files across builds is cleared outright.
-				TryDeleteDirectory(Path.Combine(root, "bin", "recompile"));
-			}
-
 			foreach ((ZipArchiveEntry entry, string relative) in entries)
 			{
-				string destination = Path.GetFullPath(Path.Combine(root, relative));
-				if (!SafePath.IsSafeDestinationUnderBase(destination, root, out string unsafeReason))
-				{
-					return unsafeReason;
-				}
-
-				Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-				string incoming = destination + NewSuffix;
-				entry.ExtractToFile(incoming, overwrite: true);
-				Replace(incoming, destination, aside);
+				string target = Path.Combine(staged, relative);
+				Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+				entry.ExtractToFile(target, overwrite: true);
 				installed.Add(relative);
 				if (progress is not null)
 				{
@@ -283,23 +375,98 @@ public static class ReleaseInstaller
 				}
 			}
 		}
-
-		RemoveDropped(root, manifestPath, installed);
-		File.WriteAllLines(manifestPath, installed);
-		if (aside.Count != 0)
+		catch (Exception exception)
 		{
-			File.AppendAllLines(Path.Combine(work, LeftoversName), aside);
+			TryDeleteDirectory(staged);
+			return Explain(exception) + " The app was not changed.";
 		}
 
+		return Apply(root, installed);
+	}
+
+	/// <summary>Swaps the staged files in. Returns an error after putting the old build back, or empty.</summary>
+	private static string Apply(string root, List<string> installed)
+	{
+		string work = WorkDirectory(root);
+		string staged = Path.Combine(work, StagedName);
+		string manifestPath = Path.Combine(work, ManifestName);
+		string planPath = Path.Combine(work, PlanName);
+		string backupName = BackupPrefix + Guid.NewGuid().ToString("N")[..8];
+		string backup = Path.Combine(work, backupName);
+		try
+		{
+			var plan = new List<string>(installed.Count + 1) { backupName };
+			foreach (string relative in installed)
+			{
+				plan.Add((File.Exists(Path.Combine(root, relative)) ? "=" : "+") + relative);
+			}
+
+			List<string> dropped = Dropped(root, manifestPath, installed);
+			bool unrecorded = !File.Exists(manifestPath);
+			File.WriteAllLines(planPath, plan);
+
+			if (unrecorded)
+			{
+				// No record of what the last package installed: the one folder that must not
+				// carry files across builds leaves whole.
+				string recompile = Path.Combine(root, "bin", "recompile");
+				if (Directory.Exists(recompile))
+				{
+					string aside = Path.Combine(backup, "bin", "recompile");
+					Directory.CreateDirectory(Path.GetDirectoryName(aside)!);
+					Directory.Move(recompile, aside);
+				}
+			}
+
+			foreach (string relative in dropped)
+			{
+				MoveAside(root, backup, relative);
+			}
+
+			foreach (string relative in installed)
+			{
+				string destination = Path.Combine(root, relative);
+				MoveAside(root, backup, relative);
+				Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+				File.Move(Path.Combine(staged, relative), destination);
+			}
+
+			File.WriteAllLines(Path.Combine(work, PendingManifestName), installed);
+			// The commit: without the plan, a start finishes the update instead of undoing it.
+			File.Delete(planPath);
+		}
+		catch (Exception exception)
+		{
+			return Explain(exception) + " " + (RollBack(root)
+				? "The previous build was put back."
+				: "The previous build could not be fully put back; restart the launcher to finish undoing the update.");
+		}
+
+		Recover(root, removeDownloads: false);
 		return string.Empty;
 	}
 
-	/// <summary>Deletes the files the previous package installed that <paramref name="installed"/> no longer names.</summary>
-	private static void RemoveDropped(string root, string manifestPath, List<string> installed)
+	/// <summary>Moves the install's file at <paramref name="relative"/> into the backup, when there is one.</summary>
+	private static void MoveAside(string root, string backup, string relative)
 	{
-		if (!File.Exists(manifestPath))
+		string path = Path.Combine(root, relative);
+		if (!File.Exists(path))
 		{
 			return;
+		}
+
+		string aside = Path.Combine(backup, relative);
+		Directory.CreateDirectory(Path.GetDirectoryName(aside)!);
+		File.Move(path, aside, overwrite: true);
+	}
+
+	/// <summary>The files the previous package installed that <paramref name="installed"/> no longer names.</summary>
+	private static List<string> Dropped(string root, string manifestPath, List<string> installed)
+	{
+		var dropped = new List<string>();
+		if (!File.Exists(manifestPath))
+		{
+			return dropped;
 		}
 
 		var kept = new HashSet<string>(installed, StringComparer.OrdinalIgnoreCase);
@@ -314,81 +481,117 @@ public static class ReleaseInstaller
 			string path = Path.GetFullPath(Path.Combine(root, relative));
 			if (SafePath.IsSafeDestinationUnderBase(path, root, out _))
 			{
-				TryDelete(path);
+				dropped.Add(relative);
 			}
 		}
-	}
 
-	/// <summary>Puts <paramref name="incoming"/> at <paramref name="destination"/>, moving a file the system holds out of the way.</summary>
-	private static void Replace(string incoming, string destination, List<string> movedAside)
-	{
-		try
-		{
-			File.Move(incoming, destination, overwrite: true);
-		}
-		catch (Exception) when (File.Exists(destination))
-		{
-			string aside = destination + AsideSuffix;
-			TryDelete(aside);
-			File.Move(destination, aside);
-			File.Move(incoming, destination);
-			movedAside.Add(aside);
-		}
+		return dropped;
 	}
 
 	/// <summary>
-	/// Deletes the files an earlier update moved aside and any download it left behind. Called at
-	/// start, when nothing holds them any more; a file still held is kept on the list for next time.
+	/// Undoes the apply the plan describes: deletes the files it added and returns every file in
+	/// its backup. Repeatable. False when a file could not be returned; the plan then stays for
+	/// the next start.
 	/// </summary>
-	public static void RemoveLeftovers(string installRoot)
+	private static bool RollBack(string root)
 	{
+		string work = WorkDirectory(root);
+		string planPath = Path.Combine(work, PlanName);
+		string staged = Path.Combine(work, StagedName);
 		try
 		{
-			string work = WorkDirectory(installRoot);
-			if (!Directory.Exists(work))
-			{
-				return;
-			}
+			string[] plan = File.ReadAllLines(planPath);
+			string backupName = plan.Length != 0 ? plan[0].Trim() : string.Empty;
+			bool named = backupName.StartsWith(BackupPrefix, StringComparison.Ordinal) &&
+				backupName.IndexOfAny(new[] { '/', '\\', '.' }) < 0;
+			string backup = Path.Combine(work, named ? backupName : BackupPrefix + "none");
 
-			foreach (string path in Directory.EnumerateFiles(work, "*.download"))
+			for (int i = 1; i < plan.Length; i++)
 			{
-				TryDelete(path);
-			}
-
-			string list = Path.Combine(work, LeftoversName);
-			if (!File.Exists(list))
-			{
-				return;
-			}
-
-			var still = new List<string>();
-			foreach (string line in File.ReadAllLines(list))
-			{
-				string path = line.Trim();
-				if (path.Length == 0 || !path.EndsWith(AsideSuffix, StringComparison.Ordinal))
+				string line = plan[i];
+				if (line.Length < 2 || line[0] != '+' || !SafePath.IsSafeRelativePath(line[1..], out _))
 				{
 					continue;
 				}
 
-				TryDelete(path);
-				if (File.Exists(path))
+				// A file the install did not have: gone again, unless it never left the staging.
+				if (!File.Exists(Path.Combine(staged, line[1..])))
 				{
-					still.Add(path);
+					File.Delete(Path.Combine(root, line[1..]));
 				}
 			}
 
-			if (still.Count == 0)
+			if (Directory.Exists(backup))
 			{
-				TryDelete(list);
+				foreach (string path in Directory.GetFiles(backup, "*", SearchOption.AllDirectories))
+				{
+					string destination = Path.Combine(root, Path.GetRelativePath(backup, path));
+					Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+					File.Move(path, destination, overwrite: true);
+				}
 			}
-			else
+
+			File.Delete(Path.Combine(work, PendingManifestName));
+			File.Delete(planPath);
+			TryDeleteDirectory(staged);
+			TryDeleteDirectory(backup);
+			return true;
+		}
+		catch (Exception)
+		{
+			return false;
+		}
+	}
+
+	/// <summary>
+	/// Settles whatever an earlier update left: rolls back an apply that was cut short, finishes
+	/// the record of one that committed, and deletes the staging and the backups (a backed-up
+	/// file the system still held when its update finished is free by the next start). Called at
+	/// start and before every install. Returns a line for the log when an update was undone.
+	/// </summary>
+	public static string Recover(string installRoot, bool removeDownloads = true)
+	{
+		try
+		{
+			string root = Path.GetFullPath(installRoot);
+			string work = WorkDirectory(root);
+			if (!Directory.Exists(work))
 			{
-				File.WriteAllLines(list, still);
+				return string.Empty;
+			}
+
+			if (removeDownloads)
+			{
+				foreach (string path in Directory.EnumerateFiles(work, "*.download"))
+				{
+					TryDelete(path);
+				}
+			}
+
+			if (File.Exists(Path.Combine(work, PlanName)))
+			{
+				return RollBack(root)
+					? "An update was interrupted; the previous build was put back."
+					: "An update was interrupted and could not be fully undone. Restart the launcher to try again.";
+			}
+
+			string pending = Path.Combine(work, PendingManifestName);
+			if (File.Exists(pending))
+			{
+				File.Move(pending, Path.Combine(work, ManifestName), overwrite: true);
+			}
+
+			TryDeleteDirectory(Path.Combine(work, StagedName));
+			foreach (string backup in Directory.GetDirectories(work, BackupPrefix + "*"))
+			{
+				TryDeleteDirectory(backup);
 			}
 		}
 		catch (Exception)
 		{
 		}
+
+		return string.Empty;
 	}
 
 	private static void TryDelete(string path)

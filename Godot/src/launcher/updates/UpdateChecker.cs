@@ -35,6 +35,9 @@ public sealed class UpdateChecker
 	/// <summary>Whether the last look reached the releases at all.</summary>
 	public bool Reached { get; private set; }
 
+	/// <summary>Why the last look did not reach the releases, worded for the player; empty when it did.</summary>
+	public string Failure { get; private set; } = string.Empty;
+
 	/// <summary>An install the launcher can replace: a desktop package, never a phone's or the editor's project.</summary>
 	public static bool CanUpdate => !OperatingSystem.IsAndroid() && !Godot.Engine.IsEditorHint() && !Godot.OS.HasFeature("editor");
 
@@ -65,12 +68,13 @@ public sealed class UpdateChecker
 		{
 			UpdateChannel channel = ReleaseUpdates.Channel;
 			string channelName = ReleaseUpdates.ChannelName(channel);
-			string? listing = await GitHubApi.HttpGetAsync(
+			(string? listing, string failure) = await GitHubApi.GetAsync(
 				ReleaseUpdates.ReleasesUrl(GitHubApi.GetRepositoryName()));
 			Reached = listing is not null;
+			Failure = failure;
 			if (listing is null)
 			{
-				result.Message = logPrefix + "could not reach the project's releases.";
+				result.Message = logPrefix + "the project's releases could not be read. " + failure;
 			}
 			else
 			{
@@ -96,10 +100,12 @@ public sealed class UpdateChecker
 	}
 
 	/// <summary>
-	/// Downloads and installs <see cref="Latest"/>; <paramref name="onSuccess"/> runs once it is
-	/// in place and recorded as the build installed. Null when there is nothing to install.
+	/// Downloads and installs <see cref="Latest"/> on a worker; <paramref name="onInstalled"/> runs
+	/// there once every file is in place. The caller then records it from the main thread
+	/// (<see cref="MarkInstalled"/>): the config is not written from a worker. Null when there is
+	/// nothing to install.
 	/// </summary>
-	public ManagedDownloadProgress? StartDownload(Action onSuccess)
+	public ManagedDownloadProgress? StartDownload(Action onInstalled)
 	{
 		if (Latest is not { } build || !CanUpdate)
 		{
@@ -107,13 +113,18 @@ public sealed class UpdateChecker
 		}
 
 		var progress = new ManagedDownloadProgress();
-		ReleaseInstaller.InstallAsync(build, Platform.GetExecutableDirectory(), progress, () =>
+		ReleaseInstaller.InstallAsync(build, Platform.GetExecutableDirectory(), progress, onInstalled);
+		return progress;
+	}
+
+	/// <summary>Records <see cref="Latest"/> as the build installed. Main thread.</summary>
+	public void MarkInstalled()
+	{
+		if (Latest is { } build)
 		{
 			ReleaseUpdates.InstalledStamp = build.Stamp;
-			UpdateAvailable = false;
-			onSuccess();
-		});
+		}
 
-		return progress;
+		UpdateAvailable = false;
 	}
 }

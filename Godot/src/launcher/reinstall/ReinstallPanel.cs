@@ -85,87 +85,6 @@ public partial class ReinstallPanel : VBoxContainer
 	public event Action? ResumeBuildRequested;
 	public event Action? StopBuildRequested;
 
-	/// <summary>The player chose which published builds the app updates to.</summary>
-	public event Action<UpdateChannel>? UpdateChannelChanged;
-
-	/// <summary>The player asked for another look at the project's releases.</summary>
-	public event Action? UpdateCheckRequested;
-
-	/// <summary>The player asked for the newest build to be downloaded and installed.</summary>
-	public event Action? UpdateInstallRequested;
-
-	private OptionButton? _updateChannel;
-	private Label? _updateStatus;
-	private Button? _updateButton;
-	private bool _updateInstalls;
-
-	/// <summary>
-	/// States the app-update row: what the last look at the releases found, what the button does
-	/// (<paramref name="installs"/>: install the newest build, else look again), and whether it can
-	/// be pressed.
-	/// </summary>
-	public void SetUpdateState(string status, bool installs, bool enabled)
-	{
-		if (_updateStatus is null || _updateButton is null || _updateChannel is null)
-		{
-			return;
-		}
-
-		_updateStatus.Text = status;
-		_updateInstalls = installs;
-		_updateButton.Text = installs ? "Update" : "Check";
-		_updateButton.Disabled = !enabled;
-		_updateChannel.Disabled = !enabled;
-		int wanted = ReleaseUpdates.Channel == UpdateChannel.Nightly ? 1 : 0;
-		if (_updateChannel.Selected != wanted)
-		{
-			_updateChannel.Select(wanted);
-		}
-	}
-
-	/// <summary>The app's own update row: the channel, what is published on it, and the button.</summary>
-	private void AddUpdateRow(VBoxContainer content)
-	{
-		Label heading = MakeLabel("App updates");
-		content.AddChild(heading);
-
-		var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-		row.AddThemeConstantOverride("separation", 8);
-
-		_updateChannel = new OptionButton
-		{
-			CustomMinimumSize = new Vector2(190, 32),
-			TooltipText = "Release follows the numbered betas. Nightly follows the newest dev build, which is untested.",
-		};
-		Apply(_updateChannel);
-		_updateChannel.AddItem(ReleaseUpdates.ChannelName(UpdateChannel.Release));
-		_updateChannel.AddItem(ReleaseUpdates.ChannelName(UpdateChannel.Nightly));
-		_updateChannel.Select(ReleaseUpdates.Channel == UpdateChannel.Nightly ? 1 : 0);
-		_updateChannel.ItemSelected += index =>
-			UpdateChannelChanged?.Invoke(index == 1 ? UpdateChannel.Nightly : UpdateChannel.Release);
-		row.AddChild(_updateChannel);
-
-		_updateButton = MakeSecondaryButton("Check", () =>
-		{
-			if (_updateInstalls)
-			{
-				UpdateInstallRequested?.Invoke();
-			}
-			else
-			{
-				UpdateCheckRequested?.Invoke();
-			}
-		});
-		row.AddChild(_updateButton);
-		content.AddChild(row);
-
-		_updateStatus = MakeLabel(string.Empty);
-		_updateStatus.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-		_updateStatus.AddThemeColorOverride("font_color", _style.TextDisabled);
-		content.AddChild(_updateStatus);
-		content.AddChild(new HSeparator());
-	}
-
 	/// <summary>Switches the Install tab's scoped game title without firing <see cref="TitleChanged"/>.</summary>
 	public void SetTitle(Engine_Title title)
 	{
@@ -261,8 +180,6 @@ public partial class ReinstallPanel : VBoxContainer
 		var content = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
 		content.AddThemeConstantOverride("separation", 8);
 		scrollMargin.AddChild(content);
-
-		AddUpdateRow(content);
 
 		Label explain = MakeLabel(
 			"What the launcher builds from your own game files. A tick means it is there and " +
