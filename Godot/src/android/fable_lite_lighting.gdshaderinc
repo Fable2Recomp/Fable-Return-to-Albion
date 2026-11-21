@@ -33,6 +33,7 @@ float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
 #endif
 
 // THE AO WEIGHTS, fable_lighting's four (left out of every lite build): the phone's switches.
+float fable_screen_ao_union(float macro_ao, vec2 screen_uv, uint cam_layers) { return max(macro_ao, 0.0); }
 #ifdef FABLE_LITE_NO_BAKED_AO
 float fable_apply_ao_strength(float raw_ao) { return 1.0; }
 float fable_direct_ao(float combined_ao) { return 1.0; }

@@ -749,7 +749,11 @@ public static partial class Engine_LevelBakedLighting
 				if (from >= 0 && from < colours.Length)
 				{
 					Color c = FromD3DColour(colours[from]);
-					if ((uint)from < (uint)selfAo.Length)
+					if (selfAo.Length == sourceVertices.Length && (uint)(cursor + v) < (uint)selfAo.Length)
+					{
+						c.A = selfAo[cursor + v];
+					}
+					else if ((uint)from < (uint)selfAo.Length)
 					{
 						c.A = selfAo[from];
 					}

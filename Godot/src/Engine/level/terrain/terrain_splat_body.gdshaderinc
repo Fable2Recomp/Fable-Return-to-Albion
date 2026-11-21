@@ -706,7 +706,7 @@ void fragment() {
 #else
 	float terrain_contact_ao = mix(1.0, fable_sample_terrain_ao(fable_world), step(0.5, FABLE_UNIFIED));
 #endif
-	float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(terrain_contact_ao, 0.0)), step(0.5, FABLE_UNIFIED));
+	float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * fable_screen_ao_union(terrain_contact_ao, SCREEN_UV, CAMERA_VISIBLE_LAYERS)), step(0.5, FABLE_UNIFIED));
 	v_combined_ao = combined_ao;
 	AO_LIGHT_AFFECT = FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT;
 

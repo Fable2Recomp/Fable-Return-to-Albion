@@ -384,7 +384,8 @@ public partial class Engine_ClothBody : MeshInstance3D
         new Refii.Host.HostBridge.GuestClothPiece[32];
 
     /// <summary>The entity a body's parent stands for: GameEntities' meta on the entity node.</summary>
-    private static readonly StringName EntityAddressMeta = "entity_address";
+    private static StringName? _entityAddressMeta;
+    private static StringName EntityAddressMeta => _entityAddressMeta ??= "entity_address";
 
     /// <summary>One piece's stated poses: the published buffers newest first, the guest frame each
     /// was posed for, the pair last drawn and the drawn arrays.</summary>

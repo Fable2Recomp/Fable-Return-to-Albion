@@ -217,6 +217,18 @@ fable_exposure_valid={
 "type": "float",
 "value": 0.0
 }
+fable_ssao_tex={
+"type": "sampler2D",
+"value": ""
+}
+fable_ssao_tex_second={
+"type": "sampler2D",
+"value": ""
+}
+fable_ssao_valid={
+"type": "float",
+"value": 0.0
+}
 fable_interior={
 "type": "float",
 "value": 0.0

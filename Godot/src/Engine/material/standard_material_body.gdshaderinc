@@ -305,6 +305,7 @@ instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
 #else
 varying float v_tree_fade;
 varying float v_combined_ao;
+varying float v_model_height;
 #endif
 
 void vertex() {
@@ -330,6 +331,7 @@ void vertex() {
 #ifdef FABLE_LITE
 #include "res://src/android/standard_lite_tree_fade.gdshaderinc"
 #else
+    v_model_height = FABLE_MODEL_HEIGHT(VERTEX);
     v_tree_fade = 1.0;
     // FABLE_SOLID never carries a band: a tree is .mdl byte 77 == 2, which hands every one of
     // its surfaces, LOD1 included, to the two-sided or wind shader (Engine_MdlMaterial), and a
@@ -658,10 +660,26 @@ void fragment() {
     // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
 #ifdef FABLE_LITE
 #include "res://src/android/standard_lite_baked_ao.gdshaderinc"
+    float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, FABLE_UNIFIED));
 #else
     float baked_ao = fable_evaluate_prop_baked_ao_normal(COLOR.a, fable_world, world_normal);
+#ifndef FABLE_TREE_WIND
+    if (FABLE_GRASS || FABLE_FOLIAGE) {
+        float plant_ground_ao = fable_evaluate_prop_baked_ao_normal(COLOR.a, fable_world, vec3(0.0, 1.0, 0.0));
+        vec2 terr_ao_h = fable_sample_terrain_ao_and_height(fable_world);
+        float terr_fade = 1.0 - smoothstep(0.10, 0.75, abs(fable_world.y - terr_ao_h.y));
+        float inherited_terr_ao = mix(1.0, terr_ao_h.x, terr_fade);
+        float root_ao = mix(0.60, 1.0, smoothstep(0.0, 0.34, max(v_model_height, 0.0)));
+        baked_ao = min(baked_ao, min(plant_ground_ao, inherited_terr_ao)) * root_ao;
+    }
 #endif
-    float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, FABLE_UNIFIED));
+#ifdef FABLE_TRANSLUCENT
+    float screen_ao = 1.0;
+#else
+    float screen_ao = fable_sample_screen_ao(SCREEN_UV, CAMERA_VISIBLE_LAYERS);
+#endif
+    float combined_ao = fable_combine_ao(ao, baked_ao, screen_ao);
+#endif
     v_combined_ao = combined_ao;
     if (!FABLE_IS_PBR) {
         SPECULAR = 0.0;

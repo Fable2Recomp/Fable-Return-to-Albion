@@ -146,6 +146,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
         }
 
         Engine_PostFxEffect.RegisterGlobals();
+        Engine_ScreenSpaceAoEffect.RegisterGlobals();
         if (Engine_PostFxParams.SunSourcesRequested)
         {
             Engine_PostFxSunSources.Ensure(this);
@@ -2012,9 +2013,9 @@ public struct SunClockInterpolator
         }
 
         float error = MathF.Max(0.0f, ShortestSignedDelta(_smoothedFraction, _lastRawFraction));
-        float desiredLag = _ratePerSecond * 0.04f;
+        float desiredLag = _ratePerSecond * 0.08f;
         float velocity = MathF.Max(0.0f, _ratePerSecond + ((error - desiredLag) * 6.0f));
-        float advance = MathF.Min(velocity * worldDelta, error);
+        float advance = MathF.Min(velocity * worldDelta, error + (_ratePerSecond * 0.08f));
         _smoothedFraction = Wrap01(_smoothedFraction + advance);
         return _smoothedFraction;
     }

@@ -501,6 +501,22 @@ float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
 #endif
 
 #ifndef FABLE_LITE
+global uniform sampler2D fable_ssao_tex : filter_linear, repeat_disable, hint_default_white;
+global uniform sampler2D fable_ssao_tex_second : filter_linear, repeat_disable, hint_default_white;
+global uniform float fable_ssao_valid = 0.0;
+
+float fable_sample_screen_ao(vec2 screen_uv, uint cam_layers) {
+	if (fable_ssao_valid <= 0.5 || fable_unified <= 0.5 ||
+	    fable_ao_strength <= 0.001 || (cam_layers & 1u) == 0u) {
+		return 1.0;
+	}
+	bool second_view = (cam_layers & (1u << 28u)) != 0u;
+	float raw = second_view
+		? textureLod(fable_ssao_tex_second, screen_uv, 0.0).r
+		: textureLod(fable_ssao_tex, screen_uv, 0.0).r;
+	return max(0.0, min(1.0, raw));
+}
+
 float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec3 world_normal) {
 	if (fable_unified <= 0.5 || fable_ao_strength <= 0.001) {
 		return 1.0;
@@ -513,7 +529,7 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 	}
 	float min_h = fable_terrain_ao_height.x;
 	float span_h = fable_terrain_ao_height.y;
-	if (world_pos.y < min_h - 0.38 || world_pos.y > min_h + span_h + 0.38) {
+	if (world_pos.y < min_h - 0.55 || world_pos.y > min_h + span_h + 0.65) {
 		return vertex_ao * inst_ao;
 	}
 
@@ -521,14 +537,15 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 	float horiz_share = smoothstep(0.15, 0.65, abs_ny);
 	vec2 n_xz = vec2(world_normal.x, world_normal.z);
 	float n_xz_len = length(n_xz);
-	// Offset ~0.6 ground-AO texels outward from vertical walls so exterior building bases sample
-	// exterior street-to-wall contact rather than interior-trapped wall-footprint texels.
+	// Offset outward from vertical bases (at least 1.75 ground-AO texels or 18 cm) so walls, crates,
+	// gravestones, fence plinths, and statue hems sample exterior floor contact outside their footprint.
 	vec2 texel_metres = vec2(
 		1.0 / max(fable_terrain_ao_height.z * fable_terrain_ao_rect.z, 2.0),
 		1.0 / max(fable_terrain_ao_height.w * fable_terrain_ao_rect.w, 2.0));
+	vec2 outward_reach = max(texel_metres * 1.75, vec2(0.18));
 	vec2 sample_xz = world_pos.xz;
 	if (n_xz_len > 1e-3) {
-		sample_xz += (n_xz / n_xz_len) * texel_metres * (0.60 * (1.0 - horiz_share));
+		sample_xz += (n_xz / n_xz_len) * outward_reach * (1.0 - 0.65 * horiz_share);
 	}
 
 	vec2 grid_uv = vec2(
@@ -559,14 +576,19 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 	float h01 = min_h + (t01.b * 255.0 + t01.a * 65280.0) * h_scale;
 	float h11 = min_h + (t11.b * 255.0 + t11.a * 65280.0) * h_scale;
 
-	// Vertical walls restrict ground contact to a tight 2..16cm plinth band instead of smearing
-	// 42cm up plaster walls, while horizontal/downward surfaces keep 5..32cm contact reach.
-	float inner_h = mix(0.02, 0.05, horiz_share);
-	float outer_h = mix(0.16, 0.32, horiz_share);
-	float hw00 = 1.0 - smoothstep(inner_h, outer_h, abs(world_pos.y - h00));
-	float hw10 = 1.0 - smoothstep(inner_h, outer_h, abs(world_pos.y - h10));
-	float hw01 = 1.0 - smoothstep(inner_h, outer_h, abs(world_pos.y - h01));
-	float hw11 = 1.0 - smoothstep(inner_h, outer_h, abs(world_pos.y - h11));
+	// Signed elevation above support floor: reject taps that jumped onto a ledge >26 cm above this fragment,
+	// and give vertical object bases a natural 3..45 cm grounded plinth gradient.
+	float inner_h = mix(0.03, 0.05, horiz_share);
+	float outer_h = mix(0.45, 0.36, horiz_share);
+	float dy00 = world_pos.y - h00;
+	float dy10 = world_pos.y - h10;
+	float dy01 = world_pos.y - h01;
+	float dy11 = world_pos.y - h11;
+
+	float hw00 = (1.0 - smoothstep(0.05, 0.26, max(-dy00, 0.0))) * (1.0 - smoothstep(inner_h, outer_h, max(dy00, 0.0)));
+	float hw10 = (1.0 - smoothstep(0.05, 0.26, max(-dy10, 0.0))) * (1.0 - smoothstep(inner_h, outer_h, max(dy10, 0.0)));
+	float hw01 = (1.0 - smoothstep(0.05, 0.26, max(-dy01, 0.0))) * (1.0 - smoothstep(inner_h, outer_h, max(dy01, 0.0)));
+	float hw11 = (1.0 - smoothstep(0.05, 0.26, max(-dy11, 0.0))) * (1.0 - smoothstep(inner_h, outer_h, max(dy11, 0.0)));
 
 	float b00 = (1.0 - f.x) * (1.0 - f.y);
 	float b10 = f.x * (1.0 - f.y);
@@ -580,10 +602,10 @@ float fable_evaluate_prop_baked_ao_normal(float color_alpha, vec3 world_pos, vec
 	float sum_w = w00 + w10 + w01 + w11;
 
 	float matched_ao = (w00 * t00.g + w10 * t10.g + w01 * t01.g + w11 * t11.g) / max(sum_w, 1e-4);
-	float min_wall_floor = mix(0.32, 0.05, horiz_share);
+	float min_wall_floor = mix(0.18, 0.05, horiz_share);
 	matched_ao = max(matched_ao, min_wall_floor);
 	float max_hw = max(max(hw00, hw10), max(hw01, hw11));
-	float fade = max_hw * smoothstep(0.0, 0.12, sum_w);
+	float fade = max_hw * smoothstep(0.0, 0.10, sum_w);
 	float ground_contact_ao = mix(1.0, matched_ao, fade);
 	return vertex_ao * min(inst_ao, ground_contact_ao);
 }
@@ -596,6 +618,27 @@ float fable_apply_ao_strength(float raw_ao) {
 		return max(raw_ao, 1e-4);
 	}
 	return pow(max(raw_ao, 1e-4), fable_ao_strength);
+}
+
+float fable_screen_ao_union(float macro_ao, vec2 screen_uv, uint cam_layers) {
+	float b = max(0.0, min(1.0, macro_ao));
+	float s = fable_sample_screen_ao(screen_uv, cam_layers);
+	float lo = min(b, s);
+	float hi = max(b, s);
+	return lo * mix(1.0, hi, 0.25);
+}
+
+float fable_combine_ao(float micro_ao, float baked_ao, float screen_ao) {
+	float micro_c = max(micro_ao, 0.0);
+	if (fable_unified <= 0.5) {
+		return micro_c;
+	}
+	float b = max(0.0, min(1.0, baked_ao));
+	float s = max(0.0, min(1.0, screen_ao));
+	float macro_lo = min(b, s);
+	float macro_hi = max(b, s);
+	float macro_union = macro_lo * mix(1.0, macro_hi, 0.25);
+	return fable_apply_ao_strength(micro_c * macro_union);
 }
 
 float fable_direct_ao(float combined_ao) {
@@ -631,7 +674,8 @@ vec3 fable_ambient_occluded(vec3 bake, float modern_ao, vec3 modern_darken) {
 	float is_amb3 = step(3.5, FABLE_MODE);
 	FABLE_LITE_MP vec3 floor_fill = (fable_ambient_colour + FABLE_FILL_FLOOR) * fable_ambient_scale;
 	FABLE_LITE_MP vec3 modern_mod = mix(vec3(1.0), modern_darken * max(modern_ao, 0.05), FABLE_UNIFIED);
-	return (bake * max(1.0 - FABLE_UNIFIED, is_amb3 * 0.35)) + (floor_fill * modern_mod);
+	float amb3_ao = mix(1.0, max(modern_ao, 0.08), 0.78 * FABLE_UNIFIED);
+	return (bake * max(1.0 - FABLE_UNIFIED, is_amb3 * 0.35 * amb3_ao)) + (floor_fill * modern_mod);
 }
 
 /// The main light. Lambert, because Fable's main light is one directional source and the
