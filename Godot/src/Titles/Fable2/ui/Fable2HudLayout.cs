@@ -51,10 +51,9 @@ public sealed partial class Fable2HudLayout : Engine_HudTitleLayout
         // unit that follows every element beneath it.
         new(ExpressionMeterName, "ExpressionMeter", null, 0.5f),
 
-        // The job chain multiplier (`Layer/JobMultiplier`), a whole unit with no binding: the
-        // guest's `SetJobMultiplierLevel` (`sub_823CAC20`) writes `<gold_img>%d` onto
-        // `Group.Text` and plays the root's slides (1 from off, 2 up, 3 down, 4/5 off) itself, so
-        // following its live element state is the whole job.
+        // The job chain multiplier (`Layer/JobMultiplier`), a whole unit with no binding: its
+        // root's slide (1 from off, 2 up, 3 down, 4/5 off) and `Group.Text` (`<gold_img>%d`) are
+        // what `SetJobMultiplierLevel` / `TurnJobMulitplierOff` state (GameUi.StateJobMultiplier).
         new("JobMultiplier", "JobMultiplier", null, 0.5f),
 
         // THE HEALTH READOUT IS ONE WIDGET, and cutting it per binding is what detached it.

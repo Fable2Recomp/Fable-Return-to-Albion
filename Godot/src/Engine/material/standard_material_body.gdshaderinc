@@ -305,6 +305,7 @@ instance uniform float xr_fade_alpha : instance_index(13) = 1.0;
 #else
 varying float v_tree_fade;
 varying float v_combined_ao;
+varying float v_model_height;
 #endif
 
 void vertex() {
@@ -330,6 +331,7 @@ void vertex() {
 #ifdef FABLE_LITE
 #include "res://src/android/standard_lite_tree_fade.gdshaderinc"
 #else
+    v_model_height = FABLE_MODEL_HEIGHT(VERTEX);
     v_tree_fade = 1.0;
     // FABLE_SOLID never carries a band: a tree is .mdl byte 77 == 2, which hands every one of
     // its surfaces, LOD1 included, to the two-sided or wind shader (Engine_MdlMaterial), and a
@@ -414,6 +416,12 @@ void fragment() {
     vec2 base_uv_dx = dFdx(UV);
     vec2 base_uv_dy = dFdy(UV);
     vec3 geom_cross = cross(dFdx(VERTEX), dFdy(VERTEX));
+#if defined(FABLE_LITE_NM_DERIV) && !defined(FABLE_SPEC_NO_NORMAL_MAP)
+    // The phone's fast normal maps (standard_lite_normal_map) rebuild the frame from VERTEX's two
+    // derivatives: taken here with the rest, never inside the per-pixel `if (!should_discard)`.
+    vec3 lite_dp1 = dFdx(VERTEX);
+    vec3 lite_dp2 = dFdy(VERTEX);
+#endif
 
     ALBEDO = vec3(0.5);
     EMISSION = vec3(0.0);
@@ -435,7 +443,7 @@ void fragment() {
     // The tree fade, as an ordered 4x4 dither (Godot's own pattern style; the title's is a 2x2
     // alpha-to-mask). A copy past its band is wholly discarded. Not in FABLE_SOLID: a discard
     // there refuses the shared depth-only shadow material, and no culled surface has a band.
-#ifndef FABLE_SOLID
+#if !defined(FABLE_SOLID) && !defined(FABLE_DEBUG_CUTOUTS_OPAQUE)
     if (v_tree_fade < 0.999) {
         if (v_tree_fade <= fable_bayer_threshold(FRAGCOORD.xy)) {
             should_discard = true;
@@ -478,7 +486,7 @@ void fragment() {
     vec4 alb = textureGrad(albedo_tex, uv, base_uv_dx, base_uv_dy);
     // FABLE_SOLID: no discard either — the second thing that refuses the shared shadow material.
     // A culled material has an albedo without alpha, so its scissor is never on (see vertex()).
-#ifndef FABLE_SOLID
+#if !defined(FABLE_SOLID) && !defined(FABLE_DEBUG_CUTOUTS_OPAQUE)
     if (alpha_scissor_on && (alb.a < alpha_scissor_threshold ||
             (entity_no_alpha_depth && alpha_scissor_threshold > FABLE_TWIN_ALPHA_REF_FROM))) {
         should_discard = true;
@@ -647,13 +655,31 @@ void fragment() {
     }
 #endif
 
+    vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+
     // GODOT'S INDIRECT SPECULAR IS OFF for legacy materials. For authored PBR, keep real roughness/metallic/AO.
 #ifdef FABLE_LITE
 #include "res://src/android/standard_lite_baked_ao.gdshaderinc"
-#else
-    float baked_ao = fable_evaluate_prop_baked_ao(COLOR.a, fable_world);
-#endif
     float combined_ao = mix(max(ao, 0.0), fable_apply_ao_strength(max(ao, 0.0) * max(baked_ao, 0.0)), step(0.5, FABLE_UNIFIED));
+#else
+    float baked_ao = fable_evaluate_prop_baked_ao_normal(COLOR.a, fable_world, world_normal);
+#ifndef FABLE_TREE_WIND
+    if (FABLE_GRASS || FABLE_FOLIAGE) {
+        float plant_ground_ao = fable_evaluate_prop_baked_ao_normal(COLOR.a, fable_world, vec3(0.0, 1.0, 0.0));
+        vec2 terr_ao_h = fable_sample_terrain_ao_and_height(fable_world);
+        float terr_fade = 1.0 - smoothstep(0.10, 0.75, abs(fable_world.y - terr_ao_h.y));
+        float inherited_terr_ao = mix(1.0, terr_ao_h.x, terr_fade);
+        float root_ao = mix(0.60, 1.0, smoothstep(0.0, 0.34, max(v_model_height, 0.0)));
+        baked_ao = min(baked_ao, min(plant_ground_ao, inherited_terr_ao)) * root_ao;
+    }
+#endif
+#ifdef FABLE_TRANSLUCENT
+    float screen_ao = 1.0;
+#else
+    float screen_ao = fable_sample_screen_ao(SCREEN_UV, CAMERA_VISIBLE_LAYERS);
+#endif
+    float combined_ao = fable_combine_ao(ao, baked_ao, screen_ao);
+#endif
     v_combined_ao = combined_ao;
     if (!FABLE_IS_PBR) {
         SPECULAR = 0.0;
@@ -666,7 +692,6 @@ void fragment() {
         SPECULAR = 0.5;
     }
 
-    vec3 world_normal = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
 #ifndef FABLE_LITE
     vec3 weather_weights = surface_weights(fable_world, world_normal);
     surface_material(weather_weights, fable_world, alb.rgb, ROUGHNESS, METALLIC);

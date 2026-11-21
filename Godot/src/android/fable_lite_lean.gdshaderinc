@@ -48,17 +48,29 @@ bool fable_atmosphere_terms_for(
 		return false;
 	}
 
+#ifdef FABLE_LITE_FOG_UNIT_SCALE
+	// `lite_fog_trims` (AndroidFogTrims): the fable model publishes outdoor_fog_scale, 1 at launch.
+	const float fog_scale = 1.0;
+#else
 	// Upstream's max(scale, 0) is the scale wherever it is read: a scale at or below 0 returns here.
 	float fog_scale = fable_interior_fog;
 	if (fog_scale <= 0.0) {
 		return false;
 	}
+#endif
 
+#ifdef FABLE_LITE_FOG_SUN_VIEW
+	// `lite_fog_trims`: dot(s, R v) = dot(s R, v), so the sun turns into view space (uniform-only)
+	// instead of every pixel's ray into world space. The same value to float rounding.
+	vec3 sun_view = vec3(-atmos_sun.x, atmos_sun.z, atmos_sun.y) * mat3(inv_view);
+	float sun_dot = dot(sun_view, view_vertex) * inv_radial;
+#else
 	vec3 world_ray = mat3(inv_view) * view_vertex;
 	// Upstream's clamp to [0, 1] is inside the half-texel clamp below, which alone decides the fetch.
 	float sun_dot = dot(atmos_sun, vec3(-world_ray.x, world_ray.z, world_ray.y)) * inv_radial;
+#endif
 	const float half_texel = 0.5 / 64.0;
-	vec3 sky = texture(atmos_inscatter, vec2(clamp(sun_dot, half_texel, 1.0 - half_texel), 0.5)).rgb;
+	vec3 sky = textureLod(atmos_inscatter, vec2(clamp(sun_dot, half_texel, 1.0 - half_texel), 0.5), 0.0).rgb;
 
 	vec3 raw;
 #ifdef FABLE_LITE_FOG_TABLE
@@ -67,7 +79,7 @@ bool fable_atmosphere_terms_for(
 	const float knot = 7.8125;
 	float texel = (d * (FABLE_FOG_TABLE_PER_KNOT / knot)) + (0.5 - (0.5 * FABLE_FOG_TABLE_PER_KNOT));
 	float u = clamp(texel, 0.5, FABLE_FOG_TABLE_TEXELS - 0.5) * (1.0 / FABLE_FOG_TABLE_TEXELS);
-	raw = min(texture(atmos_extinction, vec2(u, 0.5)).rgb, vec3(1.0));
+	raw = min(textureLod(atmos_extinction, vec2(u, 0.5), 0.0).rgb, vec3(1.0));
 #else
 	const float knot = 7.8125;
 	float dl = max(d - (0.5 * knot), 0.0);
@@ -83,11 +95,14 @@ bool fable_atmosphere_terms_for(
 		float optical_depth = atmos_curve.x * pow(max(t, 0.0), atmos_curve.z) * fog_scale;
 		raw = exp(-atmos_beta * optical_depth);
 	}
+#ifndef FABLE_LITE_FOG_NO_VOLUMETRIC_CANCEL
+	// `lite_fog_trims` compiles this out where fable_volumetric_fog_end is always 0 (AndroidFogTrims).
 	if (fable_volumetric_fog_end > 0.0) {
 		// One exp, not three: the cancel is the same in every channel.
 		float vol_dist = clamp(radial_dist, 0.0, 128.0);
 		raw = min(raw * exp(fable_volumetric_fog_end * vol_dist), vec3(1.0));
 	}
+#endif
 #endif
 
 	transmittance = raw;

@@ -254,6 +254,12 @@ public static class Engine_PipelineWarmup
             return "the last pipeline warm draws";
         }
 
+        if (Refii.AndroidRuntime.AndroidTreeCards.FirstCaptureWaiting)
+        {
+            // The tree pictures' first capture compiles the tree materials for its own target.
+            return "the far tree pictures";
+        }
+
         double seconds = (System.Diagnostics.Stopwatch.GetTimestamp() - _startTicks) /
             (double)System.Diagnostics.Stopwatch.Frequency;
         double specialisations = Performance.GetMonitor(Performance.Monitor.PipelineCompilationsSpecialization) - _specialisationsAtStart;
@@ -319,6 +325,12 @@ public static class Engine_PipelineWarmup
                     ConsiderFar(multi, mmMesh, multimesh, kinds, sources);
                     break;
             }
+        }
+
+        // The far tree cards (tree_billboards) stand outside the level's subtree.
+        if (Refii.AndroidRuntime.AndroidTreeCards.WarmCards is { Multimesh: { Mesh: { } cardMesh } cardMulti } cards)
+        {
+            Consider(cards, cardMesh, cardMulti, kinds, sources, null);
         }
 
         _kinds = kinds.Count;

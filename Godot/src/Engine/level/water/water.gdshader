@@ -79,6 +79,9 @@ varying vec3 v_eye_local;
 varying vec3 v_sun_local;
 varying vec4 v_shore; // xy = shore_dir, z = water depth above terrain, w = terrain slope
 varying float v_cloud_t;
+#ifdef FABLE_WATER_ZENITH_VERTEX
+varying flat vec3 v_zenith;
+#endif
 
 float body_edge(vec2 p) {
 	if (!has_body_bounds) {
@@ -87,6 +90,15 @@ float body_edge(vec2 p) {
 	float d = min(min(p.x - w_body_bounds.x, p.y - w_body_bounds.y),
 		min(w_body_bounds.z - p.x, w_body_bounds.w - p.y));
 	return clamp(d / 1.5, 0.0, 1.0);
+}
+
+float body_edge_sea(vec2 p) {
+	if (!has_body_bounds) {
+		return 1.0;
+	}
+	float d = min(min(p.x - w_body_bounds.x, p.y - w_body_bounds.y),
+		min(w_body_bounds.z - p.x, w_body_bounds.w - p.y));
+	return clamp(d / 3.5, 0.0, 1.0);
 }
 
 // Evaluates shoreline depth/gradient in vertex() so fragment() avoids 5 terrain height taps per pixel.
@@ -151,6 +163,10 @@ void vertex() {
 	v_eye_local = (inverse(MODEL_MATRIX) * vec4(CAMERA_POSITION_WORLD, 1.0)).xyz;
 	v_sun_local = (inverse(MODEL_MATRIX) * vec4(fable_sun_toward, 0.0)).xyz;
 	v_shore = vec4(0.0, 0.0, 4.0, 0.0);
+#ifdef FABLE_WATER_ZENITH_VERTEX
+	v_zenith = has_dome ? fable_sky_overlaid(vec3(0.0, 1.0, 0.0), fable_sky_inscatter(
+		vec3(0.0, 0.0, 1.0), atmos_sun, atmos_inscatter, beta_rayleigh, beta_mie, horizon_distance)) : sky_constant;
+#endif
 
 	if (!guest_water) {
 		vec2 sdir;
@@ -254,27 +270,23 @@ void fragment() {
 	float slope = v_shore.w;
 	vec2 sdir = v_shore.xy;
 
-	float w_low = 0.0;
 	float w_roller = 0.0;
 	vec2 w_wave_n = vec2(0.0);
-	if (!guest_water && has_terrain_height) {
-		w_low = 1.0 - smoothstep(beach_slope * 0.6, beach_slope * 1.2, slope);
-		if (coastal_surf) {
-			float env = wave_zone(dt, slope);
-			if (env > 0.002) {
-				float phase = (dt + (TIME * wave_speed)) / max(wave_len, 0.05);
-				float ph = fract(phase);
-				float shoal = 1.0 - clamp(dt / max(wave_fade_depth, 0.05), 0.0, 1.0);
-				float vary = roller_vary(v_local.xz, phase);
-				float sh = roller_shape(ph, shoal);
-				float amp_l = wave_amp * (0.7 + (0.9 * shoal));
-				float shd = (roller_shape(fract(ph + 0.02), shoal) - sh) / 0.02;
-				w_wave_n = sdir * clamp(
-					slope * shd * amp_l * env * vary * wave_slope / max(wave_len, 0.05),
-					-0.6, 0.6);
-				float burst = (1.0 - smoothstep(0.0, 0.35, abs(dt))) * smoothstep(0.3, 0.8, sh);
-				w_roller = env * burst * vary;
-			}
+	if (!guest_water && has_terrain_height && coastal_surf) {
+		float env = wave_zone(dt, slope);
+		if (env > 0.002) {
+			float phase = (dt + (TIME * wave_speed)) / max(wave_len, 0.05);
+			float ph = fract(phase);
+			float shoal = 1.0 - clamp(dt / max(wave_fade_depth, 0.05), 0.0, 1.0);
+			float vary = roller_vary(v_local.xz, phase);
+			float sh = roller_shape(ph, shoal);
+			float amp_l = wave_amp * (0.7 + (0.9 * shoal));
+			float shd = (roller_shape(fract(ph + 0.02), shoal) - sh) / 0.02;
+			w_wave_n = sdir * clamp(
+				slope * shd * amp_l * env * vary * wave_slope / max(wave_len, 0.05),
+				-0.6, 0.6);
+			float burst = (1.0 - smoothstep(0.0, 0.35, abs(dt))) * smoothstep(0.3, 0.8, sh);
+			w_roller = env * burst * vary;
 		}
 	}
 
@@ -289,6 +301,11 @@ void fragment() {
 	}
 
 	float modern_alpha = coastal_surf ? max(mask_alpha, min(w_roller, 1.0)) : mask_alpha;
+	if (!guest_water && !ocean_mode && coastal_surf && dt > 1.5) {
+		// Feather the outer 3.5 m of deep coastal WaterBody bounds so it dissolves into VistaOcean seamlessly.
+		modern_alpha *= mix(1.0, body_edge_sea(v_local.xz), smoothstep(1.5, 3.0, dt));
+	}
+
 	if (!guest_water && modern_alpha <= 0.002) {
 		// Depth-draw-never transparent early-out with zero `discard;`.
 		ALBEDO = vec3(0.0);
@@ -306,8 +323,8 @@ void fragment() {
 		vec2 swell_slope = vec2(0.0);
 		float swell_h = 0.0;
 
-		if (!guest_water && water_quality_tier >= 1 && !ocean_mode) {
-			float shore_damp = (has_terrain_height ? clamp(dt * 0.85, 0.15, 1.0) : 1.0)
+		if (!guest_water && water_quality_tier >= 1) {
+			float shore_damp = (!ocean_mode && has_terrain_height ? clamp(dt * 0.85, 0.15, 1.0) : 1.0)
 				* smoothstep(140.0, 25.0, dist);
 			add_swell_wave(v_local.xz, TIME * 0.85, vec2(0.940, 0.342), 13.7, 0.028 * shore_damp, swell_slope, swell_h);
 			add_swell_wave(v_local.xz, TIME * 0.85, vec2(-0.515, 0.857), 8.3, 0.019 * shore_damp, swell_slope, swell_h);
@@ -416,12 +433,15 @@ void fragment() {
 			float scene_here = linear_depth(SCREEN_UV, INV_PROJECTION_MATRIX);
 			float raw_depth_here = max(scene_here - water_lin, 0.0);
 
+			// Continuous angle-driven Fresnel: drops cleanly to ~5% at steep downward views (no "hovering sheet")
+			// while rising smoothly across mid and grazing angles.
 			float ndv_f = clamp(dot(V, Nf), 0.001, 1.0);
-			float fres_curve = 0.08 + ((0.92 - (0.35 * roughness)) * pow(1.0 - ndv_f, 3.0));
+			float one_minus_ndv = 1.0 - ndv_f;
+			float fres_curve = 0.05 + ((0.95 - (0.30 * roughness)) * pow(one_minus_ndv, 2.4));
 
-			// Underwater transmitted scene (lit) vs in-scattered water volume reflectance (lit via ALBEDO + light()).
+			// Underwater transmitted scene vs in-scattered water volume reflectance (matches deep w_deep across VistaOcean).
 			vec3 refr_transmitted = vec3(0.0);
-			vec3 volume_albedo = mix(w_deep.rgb, w_surface.rgb, clamp(fres_curve, 0.0, 1.0));
+			vec3 volume_albedo = w_deep.rgb;
 			if (!ocean_mode) {
 				float refr_strength = clamp(w_reflp.y, 0.05, 1.5) * 0.09 *
 					clamp(raw_depth_here * 0.85, 0.0, 1.0) * smoothstep(95.0, 16.0, dist);
@@ -469,108 +489,116 @@ void fragment() {
 			vec3 refl_col = sky_refl;
 
 			float refl_str = clamp(w_deep.w, 0.0, 1.0);
-			float artist_bias = clamp((w_bias.x * 0.30) + (w_bias.y * 0.45), -0.05, 0.45);
-			float depth_reflect = ocean_mode ? 1.0 : smoothstep(0.0, 2.2, raw_depth_here);
-			float dist_reflect = ocean_mode ? 1.0 : smoothstep(6.0, 55.0, dist);
-			float shore_clear = ocean_mode ? 1.0 : mix(0.25, 1.0, clamp(raw_depth_here * 3.0, 0.0, 1.0));
-			float base_f = max(fres_curve + artist_bias, mix(0.14, 0.58, depth_reflect * mix(0.45, 1.0, dist_reflect)));
-			float F = clamp(base_f * refl_str * shore_clear, 0.0, 0.95);
+			float artist_bias = clamp((w_bias.x * 0.22) + (w_bias.y * 0.30), -0.04, 0.28) * pow(one_minus_ndv, 1.4);
+			float shore_clear = ocean_mode ? 1.0 : mix(0.20, 1.0, clamp(raw_depth_here * 3.0, 0.0, 1.0));
+			float F = clamp((fres_curve + artist_bias) * refl_str * shore_clear, 0.0, 0.94);
 
 			if (planar_reflection) {
-				vec2 raw_planar_uv = SCREEN_UV + (Nr.xz * 0.16 * clamp(w_reflp.x, 0.1, 1.5));
+				// Attenuate only the normal UV offset near the outer 3% border; keep the planar image full-frame to the viewport edge.
+				vec2 edge_d = min(SCREEN_UV, vec2(1.0) - SCREEN_UV);
+				float uv_atten = smoothstep(0.0, 0.03, min(edge_d.x, edge_d.y));
+				vec2 raw_planar_uv = SCREEN_UV + (Nr.xz * (0.16 * clamp(w_reflp.x, 0.1, 1.5) * uv_atten));
 				vec2 planar_uv = clamp(vec2(1.0 - raw_planar_uv.x, raw_planar_uv.y), vec2(0.001), vec2(0.999));
 				bool second_view = second_reflection &&
 					distance(CAMERA_POSITION_WORLD, second_eye) < distance(CAMERA_POSITION_WORLD, first_eye);
 				vec3 planar_col = max(second_view
 					? textureLod(reflection_tex_second, planar_uv, 0.0).rgb
 					: textureLod(reflection_tex, planar_uv, 0.0).rgb, vec3(0.0));
-				vec2 pb = min(planar_uv, 1.0 - planar_uv);
-				float planar_edge = smoothstep(0.0, 0.06, min(pb.x, pb.y));
-				refl_col = mix(sky_refl, planar_col, planar_edge * 0.94);
+				refl_col = planar_col;
 			}
 
-			// Full-range perspective SSR (~60-110 m reach) with overlap slab thickness (zero Bayer checkerboard speckles)
-			// and 4-step binary search refinement. Captures characters, NPCs, entity pillars, and shoreline trees.
+			// Perspective SSR with front-to-back surface crossing (ignores foreground piers/crates/bollards between camera and water)
+			// and 4-step binary refinement for characters, NPCs, boats, and shoreline props.
 			if (water_quality_tier >= 1 && F > 0.02 && dist < 150.0) {
-				int max_steps = water_quality_tier >= 3 ? 24 : (water_quality_tier == 2 ? 18 : 14);
-				float t_start = water_quality_tier >= 3 ? 0.22 : (water_quality_tier == 2 ? 0.26 : 0.30);
-				float step_growth = water_quality_tier >= 3 ? 1.31 : (water_quality_tier == 2 ? 1.40 : 1.50);
-
 				vec3 ro = VERTEX;
 				vec3 rd = normalize((VIEW_MATRIX * vec4(R_world, 0.0)).xyz);
-				vec4 clip_ro = PROJECTION_MATRIX * vec4(ro, 1.0);
-				vec4 clip_rd = PROJECTION_MATRIX * vec4(rd, 0.0);
+				float forward_gate = smoothstep(0.12, -0.15, rd.z);
+				if (forward_gate > 0.01) {
+					int max_steps = water_quality_tier >= 3 ? 24 : (water_quality_tier == 2 ? 18 : 12);
+					float t_start = water_quality_tier >= 3 ? 0.22 : (water_quality_tier == 2 ? 0.26 : 0.30);
+					float step_growth = water_quality_tier >= 3 ? 1.31 : (water_quality_tier == 2 ? 1.40 : 1.60);
 
-				float jitter = fable_bayer_threshold(FRAGCOORD.xy);
-				float t_prev = 0.06;
-				float t_ray = t_start * (0.88 + (0.24 * jitter));
-				bool found = false;
-				float hit_lo = 0.0;
-				float hit_hi = 0.0;
-				float hit_thickness = 0.25;
-				vec2 hit_uv = vec2(0.0);
+					vec4 clip_ro = PROJECTION_MATRIX * vec4(ro, 1.0);
+					vec4 clip_rd = PROJECTION_MATRIX * vec4(rd, 0.0);
 
-				const int MAX_SSR = 24;
-				for (int i = 0; i < MAX_SSR; i++) {
-					if (i >= max_steps || t_ray > 125.0) {
-						break;
-					}
-					vec4 clip = clip_ro + (clip_rd * t_ray);
-					if (clip.w <= 0.01) {
-						break;
-					}
-					float safe_w = max(clip.w, 1e-4);
-					vec2 uv = ((clip.xy / safe_w) * 0.5) + 0.5;
-					if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-						break;
-					}
+					float jitter = fable_bayer_threshold(FRAGCOORD.xy);
+					float t_prev = 0.06;
+					float t_ray = t_start * (0.88 + (0.24 * jitter));
+					bool prev_in_front = true;
+					bool found = false;
+					float hit_lo = 0.0;
+					float hit_hi = 0.0;
+					vec2 hit_uv = vec2(0.0);
 
-					float scene = linear_depth(uv, INV_PROJECTION_MATRIX);
-					float ray = -(ro.z + (rd.z * t_ray));
-					float step_span = t_ray - t_prev;
-					float thickness = max(step_span * 1.40, 0.20 + (t_ray * 0.18));
-					if (scene < 9e5 && scene > 0.20 && scene < ray && (ray - scene) < thickness) {
-						found = true;
-						hit_lo = t_prev;
-						hit_hi = t_ray;
-						hit_thickness = thickness;
-						hit_uv = uv;
-						break;
-					}
-
-					t_prev = t_ray;
-					t_ray *= step_growth;
-				}
-
-				if (found) {
-					float ray_best = -(ro.z + (rd.z * hit_hi));
-					float scene_best = linear_depth(hit_uv, INV_PROJECTION_MATRIX);
-					for (int b = 0; b < 4; b++) {
-						float mid = 0.5 * (hit_lo + hit_hi);
-						vec4 clip_m = clip_ro + (clip_rd * mid);
-						float safe_wm = max(clip_m.w, 1e-4);
-						vec2 uv_m = clamp(((clip_m.xy / safe_wm) * 0.5) + 0.5, vec2(0.001), vec2(0.999));
-						float scene_m = linear_depth(uv_m, INV_PROJECTION_MATRIX);
-						float ray_m = -(ro.z + (rd.z * mid));
-						if (scene_m < 9e5 && scene_m > 0.20 && scene_m < ray_m) {
-							hit_hi = mid;
-							hit_uv = uv_m;
-							ray_best = ray_m;
-							scene_best = scene_m;
-						} else {
-							hit_lo = mid;
+					const int MAX_SSR = 24;
+					for (int i = 0; i < MAX_SSR; i++) {
+						if (i >= max_steps || t_ray > 125.0) {
+							break;
 						}
+						vec4 clip = clip_ro + (clip_rd * t_ray);
+						if (clip.w <= 0.01) {
+							break;
+						}
+						float safe_w = max(clip.w, 1e-4);
+						vec2 uv = ((clip.xy / safe_w) * 0.5) + 0.5;
+						if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+							break;
+						}
+
+						float scene = linear_depth(uv, INV_PROJECTION_MATRIX);
+						float ray = -(ro.z + (rd.z * t_ray));
+						float diff = scene - ray;
+						float step_span = t_ray - t_prev;
+						float coarse_thick = max(step_span * 1.25, 0.35 + (t_ray * 0.05));
+						bool foreground_occluder = (rd.z <= 0.0) && (scene < (water_lin - 0.15));
+
+						if (foreground_occluder) {
+							prev_in_front = false;
+						} else if (prev_in_front && scene < 9e5 && scene > 0.20 && diff <= 0.0 && (-diff) <= coarse_thick) {
+							found = true;
+							hit_lo = t_prev;
+							hit_hi = t_ray;
+							hit_uv = uv;
+							break;
+						} else {
+							prev_in_front = (diff > -0.02);
+						}
+
+						t_prev = t_ray;
+						t_ray *= step_growth;
 					}
 
-					vec2 b = min(hit_uv, 1.0 - hit_uv);
-					float edge = smoothstep(0.0, 0.07, b.x) * smoothstep(0.0, 0.12, hit_uv.y)
-						* smoothstep(0.0, 0.05, 1.0 - hit_uv.y);
-					float gap = max(ray_best - scene_best, 0.0);
-					float conf = 1.0 - smoothstep(hit_thickness * 0.45, hit_thickness, gap);
-					float hit_weight = edge * conf * smoothstep(145.0, 95.0, dist);
-					if (hit_weight > 0.004) {
-						vec3 ssr_col = max(textureLod(screen_tex, hit_uv, roughness * 2.0).rgb, vec3(0.0));
-						refl_col = mix(refl_col, ssr_col, hit_weight);
+					if (found) {
+						float ray_best = -(ro.z + (rd.z * hit_hi));
+						float scene_best = linear_depth(hit_uv, INV_PROJECTION_MATRIX);
+						for (int b = 0; b < 4; b++) {
+							float mid = 0.5 * (hit_lo + hit_hi);
+							vec4 clip_m = clip_ro + (clip_rd * mid);
+							float safe_wm = max(clip_m.w, 1e-4);
+							vec2 uv_m = clamp(((clip_m.xy / safe_wm) * 0.5) + 0.5, vec2(0.001), vec2(0.999));
+							float scene_m = linear_depth(uv_m, INV_PROJECTION_MATRIX);
+							float ray_m = -(ro.z + (rd.z * mid));
+							if (scene_m < 9e5 && scene_m > 0.20 && scene_m < ray_m && !(rd.z <= 0.0 && scene_m < (water_lin - 0.15))) {
+								hit_hi = mid;
+								hit_uv = uv_m;
+								ray_best = ray_m;
+								scene_best = scene_m;
+							} else {
+								hit_lo = mid;
+							}
+						}
+
+						vec2 b = min(hit_uv, 1.0 - hit_uv);
+						float edge = smoothstep(0.0, 0.025, b.x) * smoothstep(0.0, 0.04, hit_uv.y)
+							* smoothstep(0.0, 0.025, 1.0 - hit_uv.y);
+						float phys_thickness = 0.40 + (hit_hi * 0.06);
+						float gap = max(ray_best - scene_best, 0.0);
+						float conf = 1.0 - smoothstep(phys_thickness * 0.40, phys_thickness, gap);
+						float hit_weight = edge * conf * forward_gate * smoothstep(145.0, 95.0, dist);
+						if (hit_weight > 0.004) {
+							vec3 ssr_col = max(textureLod(screen_tex, hit_uv, roughness * 2.0).rgb, vec3(0.0));
+							refl_col = mix(refl_col, ssr_col, hit_weight);
+						}
 					}
 				}
 			}
@@ -578,40 +606,24 @@ void fragment() {
 			vec3 lit_emissive = (refr_transmitted * (1.0 - F)) + (refl_col * F);
 			vec3 lit_albedo = volume_albedo * (1.0 - F);
 
-			// Shoreline foam routed through lit_albedo so shadows and night darkness attenuate foam naturally.
-			if (!ocean_mode && dist < 85.0) {
-				float foam_w = 0.0;
-				if (coastal_surf) {
-					float w_surge = clamp(swell_h / max(wave_amp, 0.04), -1.0, 1.0);
-					float lap = 0.6 + (0.4 * w_surge);
-					float shore_foam = (1.0 - clamp(raw_depth_here / max(foam_width, 0.05), 0.0, 1.0))
-						* lap * (1.0 - w_low);
-					float band = max(shore_foam, w_roller);
-					if (band > 0.003) {
-						float f0 = textureGrad(normal_map,
-							(v_local.xz * 0.33) + vec2(TIME * 0.020, TIME * 0.012),
-							local_xz_dx * 0.33, local_xz_dy * 0.33).x;
-						float f1 = textureGrad(normal_map,
-							(v_local.xz * 0.19) - vec2(TIME * 0.016, TIME * 0.010),
-							local_xz_dx * 0.19, local_xz_dy * 0.19).y;
-						float pattern = mix(f1, f0, clamp((band - 0.4) / 0.4, 0.0, 1.0));
-						foam_w = smoothstep(0.45, 0.95, band * (0.35 + (0.95 * pattern))) * 0.72;
-					}
-				} else if (dist < 45.0) {
-					float calm_lap = 0.55 + (0.25 * sin((TIME * 1.1) + dot(v_local.xz, vec2(0.31, 0.17))));
-					float meniscus = (1.0 - clamp(raw_depth_here / max(foam_width * 0.30, 0.10), 0.0, 1.0))
-						* calm_lap * (1.0 - smoothstep(beach_slope * 0.7, beach_slope * 1.4, slope))
-						* smoothstep(45.0, 12.0, dist);
-					if (meniscus > 0.008) {
-						float f0 = textureGrad(normal_map,
-							(v_local.xz * 0.42) + vec2(TIME * 0.010, TIME * 0.007),
-							local_xz_dx * 0.42, local_xz_dy * 0.42).x;
-						foam_w = smoothstep(0.45, 0.95, meniscus * (0.40 + (0.85 * f0))) * 0.32;
-					}
-				}
-
+			// Breaking surf foam strictly gated to active shallow beach rollers (never vertical harbor docks or calm lakes).
+			if (!ocean_mode && coastal_surf && w_roller > 0.02 && dist < 85.0) {
+				float f0 = textureGrad(normal_map,
+					(v_local.xz * 0.33) + vec2(TIME * 0.020, TIME * 0.012),
+					local_xz_dx * 0.33, local_xz_dy * 0.33).x;
+				float f1 = textureGrad(normal_map,
+					(v_local.xz * 0.19) - vec2(TIME * 0.016, TIME * 0.010),
+					local_xz_dx * 0.19, local_xz_dy * 0.19).y;
+				float pattern = mix(f1, f0, clamp((w_roller - 0.35) / 0.40, 0.0, 1.0));
+				float foam_w = smoothstep(0.38, 0.90, w_roller * (0.40 + (0.90 * pattern))) * 0.72;
 				if (foam_w > 0.001) {
-					lit_albedo = mix(lit_albedo, vec3(0.62), foam_w);
+#ifdef FABLE_WATER_ZENITH_VERTEX
+					vec3 zen = v_zenith;
+#else
+					vec3 zen = has_dome ? dome_reflect(vec3(0.0, 1.0, 0.0)) : sky_constant;
+#endif
+					vec3 foam_tint = mix(vec3(0.58), clamp(zen, vec3(0.22), vec3(0.85)), 0.35);
+					lit_albedo = mix(lit_albedo, foam_tint, foam_w);
 					lit_emissive *= (1.0 - (foam_w * 0.65));
 				}
 			}

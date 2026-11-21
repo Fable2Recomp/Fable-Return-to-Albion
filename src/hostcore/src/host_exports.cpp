@@ -707,7 +707,10 @@ extern "C" {
 ///     (guest world space) and appends [15..17] (head_x, head_y, head_z in guest world space) and
 ///     [18] (flag bits: bit 0 LookInverted, bit 1 HostAimApplied, bit 2 HasHead) to
 ///     RefiiHostGetMouseLook.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 245; }
+/// 246 adds RefiiHostGetExpressionWheelPlayer (Fable 2) — the player whose expression wheel is open,
+///     0 for none, as the wheel's open and close hooks state it, in place of the host peeking the
+///     quick menu's open byte and the wheel controller's owner.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 246; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();

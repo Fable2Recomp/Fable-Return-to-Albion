@@ -87,10 +87,134 @@ public sealed class MdlGeometry
     public bool HasTangents => Tangents.Length > 0 || VerticesIn is not null;
 
     public bool HasBones => BoneIds.Length > 0;
+
+    private bool? _hasExplicitBothSides;
+
+    /// <summary>
+    /// Whether this surface explicitly models both sides as coplanar opposite-wound triangle pairs
+    /// at identical 3D vertex positions (such as double-sided shop posters, banners, and cutout trim),
+    /// evaluated lazily once from <see cref="Positions"/> and <see cref="Indices"/>.
+    /// </summary>
+    public bool HasExplicitBothSides
+    {
+        get => _hasExplicitBothSides ??= Engine_MdlGeometry.DetectExplicitBothSides(Positions, Indices);
+        set => _hasExplicitBothSides = value;
+    }
 }
 
 public static class Engine_MdlGeometry
 {
+    /// <summary>
+    /// Returns <see langword="true"/> when at least half of the non-degenerate triangles in
+    /// <paramref name="indices"/> pair up with an opposite-wound coplanar twin sharing the same
+    /// quantized 3D vertex coordinates in <paramref name="positions"/>.
+    /// </summary>
+    public static bool DetectExplicitBothSides(ReadOnlySpan<float> positions, ReadOnlySpan<uint> indices)
+    {
+        int triCount = indices.Length / 3;
+        int vertCount = positions.Length / 3;
+        if (triCount < 2 || vertCount < 3)
+        {
+            return false;
+        }
+
+        const float quantizeScale = 2048.0f; // ~0.49 mm grid, inside IEEE half-float precision
+        int[] canonical = ArrayPool<int>.Shared.Rent(vertCount);
+        try
+        {
+            var posMap = new Dictionary<(int X, int Y, int Z), int>(vertCount);
+            int uniqueCount = 0;
+            for (int v = 0; v < vertCount; v++)
+            {
+                float px = positions[v * 3];
+                float py = positions[v * 3 + 1];
+                float pz = positions[v * 3 + 2];
+                if (!float.IsFinite(px) || !float.IsFinite(py) || !float.IsFinite(pz))
+                {
+                    canonical[v] = -1;
+                    continue;
+                }
+
+                var key = (
+                    (int)MathF.Round(px * quantizeScale),
+                    (int)MathF.Round(py * quantizeScale),
+                    (int)MathF.Round(pz * quantizeScale));
+                if (!posMap.TryGetValue(key, out int id))
+                {
+                    id = uniqueCount++;
+                    posMap[key] = id;
+                }
+
+                canonical[v] = id;
+            }
+
+            if (uniqueCount < 3)
+            {
+                return false;
+            }
+
+            var seenDirected = new Dictionary<(int A, int B, int C), int>(triCount);
+            int validTriangles = 0;
+            int pairedTriangles = 0;
+
+            for (int t = 0; t < triCount; t++)
+            {
+                uint i0 = indices[t * 3];
+                uint i1 = indices[t * 3 + 1];
+                uint i2 = indices[t * 3 + 2];
+                if (i0 >= (uint)vertCount || i1 >= (uint)vertCount || i2 >= (uint)vertCount)
+                {
+                    continue;
+                }
+
+                int a = canonical[i0];
+                int b = canonical[i1];
+                int c = canonical[i2];
+                if (a < 0 || b < 0 || c < 0 || a == b || b == c || c == a)
+                {
+                    continue;
+                }
+
+                validTriangles++;
+
+                // Rotate cyclically so the smallest canonical vertex index leads while preserving winding.
+                (int A, int B, int C) dirKey;
+                (int A, int B, int C) oppKey;
+                if (a < b && a < c)
+                {
+                    dirKey = (a, b, c);
+                    oppKey = (a, c, b);
+                }
+                else if (b < a && b < c)
+                {
+                    dirKey = (b, c, a);
+                    oppKey = (b, a, c);
+                }
+                else
+                {
+                    dirKey = (c, a, b);
+                    oppKey = (c, b, a);
+                }
+
+                if (seenDirected.TryGetValue(oppKey, out int oppRemaining) && oppRemaining > 0)
+                {
+                    seenDirected[oppKey] = oppRemaining - 1;
+                    pairedTriangles += 2;
+                }
+                else
+                {
+                    seenDirected.TryGetValue(dirKey, out int cur);
+                    seenDirected[dirKey] = cur + 1;
+                }
+            }
+
+            return validTriangles >= 2 && pairedTriangles * 2 >= validTriangles;
+        }
+        finally
+        {
+            ArrayPool<int>.Shared.Return(canonical);
+        }
+    }
     // THE FILE'S NORMALS ARE THE CONTRACT. Every engine layout states a HEND3N NORMAL0 at +8
     // (sub_82A8B0E0 / sub_82A750E8 / sub_82A70510) and it is outward on props and characters
     // alike; the winding-derived recompute is inverted against that winding and is only a

@@ -52,9 +52,17 @@ public static class Engine_ShaderFamily
     public const string StandardCulledPath =
         "res://src/Engine/material/standard_material_culled.gdshader";
 
+    /// <summary>Cutout/alpha-prepass shader with back faces culled, for meshes that explicitly model both sides.</summary>
+    public const string StandardCutoutCulledPath =
+        "res://src/Engine/material/standard_material_cutout_culled.gdshader";
+
     /// <summary>The blended shader for a translucent diffuse (texture header flag 0x80).</summary>
     public const string StandardTranslucentPath =
         "res://src/Engine/material/standard_material_translucent.gdshader";
+
+    /// <summary>The blended translucent shader with back faces culled, for meshes that explicitly model both sides.</summary>
+    public const string StandardTranslucentCulledPath =
+        "res://src/Engine/material/standard_material_translucent_culled.gdshader";
 
     /// <summary>The two-sided shader with the title's tree wind, for every surface of a tree (.mdl byte 77 == 2).</summary>
     public const string StandardTreePath =

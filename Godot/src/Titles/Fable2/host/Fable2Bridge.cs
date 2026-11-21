@@ -157,6 +157,14 @@ public static class Fable2Bridge
 	public static int GetMenuOwner() => TryGetAbiVersion() is null ? 1 : RefiiHostGetMenuOwner();
 
 	/// <summary>
+	/// The player whose expression wheel is open (1 or 2), 0 for none — as the guest's wheel open and
+	/// close state it (lhGuiManager OpenExpressionWheel TU1 0x8236F110 / disc 0x82337310, the record
+	/// id it hands the wheel; CloseExpressionWheel 0x8236F340 / 0x82337540).
+	/// </summary>
+	public static int GetExpressionWheelPlayer() =>
+		TryGetAbiVersion() is null ? 0 : RefiiHostGetExpressionWheelPlayer();
+
+	/// <summary>
 	/// The players a region exit refused since the last call because their partner was out of
 	/// range (bit 0 player one, bit 1 player two) — the co-op travel rule, once per approach.
 	/// Read-and-clear.
@@ -675,13 +683,12 @@ public static class Fable2Bridge
 	/// <param name="RightAccepted">Player two has accepted (`+160`).</param>
 	/// <param name="PickerOpen">Player two's save picker is up (`+304`).</param>
 	/// <param name="PickerCursor">The picked save, 0-based (`+392`).</param>
-	/// <param name="PickerBaseSlot">The card the first save sits on, 1..3 (`+396`).</param>
 	/// <param name="Saves">The picker's cards, in save order: the guest's finished text and whether
 	/// the save's header parsed (A is refused on one that did not).</param>
 	/// <param name="Closing">The screen is closing (`+268`); it takes no input.</param>
 	public readonly record struct CoopScreenState(
 		int LeftFocus, bool LeftAccepted, int RightFocus, bool RightAccepted, bool PickerOpen,
-		int PickerCursor, int PickerBaseSlot, IReadOnlyList<(string Text, bool Valid)> Saves, bool Closing);
+		int PickerCursor, IReadOnlyList<(string Text, bool Valid)> Saves, bool Closing);
 
 	/// <summary>
 	/// The co-op screen's state, or null when screen 24 is not up. <paramref name="withText"/>
@@ -717,7 +724,7 @@ public static class Fable2Bridge
 
 		return new CoopScreenState(
 			(int)words[0], words[1] != 0u, (int)words[2], words[3] != 0u, words[4] != 0u,
-			(int)words[5], (int)words[6], saves, words[9] != 0u);
+			(int)words[5], saves, words[9] != 0u);
 	}
 
 	/// <summary>
@@ -2336,12 +2343,14 @@ public static class Fable2Bridge
 			F(w[9]), unchecked((int)w[10]), pieces[0], pieces[1], pieces[2], pieces[3]);
 	}
 
-	/// <summary>The co-op screen's decision state (screen 24) — see <c>CoopScreen</c> in hero_derived.h.</summary>
+	/// <summary>The co-op screen's decision state (screen 24) — see <c>CoopScreen</c> in hero_derived.h.
+	/// Words 13..15 (the pickboxes' indices) are not read: each caption is stated by its SetIndex
+	/// (<see cref="Engine_UiPickBoxes"/>).</summary>
 	public readonly record struct CoopPageState(
 		bool Known, int Session, bool OnlineClient, bool RightSignedIn,
 		bool AcceptedLeft, bool AcceptedRight, bool PeerReady, bool Flag297, bool Flag298,
 		bool Child, bool ChildLevel, int UserRightSave, bool SaveChosen,
-		int[] PickSelected, bool[] PickEnabled, int[] PickState, int ProfileLeft, int ProfileRight);
+		bool[] PickEnabled, int[] PickState, int ProfileLeft, int ProfileRight);
 
 	public static CoopPageState GetCoopState()
 	{
@@ -2366,7 +2375,6 @@ public static class Fable2Bridge
 		return new CoopPageState(
 			true, unchecked((int)w[1]), w[2] != 0u, w[3] != 0u, w[4] != 0u, w[5] != 0u, w[6] != 0u,
 			w[7] != 0u, w[8] != 0u, w[9] != 0u, w[10] != 0u, unchecked((int)w[11]), w[12] != 0u,
-			new[] { unchecked((int)w[13]), unchecked((int)w[14]), unchecked((int)w[15]) },
 			new[] { (w[16] & 1u) != 0u, (w[16] & 2u) != 0u, (w[16] & 4u) != 0u },
 			new[] { unchecked((int)w[17]), unchecked((int)w[18]), unchecked((int)w[19]) },
 			unchecked((int)w[20]), unchecked((int)w[21]));
@@ -2624,6 +2632,9 @@ public static class Fable2Bridge
 
 	[DllImport(Library)]
 	private static extern int RefiiHostGetMenuOwner();
+
+	[DllImport(Library)]
+	private static extern int RefiiHostGetExpressionWheelPlayer();
 
 	[DllImport(Library)]
 	private static extern int RefiiHostTakeExitRefused();

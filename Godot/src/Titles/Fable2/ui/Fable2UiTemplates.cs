@@ -721,11 +721,10 @@ public static class Fable2UiTemplates
 		// ask for the root, so they keep the per-presentation model path they had — which was
 		// working — until the capture is keyed by presentation.
 		//
-		// COST OF THE RETRACTION: the furniture press fix goes with it. Those rows carry event
-		// type 0 and `sub_826B65F0` handles only 140/141, so an identity push does nothing; the
-		// commit is the A press through the input handler (`sub_826B6A18` / `sub_826B7550`),
-		// which is what `Engine_UiScreenActions.ScreenSelect` and the template's `RowCommand`
-		// were for. Both remain, unused by these two screens, for when the capture is scoped.
+		// Those rows carry event type 0 and `sub_826B65F0` handles only 140/141, so an identity
+		// push does nothing. Upgrade furniture commits by the screen's `RowAction` (the level, to
+		// `sub_826B6A18`'s transaction); decoration through the stated highlight and its A
+		// (`sub_826B7550`).
 
 		// THE SHOP'S SIX GROUPS — `sub_82994218`'s own spawn order, each a counted header
 		// through `sub_826CF098` and each emitted only when its own count is non-zero (the guest
@@ -1143,9 +1142,11 @@ public static class Fable2UiTemplates
 				// clothing (`sub_829B7328`), gift (`sub_829A9E08`) and decoration
 				// (`sub_8299CEA8`). Upgrade furniture (26) has no mask: the guest registers
 				// nothing there.
-				// Furniture and decoration choose in the input handler's 36 arm from the guest's
-				// highlight (`sub_826B6A18`); the item books act by stated command.
-				CommitsByHighlight = id is 26 or 27,
+				// Decoration chooses in the input handler's 36 arm from the guest's highlight
+				// (`sub_826B7550`); the item books act by stated command, and so does upgrade
+				// furniture: a row is a level and the verb runs `sub_826B6A18`'s transaction on it.
+				CommitsByHighlight = id is 27,
+				RowAction = id == Engine_UiFurniturePage.ScreenId ? Engine_UiFurniturePage.UpgradeAction : string.Empty,
 
 				// DECORATION'S Y REMOVES what the slot holds: the input handler's code 39 arm
 				// (`sub_826B7770` case 13, 0x826B78C4..0x826B7908; disc `sub_8259CA10`
@@ -1285,12 +1286,9 @@ public static class Fable2UiTemplates
 			FlowBase = "Foreground.Book.Pages.ExpressionsPage.Contents.Effects",
 			FlowMoved = { "Foreground.Book.Pages.ExpressionsPage.Contents.Effects" },
 
-			// THE EXPRESSION'S ICON IS THE GUEST'S STATEMENT: the page refresh `sub_829BCDF0`
-			// reads the highlighted expression's `IconGraphic` and sets it with
-			// `GuiElement_SetTexture` (0x829BCEE8; disc `sub_828D61D0` 0x828D62C8), told for the
-			// headless element — on the row Godot states (`sub_826C1B50`). A guest unit, so the
-			// told texture stands inside the page Godot otherwise owns.
-			GuestTextUnits = { "ExpressionsPage.Contents.Icon" },
+			// The expression's icon is the record's `IconGraphic`, drawn by the provider
+			// (Engine_UiLogbookPage.Textures) from the row Godot states, as the guest's fill
+			// `sub_829BCDF0` sets it (0x829BCEE8; disc `sub_828D61D0` 0x828D62C8).
 
 			// Lifted verbatim from `Engine_UiLogbookPage.StatRows`.
 			StatFields =
@@ -1702,18 +1700,17 @@ public static class Fable2UiTemplates
 		{
 			ScreenId = 11, Name = "minigamecompleted", Presentation = "minigamecompleted",
 			OwnsRevealedInput = true,
-			RevealedAccept = Engine_UiScreenActions.ScreenDismiss,
+			RevealedAccept = Fable2UiVerbs.MiniGameConfirmCommand,
 
 			// `Select` has two bearers — the button GROUP is 0, its label Text is 1 — so the
 			// bare name is right here and the label comes through the text sweep.
 			// `Title` too: un-cloned it had no node, and the tally drew with no heading.
 			ChromeUnits = { "paperbox", "Select", "Motif", "Amounts", "Title" },
 
-			// EVERY STRING AND ROW IS A REGISTRY STATEMENT, read by the names the file binds
-			// (`Engine_UiOwnedBook.RegistryText` / `RegistrySlide`): `TurnOnMiniGameComplete`
-			// publishes MiniGameTitle and MiniGameButton, `AddAmountToMiniGameComplete`
-			// MiniGameName%d/Amount%d and the row toggles, and the tally's tick republishes the
-			// amounts as they count up (`sub_823CD688`). The class writes no element directly.
+			// The title, the button, the rows and their count-up are what `TurnOnMiniGameComplete`
+			// and `AddAmountToMiniGameComplete` state (Engine_UiGuiWidgets), drawn by the `minigame`
+			// provider over the names the file binds.
+			Provider = Fable2PageProviders.MiniGame,
 			RestFromFile = true,
 		});
 

@@ -19,6 +19,14 @@ public class AndroidRestartNotesTests
         AssertThat(AndroidRestartNotes.DescriptionNeedsRestart("Lighter shading. Applies at the next start.")).IsTrue();
         AssertThat(AndroidRestartNotes.DescriptionNeedsRestart("Thinner text. Takes effect the next time the game starts.")).IsTrue();
         AssertThat(AndroidRestartNotes.DescriptionNeedsRestart("Fewer vertices. Applies to models loaded after the next launch.")).IsTrue();
+        // The agreed line itself, which descriptions end with.
+        AssertThat(AndroidRestartNotes.DescriptionNeedsRestart("Culls behind buildings. " + AndroidRestartNotes.SettingNote)).IsTrue();
+        // The occlusion row has the phone's wording on a phone (upstream's on desktop, where these tests run).
+        AssertThat(AndroidRestartNotes.DescriptionNeedsRestart(Refii.Launcher.Core.RuntimeCVarsAndroid.PhoneOcclusionText)).IsTrue();
+        foreach (string key in new[] { "occlusion_auto_metres", "occlusion_rays_per_thread", "occlusion_bvh_quality" })
+        {
+            AssertThat(AndroidRestartNotes.NeedsRestart(key)).OverrideFailureMessage(key).IsTrue();
+        }
         // Live, at a loading screen, or a passing mention of the next start that is not the setting's own rule.
         AssertThat(AndroidRestartNotes.DescriptionNeedsRestart("Softer picture. Takes effect live.")).IsFalse();
         AssertThat(AndroidRestartNotes.DescriptionNeedsRestart("Fewer plants. Takes effect at the next loading screen.")).IsFalse();

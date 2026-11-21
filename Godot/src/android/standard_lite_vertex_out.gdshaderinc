@@ -34,3 +34,8 @@
 #endif
 #endif
     FABLE_PROP_VERTEX_OUT
+#if defined(FABLE_DEBUG_CUTOUTS_HIDDEN) && !defined(FABLE_SOLID) && !defined(FABLE_TRANSLUCENT)
+    // `debug_cutouts = "hidden"` (AndroidFlatCutouts): every vertex of a build that can discard lands
+    // outside the clip volume, so its triangles are culled before any pixel; the vertex work stays.
+    POSITION = vec4(4.0, 4.0, 0.5, 1.0);
+#endif

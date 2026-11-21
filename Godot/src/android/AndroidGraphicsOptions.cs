@@ -36,7 +36,7 @@ public sealed record AndroidGraphicsOption(
 /// picture and that the running game picks up at once, or at the next loading screen where it says so.
 /// The host rereads the render scale and mesh LOD (AndroidGameHost.RefreshRenderScale); the rest reach
 /// their readers through <see cref="Refii.Core.Engine_RefiiConfig.TrySetGodotCvar"/> (placed lights, the
-/// sun shadow's depth and reach, the props' draw ranges, the trees' far reach and coarser levels, the
+/// sun shadow's depth and reach, the props' draw ranges, the trees' far reach, hand-over and coarser levels, the
 /// ground's coarser levels, the bloom, and the undergrowth at its next build). The host also rereads the
 /// sun shadow's map size and edge filter (<see cref="AndroidSunShadows"/>). Settings read only at launch
 /// (the characters' draw distance, the trees' shadow reach and thinned crowns) are left to the launcher.
@@ -56,7 +56,8 @@ public static class AndroidGraphicsOptions
     /// took 8% on an Adreno 640 (2-3% in the 2026-11-07 walks: 24 to 8 at High, 8 to 4 at Medium, so Lamps
     /// reads Low); every lamp that casts renders its own shadow map. Distant detail and
     /// object distance are most of the rest of Ultra's +25-30% over High; trees past 300 m are 7.6% of
-    /// the S10e's frame at Bower Lake and half the undergrowth 7.5%. The lamp range and bloom moved
+    /// the S10e's frame at Bower Lake and half the undergrowth 7.5%; the trees' hand-over at half the distance
+    /// 3-7% on the S10e at Low. The lamp range and bloom moved
     /// nothing measurable. Shadow softness Off to High cost the S25+ about 9%; shadow quality 1024 to
     /// 2048 nothing measurable.</remarks>
     public static readonly AndroidGraphicsOption[] All =
@@ -85,9 +86,14 @@ public static class AndroidGraphicsOptions
             v => v == 0 ? "All" : Number(v * 100) + "%"),
         // 0 keeps every tree's stated reach (up to about a kilometre).
         new("tree_far_reach", "Tree distance", AndroidGraphicsImpact.Medium,
-            "How far away trees are still drawn. Distant trees are many small leaves, which an older phone pays for whatever the resolution; a shorter distance thins the far tree line.",
-            new[] { "250", "300", "350", "500", "0" },
+            "How far away trees are still drawn. Distant trees are many small leaves, which an older phone pays for whatever the resolution; a shorter distance thins the far tree line. With far trees drawn as pictures it costs little.",
+            new[] { "200", "250", "300", "350", "500", "0" },
             v => v == 0 ? "All" : Number(v) + " m"),
+        // A share of each tree's stated hand-over distance, held at 40 m or more (Engine_TreeReach).
+        new(Refii.Level.Engine_TreeReach.TreeHandoverKey, "Full-detail tree distance", AndroidGraphicsImpact.Medium,
+            "How far away trees keep their full models before the game's simpler far models take over, as a share of the usual distance. Lower is faster in forests; nearby trees look a little plainer.",
+            new[] { "0.5", "0.75", "1" },
+            v => Number(v * 100) + "%"),
         new(Refii.Level.Engine_LevelProps.FoliageDensityKey, "Plant density", AndroidGraphicsImpact.Medium,
             "How much of the grass, ferns and nettles is drawn, thinned evenly. Trees stay whole. Takes effect at the next loading screen.",
             new[] { "0.25", "0.5", "0.75", "1" },

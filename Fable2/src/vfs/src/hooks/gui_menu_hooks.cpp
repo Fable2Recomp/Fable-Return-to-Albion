@@ -126,6 +126,9 @@ AnsweredRow NoRow() {
 /// no record for is answered as its category.
 constexpr int32_t kSubmenuType = 301;
 
+/// Upgrade furniture's in-game screen id (TU1 numbering, as `CurrentScreen` answers).
+constexpr uint32_t kUpgradeFurnitureScreen = 26u;
+
 /// The list screens whose rows are keyed in the shared row-id map by a population TICKET: items
 /// (15), clothing (16), gift (25). Godot states their rows by the item's record hash.
 bool KeysRowsByTicket(uint32_t screen) { return screen == 15u || screen == 16u || screen == 25u; }
@@ -269,6 +272,22 @@ REX_EXTERN(rex_lhGuiMenu_GetHighlightedItemData) {
         row = NoRow();
         if (screen == 14u) {
             row.event_type = kSubmenuType;
+        }
+
+        // UPGRADE FURNITURE BEFORE GODOT'S FIRST STATEMENT. The screen's Update `sub_826B64D8`
+        // (disc `sub_8259B6C8`) reads the highlight on the tick the screen opens (0x826b655c /
+        // 0x8259b74c), before its list is spawned, and with an id unlike its cache +348
+        // (0x826b656c) refills both pages. The id is taken as a furniture level by both: page 1
+        // `sub_8299B6D8` looks the unlock card up (`sub_825CC2F0` 0x8299bad0) and uses it only
+        // when found (0x8299baec); page 2 `sub_8299C710` (disc `sub_828F22B8`) looks it up
+        // (0x8299caf4, result ignored) and, when the id equals the installed level F+16
+        // (0x8299cb10), names the card through its handle (0x8299cb78 / `sub_82764688`). The
+        // script's no-row id 0 equals the level of a piece never upgraded, and with no level-1
+        // card in the hero's inventory that handle is empty: guest 0x10. -1 is no level, so page 2
+        // skips that branch; Godot's statement a frame later differs from the cached -1 and both
+        // pages refill from the stated row.
+        if (screen == kUpgradeFurnitureScreen) {
+            row.id = -1;
         }
     }
 

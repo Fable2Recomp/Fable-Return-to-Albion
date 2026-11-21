@@ -749,7 +749,11 @@ public static partial class Engine_LevelBakedLighting
 				if (from >= 0 && from < colours.Length)
 				{
 					Color c = FromD3DColour(colours[from]);
-					if ((uint)from < (uint)selfAo.Length)
+					if (selfAo.Length == sourceVertices.Length && (uint)(cursor + v) < (uint)selfAo.Length)
+					{
+						c.A = selfAo[cursor + v];
+					}
+					else if ((uint)from < (uint)selfAo.Length)
 					{
 						c.A = selfAo[from];
 					}
@@ -1329,22 +1333,37 @@ public static partial class Engine_LevelBakedLighting
 	/// frame: every time-of-day step and every tenth of a painted blend crossed the world as a
 	/// visible wave, and between steps nothing moved at all.
 	/// </remarks>
-	public static void PublishThemeLighting(LightingFrame? frame)
+	public static void PublishThemeLighting(LightingFrame? frame) =>
+		PublishThemeLighting(frame, 1.0f, out _);
+
+	/// <summary>
+	/// Publishes the theme's lighting globals while scaling shader-emitted <c>fable_ambient_colour</c>
+	/// by <paramref name="ambientFloorShare"/> (used when non-SDFGI Modern mode routes the remaining
+	/// share through <c>Environment.AmbientLight</c> so screen-space SSAO occludes crevices day and night).
+	/// </summary>
+	public static void PublishThemeLighting(
+		LightingFrame? frame,
+		float ambientFloorShare,
+		out Vector3 unscaledThemeAmbient)
 	{
 		float[] lightmap = frame?.LightmapColour ?? WhiteLightmap;
 		RenderingServer.GlobalShaderParameterSet(Global_lightmap_tint,
 			new Vector3(lightmap[0], lightmap[1], lightmap[2]));
 
-		float ar = 0f, ag = 0f, ab = 0f;
+		float tr = 0f, tg = 0f, tb = 0f;
 		if (frame is not null && frame.HasAmbient)
 		{
-			float ambientScale = AmbientScale * ActiveToneCurveAmbientScale;
-			ar = frame.AmbientColour[0] * frame.AmbientEnergy * ambientScale;
-			ag = frame.AmbientColour[1] * frame.AmbientEnergy * ambientScale;
-			ab = frame.AmbientColour[2] * frame.AmbientEnergy * ambientScale;
+			float toneScale = ActiveToneCurveAmbientScale;
+			tr = frame.AmbientColour[0] * frame.AmbientEnergy * toneScale;
+			tg = frame.AmbientColour[1] * frame.AmbientEnergy * toneScale;
+			tb = frame.AmbientColour[2] * frame.AmbientEnergy * toneScale;
 		}
 
-		RenderingServer.GlobalShaderParameterSet(Global_ambient_colour, new Vector3(ar, ag, ab));
+		unscaledThemeAmbient = new Vector3(tr, tg, tb);
+		float emittedScale = AmbientScale * Math.Clamp(ambientFloorShare, 0.0f, 1.0f);
+		RenderingServer.GlobalShaderParameterSet(
+			Global_ambient_colour,
+			new Vector3(tr * emittedScale, tg * emittedScale, tb * emittedScale));
 
 		// White when the theme states none, because this colour is the FLOOR of a lerp toward
 		// 1 rather than a tint — black here would drive every normal-mapped surface's ambient

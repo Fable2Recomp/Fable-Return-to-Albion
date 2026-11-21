@@ -70,7 +70,7 @@ public static class Engine_SkyEnvironment
         }
 
         string shaderPath = Engine_DynamicSky.Enabled ? Engine_DynamicSky.ShaderPath : ShaderPath;
-        var shader = GD.Load<Shader>(shaderPath);
+        var shader = Refii.AndroidRuntime.AndroidSkyGlobals.Load(shaderPath);
         if (shader is null)
         {
             GD.Print($"[sky] shader missing at {shaderPath}");
@@ -187,6 +187,7 @@ public static class Engine_SkyEnvironment
             BoundDomeLuts.AddOrUpdate(material, lut);
         }
 
+        if (Refii.AndroidRuntime.AndroidSkyGlobals.Publish(material, state.BetaRayleigh, state.BetaMie)) return;
         material.SetShaderParameter(BetaRayleighName, new Vector3(
             state.BetaRayleigh[0], state.BetaRayleigh[1], state.BetaRayleigh[2]));
         material.SetShaderParameter(BetaMieName, new Vector3(

@@ -25,18 +25,34 @@ namespace Refii.Models;
 public static class Engine_ModelSelfAo
 {
 	public const uint Magic = 0x4F414D52u; // "RMAO" little-endian
-	public const uint Version = 2u;
+	public const uint Version = 4u;
 	public const int RayCount = 24;
 	public const float DefaultMaxRadius = 1.5f;
 	public const float MinSelfAo = 0.05f;
 
+	/// <summary>One non-skinned surface of a multi-part composite model for cross-part self-AO evaluation.</summary>
+	public readonly record struct CompositeSurfaceInput(
+		Vector3[] Vertices,
+		Vector3[] Normals,
+		int[] Indices);
+
 	private static readonly Vector3[] HemisphereKernel = BuildCosineFibonacciHemisphere(RayCount);
+
+	private readonly record struct SelfAoBakeJob(
+		string CacheKey,
+		MdlGeometry[] Snapshot,
+		int SourceVertexTotal,
+		bool IncludeGroundPlane);
 
 	private static readonly ConcurrentDictionary<string, float[]> MemoryCache =
 		new(StringComparer.OrdinalIgnoreCase);
 
 	private static readonly ConcurrentDictionary<string, byte> InFlightBackgroundBakes =
 		new(StringComparer.OrdinalIgnoreCase);
+
+	private static readonly ConcurrentQueue<SelfAoBakeJob> BackgroundBakeQueue = new();
+	private static readonly System.Threading.AutoResetEvent BackgroundBakeSignal = new(false);
+	private static int _backgroundWorkerStarted;
 
 	public static string CacheModelsAoDirectory =>
 		Path.Combine(Refii.Core.Engine_Title.Active.CacheDirectory, "ao", "models");
@@ -45,6 +61,9 @@ public static class Engine_ModelSelfAo
 	{
 		MemoryCache.Clear();
 		InFlightBackgroundBakes.Clear();
+		while (BackgroundBakeQueue.TryDequeue(out _))
+		{
+		}
 	}
 
 	/// <summary>
@@ -79,7 +98,7 @@ public static class Engine_ModelSelfAo
 		out float[] selfAo)
 	{
 		selfAo = Array.Empty<float>();
-		if (sourceVertexTotal <= 0 || info.ShProbeData.Length == 0 || info.ShDescriptor.Length < 8)
+		if (sourceVertexTotal <= 0 || info.ShProbeData.Length == 0 || info.ShDescriptor.Length < 5)
 		{
 			return false;
 		}
@@ -95,7 +114,9 @@ public static class Engine_ModelSelfAo
 			return false;
 		}
 
-		const float invUnoccludedL0 = 1.0f / (0.2820948f * MathF.PI); // 1 / (Y_0^0 * pi) ~= 1.128379
+		// D3DX PRT band-0 basis matches fable_probe_bake (Y_0^0 = 0.2820948); an unoccluded hemisphere
+		// stores tr.x = 0.2820948 so dot(tr, probe) equals probe.x * 0.2820948.
+		const float invUnoccludedL0 = 1.0f / 0.2820948f;
 		var result = new float[sourceVertexTotal];
 		bool anyValid = false;
 
@@ -239,19 +260,218 @@ public static class Engine_ModelSelfAo
 			geometries, sourcePositions, sourceNormals, hasVertex, sourceVertexTotal, includeGroundPlane);
 	}
 
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	private static float SmoothStep(float edge0, float edge1, float x)
+	{
+		if (edge1 <= edge0)
+		{
+			return x >= edge1 ? 1.0f : 0.0f;
+		}
+
+		float t = Math.Clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+		return t * t * (3.0f - 2.0f * t);
+	}
+
+	/// <summary>
+	/// Computes each vertex's mean incident triangle edge span and tangent-projected interior centroid pull.
+	/// Coarse triangles (&gt;0.24 m, e.g. 2-triangle brick walls, crate panels, plaques, fence plinths)
+	/// pull their representative hemisphere sample slightly out of overlapping corner joints and suppress
+	/// sub-triangle lip smearing that hardware Gouraud interpolation would stretch across flat faces.
+	/// </summary>
+	private static void ComputeVertexSurfaceMetrics(
+		IReadOnlyList<MdlGeometry> geometries,
+		Vector3[] sourcePositions,
+		Vector3[] sourceNormals,
+		bool[] hasVertex,
+		int sourceVertexTotal,
+		out float[] meanEdgeSpan,
+		out float[] minCentroidSpan,
+		out Vector3[] centroidPull)
+	{
+		meanEdgeSpan = new float[sourceVertexTotal];
+		minCentroidSpan = new float[sourceVertexTotal];
+		centroidPull = new Vector3[sourceVertexTotal];
+		var minCentroidDist = new float[sourceVertexTotal];
+		Array.Fill(minCentroidDist, float.PositiveInfinity);
+		var triCounts = new int[sourceVertexTotal];
+
+		foreach (MdlGeometry geo in geometries)
+		{
+			if (geo.VertexCount == 0 || geo.TriangleCount == 0)
+			{
+				continue;
+			}
+
+			float[] pos = geo.Positions;
+			uint[] indices = geo.Indices;
+			int[] srcMap = geo.SourceVertices;
+			int srcLen = srcMap.Length;
+
+			for (int i = 0; i + 2 < indices.Length; i += 3)
+			{
+				int v0 = (int)indices[i];
+				int v1 = (int)indices[i + 1];
+				int v2 = (int)indices[i + 2];
+				int p0 = v0 * 3;
+				int p1 = v1 * 3;
+				int p2 = v2 * 3;
+				if (p0 + 2 >= pos.Length || p1 + 2 >= pos.Length || p2 + 2 >= pos.Length)
+				{
+					continue;
+				}
+
+				Vector3 a = new(pos[p0], pos[p0 + 1], pos[p0 + 2]);
+				Vector3 b = new(pos[p1], pos[p1 + 1], pos[p1 + 2]);
+				Vector3 c = new(pos[p2], pos[p2 + 1], pos[p2 + 2]);
+				if (!a.IsFinite() || !b.IsFinite() || !c.IsFinite())
+				{
+					continue;
+				}
+
+				float e01 = a.DistanceTo(b);
+				float e12 = b.DistanceTo(c);
+				float e20 = c.DistanceTo(a);
+				float triMeanEdge = (e01 + e12 + e20) * (1.0f / 3.0f);
+				if (triMeanEdge <= 1e-5f)
+				{
+					continue;
+				}
+
+				Vector3 centroid = (a + b + c) * (1.0f / 3.0f);
+				int s0 = (uint)v0 < (uint)srcLen ? srcMap[v0] : -1;
+				int s1 = (uint)v1 < (uint)srcLen ? srcMap[v1] : -1;
+				int s2 = (uint)v2 < (uint)srcLen ? srcMap[v2] : -1;
+
+				if ((uint)s0 < (uint)sourceVertexTotal && hasVertex[s0])
+				{
+					Vector3 off = centroid - sourcePositions[s0];
+					meanEdgeSpan[s0] += triMeanEdge;
+					centroidPull[s0] += off;
+					minCentroidDist[s0] = MathF.Min(minCentroidDist[s0], off.Length());
+					triCounts[s0]++;
+				}
+				if ((uint)s1 < (uint)sourceVertexTotal && hasVertex[s1])
+				{
+					Vector3 off = centroid - sourcePositions[s1];
+					meanEdgeSpan[s1] += triMeanEdge;
+					centroidPull[s1] += off;
+					minCentroidDist[s1] = MathF.Min(minCentroidDist[s1], off.Length());
+					triCounts[s1]++;
+				}
+				if ((uint)s2 < (uint)sourceVertexTotal && hasVertex[s2])
+				{
+					Vector3 off = centroid - sourcePositions[s2];
+					meanEdgeSpan[s2] += triMeanEdge;
+					centroidPull[s2] += off;
+					minCentroidDist[s2] = MathF.Min(minCentroidDist[s2], off.Length());
+					triCounts[s2]++;
+				}
+			}
+		}
+
+		for (int v = 0; v < sourceVertexTotal; v++)
+		{
+			int count = triCounts[v];
+			if (count <= 0)
+			{
+				continue;
+			}
+
+			float invCount = 1.0f / count;
+			float span = meanEdgeSpan[v] * invCount;
+			meanEdgeSpan[v] = span;
+			float nearestDist = float.IsFinite(minCentroidDist[v]) ? minCentroidDist[v] : 0.0f;
+			minCentroidSpan[v] = nearestDist;
+
+			if (span <= 0.24f || nearestDist <= 0.12f)
+			{
+				centroidPull[v] = Vector3.Zero;
+				continue;
+			}
+
+			Vector3 n = sourceNormals[v];
+			Vector3 avgOffset = centroidPull[v] * invCount;
+			Vector3 tangentOffset = avgOffset - n * avgOffset.Dot(n);
+			float tangentLenSq = tangentOffset.LengthSquared();
+			if (tangentLenSq <= 1e-8f)
+			{
+				centroidPull[v] = Vector3.Zero;
+				continue;
+			}
+
+			float tangentLen = MathF.Sqrt(tangentLenSq);
+			float maxPull = Math.Min(0.30f, Math.Min(nearestDist * 0.85f, Math.Min(tangentLen * 0.55f, (span - 0.24f) * 0.22f)));
+			centroidPull[v] = maxPull > 1e-4f ? (tangentOffset / tangentLen) * maxPull : Vector3.Zero;
+		}
+	}
+
 	private static float[] ComputeFastCreviceAndBaseAoFromExtracted(
 		IReadOnlyList<MdlGeometry> geometries,
 		Vector3[] sourcePositions,
 		Vector3[] sourceNormals,
 		bool[] hasVertex,
 		int sourceVertexTotal,
-		bool includeGroundPlane)
+		bool includeGroundPlane,
+		float[]? precomputedMeanEdgeSpan = null)
 	{
 		var result = new float[sourceVertexTotal];
 		Array.Fill(result, 1.0f);
 
+		float[] meanEdgeSpan;
+		if (precomputedMeanEdgeSpan is not null && precomputedMeanEdgeSpan.Length == sourceVertexTotal)
+		{
+			meanEdgeSpan = precomputedMeanEdgeSpan;
+		}
+		else
+		{
+			ComputeVertexSurfaceMetrics(
+				geometries, sourcePositions, sourceNormals, hasVertex, sourceVertexTotal,
+				out meanEdgeSpan, out _, out _);
+		}
+
 		var concSum = new float[sourceVertexTotal];
+		var concMax = new float[sourceVertexTotal];
 		var concCount = new int[sourceVertexTotal];
+		var nextCoincident = new int[sourceVertexTotal];
+		Array.Fill(nextCoincident, -1);
+		var posHead = new Dictionary<(int X, int Y, int Z), int>(sourceVertexTotal);
+		const float seamQuantizeScale = 2048.0f; // ~0.49 mm tolerance to weld split hard-edge UV/submesh seams
+		for (int v = 0; v < sourceVertexTotal; v++)
+		{
+			if (!hasVertex[v])
+			{
+				continue;
+			}
+
+			Vector3 p = sourcePositions[v];
+			if (!p.IsFinite())
+			{
+				continue;
+			}
+
+			var key = (
+				(int)MathF.Round(p.X * seamQuantizeScale),
+				(int)MathF.Round(p.Y * seamQuantizeScale),
+				(int)MathF.Round(p.Z * seamQuantizeScale));
+			if (posHead.TryGetValue(key, out int prev))
+			{
+				nextCoincident[v] = prev;
+			}
+
+			posHead[key] = v;
+		}
+
+		// Map each sourceVertex directly to the head of its spatial coincidence chain so we don't hash per edge.
+		var chainHead = new int[sourceVertexTotal];
+		Array.Fill(chainHead, -1);
+		foreach (int head in posHead.Values)
+		{
+			for (int cur = head; cur >= 0; cur = nextCoincident[cur])
+			{
+				chainHead[cur] = head;
+			}
+		}
+
 		float minY = float.PositiveInfinity;
 		float maxY = float.NegativeInfinity;
 		const float maxEdgeRadius = 0.85f;
@@ -267,23 +487,52 @@ public static class Engine_ModelSelfAo
 				return;
 			}
 
-			Vector3 d = sourcePositions[sb] - sourcePositions[sa];
-			float lenSq = d.LengthSquared();
-			if (lenSq <= 1e-8f || lenSq >= maxEdgeRadiusSq)
+			Vector3 pb = sourcePositions[sb];
+			int cur = chainHead[sa] >= 0 ? chainHead[sa] : sa;
+			int guard = 0;
+			while (cur >= 0 && guard++ < 8)
 			{
-				return;
-			}
+				if (cur != sb && hasVertex[cur])
+				{
+					Vector3 d = pb - sourcePositions[cur];
+					float lenSq = d.LengthSquared();
+					if (lenSq > 1e-8f && lenSq < maxEdgeRadiusSq)
+					{
+						float invLen = 1.0f / MathF.Sqrt(lenSq);
+						float len = lenSq * invLen;
+						float sinElev = d.Dot(sourceNormals[cur]) * invLen;
+						float distWeight = 0.45f + 0.55f * (1.0f - len * invMaxEdgeRadius);
+						if (sinElev > 0.015f)
+						{
+							// Nyquist guard: prevent a 4..18cm crate rim, plaque border, or timber beam
+							// from smearing dark 1-ring corner AO across a 0.6..3.0m 2-triangle flat panel.
+							float receiverSpan = meanEdgeSpan[cur];
+							float stepHeight = len * sinElev;
+							float nyquist = receiverSpan <= 0.20f
+								? 1.0f
+								: SmoothStep(0.18f, 0.55f, stepHeight / receiverSpan);
+							float weighted = sinElev * distWeight * nyquist;
+							if (weighted > 1e-4f)
+							{
+								concSum[cur] += weighted;
+								if (weighted > concMax[cur])
+								{
+									concMax[cur] = weighted;
+								}
+							}
+						}
 
-			float invLen = 1.0f / MathF.Sqrt(lenSq);
-			float len = lenSq * invLen;
-			float sinElev = d.Dot(sourceNormals[sa]) * invLen;
-			float distWeight = 0.45f + 0.55f * (1.0f - len * invMaxEdgeRadius);
-			if (sinElev > 0.0f)
-			{
-				concSum[sa] += sinElev * distWeight;
-			}
+						concCount[cur]++;
+					}
+				}
 
-			concCount[sa]++;
+				if (chainHead[sa] < 0)
+				{
+					break;
+				}
+
+				cur = nextCoincident[cur];
+			}
 		}
 
 		foreach (MdlGeometry geo in geometries)
@@ -343,17 +592,19 @@ public static class Engine_ModelSelfAo
 			}
 
 			float meanElev = concCount[v] > 0 ? concSum[v] / concCount[v] : 0.0f;
-			float creviceOcc = Math.Clamp(meanElev * 1.35f, 0.0f, 0.68f);
+			float blendedElev = (0.50f * concMax[v]) + (0.50f * meanElev);
+			float coarseAtten = 1.0f - SmoothStep(0.52f, 1.05f, meanEdgeSpan[v]);
+			float creviceOcc = Math.Clamp(blendedElev * 1.15f * coarseAtten, 0.0f, 0.72f);
 			float ao = 1.0f - creviceOcc;
 
 			if (groundValid)
 			{
 				float dy = sourcePositions[v].Y - minY;
-				if (dy >= -0.02f && dy < 0.6f)
+				if (dy >= -0.02f && dy < 0.48f && sourceNormals[v].Y < 0.45f)
 				{
-					float hFactor = 1.0f - Math.Clamp(dy / 0.6f, 0.0f, 1.0f);
-					float nGroundVis = Math.Clamp((1.0f - sourceNormals[v].Y) * 0.5f, 0.0f, 1.0f);
-					float groundOcc = 0.35f * hFactor * hFactor * nGroundVis;
+					float hFactor = 1.0f - Math.Clamp(dy / 0.48f, 0.0f, 1.0f);
+					float nGroundVis = Math.Clamp((0.45f - sourceNormals[v].Y) * 0.70f, 0.0f, 1.0f);
+					float groundOcc = 0.22f * hFactor * hFactor * nGroundVis;
 					ao *= 1.0f - groundOcc;
 				}
 			}
@@ -400,8 +651,13 @@ public static class Engine_ModelSelfAo
 			return result;
 		}
 
+		ComputeVertexSurfaceMetrics(
+			geometries, sourcePositions, sourceNormals, hasVertex, sourceVertexTotal,
+			out float[] meanEdgeSpan, out float[] minCentroidSpan, out Vector3[] centroidPull);
+
 		float[] creviceAo = ComputeFastCreviceAndBaseAoFromExtracted(
-			geometries, sourcePositions, sourceNormals, hasVertex, sourceVertexTotal, includeGroundPlane: false);
+			geometries, sourcePositions, sourceNormals, hasVertex, sourceVertexTotal,
+			includeGroundPlane: false, precomputedMeanEdgeSpan: meanEdgeSpan);
 
 		var bvhTris = new List<Engine_LevelShadowMaps.BvhTriangle>(512);
 		float minY = float.PositiveInfinity;
@@ -415,6 +671,7 @@ public static class Engine_ModelSelfAo
 			}
 
 			float[] pos = geo.Positions;
+			float[] nrm = geo.Normals;
 			uint[] indices = geo.Indices;
 			for (int i = 0; i + 2 < indices.Length; i += 3)
 			{
@@ -434,13 +691,29 @@ public static class Engine_ModelSelfAo
 					continue;
 				}
 
-				if ((b - a).Cross(c - a).LengthSquared() <= 1e-10f)
+				Vector3 faceCross = (b - a).Cross(c - a);
+				if (faceCross.LengthSquared() <= 1e-10f)
 				{
 					continue;
 				}
 
 				minY = MathF.Min(minY, MathF.Min(a.Y, MathF.Min(b.Y, c.Y)));
 				maxY = MathF.Max(maxY, MathF.Max(a.Y, MathF.Max(b.Y, c.Y)));
+
+				// Orient BvhTriangle winding so BvhTriangle.Normal aligns with the outward vertex normals
+				// (shipped Fable 2 meshes are clockwise-front, so raw (b-a)x(c-a) points inward unless swapped).
+				if (i0 + 2 < nrm.Length && i1 + 2 < nrm.Length && i2 + 2 < nrm.Length)
+				{
+					Vector3 avgVertN = new(
+						nrm[i0] + nrm[i1] + nrm[i2],
+						nrm[i0 + 1] + nrm[i1 + 1] + nrm[i2 + 1],
+						nrm[i0 + 2] + nrm[i1 + 2] + nrm[i2 + 2]);
+					if (avgVertN.IsFinite() && avgVertN.LengthSquared() > 1e-8f && faceCross.Dot(avgVertN) < 0.0f)
+					{
+						(b, c) = (c, b);
+					}
+				}
+
 				bvhTris.Add(new Engine_LevelShadowMaps.BvhTriangle(a, b, c));
 			}
 		}
@@ -468,20 +741,64 @@ public static class Engine_ModelSelfAo
 
 			Vector3 pos = sourcePositions[v];
 			Vector3 n = sourceNormals[v];
+			float span = meanEdgeSpan[v];
+			float nearestCentroid = minCentroidSpan[v];
+			Vector3 samplePos = pos;
+			Vector3 pull = centroidPull[v];
+			float pullLenSq = pull.LengthSquared();
+			if (pullLenSq > 1e-6f)
+			{
+				float pullLen = MathF.Sqrt(pullLenSq);
+				Vector3 pullDir = pull / pullLen;
+				if (!bvh.TraceClosestHit(pos + n * 0.012f, pullDir, 0.005f, pullLen, out float blockDist, out Vector3 blockN) ||
+				    pullDir.Dot(blockN) > 0.05f || blockDist > pullLen * 0.85f)
+				{
+					samplePos = pos + pull;
+				}
+			}
+
 			BuildOrthonormalBasis(n, out Vector3 tangent, out Vector3 bitangent);
 
-			Vector3 rayOrigin = pos + n * 0.008f;
+			Vector3 rayOrigin = samplePos + n * 0.010f;
+			float escapeRadius = Math.Clamp(MathF.Max(0.08f, span * 0.55f), 0.08f, 0.65f);
 			float occSum = 0.0f;
 
 			for (int r = 0; r < HemisphereKernel.Length; r++)
 			{
 				Vector3 local = HemisphereKernel[r];
 				Vector3 dir = (tangent * local.X + bitangent * local.Y + n * local.Z).Normalized();
-				if (bvh.TraceClosestHit(rayOrigin, dir, tMin, effectiveRadius, out float hitDist, out _))
+
+				float tCur = tMin;
+				bool hitFront = false;
+				float frontDist = 0.0f;
+				for (int step = 0; step < 4; step++)
 				{
-					float macroFalloff = MathF.Max(0.0f, 1.0f - hitDist * invRadius);
-					float tightFalloff = MathF.Max(0.0f, 1.0f - hitDist * invTightRadius);
-					occSum += MathF.Min(1.25f, (macroFalloff * macroFalloff) + 0.35f * (tightFalloff * tightFalloff));
+					if (!bvh.TraceClosestHit(rayOrigin, dir, tCur, effectiveRadius, out float hitDist, out Vector3 hitNormal))
+					{
+						break;
+					}
+
+					// Step past enclosing backfaces (embedded corners inside timber beams, crate brackets,
+					// plaque borders, easel frames, or stone fence pillars).
+					if (dir.Dot(hitNormal) > 0.05f && hitDist < escapeRadius)
+					{
+						tCur = hitDist + 0.008f;
+						continue;
+					}
+
+					hitFront = true;
+					frontDist = hitDist;
+					break;
+				}
+
+				if (hitFront)
+				{
+					float macroFalloff = MathF.Max(0.0f, 1.0f - frontDist * invRadius);
+					float tightFalloff = MathF.Max(0.0f, 1.0f - frontDist * invTightRadius);
+					float shortGuard = nearestCentroid <= 0.16f
+						? 1.0f
+						: SmoothStep(0.04f, Math.Min(0.46f, nearestCentroid * 0.40f), frontDist);
+					occSum += shortGuard * MathF.Min(1.25f, (macroFalloff * macroFalloff) + 0.35f * (tightFalloff * tightFalloff));
 				}
 			}
 
@@ -491,12 +808,11 @@ public static class Engine_ModelSelfAo
 			if (groundValid)
 			{
 				float dy = pos.Y - minY;
-				if (dy >= -0.02f && dy < 0.6f)
+				if (dy >= -0.02f && dy < 0.48f && n.Y < 0.45f)
 				{
-					float hFactor = 1.0f - Math.Clamp(dy / 0.6f, 0.0f, 1.0f);
-					// A downward normal (n.Y = -1) sees the ground plane fully; an upward normal (n.Y = +1) sees none.
-					float nGroundVis = Math.Clamp((1.0f - n.Y) * 0.5f, 0.0f, 1.0f);
-					float groundOcc = 0.35f * hFactor * hFactor * nGroundVis;
+					float hFactor = 1.0f - Math.Clamp(dy / 0.48f, 0.0f, 1.0f);
+					float nGroundVis = Math.Clamp((0.45f - n.Y) * 0.70f, 0.0f, 1.0f);
+					float groundOcc = 0.22f * hFactor * hFactor * nGroundVis;
 					ao *= 1.0f - groundOcc;
 				}
 			}
@@ -576,12 +892,21 @@ public static class Engine_ModelSelfAo
 			if (geometries is { Count: > 0 })
 			{
 				bool includeGround = info.SkinnedCount == 0 && info.MovementMode != 1;
-				float[] creviceAo = ComputeFastCreviceAndBaseAo(geometries, sourceVertexTotal, includeGround);
-				if (creviceAo.Length == sourceVertexTotal)
+				if (TryExtractCanonicalSourceVertices(
+					geometries, sourceVertexTotal,
+					out Vector3[] srcPos, out Vector3[] srcNrm, out bool[] hasVert))
 				{
+					ComputeVertexSurfaceMetrics(
+						geometries, srcPos, srcNrm, hasVert, sourceVertexTotal,
+						out float[] meanEdgeSpan, out _, out _);
+					float[] creviceAo = ComputeFastCreviceAndBaseAoFromExtracted(
+						geometries, srcPos, srcNrm, hasVert, sourceVertexTotal,
+						includeGround, meanEdgeSpan);
 					for (int v = 0; v < sourceVertexTotal; v++)
 					{
-						prtAo[v] = CombineMacroAndCreviceAo(prtAo[v], creviceAo[v]);
+						float coarseFade = SmoothStep(0.32f, 0.78f, meanEdgeSpan[v]);
+						float guardedPrt = Mathf.Lerp(prtAo[v], 1.0f, coarseFade);
+						prtAo[v] = CombineMacroAndCreviceAo(guardedPrt, creviceAo[v]);
 					}
 				}
 
@@ -626,24 +951,58 @@ public static class Engine_ModelSelfAo
 		}
 
 		MdlGeometry[] snapshot = geometries is MdlGeometry[] arr ? arr : new List<MdlGeometry>(geometries).ToArray();
-		_ = Task.Run(() =>
+		BackgroundBakeQueue.Enqueue(new SelfAoBakeJob(cacheKey, snapshot, sourceVertexTotal, includeGroundPlane));
+		EnsureBackgroundWorkerStarted();
+		BackgroundBakeSignal.Set();
+	}
+
+	private static void EnsureBackgroundWorkerStarted()
+	{
+		if (System.Threading.Interlocked.CompareExchange(ref _backgroundWorkerStarted, 1, 0) != 0)
 		{
+			return;
+		}
+
+		var worker = new System.Threading.Thread(BackgroundSelfAoLoop)
+		{
+			IsBackground = true,
+			Name = "Refii.ModelSelfAo",
+			Priority = System.Threading.ThreadPriority.BelowNormal,
+		};
+		worker.Start();
+	}
+
+	private static void BackgroundSelfAoLoop()
+	{
+		while (true)
+		{
+			if (!BackgroundBakeQueue.TryDequeue(out SelfAoBakeJob job))
+			{
+				BackgroundBakeSignal.WaitOne();
+				continue;
+			}
+
 			try
 			{
-				string diskPath = GetDiskCachePath(cacheKey);
-				if (TryReadDiskCache(diskPath, sourceVertexTotal, out float[] existing))
+				while (Engine_LevelShadowPrebuild.IsLoadBakePending)
+				{
+					System.Threading.Thread.Sleep(20);
+				}
+
+				string diskPath = GetDiskCachePath(job.CacheKey);
+				if (TryReadDiskCache(diskPath, job.SourceVertexTotal, out float[] existing))
 				{
 					if (MemoryCache.Count < 512)
 					{
-						MemoryCache[cacheKey] = existing;
+						MemoryCache[job.CacheKey] = existing;
 					}
-					return;
+					continue;
 				}
 
-				float[] computed = ComputeBvhSelfAo(snapshot, sourceVertexTotal, includeGroundPlane);
+				float[] computed = ComputeBvhSelfAo(job.Snapshot, job.SourceVertexTotal, job.IncludeGroundPlane);
 				if (MemoryCache.Count < 512)
 				{
-					MemoryCache[cacheKey] = computed;
+					MemoryCache[job.CacheKey] = computed;
 				}
 				TryWriteDiskCache(diskPath, computed);
 			}
@@ -652,9 +1011,9 @@ public static class Engine_ModelSelfAo
 			}
 			finally
 			{
-				InFlightBackgroundBakes.TryRemove(cacheKey, out _);
+				InFlightBackgroundBakes.TryRemove(job.CacheKey, out _);
 			}
-		});
+		}
 	}
 
 	/// <summary>
@@ -700,6 +1059,277 @@ public static class Engine_ModelSelfAo
 		}
 
 		return computed;
+	}
+
+	/// <summary>
+	/// Evaluates per-surface-vertex self-AO for a single <c>.mdl</c> mesh without averaging normals across
+	/// shared <c>SourceVertices</c> on hard 90-degree corners (crates, beams, stairs, fences, plinths).
+	/// </summary>
+	public static float[][] GetOrComputeSurfaceSelfAo(
+		MdlInfo info,
+		IReadOnlyList<MdlGeometry> surfaces,
+		string virtualPath)
+	{
+		if (surfaces is null || surfaces.Count == 0)
+		{
+			return Array.Empty<float[]>();
+		}
+
+		int totalVertices = 0;
+		for (int i = 0; i < surfaces.Count; i++)
+		{
+			totalVertices += Math.Max(0, surfaces[i].VertexCount);
+		}
+
+		if (totalVertices <= 0)
+		{
+			return Array.Empty<float[]>();
+		}
+
+		bool includeGround = info.SkinnedCount == 0 && info.MovementMode != 1;
+		bool allowSyncBvh = info.SkinnedCount <= 8 && totalVertices <= 4096;
+		string cacheKey = !string.IsNullOrEmpty(virtualPath) && info.SkinnedCount <= 8
+			? $"mdl-surf:{virtualPath}"
+			: string.Empty;
+
+		var surfaceGeos = new List<MdlGeometry>(surfaces.Count);
+		int cursor = 0;
+		for (int s = 0; s < surfaces.Count; s++)
+		{
+			MdlGeometry src = surfaces[s];
+			int vCount = src.VertexCount;
+			if (vCount <= 0 || src.TriangleCount <= 0 || src.Indices.Length < 3)
+			{
+				cursor += Math.Max(0, vCount);
+				continue;
+			}
+
+			var uniqueMap = new int[vCount];
+			for (int v = 0; v < vCount; v++)
+			{
+				uniqueMap[v] = cursor + v;
+			}
+
+			surfaceGeos.Add(new MdlGeometry
+			{
+				Name = src.Name,
+				Positions = src.Positions,
+				Normals = src.Normals,
+				Uvs = Array.Empty<float>(),
+				Indices = src.Indices,
+				SourceVertices = uniqueMap,
+			});
+			cursor += vCount;
+		}
+
+		float[]? flatAo = null;
+		string fullKey = cacheKey.Length != 0
+			? $"composite-v4:{cacheKey.Replace('\\', '/').ToLowerInvariant()}:{totalVertices}"
+			: string.Empty;
+
+		if (fullKey.Length != 0 &&
+		    MemoryCache.TryGetValue(fullKey, out float[]? memCached) &&
+		    memCached.Length == totalVertices)
+		{
+			flatAo = memCached;
+		}
+
+		string? diskPath = fullKey.Length != 0 && !Refii.Core.Engine_AppRoot.IsTestHost
+			? GetDiskCachePath(fullKey)
+			: null;
+		if (flatAo is null && diskPath is not null && TryReadDiskCache(diskPath, totalVertices, out float[] diskCached))
+		{
+			if (MemoryCache.Count < 512)
+			{
+				MemoryCache[fullKey] = diskCached;
+			}
+			flatAo = diskCached;
+		}
+
+		if (flatAo is null)
+		{
+			if (allowSyncBvh)
+			{
+				flatAo = ComputeBvhSelfAo(surfaceGeos, totalVertices, includeGroundPlane: includeGround);
+				if (fullKey.Length != 0 && MemoryCache.Count < 512)
+				{
+					MemoryCache[fullKey] = flatAo;
+				}
+				if (diskPath is not null)
+				{
+					TryWriteDiskCache(diskPath, flatAo);
+				}
+			}
+			else
+			{
+				flatAo = ComputeFastCreviceAndBaseAo(surfaceGeos, totalVertices, includeGroundPlane: includeGround);
+				if (fullKey.Length != 0 && info.SkinnedCount <= 8)
+				{
+					QueueBackgroundSelfAoBake(surfaceGeos, totalVertices, includeGround, fullKey);
+				}
+			}
+		}
+
+		var perSurface = new float[surfaces.Count][];
+		int readCursor = 0;
+		for (int s = 0; s < surfaces.Count; s++)
+		{
+			int vCount = Math.Max(0, surfaces[s].VertexCount);
+			if (vCount == 0)
+			{
+				perSurface[s] = Array.Empty<float>();
+				continue;
+			}
+
+			var slice = new float[vCount];
+			Array.Copy(flatAo, readCursor, slice, 0, vCount);
+			perSurface[s] = slice;
+			readCursor += vCount;
+		}
+
+		return perSurface;
+	}
+
+	/// <summary>
+	/// Evaluates cross-part self-AO across all opaque surfaces of a multi-part static composite
+	/// (modular buildings, multi-mesh props) so beam-to-wall joints, eaves, corbels, and T-junctions
+	/// occlude one another rather than evaluating each <c>.mdl</c> part in isolation.
+	/// </summary>
+	public static float[][] ComputeCompositeSelfAo(
+		IReadOnlyList<CompositeSurfaceInput> surfaces,
+		string compositeCacheKey = "",
+		bool allowSynchronousBvh = true)
+	{
+		if (surfaces is null || surfaces.Count <= 1)
+		{
+			return Array.Empty<float[]>();
+		}
+
+		int totalVertices = 0;
+		for (int i = 0; i < surfaces.Count; i++)
+		{
+			totalVertices += surfaces[i].Vertices?.Length ?? 0;
+		}
+
+		if (totalVertices <= 0)
+		{
+			return Array.Empty<float[]>();
+		}
+
+		string fullKey = !string.IsNullOrEmpty(compositeCacheKey)
+			? $"composite-v4:{compositeCacheKey.Replace('\\', '/').ToLowerInvariant()}:{totalVertices}"
+			: string.Empty;
+
+		float[]? flatAo = null;
+		if (fullKey.Length != 0 &&
+		    MemoryCache.TryGetValue(fullKey, out float[]? memCached) &&
+		    memCached.Length == totalVertices)
+		{
+			flatAo = memCached;
+		}
+
+		string? diskPath = fullKey.Length != 0 && !Refii.Core.Engine_AppRoot.IsTestHost
+			? GetDiskCachePath(fullKey)
+			: null;
+		if (flatAo is null && diskPath is not null && TryReadDiskCache(diskPath, totalVertices, out float[] diskCached))
+		{
+			if (MemoryCache.Count < 512)
+			{
+				MemoryCache[fullKey] = diskCached;
+			}
+			flatAo = diskCached;
+		}
+
+		if (flatAo is null)
+		{
+			var compositeGeos = new List<MdlGeometry>(surfaces.Count);
+			int vertexBase = 0;
+			for (int s = 0; s < surfaces.Count; s++)
+			{
+				CompositeSurfaceInput surf = surfaces[s];
+				int vCount = surf.Vertices?.Length ?? 0;
+				if (vCount == 0 || surf.Indices is null || surf.Indices.Length < 3)
+				{
+					vertexBase += vCount;
+					continue;
+				}
+
+				var pos = new float[vCount * 3];
+				var nrm = new float[vCount * 3];
+				var srcVerts = new int[vCount];
+				Vector3[] verts = surf.Vertices!;
+				Vector3[] norms = surf.Normals;
+				for (int v = 0; v < vCount; v++)
+				{
+					int o = v * 3;
+					pos[o] = verts[v].X;
+					pos[o + 1] = verts[v].Y;
+					pos[o + 2] = verts[v].Z;
+					Vector3 n = norms is not null && v < norms.Length ? norms[v] : Vector3.Up;
+					nrm[o] = n.X;
+					nrm[o + 1] = n.Y;
+					nrm[o + 2] = n.Z;
+					srcVerts[v] = vertexBase + v;
+				}
+
+				var uIndices = new uint[surf.Indices.Length];
+				for (int idx = 0; idx < surf.Indices.Length; idx++)
+				{
+					uIndices[idx] = (uint)Math.Max(0, surf.Indices[idx]);
+				}
+
+				compositeGeos.Add(new MdlGeometry
+				{
+					Name = $"comp_{s}",
+					Positions = pos,
+					Normals = nrm,
+					Uvs = Array.Empty<float>(),
+					Indices = uIndices,
+					SourceVertices = srcVerts,
+				});
+				vertexBase += vCount;
+			}
+
+			if (allowSynchronousBvh && totalVertices <= 4096)
+			{
+				flatAo = ComputeBvhSelfAo(compositeGeos, totalVertices, includeGroundPlane: true, maxRadius: 1.85f);
+				if (fullKey.Length != 0 && MemoryCache.Count < 512)
+				{
+					MemoryCache[fullKey] = flatAo;
+				}
+				if (diskPath is not null)
+				{
+					TryWriteDiskCache(diskPath, flatAo);
+				}
+			}
+			else
+			{
+				flatAo = ComputeFastCreviceAndBaseAo(compositeGeos, totalVertices, includeGroundPlane: true);
+				if (fullKey.Length != 0)
+				{
+					QueueBackgroundSelfAoBake(compositeGeos, totalVertices, includeGroundPlane: true, fullKey);
+				}
+			}
+		}
+
+		var perSurface = new float[surfaces.Count][];
+		int cursor = 0;
+		for (int s = 0; s < surfaces.Count; s++)
+		{
+			int vCount = surfaces[s].Vertices?.Length ?? 0;
+			if (vCount <= 0)
+			{
+				perSurface[s] = Array.Empty<float>();
+				continue;
+			}
+
+			var slice = new float[vCount];
+			Array.Copy(flatAo, cursor, slice, 0, vCount);
+			perSurface[s] = slice;
+			cursor += vCount;
+		}
+
+		return perSurface;
 	}
 
 	/// <summary>

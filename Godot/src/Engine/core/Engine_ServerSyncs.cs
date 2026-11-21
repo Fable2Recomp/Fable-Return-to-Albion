@@ -180,10 +180,13 @@ public static class Engine_ServerSyncs
 		private bool _inDraw;
 		private long _drawnFrame;
 		private long _frameUploadBytes;
+		private int _frameFenceWaiters;
 
 		public bool LoadCoverActive { get; set; }
 
 		public bool OnMainThread => System.Environment.CurrentManagedThreadId == Volatile.Read(ref _mainThreadId);
+
+		public long DrawnFrame => Interlocked.Read(ref _drawnFrame);
 
 		public long FrameUploadBytes => Interlocked.Read(ref _frameUploadBytes);
 
@@ -211,9 +214,65 @@ public static class Engine_ServerSyncs
 			lock (_gpuUploadGate)
 			{
 				Volatile.Write(ref _inDraw, false);
-				_drawnFrame++;
+				Interlocked.Increment(ref _drawnFrame);
 				Interlocked.Exchange(ref _frameUploadBytes, 0L);
 				Monitor.PulseAll(_gpuUploadGate);
+			}
+		}
+
+		/// <summary>
+		/// Blocks a background worker until <paramref name="frames"/> rendered frames have completed
+		/// (or <paramref name="timeoutMs"/> elapses / <paramref name="isCancelled"/> signals), allowing
+		/// live background GPU compute jobs to yield cleanly between drawn frames.
+		/// </summary>
+		public bool WaitForNextDrawnFrame(int frames = 1, int timeoutMs = 100, System.Func<bool>? isCancelled = null)
+		{
+			if (frames <= 0 || timeoutMs <= 0 || OnMainThread || Engine_RdHealth.IsDeviceLost)
+			{
+				return false;
+			}
+
+			if (isCancelled is not null && isCancelled())
+			{
+				return false;
+			}
+
+			long startTick = Stopwatch.GetTimestamp();
+			long maxTicks = (long)(timeoutMs * (Stopwatch.Frequency / 1000.0));
+			Interlocked.Increment(ref _frameFenceWaiters);
+			try
+			{
+				lock (_gpuUploadGate)
+				{
+					long targetFrame = Interlocked.Read(ref _drawnFrame) + frames;
+					while (Interlocked.Read(ref _drawnFrame) < targetFrame)
+					{
+						if (Engine_RdHealth.IsDeviceLost || (isCancelled is not null && isCancelled()))
+						{
+							return false;
+						}
+
+						long elapsed = Stopwatch.GetTimestamp() - startTick;
+						if (elapsed >= maxTicks)
+						{
+							return false;
+						}
+
+						int remainingMs = (int)System.Math.Ceiling((maxTicks - elapsed) * 1000.0 / Stopwatch.Frequency);
+						if (remainingMs <= 0)
+						{
+							return false;
+						}
+
+						Monitor.Wait(_gpuUploadGate, System.Math.Min(16, remainingMs));
+					}
+
+					return true;
+				}
+			}
+			finally
+			{
+				Interlocked.Decrement(ref _frameFenceWaiters);
 			}
 		}
 
@@ -382,6 +441,14 @@ public static class Engine_ServerSyncs
 
 	/// <summary>rendering_server FramePostDraw callback: advances the drawn-frame counter and resets the frame staging budget.</summary>
 	public static void MarkDrawEnd() => DefaultPacer.MarkDrawEnd();
+
+	/// <summary>
+	/// Blocks a background worker until <paramref name="frames"/> rendered frames have completed
+	/// (or <paramref name="timeoutMs"/> elapses / <paramref name="isCancelled"/> signals), allowing
+	/// live background GPU compute jobs to yield cleanly between drawn frames without main-thread marshaling.
+	/// </summary>
+	public static bool WaitForNextDrawnFrame(int frames = 1, int timeoutMs = 100, System.Func<bool>? isCancelled = null) =>
+		DefaultPacer.WaitForNextDrawnFrame(frames, timeoutMs, isCancelled);
 
 	/// <summary>
 	/// Resets the per-frame upload budget at the start of a new main-thread frame (covering

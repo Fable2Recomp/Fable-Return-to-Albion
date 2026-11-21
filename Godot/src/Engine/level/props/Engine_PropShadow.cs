@@ -154,6 +154,7 @@ public static class Engine_PropShadow
 			VisibilityRangeFadeMode = batch.VisibilityRangeFadeMode,
 		};
 		batch.AddChild(twin);
+		Refii.AndroidRuntime.AndroidShadowTwinDither.Register(twin);
 		// And the batch's dither band: the shadow fades with the copy, not at the cell's cut.
 		Engine_PropFade.Copy(batch, twin);
 

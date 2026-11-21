@@ -307,6 +307,15 @@ public static class Engine_MdlComposite
             return null;
         }
 
+        // Cross-part self-AO for non-skinned multi-part static/building composites in Modern mode:
+        // beams, corbels, window frames, eaves, and stairs assembled across multiple `.mdl` parts
+        // cast geometric crevice occlusion onto adjacent parts' vertices while caching to `.selfao`.
+        if (names.Count == 0 && resolved > 1 && readySurfaces.Count > 1 &&
+            !Engine_ClassicMaterial.Active && Refii.Lighting.Engine_LightingFrame.ModernModel)
+        {
+            ApplyCompositeSelfAo(readySurfaces, partPaths, ref totalEstimatedBytes);
+        }
+
         Refii.Core.Engine_ServerSyncs.RunGpuUpload(System.Math.Max(4096L, totalEstimatedBytes), () =>
         {
             for (int i = 0; i < readySurfaces.Count; i++)
@@ -348,6 +357,94 @@ public static class Engine_MdlComposite
         }
 
         return mesh;
+    }
+
+    private static void ApplyCompositeSelfAo(
+        List<(Godot.Collections.Array Arrays, Mesh.PrimitiveType Primitive,
+            string Name, Material Material, Godot.Collections.Dictionary? Lods, float[]? LevelTable)> readySurfaces,
+        List<string> partPaths,
+        ref long totalEstimatedBytes)
+    {
+        var eligibleIndices = new List<int>(readySurfaces.Count);
+        var inputs = new List<Engine_ModelSelfAo.CompositeSurfaceInput>(readySurfaces.Count);
+        int totalVertices = 0;
+
+        for (int i = 0; i < readySurfaces.Count; i++)
+        {
+            (Godot.Collections.Array arrays, Mesh.PrimitiveType primitive, _, _, _, _) = readySurfaces[i];
+            if (primitive != Mesh.PrimitiveType.Triangles ||
+                arrays.Count <= (int)Mesh.ArrayType.Index ||
+                arrays[(int)Mesh.ArrayType.Vertex].VariantType != Variant.Type.PackedVector3Array ||
+                arrays[(int)Mesh.ArrayType.Index].VariantType != Variant.Type.PackedInt32Array)
+            {
+                continue;
+            }
+
+            // Skip tree wind surfaces whose Custom1..3 streams carry wind pivots/weights.
+            if ((arrays.Count > (int)Mesh.ArrayType.Custom1 && arrays[(int)Mesh.ArrayType.Custom1].VariantType != Variant.Type.Nil) ||
+                (arrays.Count > (int)Mesh.ArrayType.Custom3 && arrays[(int)Mesh.ArrayType.Custom3].VariantType != Variant.Type.Nil))
+            {
+                continue;
+            }
+
+            Vector3[] verts = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+            int[] indices = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
+            if (verts.Length == 0 || indices.Length < 3)
+            {
+                continue;
+            }
+
+            Vector3[] norms = arrays[(int)Mesh.ArrayType.Normal].VariantType == Variant.Type.PackedVector3Array
+                ? arrays[(int)Mesh.ArrayType.Normal].AsVector3Array()
+                : System.Array.Empty<Vector3>();
+
+            eligibleIndices.Add(i);
+            inputs.Add(new Engine_ModelSelfAo.CompositeSurfaceInput(verts, norms, indices));
+            totalVertices += verts.Length;
+        }
+
+        if (inputs.Count <= 1 || totalVertices <= 0)
+        {
+            return;
+        }
+
+        string compositeKey = string.Join('|', partPaths);
+        float[][] perSurfaceAo = Engine_ModelSelfAo.ComputeCompositeSelfAo(
+            inputs,
+            compositeKey,
+            allowSynchronousBvh: totalVertices <= 4096);
+        if (perSurfaceAo.Length != inputs.Count)
+        {
+            return;
+        }
+
+        for (int k = 0; k < eligibleIndices.Count; k++)
+        {
+            float[] ao = perSurfaceAo[k];
+            if (ao.Length == 0)
+            {
+                continue;
+            }
+
+            int surfIdx = eligibleIndices[k];
+            Godot.Collections.Array arrays = readySurfaces[surfIdx].Arrays;
+            bool hadColor = arrays.Count > (int)Mesh.ArrayType.Color &&
+                arrays[(int)Mesh.ArrayType.Color].VariantType == Variant.Type.PackedColorArray;
+            Color[]? existing = hadColor ? arrays[(int)Mesh.ArrayType.Color].AsColorArray() : null;
+            var colors = new Color[ao.Length];
+            for (int v = 0; v < ao.Length; v++)
+            {
+                Color baseCol = existing is not null && v < existing.Length ? existing[v] : Colors.White;
+                float existingAo = baseCol.A > 0.001f ? baseCol.A : 1.0f;
+                colors[v] = new Color(baseCol.R, baseCol.G, baseCol.B, MathF.Min(existingAo, ao[v]));
+            }
+
+            arrays[(int)Mesh.ArrayType.Color] = colors;
+            if (!hadColor)
+            {
+                totalEstimatedBytes += ao.Length * 16L;
+            }
+        }
     }
 
     /// <summary>

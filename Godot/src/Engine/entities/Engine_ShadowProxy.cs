@@ -171,6 +171,7 @@ public static class Engine_ShadowProxy
 
 		return shaderResourcePath.EndsWith("/standard_material.gdshader", StringComparison.Ordinal) ||
 			shaderResourcePath.EndsWith("/standard_material_culled.gdshader", StringComparison.Ordinal) ||
+			shaderResourcePath.EndsWith("/standard_material_cutout_culled.gdshader", StringComparison.Ordinal) ||
 			shaderResourcePath.EndsWith("/standard_material_phong.gdshader", StringComparison.Ordinal);
 	}
 

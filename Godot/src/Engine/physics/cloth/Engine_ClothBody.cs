@@ -1,9 +1,169 @@
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Runtime.ExceptionServices;
+using System.Threading;
 using Godot;
 
 namespace Refii.Physics;
+
+/// <summary>
+/// Lock-free generation-matched work-stealing gate for per-frame cloth solves.
+/// Queues the step onto the <see cref="ThreadPool"/> without per-frame <c>Task</c> allocations; if the
+/// ThreadPool is saturated when <c>Land()</c> runs at frame end, the main thread atomically claims the
+/// generation and executes the ~0.05 ms solve inline instead of stalling on a starved worker queue.
+/// </summary>
+public sealed class ClothSolveGate : IThreadPoolWorkItem
+{
+    private readonly Action _solveAction;
+    private readonly object _waitGate = new();
+    private long _issuedGen;
+    private long _claimedGen;
+    private long _completedGen;
+    private long _uploadedGen;
+    private int _waiters;
+    private Exception? _error;
+
+    /// <summary>Creates a work-stealing solve gate bound to <paramref name="solveAction"/>.</summary>
+    public ClothSolveGate(Action solveAction)
+    {
+        _solveAction = solveAction ?? throw new ArgumentNullException(nameof(solveAction));
+    }
+
+    /// <summary>True while an issued cloth solve step is still running or queued and has not yet completed.</summary>
+    public bool HasPendingStep => Volatile.Read(ref _completedGen) < Volatile.Read(ref _issuedGen);
+
+    /// <summary>True while an issued cloth solve step has not yet been uploaded to the mesh surface on the main thread.</summary>
+    public bool HasUnuploadedStep => Volatile.Read(ref _uploadedGen) < Volatile.Read(ref _issuedGen);
+
+    /// <summary>True once a worker (or main-thread steal) has claimed the latest issued step.</summary>
+    public bool IsLatestClaimed => Volatile.Read(ref _claimedGen) >= Volatile.Read(ref _issuedGen);
+
+    /// <summary>
+    /// Atomically marks the latest completed solve generation as uploaded on the main thread.
+    /// Returns <c>true</c> when a newly completed step is ready to be uploaded.
+    /// </summary>
+    public bool TryConsumeUpload()
+    {
+        long completed = Volatile.Read(ref _completedGen);
+        long uploaded = Volatile.Read(ref _uploadedGen);
+        if (completed <= uploaded)
+        {
+            return false;
+        }
+
+        return Interlocked.CompareExchange(ref _uploadedGen, completed, uploaded) == uploaded;
+    }
+
+    /// <summary>Issues a new generation and schedules this gate on the <see cref="ThreadPool"/>.</summary>
+    public long Schedule()
+    {
+        long gen = Interlocked.Increment(ref _issuedGen);
+        ThreadPool.UnsafeQueueUserWorkItem(this, preferLocal: false);
+        return gen;
+    }
+
+    /// <summary>Issues a new generation without queueing onto the <see cref="ThreadPool"/> (for deterministic work-stealing tests).</summary>
+    public long IssueWithoutQueueing() => Interlocked.Increment(ref _issuedGen);
+
+    void IThreadPoolWorkItem.Execute() => TryExecuteWorkerStep();
+
+    /// <summary>Attempts to claim and run the latest unstarted generation on a worker thread.</summary>
+    public bool TryExecuteWorkerStep()
+    {
+        long gen = Volatile.Read(ref _issuedGen);
+        if (gen <= 0 || Interlocked.CompareExchange(ref _claimedGen, gen, gen - 1) != gen - 1)
+        {
+            return false;
+        }
+
+        RunClaimedStep(gen);
+        return true;
+    }
+
+    /// <summary>
+    /// Ensures the latest issued step is finished: steals and runs it inline if no worker has claimed it yet,
+    /// or waits briefly if a worker is already mid-solve. Returns <c>true</c> when stolen inline.
+    /// </summary>
+    public bool CompleteOrSteal()
+    {
+        long gen = Volatile.Read(ref _issuedGen);
+        if (gen <= 0 || Volatile.Read(ref _completedGen) >= gen)
+        {
+            ThrowCapturedIfAny();
+            return false;
+        }
+
+        if (Interlocked.CompareExchange(ref _claimedGen, gen, gen - 1) == gen - 1)
+        {
+            RunClaimedStep(gen);
+            ThrowCapturedIfAny();
+            return true;
+        }
+
+        var spin = new SpinWait();
+        while (Volatile.Read(ref _completedGen) < gen)
+        {
+            if (spin.NextSpinWillYield)
+            {
+                Interlocked.Increment(ref _waiters);
+                try
+                {
+                    lock (_waitGate)
+                    {
+                        if (Volatile.Read(ref _completedGen) < gen)
+                        {
+                            Monitor.Wait(_waitGate, 1);
+                        }
+                    }
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _waiters);
+                }
+            }
+            else
+            {
+                spin.SpinOnce();
+            }
+        }
+
+        ThrowCapturedIfAny();
+        return false;
+    }
+
+    private void RunClaimedStep(long gen)
+    {
+        try
+        {
+            _error = null;
+            _solveAction();
+        }
+        catch (Exception ex)
+        {
+            _error = ex;
+        }
+        finally
+        {
+            Volatile.Write(ref _completedGen, gen);
+            if (Volatile.Read(ref _waiters) > 0)
+            {
+                lock (_waitGate)
+                {
+                    Monitor.PulseAll(_waitGate);
+                }
+            }
+        }
+    }
+
+    private void ThrowCapturedIfAny()
+    {
+        Exception? err = Interlocked.Exchange(ref _error, null);
+        if (err is not null)
+        {
+            ExceptionDispatchInfo.Capture(err).Throw();
+        }
+    }
+}
 
 /// <summary>
 /// The cloth of one drawn entity: a child of the entity's mesh node that draws the cloth
@@ -57,6 +217,68 @@ namespace Refii.Physics;
 public partial class Engine_ClothBody : MeshInstance3D
 {
     public const string NodeName = "ClothBody";
+
+    /// <summary>The <c>refii.toml</c> CVar scaling each entity's stated maximum cloth simulation range.</summary>
+    public const string DistanceScaleKey = "cloth_distance_scale";
+
+    /// <summary>Optional test/debug override for <see cref="ClothDistanceScale"/>; null reads <c>refii.toml</c>.</summary>
+    public static float? DistanceScaleOverride;
+
+    private static long _distanceScaleGeneration = -1;
+    private static float _cachedDistanceScale = 1.0f;
+
+    /// <summary>
+    /// Live multiplier (<c>cloth_distance_scale</c>) on each entity's stated cloth simulation distance,
+    /// cached per <see cref="Refii.Core.Engine_Switches.Generation"/> so per-frame checks cost zero allocations.
+    /// </summary>
+    public static float ClothDistanceScale
+    {
+        get
+        {
+            if (DistanceScaleOverride is { } forced)
+            {
+                return Math.Clamp(forced, 0.0f, 10.0f);
+            }
+
+            long gen = Refii.Core.Engine_Switches.Generation;
+            if (gen == Volatile.Read(ref _distanceScaleGeneration))
+            {
+                return _cachedDistanceScale;
+            }
+
+            float scale = 1.0f;
+            try
+            {
+                scale = Math.Clamp(
+                    Refii.Core.Engine_RefiiConfig.Float(
+                        Refii.Core.Engine_RefiiConfig.Read(out _), DistanceScaleKey, 1.0f),
+                    0.0f, 10.0f);
+            }
+            catch (Exception)
+            {
+                scale = 1.0f;
+            }
+
+            _cachedDistanceScale = scale;
+            Volatile.Write(ref _distanceScaleGeneration, gen);
+            return scale;
+        }
+    }
+
+    /// <summary>
+    /// Computes the effective cloth simulation cutoff distance in metres from the entity's stated
+    /// range and <paramref name="scale"/>. Pure helper safe for headless unit tests.
+    /// </summary>
+    public static float EffectiveMaxDistance(float statedDistance, float scale)
+    {
+        if (!float.IsFinite(statedDistance) || statedDistance <= 0.0f ||
+            !float.IsFinite(scale) || scale <= 0.0f)
+        {
+            return 0.0f;
+        }
+
+        return statedDistance * Math.Clamp(scale, 0.0f, 10.0f);
+    }
 
     /// <summary>
     /// <c>flt_83317D74</c>: the distance a twin's constructor (<c>sub_82AA2658</c>) gives it before its
@@ -119,10 +341,7 @@ public partial class Engine_ClothBody : MeshInstance3D
 
     private Skeleton3D? _skeleton;
 
-    private Task? _job;
-
-    /// <summary><see cref="Solve"/> as a delegate made once: a method group is a new one per call.</summary>
-    private Action? _solve;
+    private ClothSolveGate? _solveGate;
 
     private float _jobDt;
 
@@ -165,7 +384,8 @@ public partial class Engine_ClothBody : MeshInstance3D
         new Refii.Host.HostBridge.GuestClothPiece[32];
 
     /// <summary>The entity a body's parent stands for: GameEntities' meta on the entity node.</summary>
-    private static readonly StringName EntityAddressMeta = "entity_address";
+    private static StringName? _entityAddressMeta;
+    private static StringName EntityAddressMeta => _entityAddressMeta ??= "entity_address";
 
     /// <summary>One piece's stated poses: the published buffers newest first, the guest frame each
     /// was posed for, the pair last drawn and the drawn arrays.</summary>
@@ -449,17 +669,22 @@ public partial class Engine_ClothBody : MeshInstance3D
     /// </summary>
     private void Land()
     {
-        if (_job is null || _patch is null)
+        if (_solveGate is not { HasUnuploadedStep: true } || _patch is null)
         {
             return;
         }
 
-        if (!_job.IsCompleted)
+        if (!_solveGate.IsLatestClaimed)
         {
             System.Threading.Interlocked.Increment(ref _lagged);
         }
 
         Collect();
+        if (!_solveGate.TryConsumeUpload())
+        {
+            return;
+        }
+
         long uploadFrom = System.Diagnostics.Stopwatch.GetTimestamp();
         _patch.Upload();
         ApplyBounds();
@@ -477,24 +702,22 @@ public partial class Engine_ClothBody : MeshInstance3D
         }
     }
 
-    /// <summary>Waits for a running solve; the body's state is then quiescent.</summary>
+    /// <summary>Completes or steals a pending solve; the body's state is then quiescent.</summary>
     private void Collect()
     {
-        if (_job is null)
+        if (_solveGate is not { HasPendingStep: true })
         {
             return;
         }
 
         try
         {
-            _job.Wait();
+            _solveGate.CompleteOrSteal();
         }
-        catch (AggregateException e)
+        catch (Exception e)
         {
-            GD.PushError($"[physics] cloth solve failed: {e.InnerException?.Message}");
+            GD.PushError($"[physics] cloth solve failed: {e.Message}");
         }
-
-        _job = null;
     }
 
     public override void _Process(double delta)
@@ -521,7 +744,7 @@ public partial class Engine_ClothBody : MeshInstance3D
         // that drew nothing) lands now. One still RUNNING owns this body's arrays: no new step
         // until it is done.
         Land();
-        if (_job is not null)
+        if (_solveGate is { HasPendingStep: true })
         {
             return;
         }
@@ -595,7 +818,7 @@ public partial class Engine_ClothBody : MeshInstance3D
 
         _jobDt = step ? subDt : 0.0f;
         _jobStepped = step;
-        _job = Task.Run(_solve ??= Solve);
+        (_solveGate ??= new ClothSolveGate(Solve)).Schedule();
         System.Threading.Interlocked.Increment(ref _stepped);
         System.Threading.Interlocked.Add(ref _mainTicks, System.Diagnostics.Stopwatch.GetTimestamp() - mainFrom);
     }
@@ -965,6 +1188,13 @@ public partial class Engine_ClothBody : MeshInstance3D
     /// </summary>
     private float FadeWeight(MeshInstance3D parent, out bool inView)
     {
+        float scale = ClothDistanceScale;
+        if (scale <= 0.0f)
+        {
+            inView = false;
+            return 0.0f;
+        }
+
         inView = true;
         IReadOnlyList<Camera3D> cameras = Refii.Core.Engine_Views.Cameras(GetViewport()?.GetCamera3D());
         if (cameras.Count == 0)
@@ -972,21 +1202,29 @@ public partial class Engine_ClothBody : MeshInstance3D
             return 1.0f;
         }
 
-        float max = StatedMaxDistance(parent);
-        Vector3 origin = parent.GlobalPosition;
-        float distance = float.MaxValue;
-        int views = Math.Min(cameras.Count, _frustum.Length);
-        for (int v = 0; v < views; v++)
-        {
-            distance = MathF.Min(distance, origin.DistanceTo(cameras[v].GlobalPosition));
-        }
-
-        if (distance >= max + 6.0f)
+        float max = EffectiveMaxDistance(StatedMaxDistance(parent), scale);
+        if (max <= 0.0f)
         {
             inView = false;
             return 0.0f;
         }
 
+        Vector3 origin = parent.GlobalPosition;
+        float minDistanceSq = float.MaxValue;
+        int views = Math.Min(cameras.Count, _frustum.Length);
+        for (int v = 0; v < views; v++)
+        {
+            minDistanceSq = MathF.Min(minDistanceSq, origin.DistanceSquaredTo(cameras[v].GlobalPosition));
+        }
+
+        float outerCutoff = max + 6.0f;
+        if (minDistanceSq >= outerCutoff * outerCutoff)
+        {
+            inView = false;
+            return 0.0f;
+        }
+
+        float distance = MathF.Sqrt(minDistanceSq);
         inView = InView(cameras, views, parent);
         if (!inView || distance >= max)
         {
@@ -1340,6 +1578,7 @@ public partial class Engine_ClothBody : MeshInstance3D
             ["stepsPerFrame"] = (double)_stepped / frames,
             ["sleptPerFrame"] = (double)_slept / frames,
             ["laggedPerFrame"] = (double)_lagged / frames,
+            ["distanceScale"] = ClothDistanceScale,
         };
 
         _solveTicks = 0;

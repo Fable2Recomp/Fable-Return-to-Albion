@@ -35,8 +35,28 @@ public static class Engine_LevelShadowPrebuild
 
 	private static readonly object AsyncBakeGate = new();
 	private static int _asyncBakeGeneration;
+	private static int _loadBakePendingGeneration;
+	private static string _loadBakeStatus = string.Empty;
 	private static LevelEntry? _activeScenarioLevel;
 	private static string _activeScenarioGdbPath = string.Empty;
+
+	/// <summary>
+	/// True while an uncached during-load GPU shadow/AO bake launched for the active scenario is still
+	/// running and should hold the loading screen (<c>GameWorld.ReleaseWhenPropsHaveStreamed</c>).
+	/// </summary>
+	public static bool IsLoadBakePending
+	{
+		get
+		{
+			int pendingGen = Volatile.Read(ref _loadBakePendingGeneration);
+			return pendingGen != 0 &&
+				pendingGen == Volatile.Read(ref _asyncBakeGeneration) &&
+				!Refii.Core.Engine_RdHealth.IsDeviceLost;
+		}
+	}
+
+	/// <summary>Human-readable phase description for diagnostic hold logs while <see cref="IsLoadBakePending"/> is true.</summary>
+	public static string LoadBakeStatus => Volatile.Read(ref _loadBakeStatus);
 
 	/// <summary>
 	/// Runs the static shadow prebuild sweep across all discovered levels and scenarios.
@@ -315,15 +335,8 @@ public static class Engine_LevelShadowPrebuild
 					{
 						try
 						{
-							string? dir = Path.GetDirectoryName(diskPath);
-							if (!string.IsNullOrEmpty(dir))
-							{
-								Directory.CreateDirectory(dir);
-							}
-
-							byte[] payload = Engine_LevelShadowMaps.Serialize(shadowContainer);
+							Engine_LevelShadowMaps.WriteToFileAtomic(diskPath, shadowContainer);
 							shadowContainer.Texels = Array.Empty<ushort>();
-							File.WriteAllBytes(diskPath, payload);
 							if (resolvedGdb.Length != 0)
 							{
 								bakedShadowPathCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{resolution}|{lightsPerMap}"] = diskPath;
@@ -347,16 +360,9 @@ public static class Engine_LevelShadowPrebuild
 					{
 						try
 						{
-							string? dir = Path.GetDirectoryName(aoDiskPath);
-							if (!string.IsNullOrEmpty(dir))
-							{
-								Directory.CreateDirectory(dir);
-							}
-
-							byte[] payload = Engine_LevelAmbientOcclusion.Serialize(aoContainer);
+							Engine_LevelAmbientOcclusion.WriteToFileAtomic(aoDiskPath, aoContainer);
 							aoContainer.PropAoBytes = Array.Empty<byte>();
 							aoContainer.TerrainAoBytes = Array.Empty<byte>();
-							File.WriteAllBytes(aoDiskPath, payload);
 							if (resolvedGdb.Length != 0)
 							{
 								bakedAoPathCache[$"{scenarioEntry.HeightfieldPath}|{resolvedGdb}|{aoRes}"] = aoDiskPath;
@@ -459,15 +465,8 @@ public static class Engine_LevelShadowPrebuild
 					worldBvh, bakeLights, resolution, lightsPerMap, placedReach, interiorReach);
 				try
 				{
-					string? dir = Path.GetDirectoryName(diskPath);
-					if (!string.IsNullOrEmpty(dir))
-					{
-						Directory.CreateDirectory(dir);
-					}
-
-					byte[] payload = Engine_LevelShadowMaps.Serialize(shadowContainer);
+					Engine_LevelShadowMaps.WriteToFileAtomic(diskPath, shadowContainer);
 					shadowContainer.Texels = Array.Empty<ushort>();
-					File.WriteAllBytes(diskPath, payload);
 				}
 				catch (Exception ex)
 				{
@@ -482,16 +481,9 @@ public static class Engine_LevelShadowPrebuild
 					worldBvh, propBlocks, lightHosts, fixtureModelPaths, primaryTerrain, read);
 				try
 				{
-					string? dir = Path.GetDirectoryName(aoDiskPath);
-					if (!string.IsNullOrEmpty(dir))
-					{
-						Directory.CreateDirectory(dir);
-					}
-
-					byte[] payload = Engine_LevelAmbientOcclusion.Serialize(aoContainer);
+					Engine_LevelAmbientOcclusion.WriteToFileAtomic(aoDiskPath, aoContainer);
 					aoContainer.PropAoBytes = Array.Empty<byte>();
 					aoContainer.TerrainAoBytes = Array.Empty<byte>();
-					File.WriteAllBytes(aoDiskPath, payload);
 				}
 				catch (Exception ex)
 				{
@@ -516,13 +508,19 @@ public static class Engine_LevelShadowPrebuild
 	/// <summary>
 	/// Records the active loaded scenario and launches a non-blocking background GPU bake when
 	/// either the static shadow atlas (<c>.shadows</c>) or ground contact AO (<c>.ao</c>) is missing
-	/// or out-of-date for the active quality preset. Hot-binds each result into the live scene as soon
-	/// as it finishes and persists it to disk so subsequent entries load in ~15 ms.
+	/// or out-of-date for the active quality preset. Runs immediately during the loading screen when
+	/// <c>LoadCoverActive</c> is set so gameplay never hitches post-load.
 	/// </summary>
-	public static void EnsureScenarioBuiltAsync(LevelEntry level, string gdbPath)
+	public static void EnsureScenarioBuiltAsync(
+		LevelEntry level,
+		string gdbPath,
+		Engine_LevelProps.StaticLightingBakeSnapshot? prebuiltSnapshot = null)
 	{
 		LevelEntry snapshot = CloneWithScenario(level, level.Scenario);
 		int generation = Interlocked.Increment(ref _asyncBakeGeneration);
+		Volatile.Write(ref _loadBakePendingGeneration, 0);
+		Volatile.Write(ref _loadBakeStatus, string.Empty);
+
 		lock (AsyncBakeGate)
 		{
 			_activeScenarioLevel = snapshot;
@@ -553,71 +551,143 @@ public static class Engine_LevelShadowPrebuild
 			return;
 		}
 
-		System.Threading.Tasks.Task.Run(() =>
+		bool holdLoadCover = Refii.Core.Engine_ServerSyncs.LoadCoverActive;
+		if (holdLoadCover)
+		{
+			Volatile.Write(ref _loadBakeStatus, "assembling BVH");
+			Volatile.Write(ref _loadBakePendingGeneration, generation);
+		}
+
+		Engine_LevelProps.StaticLightingBakeSnapshot? capturedSnapshot = prebuiltSnapshot;
+		var bakeThread = new Thread(() =>
 		{
 			bool IsCancelled() =>
 				Volatile.Read(ref _asyncBakeGeneration) != generation ||
 				Refii.Core.Engine_RdHealth.IsDeviceLost;
-			while (Refii.Core.Engine_ServerSyncs.LoadCoverActive && !IsCancelled())
+
+			void SetStatus(string phase)
 			{
-				Thread.Sleep(25);
+				if (Volatile.Read(ref _loadBakePendingGeneration) == generation)
+				{
+					Volatile.Write(ref _loadBakeStatus, phase);
+				}
 			}
 
-			if (IsCancelled())
-			{
-				return;
-			}
+			System.Threading.Tasks.Task? shadowDiskWriteTask = null;
+			StaticShadowMapContainer? pendingShadowBind = null;
 
-			Engine_GameAssets? assets = Engine_GameAssets.Instance;
-			BnkFileSystem? banks = assets?.WaitForArchives();
-			if (banks is null || assets is null)
-			{
-				return;
-			}
-
-			Func<string, byte[]?> read = assets.ReadAllBytes;
-			var sw = Stopwatch.StartNew();
 			try
 			{
-				if (!Engine_LevelShadowMaps.TryBuildWorldGeometry(
-					snapshot,
-					read,
-					out Engine_LevelShadowMaps.BvhTree? worldBvh,
-					out List<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
-					out HashSet<uint> lightHosts,
-					out HashSet<string> fixtureModelPaths,
-					out List<Engine_LevelShadowMaps.BakeLightSpec> bakeLights,
-					out List<GhfHeights> terrainHeights,
-					out string _,
-					out int _,
-					out string _) || worldBvh is null || IsCancelled())
+				if (IsCancelled())
 				{
 					return;
 				}
 
+				Engine_GameAssets? assets = Engine_GameAssets.Instance;
+				BnkFileSystem? banks = assets?.WaitForArchives();
+				if (banks is null || assets is null || IsCancelled())
+				{
+					return;
+				}
+
+				Func<string, byte[]?> read = assets.ReadAllBytes;
+				var sw = Stopwatch.StartNew();
+
+				Engine_LevelShadowMaps.BvhTree? worldBvh;
+				List<Engine_LevelProps.StaticShadowPropBlock> propBlocks;
+				HashSet<uint> lightHosts;
+				HashSet<string> fixtureModelPaths;
+				List<Engine_LevelShadowMaps.BakeLightSpec> bakeLights;
+				List<GhfHeights> terrainHeights;
+
+				bool builtOk = capturedSnapshot is not null
+					? Engine_LevelShadowMaps.TryBuildWorldGeometryFromSnapshot(
+						snapshot,
+						capturedSnapshot,
+						read,
+						IsCancelled,
+						out worldBvh,
+						out propBlocks,
+						out lightHosts,
+						out fixtureModelPaths,
+						out bakeLights,
+						out terrainHeights,
+						out string _,
+						out int _,
+						out string _)
+					: Engine_LevelShadowMaps.TryBuildWorldGeometry(
+						snapshot,
+						read,
+						out worldBvh,
+						out propBlocks,
+						out lightHosts,
+						out fixtureModelPaths,
+						out bakeLights,
+						out terrainHeights,
+						out string _,
+						out int _,
+						out string _);
+				capturedSnapshot = null;
+
+				if (!builtOk || worldBvh is null || IsCancelled())
+				{
+					return;
+				}
+
+				using Engine_GpuBvhBaker.GpuBakeSession? gpuSession =
+					(!shadowValid && !aoValid) ? Engine_GpuBvhBaker.TryCreateSession(worldBvh) : null;
+
 				if (!shadowValid && !IsCancelled())
 				{
+					if (!Refii.Core.Engine_ServerSyncs.LoadCoverActive &&
+					    Thread.CurrentThread.Priority != ThreadPriority.BelowNormal)
+					{
+						Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+					}
+
+					SetStatus($"baking {bakeLights.Count} lamp shadows");
 					StaticShadowMapContainer shadowContainer = Engine_LevelShadowMaps.BakeFromBvh(
-						worldBvh, bakeLights, resolution, lightsPerMap, placedReach, interiorReach, IsCancelled);
+						worldBvh,
+						bakeLights,
+						resolution,
+						lightsPerMap,
+						placedReach,
+						interiorReach,
+						IsCancelled,
+						liveGameplayPaced: true,
+						gpuSession);
 					if (!IsCancelled())
 					{
-						try
+						if (!aoValid)
 						{
-							string? dir = Path.GetDirectoryName(diskPath);
-							if (!string.IsNullOrEmpty(dir))
+							// Overlap streaming .shadows to disk while Ground AO traces on the GPU.
+							pendingShadowBind = shadowContainer;
+							shadowDiskWriteTask = System.Threading.Tasks.Task.Run(() =>
 							{
-								Directory.CreateDirectory(dir);
+								try
+								{
+									Engine_LevelShadowMaps.WriteToFileAtomic(diskPath, shadowContainer);
+								}
+								catch (Exception ex)
+								{
+									GD.PrintErr($"[shadow-bake] failed to write {diskPath}: {ex.Message}");
+								}
+							});
+						}
+						else
+						{
+							try
+							{
+								Engine_LevelShadowMaps.WriteToFileAtomic(diskPath, shadowContainer);
+							}
+							catch (Exception ex)
+							{
+								GD.PrintErr($"[shadow-bake] failed to write {diskPath}: {ex.Message}");
 							}
 
-							byte[] payload = Engine_LevelShadowMaps.Serialize(shadowContainer);
-							File.WriteAllBytes(diskPath, payload);
+							SetStatus("binding lamp shadows");
+							Engine_LevelShadowMaps.HotBindIfActive(snapshot, safeGdbPath, shadowContainer);
 						}
-						catch (Exception ex)
-						{
-							GD.PrintErr($"[shadow-bake] failed to write {diskPath}: {ex.Message}");
-						}
-
-						Engine_LevelShadowMaps.HotBindIfActive(snapshot, safeGdbPath, shadowContainer);
 					}
 					else
 					{
@@ -627,27 +697,58 @@ public static class Engine_LevelShadowPrebuild
 
 				if (!aoValid && !IsCancelled())
 				{
+					if (!Refii.Core.Engine_ServerSyncs.LoadCoverActive &&
+					    Thread.CurrentThread.Priority != ThreadPriority.BelowNormal)
+					{
+						Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+					}
+
+					SetStatus("baking ground AO");
 					GhfHeights? primaryTerrain = Engine_LevelAmbientOcclusion.SelectPrimaryTerrain(terrainHeights);
 					StaticAoContainer aoContainer = Engine_LevelAmbientOcclusion.BakeFromBvh(
-						worldBvh, propBlocks, lightHosts, fixtureModelPaths, primaryTerrain, read, IsCancelled);
+						worldBvh,
+						propBlocks,
+						lightHosts,
+						fixtureModelPaths,
+						primaryTerrain,
+						read,
+						IsCancelled,
+						liveGameplayPaced: true,
+						gpuSession);
+
+					if (shadowDiskWriteTask is not null)
+					{
+						try { shadowDiskWriteTask.GetAwaiter().GetResult(); } catch { }
+						shadowDiskWriteTask = null;
+					}
+
+					if (pendingShadowBind is not null)
+					{
+						if (!IsCancelled())
+						{
+							SetStatus("binding lamp shadows");
+							Engine_LevelShadowMaps.HotBindIfActive(snapshot, safeGdbPath, pendingShadowBind);
+						}
+						else
+						{
+							pendingShadowBind.Texels = Array.Empty<ushort>();
+						}
+
+						pendingShadowBind = null;
+					}
+
 					if (!IsCancelled())
 					{
 						try
 						{
-							string? dir = Path.GetDirectoryName(aoDiskPath);
-							if (!string.IsNullOrEmpty(dir))
-							{
-								Directory.CreateDirectory(dir);
-							}
-
-							byte[] payload = Engine_LevelAmbientOcclusion.Serialize(aoContainer);
-							File.WriteAllBytes(aoDiskPath, payload);
+							Engine_LevelAmbientOcclusion.WriteToFileAtomic(aoDiskPath, aoContainer);
 						}
 						catch (Exception ex)
 						{
 							GD.PrintErr($"[ao-bake] failed to write {aoDiskPath}: {ex.Message}");
 						}
 
+						SetStatus("binding ground AO");
 						Engine_LevelAmbientOcclusion.HotBindIfActive(snapshot, safeGdbPath, aoContainer);
 					}
 					else
@@ -669,14 +770,36 @@ public static class Engine_LevelShadowPrebuild
 			}
 			finally
 			{
+				if (shadowDiskWriteTask is not null)
+				{
+					try { shadowDiskWriteTask.GetAwaiter().GetResult(); } catch { }
+				}
+
+				if (pendingShadowBind is not null)
+				{
+					pendingShadowBind.Texels = Array.Empty<ushort>();
+				}
+
 				if (Volatile.Read(ref _asyncBakeGeneration) == generation)
 				{
 					Engine_LevelShadowMaps.ClearBakeCaches();
 					Engine_LevelAmbientOcclusion.ClearBakeCaches();
 				}
+
+				if (Interlocked.CompareExchange(ref _loadBakePendingGeneration, 0, generation) == generation)
+				{
+					Volatile.Write(ref _loadBakeStatus, string.Empty);
+				}
+
+				Refii.AndroidRuntime.AndroidBakedShadows.AfterInGameBake();
 			}
-		}).ContinueWith(_ => Refii.AndroidRuntime.AndroidBakedShadows.AfterInGameBake(),
-			CancellationToken.None, System.Threading.Tasks.TaskContinuationOptions.ExecuteSynchronously, System.Threading.Tasks.TaskScheduler.Default);
+		})
+		{
+			IsBackground = true,
+			Name = "Refii.LightingBake",
+			Priority = holdLoadCover ? ThreadPriority.Normal : ThreadPriority.BelowNormal,
+		};
+		bakeThread.Start();
 	}
 
 	/// <summary>
@@ -715,6 +838,8 @@ public static class Engine_LevelShadowPrebuild
 	public static void ClearActiveScenario()
 	{
 		Interlocked.Increment(ref _asyncBakeGeneration);
+		Volatile.Write(ref _loadBakePendingGeneration, 0);
+		Volatile.Write(ref _loadBakeStatus, string.Empty);
 		lock (AsyncBakeGate)
 		{
 			_activeScenarioLevel = null;

@@ -151,7 +151,7 @@ public static class Engine_WaterMaterial
         error = string.Empty;
         EnsureInitialized();
 
-        var shader = GD.Load<Shader>(ShaderPath);
+        var shader = Refii.AndroidRuntime.AndroidWaterZenith.Load(ShaderPath);
         if (shader is null)
         {
             error = $"water shader missing at {ShaderPath}";

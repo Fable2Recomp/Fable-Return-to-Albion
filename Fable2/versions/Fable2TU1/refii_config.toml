@@ -11824,6 +11824,32 @@
 # The ranged aim cursor (r3 the aim, r4 its stick as two packed floats): the mouse's turn joins
 # the stick through the cursor's own gain (Fable2/src/vfs/src/hooks/mouse_look.cpp).
 0x8287B258 = { name = "rex_lhRangedAim_MoveCursor" }
+# B7 UI cut, world icons (Fable2/src/vfs/src/hooks/world_icon_hooks.cpp): the base Init (r3 icon, r4 descriptor)
+# and destructor, CWorldIcon3D SetType (r4 type) / SetText (r4 title, r5 amount), the base SetColour
+# (r4 four bytes) and the pooled icon's Update state every icon into the shared table.
+0x828203B8 = { name = "rex_lhWorldIconBase_Init" }
+0x82820348 = { name = "rex_lhWorldIconBase_Destroy" }
+0x82824830 = { name = "rex_lhWorldIcon3D_SetType" }
+0x82824968 = { name = "rex_lhWorldIcon3D_SetText" }
+0x82820F30 = { name = "rex_lhWorldIconBase_SetColour" }
+0x82824D60 = { name = "rex_lhWorldIconPooled_Update" }
+# B7 UI cut, the co-op save picker's opener (r3 the screen): its first card stated after it
+# (gui_headless_presentation.cpp, @CoopPicker.Open).
+0x8243B070 = { name = "rex_lhGuiCoopScreen_OpenSavePicker" }
+# B7 UI cut: entries whose arguments state what the headless stamps and told texts used to catch.
+0x826E1408 = { name = "rex_lhGui_FrontendRoot_StampSaveCard" }
+0x826E40E0 = { name = "rex_lhGui_FrontendRoot_OpenDialog" }
+0x826AC5F0 = { name = "rex_lhGuiExpressionWheel_SetItem" }
+0x826B8BB0 = { name = "rex_lhGuiNumericAdjuster_Render" }
+0x823DB850 = { name = "rex_lhGuiGamerCard_SetName" }
+0x82370178 = { name = "rex_lhGuiManager_ExitGuiModeQuiet" }
+# B7 UI cut, told values to their calls (gui_headless_presentation.cpp): the pause legend row
+# (r5 row, r6 tag, r7 &hash), the pickbox's Init (r5 path) and SetIndex (r4 index), the logbook's
+# expression fill (its writes untold).
+0x826A3AC8 = { name = "rex_lhGuiPauseRootScreen_SetMapKey" }
+0x82881FD0 = { name = "rex_lhGuiPickBox_Init" }
+0x828821D0 = { name = "rex_lhGuiPickBox_SetIndex" }
+0x829BCDF0 = { name = "rex_lhGuiLogbookScreen_FillExpression" }
 
 # Co-op heroes (Fable2/src/hooks/src/coop_hero_hooks.cpp): each hook runs before its instruction and
 # skips one henchman test. Same offsets in both builds.
@@ -12348,17 +12374,12 @@ address = 0x82284210
 registers = ["r3", "r4", "r5"]
 
 # The HUD's texture writes onto a headless element, stated as the hash the quad would carry:
-# GuiElement_SetTexture's entry (r3 name, r4 element), the expression wheel item (r29, name r28),
-# the d-pad slots (r3, name at sp+0x50), the spell wheel (r31) and the spell charges (r10).
+# GuiElement_SetTexture's entry (r3 name, r4 element) (the wheel's items are stated at
+# rex_lhGuiExpressionWheel_SetItem), the d-pad slots (r3, name at sp+0x50), the spell wheel (r31) and the spell charges (r10).
 [[midasm_hook]]
 name = "RefiiHeadlessSetTextureByName"
 address = 0x82425BB8
 registers = ["r3", "r4"]
-
-[[midasm_hook]]
-name = "RefiiHeadlessTextureNamed"
-address = 0x826AC708
-registers = ["r3", "r29", "r28"]
 
 [[midasm_hook]]
 name = "RefiiHeadlessTextureOnStack"
@@ -12387,26 +12408,6 @@ registers = ["r3", "r4", "r1"]
 name = "RefiiHeadlessStampTexture"
 address = 0x826E14B0
 registers = ["r3", "r30"]
-
-[[midasm_hook]]
-name = "RefiiHeadlessStampCardBlank"
-address = 0x826E06CC
-registers = ["r3"]
-
-[[midasm_hook]]
-name = "RefiiHeadlessStampGlyphCancel"
-address = 0x826E421C
-registers = ["r30"]
-
-[[midasm_hook]]
-name = "RefiiHeadlessStampGlyphOther"
-address = 0x826E4284
-registers = ["r30"]
-
-[[midasm_hook]]
-name = "RefiiHeadlessStampCardBlank"
-address = 0x826E20F0
-registers = ["r3"]
 
 # The quad readers' joins: a headless element's missing kind-2 record answered with the inert
 # record (gui_headless_presentation.cpp, RefiiHeadlessQuadRecord). TU1
@@ -12466,17 +12467,12 @@ registers = ["r4", "r5"]
 return_on_true = true
 
 # The inline texture stores on a headless element (gui_pause_hooks.cpp): the pause map image (r31,
-# hash at sp+0x58), each legend KeyImage (r29, hash at *r27), each co-op save card's portrait (r31,
-# hash at *r29).
+# hash at sp+0x58), each co-op save card's portrait (r31, hash at *r29). The legend rows'
+# icons are SetMapKey's argument.
 [[midasm_hook]]
 name = "RefiiPauseMapTexture"
 address = 0x826A21C4  # sub_826A19E0, `lwz r11, 4(r31)`
 registers = ["r31", "r1"]
-
-[[midasm_hook]]
-name = "RefiiHeadlessInlineTexture"
-address = 0x826A3B8C  # sub_826A3AC8, `lwz r11, 4(r29)`
-registers = ["r29", "r27"]
 
 [[midasm_hook]]
 name = "RefiiHeadlessInlineTexture"

@@ -35,9 +35,8 @@ public sealed class HostUiSource : Fable2UiSource
 	/// <summary>
 	/// `F = *(*(*(0x83496AC0)+8)+0x50)` (0x8230FF44..0x8230FF64, gated on `byte_83496AC4`); the
 	/// main-menu root `*(F+0xB8)` (vt 0x820D0934) and the title `*(F+0xB4)` (vt 0x820D09C4).
-	/// Either sets `+57` when it raises the dialog (`sub_826E1C50`, `sub_826E3580`); `+20` is its
-	/// presentation; the root takes the answer in mode `+24 == 6` (set on DIALOG_ACTIVE,
-	/// `sub_826E1040`), the title in mode 12; `+206` is the root's cancel flag.
+	/// Either sets `+57` when it raises the dialog (`sub_826E1C50`, `sub_826E3580`); the root takes
+	/// the answer in mode `+24 == 6` (set on DIALOG_ACTIVE, `sub_826E1040`), the title in mode 12.
 	/// </summary>
 	private static readonly (uint Offset, uint Vtable, uint Accepting)[] DialogOwners =
 		{ (0xB8u, 0x820D0934u, 6u), (0xB4u, 0x820D09C4u, 12u) };
@@ -71,20 +70,14 @@ public sealed class HostUiSource : Fable2UiSource
 				continue;
 			}
 
-			// +0 vtable, +20 presentation, +24 mode, +56..+59 holds the +57 flag, +204..+207
-			// the +206 cancel flag.
-			uint[] words = HostBridge.Peek(owner[0], 52);
-			if (words.Length != 52 || HostBridge.GuestAddressToTu1(words[0]) != vtable || ((words[14] >> 16) & 0xFFu) == 0u)
+			// +0 vtable, +24 mode, +56..+59 holds the +57 flag.
+			uint[] words = HostBridge.Peek(owner[0], 15);
+			if (words.Length != 15 || HostBridge.GuestAddressToTu1(words[0]) != vtable || ((words[14] >> 16) & 0xFFu) == 0u)
 			{
 				continue;
 			}
 
-			// The root's cancel flag is at +206 in TU1 and +194 without the title update: every
-			// root field from +72 up sits 12 bytes lower there (`lbz` 206 against 194 at the same
-			// place in the two builds' root action handlers).
-			uint cancelWord = HostBridge.PickByBuild(words[51], words[48]);
-			bool cancel = vtable == 0x820D0934u && ((cancelWord >> 8) & 0xFFu) != 0u;
-			return new FrontEndDialogState(owner[0], words[5], words[6] == accepting, cancel);
+			return new FrontEndDialogState(owner[0], words[6] == accepting);
 		}
 
 		return null;

@@ -721,7 +721,10 @@ public static class RuntimeConfig
     internal static string FormatTomlValue(RuntimeCVarDefinition definition, string rawValue) =>
         definition.Type switch
         {
-            RuntimeCVarType.Bool => NormalizeBoolValue(rawValue),
+            RuntimeCVarType.Bool => definition.Name == "occlusion_culling" &&
+                rawValue.Trim().Trim('"').Equals("auto", StringComparison.OrdinalIgnoreCase)
+                    ? EscapeTomlString("auto")
+                    : NormalizeBoolValue(rawValue),
             RuntimeCVarType.String => EscapeTomlString(rawValue),
             _ => string.IsNullOrEmpty(rawValue) ? definition.DefaultValue : rawValue,
         };

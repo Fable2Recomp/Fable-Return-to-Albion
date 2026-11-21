@@ -9,6 +9,38 @@ namespace Refii.Level;
 /// </summary>
 public static class Engine_TreeReach
 {
+	/// <summary>
+	/// Whether distant trees are drawn as cards (the classic renderer's billboards, or
+	/// `tree_billboards` on a phone): the tree's impostor model then ends at its stated F and
+	/// carries {F, cull} for the cards. Any thread.
+	/// </summary>
+	public static bool BillboardsDrawn =>
+		Refii.Models.Engine_ClassicBillboards.Available || Refii.AndroidRuntime.AndroidTreeCards.On;
+
+	/// <summary>
+	/// Whether a placed tree whose definition names no LOD model borrows the `_LOD1` (and `_shadow`) model
+	/// of the level's own tree block for the same model (Engine_LevelProps.StatePlacedTree): the main model
+	/// to F, the `_LOD1` beyond. Any thread.
+	/// </summary>
+	public static bool PlacedTreeBorrowsFarModel => PlacedTreeBorrows(
+		Refii.Models.Engine_ClassicBillboards.Available, Refii.AndroidRuntime.AndroidTreeCards.On,
+		Refii.AndroidRuntime.AndroidTreeCards.StartScaleChosen);
+
+	/// <summary>
+	/// <see cref="PlacedTreeBorrowsFarModel"/> for these settings. Pure.
+	/// </summary>
+	/// <remarks>
+	/// Under classic the impostor follows the full model, as the title's does: no stand-in. The phone's cards
+	/// (`tree_billboards`) do the same at start scale 1, where the full model ends at F and the card takes
+	/// over there, as it always has. Past 1 the cards start at scale x F, and a tree that kept its full
+	/// model as the impostor drew the full model all the way out to the card: in Bowerstone's graveyard at
+	/// Ultra (scale 3, so 192 m) 2.83 M triangles against 1.68 M with no cards at all (Galaxy S25+,
+	/// 2026-11-16). Borrowing, the tree draws exactly what it draws without cards (the `_LOD1` from the
+	/// hand-over) up to the card start, and the card from there.
+	/// </remarks>
+	public static bool PlacedTreeBorrows(bool classic, bool cards, float startScale) =>
+		!classic && (!cards || Refii.AndroidRuntime.AndroidTreeCardMaths.StartScale(startScale) > 1f);
+
 	/// <summary>`tree_far_reach`: the farthest any tree model draws, in metres; 0 keeps the stated reach.</summary>
 	public const string TreeFarReachKey = "tree_far_reach";
 
@@ -23,13 +55,15 @@ public static class Engine_TreeReach
 	internal static bool RefreshLive(string name)
 	{
 		if (!name.Equals(TreeFarReachKey, StringComparison.OrdinalIgnoreCase) &&
-			!name.Equals(TreeLodBiasKey, StringComparison.OrdinalIgnoreCase))
+			!name.Equals(TreeLodBiasKey, StringComparison.OrdinalIgnoreCase) &&
+			!name.Equals(TreeHandoverKey, StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
 
 		TreeFarReach = ReadTreeFarReach();
 		TreeLodBias = ReadTreeLodBias();
+		TreeHandover = ReadTreeHandover();
 		return true;
 	}
 
@@ -100,7 +134,97 @@ public static class Engine_TreeReach
 
 	/// <summary>A tree node's band and range capped at the configured <see cref="TreeFarReach"/>.</summary>
 	internal static (float[] Band, float[] Stated) Cap(float[] band, float[] stated) =>
-		CapTreeReach(band, stated, TreeFarReach);
+		Cap(band, stated, TreeHandover, TreeFarReach);
+
+	/// <summary>A tree node's band and range with its hand-over scaled, then capped at <paramref name="reach"/>:
+	/// in that order, so a capped `_LOD1` node's fade-out follows its scaled fade-in. Pure.</summary>
+	internal static (float[] Band, float[] Stated) Cap(float[] band, float[] stated, float scale, float reach)
+	{
+		(band, stated) = ScaleHandover(band, stated, scale);
+		return CapTreeReach(band, stated, reach);
+	}
+
+	/// <summary>`tree_handover_scale`: where a tree's main model hands over to its `_LOD1` model, as a
+	/// fraction of the stated LOD distance; 1 keeps the stated distance.</summary>
+	public const string TreeHandoverKey = "tree_handover_scale";
+
+	/// <summary>The nearest a scaled hand-over may come, in metres.</summary>
+	/// <remarks>A tree that already hands over within this distance keeps it: closer in, a full model covers
+	/// enough of the screen that its simpler far model would show.</remarks>
+	public const float HandoverFloorMetres = 40f;
+
+	/// <summary>`tree_handover_scale` as last read, held to [0.25, 1].</summary>
+	public static float TreeHandover { get; private set; } = ReadTreeHandover();
+
+	private static float ReadTreeHandover()
+	{
+		try
+		{
+			float scale = Refii.Core.Engine_RefiiConfig.Float(Refii.Core.Engine_RefiiConfig.Read(out _), TreeHandoverKey, 1f);
+			return float.IsFinite(scale) ? Mathf.Clamp(scale, 0.25f, 1f) : 1f;
+		}
+		catch (System.Exception)
+		{
+			return 1f;
+		}
+	}
+
+	/// <summary>
+	/// A tree node's band and range with the hand-over between its main and `_LOD1` models moved in
+	/// to <paramref name="scale"/> times the stated LOD distance; unchanged at 1 and for a tree
+	/// with no `_LOD1` model.
+	/// </summary>
+	/// <remarks>
+	/// WHY. A main tree model is the game's full mesh (Oakfield's pine: 9,500 triangles) and its
+	/// `_LOD1` the game's own far mesh (316), swapped at the stated L (about 80 m for the pine). On a
+	/// phone's screen the far mesh holds up sooner. Both nodes move together, so the two models
+	/// still trade places across one stretch, through the same per-placement fade.
+	/// </remarks>
+	internal static (float[] Band, float[] Stated) ScaleHandover(float[] band, float[] stated, float scale)
+	{
+		if (!(scale > 0f) || !(scale < 1f) || band.Length < 6 || stated.Length < 3)
+		{
+			return (band, stated);
+		}
+
+		// The stated L, from whichever node this is, and the scale held so the hand-over never comes
+		// nearer than HandoverFloorMetres: a tree that already hands over close by keeps its distance.
+		float stat = band[1] > 0f ? band[0] / 0.875f : band[5] == 2f ? band[3] : 0f;
+		if (!(stat > 0f))
+		{
+			return (band, stated);
+		}
+
+		scale = Mathf.Max(scale, Mathf.Min(1f, HandoverFloorMetres / stat));
+		if (!(scale < 1f))
+		{
+			return (band, stated);
+		}
+
+		var scaledBand = (float[])band.Clone();
+		var scaledStated = (float[])stated.Clone();
+		if (band[1] > 0f)
+		{
+			// The `_LOD1` node: its fade-in starts at 0.875 L and runs over 0.125 L.
+			float pad = Mathf.Max(stated[2] - band[3], 0f);
+			scaledBand[0] = band[0] * scale;
+			scaledBand[1] = band[1] / scale;
+			scaledStated[0] = Mathf.Max(0f, scaledBand[0] - pad);
+			return (scaledBand, scaledStated);
+		}
+
+		if (band[5] == 2f && band[3] > 0f)
+		{
+			// The main node of a tree with a `_LOD1`: its fade-out ends at L.
+			float pad = Mathf.Max(stated[2] - band[3], 0f);
+			scaledBand[3] = band[3] * scale;
+			scaledBand[4] = band[4] / scale;
+			scaledStated[2] = scaledBand[3] + pad;
+			return (scaledBand, scaledStated);
+		}
+
+		return (band, stated);
+	}
 
 	/// <summary>
 	/// A tree node's band and range with its far end pulled in to <paramref name="reach"/> metres,

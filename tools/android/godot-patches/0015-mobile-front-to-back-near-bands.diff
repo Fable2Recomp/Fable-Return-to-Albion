@@ -1,0 +1,31 @@
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+@@ -2181,6 +2181,9 @@
+ 	near_plane.d += p_render_data->scene_data->cam_projection.get_z_near();
+ 	float z_max = p_render_data->scene_data->cam_projection.get_z_far() - p_render_data->scene_data->cam_projection.get_z_near();
+ 	const bool opaque_front_to_back = GLOBAL_GET_CACHED(bool, "rendering/renderer/opaque_front_to_back_mobile");
++	// godot-patches/0015: past this distance (metres, 0 = no limit) every instance shares the last band,
++	// so the far field keeps the stock shader and material grouping.
++	const float front_to_back_reach = GLOBAL_GET_CACHED(float, "rendering/renderer/opaque_front_to_back_reach_mobile");
+ 
+ 	RenderList *rl = &render_list[p_render_list];
+ 
+@@ -2216,7 +2219,7 @@
+ 		// pixels by early depth test shades fewer of them; shader and material still group within a band.
+ 		uint32_t depth_band = 0;
+ 		if (opaque_front_to_back && inst->depth > 2.0) {
+-			depth_band = CLAMP(int(Math::log2(inst->depth * 0.5) * 2.0) + 1, 1, 15);
++			depth_band = (front_to_back_reach > 0.0f && inst->depth >= front_to_back_reach) ? 15 : CLAMP(int(Math::log2(inst->depth * 0.5) * 2.0) + 1, 1, 15);
+ 		}
+ 
+ 		uint32_t flags = inst->base_flags; //fill flags if appropriate
+@@ -3580,6 +3583,8 @@
+ 
+ 	// Opaque surfaces in front-to-back bands (see _fill_render_list). Off keeps the stock order.
+ 	GLOBAL_DEF("rendering/renderer/opaque_front_to_back_mobile", false);
++	// Front-to-back bands only within this many metres; 0 bands every distance (godot-patches/0015).
++	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/renderer/opaque_front_to_back_reach_mobile", PROPERTY_HINT_RANGE, "0,1000,0.5,or_greater"), 0.0);
+ 	// Per-pixel light and sun-shadow skips and the light buffer's unlit lights (godot-patches/0014). Off keeps stock.
+ 	GLOBAL_DEF("rendering/renderer/sun_shadow_skip_beyond_fade_mobile", false);
+ 	GLOBAL_DEF("rendering/renderer/sun_shadow_skip_facing_away_mobile", false);

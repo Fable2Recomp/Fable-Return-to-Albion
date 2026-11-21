@@ -160,6 +160,32 @@ public class DisplayBoxStatementsTests
 		AssertThat(Engine_UiDisplayBoxes.Menu).IsNull();
 	}
 
+	/// <summary>The Orb card's name is the one its build stated (`sub_823DB850` r5): kept across a
+	/// row's repopulate, dropped by the close.</summary>
+	[TestCase]
+	public void TheCardsNameIsWhatItsBuildStated()
+	{
+		const uint box = 0x4C005000u;
+		var model = new Engine_UiGuiBoxes.MenuBoxModel("Orb",
+			new[] { new Engine_UiGuiBoxes.MenuOption("Join", true) }, Cancelable: true);
+		Engine_UiDisplayBoxes.MenuOpened(box, model, card: true);
+		AssertThat(Engine_UiDisplayBoxes.Menu!.GamerName).IsNull();
+
+		Engine_UiDisplayBoxes.GamerCardNamed(0x4C006000u, "Other");
+		AssertThat(Engine_UiDisplayBoxes.Menu!.GamerName).IsNull();
+
+		Engine_UiDisplayBoxes.GamerCardNamed(box, string.Empty);
+		AssertThat(Engine_UiDisplayBoxes.Menu!.GamerName).IsEqual(string.Empty);
+
+		Engine_UiDisplayBoxes.MenuOpened(box, model, card: true);
+		AssertThat(Engine_UiDisplayBoxes.Menu!.GamerName).IsEqual(string.Empty);
+
+		Engine_UiDisplayBoxes.MenuClosed(box);
+		Engine_UiDisplayBoxes.MenuOpened(box, model, card: true);
+		AssertThat(Engine_UiDisplayBoxes.Menu!.GamerName).IsNull();
+		Engine_UiDisplayBoxes.MenuClosed(box);
+	}
+
 	/// <summary>The quest box's page comes from its own fields; with no strings a tag stands as it
 	/// is, and a condition shows only up to the stated count.</summary>
 	[TestCase]

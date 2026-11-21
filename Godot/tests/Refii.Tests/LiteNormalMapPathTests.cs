@@ -41,7 +41,7 @@ public sealed class LiteNormalMapPathTests
     private static bool Names(string code, string builtin) =>
         Regex.IsMatch(code, @"\b" + builtin + @"\b", RegexOptions.CultureInvariant);
 
-    private static readonly Regex Fetch = new(@"texture\(\s*normal_tex\b", RegexOptions.CultureInvariant);
+    private static readonly Regex Fetch = new(@"texture(?:Grad)?\(\s*normal_tex\b", RegexOptions.CultureInvariant);
 
     private static readonly Regex DirectWrite = new(@"\bNORMAL\s*=\s*mapped_view\s*;", RegexOptions.CultureInvariant);
 
@@ -84,7 +84,8 @@ public sealed class LiteNormalMapPathTests
                     .OverrideFailureMessage(path).IsFalse();
                 AssertThat(Fetch.IsMatch(active)).OverrideFailureMessage(path).IsTrue();
                 AssertThat(DirectWrite.IsMatch(active)).OverrideFailureMessage(path).IsTrue();
-                AssertThat(active.Contains("dFdx(uv)", StringComparison.Ordinal)).OverrideFailureMessage(path).IsTrue();
+                AssertThat(active.Contains("vec2 duv1 = base_uv_dx;", StringComparison.Ordinal)).OverrideFailureMessage(path).IsTrue();
+                AssertThat(active.Contains("vec3 lite_dp1 = dFdx(VERTEX);", StringComparison.Ordinal)).OverrideFailureMessage(path).IsTrue();
             }
         }
     }

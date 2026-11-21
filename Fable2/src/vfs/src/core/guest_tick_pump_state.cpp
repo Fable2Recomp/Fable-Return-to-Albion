@@ -674,6 +674,24 @@ extern "C" bool refii_bridge_get_stated_highlight(uint32_t* screen, int32_t* eve
   return true;
 }
 
+extern "C" bool refii_bridge_menu_last_spawned_row_name(int32_t event_type, uint32_t id, char* name,
+                                                        uint32_t capacity) {
+  std::lock_guard lock(refii::vfs::g_menu_mutex);
+  if (name == nullptr || capacity == 0u) {
+    return false;
+  }
+  for (auto row = refii::vfs::g_menu_rows.rbegin(); row != refii::vfs::g_menu_rows.rend(); ++row) {
+    if (row->event_type != event_type) {
+      break;
+    }
+    if (row->id == id) {
+      std::snprintf(name, capacity, "%s", row->name.c_str());
+      return true;
+    }
+  }
+  return false;
+}
+
 namespace {
 std::mutex g_fold_mutex;
 std::unordered_map<uint32_t, uint32_t> g_fold_depth;
@@ -939,6 +957,24 @@ void refii_bridge_set_menu_owner_two(int32_t two) {
 }
 
 int32_t refii_bridge_menu_owner_two(void) { return g_menu_owner_two.load(std::memory_order_relaxed); }
+
+namespace {
+/// The player whose expression wheel is open, 0 for none.
+std::atomic<int32_t> g_expression_wheel_player{0};
+}  // namespace
+
+/// Set by the open hook when the quick menu's +35 (+34 disc) goes 0 -> 1 (`stb` TU1 0x8236F31C /
+/// disc 0x8233751C), to the record's +36 the guest hands `sub_826A9A60` / `sub_8258D1A0`
+/// (`lwz r4,0x24(r30)` 0x8236F324 / 0x82337524); cleared by the close hook when it clears the byte
+/// (`stb` 0x8236F374 / 0x82337574). Those and the quick menu's constructor (`sub_8236D078`
+/// 0x8236D0A8 / `sub_82335218` 0x82335248, 0) are the byte's only writers.
+void refii_bridge_set_expression_wheel_player(int32_t player) {
+  g_expression_wheel_player.store(player, std::memory_order_relaxed);
+}
+
+int32_t refii_bridge_expression_wheel_player(void) {
+  return g_expression_wheel_player.load(std::memory_order_relaxed);
+}
 
 namespace {
 /// Players a region exit refused since the host last asked (bit 0 player one, bit 1 player two).

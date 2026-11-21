@@ -36,7 +36,7 @@ public partial class GameUi
 	/// </summary>
 	private void FollowModWheelButtonsTwo()
 	{
-		_modWheelWaitingTwo = GuestExpressionWheelOpen() ? 0 : _modWheelWaitingTwo + 1;
+		_modWheelWaitingTwo = Fable2Bridge.GetExpressionWheelPlayer() != 0 ? 0 : _modWheelWaitingTwo + 1;
 		if (_modWheelWaitingTwo > ModWheelOpenGrace)
 		{
 			_modWheelWaitingTwo = 0;
@@ -78,7 +78,7 @@ public partial class GameUi
 	private void FollowModWheelButtons()
 	{
 		// The guest refuses a wheel for a busy hero, and closes one for its own reasons.
-		_modWheelWaiting = GuestExpressionWheelOpen() ? 0 : _modWheelWaiting + 1;
+		_modWheelWaiting = Fable2Bridge.GetExpressionWheelPlayer() != 0 ? 0 : _modWheelWaiting + 1;
 		if (_modWheelWaiting > ModWheelOpenGrace)
 		{
 			_modWheelWaiting = 0;
@@ -102,35 +102,6 @@ public partial class GameUi
 		{
 			ModWheel.StepPage(-1);
 		}
-	}
-
-	/// <summary>
-	/// The guest's own open flag, as the pump's QuickWheel lever reads it: the quick menu
-	/// `*(GUI+28)`, its byte +35 (+34 unpatched, `GuiOwnerField`). The HUD's drawn quads are no
-	/// answer — the closed wheel's art stays drawn under the guest's element state.
-	/// </summary>
-	private static bool GuestExpressionWheelOpen()
-	{
-		System.Span<uint> word = stackalloc uint[1];
-		uint at = HostBridge.GuestAddress(0x83496B08u);
-		if (at == 0u || HostBridge.Peek(at, word) != 1 || word[0] < 0x10000u)
-		{
-			return false;
-		}
-
-		if (HostBridge.Peek(word[0] + 28u, word) != 1 || word[0] < 0x10000u)
-		{
-			return false;
-		}
-
-		uint field = HostBridge.PickByBuild(35u, 34u);
-		if (HostBridge.Peek(word[0] + 32u, word) != 1)
-		{
-			return false;
-		}
-
-		// Guest words are big-endian: byte +32 is the word's top byte, +35 its bottom.
-		return ((word[0] >> (int)((35u - field) * 8u)) & 0xFFu) != 0u;
 	}
 
 	/// <summary>The HUD's element text, with the mods' entries on the wedges while the mod wheel stands.</summary>

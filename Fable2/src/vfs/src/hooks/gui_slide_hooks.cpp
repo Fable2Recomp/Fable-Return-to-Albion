@@ -221,81 +221,9 @@ void Queue(uint8_t* base, refii::vfs::ToldStatement::Kind kind, uint32_t present
     refii_bridge_told_push(static_cast<uint32_t>(kind), presentation, root_hash, ordinal, a, b);
 }
 
-constexpr uint32_t kMaxTextUnits = 4096u;
-
-/// The front end's active screen presentation (`GUI+188` → `+20`), when its root is `root`. The
-/// field exists only on the derived GUI_FRONT_END object (`sub_82378230`); in game the GUI is the
-/// 176-byte base, so the exact root match is what keeps a stale word from answering.
-uint32_t FrontEndPresentation(uint8_t* base, uint32_t root) {
-    const uint32_t gui = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496B08u));
-    if (!Plausible(gui)) return 0;
-    const uint32_t active = refii::vfs::LoadGuestU32(base, gui + 188u);
-    if (!Plausible(active)) return 0;
-    const uint32_t presentation = refii::vfs::LoadGuestU32(base, active + 20u);
-    return Plausible(presentation) &&
-                   (root == 0 || refii::vfs::LoadGuestU32(base, presentation + kRootInPresentation) == root)
-               ? presentation
-               : 0;
-}
-
-/// The presentation whose tree holds `element`: its root, climbed to through the parent links,
-/// matched against the GUI player's presentation list (`GUI+16`, array +72, count +80).
-uint32_t PresentationOf(uint8_t* base, uint32_t element) {
-    uint32_t root = element;
-    for (int depth = 0; depth < 256; ++depth) {
-        const uint32_t parent = refii::vfs::LoadGuestU32(base, root + 12u);
-        if (!Plausible(parent)) break;
-        root = parent;
-    }
-
-    const uint32_t gui = refii::vfs::LoadGuestU32(base, refii::guest::Address(0x83496B08u));
-    if (!Plausible(gui)) return 0;
-    const uint32_t player = refii::vfs::LoadGuestU32(base, gui + 16u);
-    if (!Plausible(player)) return 0;
-    const uint32_t array = refii::vfs::LoadGuestU32(base, player + 72u);
-    const uint32_t count = refii::vfs::LoadGuestU32(base, player + 80u);
-    if (!Plausible(array)) return 0;
-    for (uint32_t i = 0; i < count && i < 256u; ++i) {
-        const uint32_t presentation = refii::vfs::LoadGuestU32(base, array + i * 4u);
-        if (Plausible(presentation) &&
-            refii::vfs::LoadGuestU32(base, presentation + kRootInPresentation) == root) {
-            return presentation;
-        }
-    }
-    return FrontEndPresentation(base, root);
-}
-
 }  // namespace
 
 namespace refii::vfs {
-
-void TellText(uint8_t* base, uint32_t element) {
-    if (!Plausible(element) || refii::vfs::LoadGuestU8(base, element + 30u) != 4u) return;
-    const uint32_t holder = refii::vfs::LoadGuestU32(base, element + 4u);
-    if (!Plausible(holder)) return;
-    const uint32_t record = refii::vfs::LoadGuestU32(base, holder);
-    if (!Plausible(record)) return;
-    const uint32_t rep = refii::vfs::LoadGuestU32(base, record + 140u);
-    if (!Plausible(rep)) return;
-    const uint32_t data = refii::vfs::LoadGuestU32(base, rep);
-    const uint32_t length = refii::vfs::LoadGuestU32(base, rep + 4u);
-
-    const uint32_t presentation = PresentationOf(base, element);
-    if (presentation == 0) return;
-    uint32_t root_hash = 0;
-    uint32_t ordinal = 0;
-    if (!OrdinalOf(base, presentation, element, root_hash, ordinal)) return;
-    std::vector<uint16_t> units;
-    if (Plausible(data)) {
-        const uint32_t count = std::min(length, kMaxTextUnits);
-        units.reserve(count);
-        for (uint32_t i = 0; i < count; ++i) {
-            units.push_back(refii::vfs::LoadGuestU16(base, data + i * 2u));
-        }
-    }
-    refii_bridge_told_text_push(presentation, root_hash, ordinal, units.data(),
-                                static_cast<uint32_t>(units.size()));
-}
 
 void TellGotoSlideBegin() { ++t_inside_goto; }
 
@@ -338,10 +266,8 @@ REX_EXTERN(rex_lhGfxElements_EvaluateTracks) {
     --t_inside_tracks;
 }
 
-// The front end's menu dispatch: TU1 0x826DFD58. Its Load Game path stamps blank.tex on every card
-// and each save's portrait (`sub_826E1408`); its dialogs set the Y glyph (`sub_826E40E0`). The
-// front end's presentation is headless, so each stamp is stated where it takes its element
-// (gui_headless_presentation.cpp, THE FRONT END'S TEXTURE STAMPS).
+// The front end's menu dispatch: TU1 0x826DFD58. Its Load Game cards and its dialogs are stated
+// at their own entries (gui_headless_presentation.cpp, StampSaveCard and OpenDialog).
 PPC_EXTERN_FUNC(__imp__rex_lhGui_FrontendRoot_MenuActionDispatch);
 REX_EXTERN(rex_lhGui_FrontendRoot_MenuActionDispatch) {
     __imp__rex_lhGui_FrontendRoot_MenuActionDispatch(ctx, base);

@@ -52,5 +52,9 @@ public class Engine_UiStatedBoxes
 
 	/// <summary>One menu box as its populate stated it: the title, cancelable, the Orb's player card,
 	/// and each row's label (resolved by the receiver) and enabled byte.</summary>
-	public sealed record MenuBox(uint Address, Engine_UiGuiBoxes.MenuBoxModel Model, bool Card);
+	public sealed record MenuBox(uint Address, Engine_UiGuiBoxes.MenuBoxModel Model, bool Card)
+	{
+		/// <summary>The player card's name as its build stated it, null until it does.</summary>
+		public string? GamerName { get; init; }
+	}
 }

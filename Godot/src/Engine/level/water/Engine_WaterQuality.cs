@@ -71,10 +71,10 @@ public static class Engine_WaterQuality
     public static WaterMirrorSpec MirrorFor(WaterQualityTier tier) => tier switch
     {
         WaterQualityTier.Low => new(false, 256, 4, 50f, 4f),
-        WaterQualityTier.Balanced => new(false, 256, 4, 200f, 4f),
-        WaterQualityTier.High => new(true, 256, 3, 225f, 4f),
-        WaterQualityTier.Ultra => new(true, 384, 2, 300f, 3f),
-        _ => new(false, 256, 4, 200f, 4f),
+        WaterQualityTier.Balanced => new(true, 256, 4, 800f, 4f),
+        WaterQualityTier.High => new(true, 320, 3, 1200f, 3.5f),
+        WaterQualityTier.Ultra => new(true, 384, 2, float.PositiveInfinity, 3f),
+        _ => new(true, 256, 4, 800f, 4f),
     };
 
     /// <summary>Returns the linear SSR march step budget for <paramref name="tier"/>.</summary>
@@ -84,10 +84,10 @@ public static class Engine_WaterQuality
         return tier switch
         {
             WaterQualityTier.Low => 0,
-            WaterQualityTier.Balanced => 14,
+            WaterQualityTier.Balanced => 12,
             WaterQualityTier.High => 18,
             WaterQualityTier.Ultra => 24,
-            _ => 14,
+            _ => 12,
         };
     }
 }

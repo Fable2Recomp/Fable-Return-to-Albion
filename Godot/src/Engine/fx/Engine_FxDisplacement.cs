@@ -279,7 +279,7 @@ public partial class Engine_FxDisplacement : Node
         Vector2 v = _host!.GetVisibleRect().Size;
         var size = new Vector2I((int)MathF.Ceiling(v.X), (int)MathF.Ceiling(v.Y));
         if (size.X <= 0 || size.Y <= 0) return;
-        if (_rect is not null && _rect.Size != v)
+        if (_rect is not null && !Refii.AndroidRuntime.AndroidDisplacementRect.Owns(_rect) && _rect.Size != v)
         {
             _rect.Position = Vector2.Zero;
             _rect.Size = v;

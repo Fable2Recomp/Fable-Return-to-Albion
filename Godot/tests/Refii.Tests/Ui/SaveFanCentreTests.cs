@@ -25,12 +25,14 @@ public class SaveFanCentreTests
     public void AShortFanIsCentredWhereTheFullOneIs()
     {
         float full = Mid(0, 6);
-        for (int count = 1; count <= 5; count++)
+        for (int first = 0; first < 6; first++)
         {
-            int first = Engine_FrontEndSaveCards.BaseSlotFor(count) - 1;
-            float offset = Engine_FrontEndSaveCards.ArcCentreOffset(first, count);
-            AssertThat(System.MathF.Abs(Mid(first, count) + offset - full) < 0.001f)
-                .OverrideFailureMessage($"{count} card(s) from slot {first + 1}: offset {offset}").IsTrue();
+            for (int count = 1; first + count <= 6; count++)
+            {
+                float offset = Engine_FrontEndSaveCards.ArcCentreOffset(first, count);
+                AssertThat(System.MathF.Abs(Mid(first, count) + offset - full) < 0.001f)
+                    .OverrideFailureMessage($"{count} card(s) from slot {first + 1}: offset {offset}").IsTrue();
+            }
         }
     }
 

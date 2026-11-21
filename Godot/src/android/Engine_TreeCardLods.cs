@@ -48,64 +48,24 @@ public static class Engine_TreeCardLods
     /// <param name="far">Also the two coarser levels (`tree_card_far_levels`).</param>
     /// <returns>(key, indices) pairs as Godot's `lods` dictionary takes them; empty when the
     /// surface has too few cards for a level to save 30%.</returns>
-    public static List<(float Key, int[] Indices)> Build(ReadOnlySpan<int> indices, int vertexCount, float extent, bool far = false)
+    public static List<(float Key, int[] Indices)> Build(ReadOnlySpan<int> indices, int vertexCount, float extent, bool far = false) =>
+        Build(indices, vertexCount, extent, far, default, CardTriangles);
+
+    /// <summary>
+    /// <see cref="Build(ReadOnlySpan{int}, int, float, bool)"/> with the card size stated, and components
+    /// found across vertices at equal positions when <paramref name="positions"/> is given.
+    /// </summary>
+    /// <param name="positions">The surface's positions, or empty to join by index alone.</param>
+    /// <param name="cardTriangles">The most triangles a component may have and still be dropped.</param>
+    public static List<(float Key, int[] Indices)> Build(
+        ReadOnlySpan<int> indices, int vertexCount, float extent, bool far, ReadOnlySpan<Godot.Vector3> positions, int cardTriangles)
     {
         var levels = new List<(float, int[])>();
         int triangles = indices.Length / 3;
-        if (triangles < 32 || vertexCount <= 0 || !(extent > 0f) || !float.IsFinite(extent))
+        if (triangles < 32 || !(extent > 0f) || !float.IsFinite(extent) ||
+            Places(indices, vertexCount, positions, cardTriangles) is not { } place)
         {
             return levels;
-        }
-
-        var parent = new int[vertexCount];
-        for (int v = 0; v < vertexCount; v++)
-        {
-            parent[v] = v;
-        }
-
-        int Find(int v)
-        {
-            while (parent[v] != v)
-            {
-                parent[v] = parent[parent[v]];
-                v = parent[v];
-            }
-
-            return v;
-        }
-
-        for (int t = 0; t < triangles; t++)
-        {
-            int a = indices[t * 3], b = indices[(t * 3) + 1], c = indices[(t * 3) + 2];
-            if ((uint)a >= (uint)vertexCount || (uint)b >= (uint)vertexCount || (uint)c >= (uint)vertexCount)
-            {
-                return levels;
-            }
-
-            parent[Find(a)] = Find(b);
-            parent[Find(b)] = Find(c);
-        }
-
-        // Per component, by its root vertex: its triangle count and first triangle, which names it stably.
-        var count = new int[vertexCount];
-        var first = new int[vertexCount];
-        var root = new int[triangles];
-        for (int t = 0; t < triangles; t++)
-        {
-            int r = Find(indices[t * 3]);
-            root[t] = r;
-            if (count[r]++ == 0)
-            {
-                first[r] = t;
-            }
-        }
-
-        // A card's fixed place in [0, 1), or -1 for a component always kept.
-        var place = new float[triangles];
-        for (int t = 0; t < triangles; t++)
-        {
-            int r = root[t];
-            place[t] = count[r] <= CardTriangles ? Hash01(first[r]) : -1f;
         }
 
         var level = new int[triangles * 3];
@@ -137,6 +97,111 @@ public static class Engine_TreeCardLods
         return levels;
     }
 
+    /// <summary>
+    /// Each triangle's fixed place in [0, 1) when its component is a card, -1 when it is always kept;
+    /// null for indices outside the vertices.
+    /// </summary>
+    private static float[]? Places(ReadOnlySpan<int> indices, int vertexCount, ReadOnlySpan<Godot.Vector3> positions, int cardTriangles)
+    {
+        int triangles = indices.Length / 3;
+        if (vertexCount <= 0)
+        {
+            return null;
+        }
+
+        var parent = new int[vertexCount];
+        for (int v = 0; v < vertexCount; v++)
+        {
+            parent[v] = v;
+        }
+
+        int Find(int v)
+        {
+            while (parent[v] != v)
+            {
+                parent[v] = parent[parent[v]];
+                v = parent[v];
+            }
+
+            return v;
+        }
+
+        // A trunk's UV seams split it into small index islands; joined by position it is one piece.
+        if (positions.Length == vertexCount)
+        {
+            var at = new Dictionary<Godot.Vector3, int>(vertexCount);
+            for (int v = 0; v < vertexCount; v++)
+            {
+                if (!at.TryAdd(positions[v], v))
+                {
+                    parent[v] = at[positions[v]];
+                }
+            }
+        }
+
+        for (int t = 0; t < triangles; t++)
+        {
+            int a = indices[t * 3], b = indices[(t * 3) + 1], c = indices[(t * 3) + 2];
+            if ((uint)a >= (uint)vertexCount || (uint)b >= (uint)vertexCount || (uint)c >= (uint)vertexCount)
+            {
+                return null;
+            }
+
+            parent[Find(a)] = Find(b);
+            parent[Find(b)] = Find(c);
+        }
+
+        // Per component, by its root vertex: its triangle count and first triangle, which names it stably.
+        var count = new int[vertexCount];
+        var first = new int[vertexCount];
+        var root = new int[triangles];
+        for (int t = 0; t < triangles; t++)
+        {
+            int r = Find(indices[t * 3]);
+            root[t] = r;
+            if (count[r]++ == 0)
+            {
+                first[r] = t;
+            }
+        }
+
+        var place = new float[triangles];
+        for (int t = 0; t < triangles; t++)
+        {
+            int r = root[t];
+            place[t] = count[r] <= cardTriangles ? Hash01(first[r]) : -1f;
+        }
+
+        return place;
+    }
+
+    /// <summary>
+    /// Whether a tree surface is trunk and boughs rather than leaves: at least <see cref="TrunkShare"/>
+    /// of its triangles sit in pieces larger than a leaf cluster, joined by position. Pure.
+    /// </summary>
+    public static bool IsTrunk(ReadOnlySpan<int> indices, int vertexCount, ReadOnlySpan<Godot.Vector3> positions)
+    {
+        if (indices.Length < 3 || positions.Length != vertexCount ||
+            Places(indices, vertexCount, positions, ClusterTriangles) is not { } place)
+        {
+            return false;
+        }
+
+        int solid = 0;
+        foreach (float p in place)
+        {
+            if (p < 0f)
+            {
+                ++solid;
+            }
+        }
+
+        return solid >= place.Length * TrunkShare;
+    }
+
+    /// <summary>The share of a surface's triangles in large pieces that makes it a trunk.</summary>
+    public const float TrunkShare = 0.7f;
+
     /// <summary>A card's fixed place in [0, 1): golden-ratio spacing, so any share keeps an even spread.</summary>
     private static float Hash01(int id) => (float)((id * 0.6180339887498949) % 1.0);
 
@@ -147,6 +212,60 @@ public static class Engine_TreeCardLods
     /// <summary>`tree_card_far_levels`: whether the thinned trees also get an eighth and a sixteenth
     /// of their cards. Off by default; read once, so it applies to models loaded after a relaunch.</summary>
     public static bool FarLevelsEnabled { get; } = ReadFarLevels();
+
+    /// <summary>The refii.toml key of <see cref="ClustersEnabled"/>.</summary>
+    public const string ClusterKey = "tree_cluster_lod";
+
+    /// <summary>The most triangles a leaf cluster may have under <see cref="ClusterKey"/>.</summary>
+    public const int ClusterTriangles = 32;
+
+    /// <summary>
+    /// `tree_cluster_lod`: leaf clusters of up to <see cref="ClusterTriangles"/> triangles thin as
+    /// cards do. Off by default; read once, so it applies to models loaded after a relaunch.
+    /// </summary>
+    /// <remarks>
+    /// Most shipped trees build their crowns from clusters of 8 to 16 triangles, which the card rule
+    /// (<see cref="CardTriangles"/>) never thins: in Oakfield 0.94 of 1.05 million tree triangles in
+    /// view had no coarser level. Components are joined across vertices at equal positions, so a
+    /// trunk's UV islands count as the one piece they are and stay whole.
+    /// </remarks>
+    public static bool ClustersEnabled { get; } = ReadClusters();
+
+    private static bool ReadClusters()
+    {
+        try
+        {
+            return Enabled && Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), ClusterKey, false);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>The refii.toml key of <see cref="TrunksEnabled"/>.</summary>
+    public const string TrunkKey = "tree_trunk_lod";
+
+    /// <summary>
+    /// `tree_trunk_lod`: a tree's trunk and bough surfaces (<see cref="IsTrunk"/>) get generated simpler
+    /// versions, as other scenery does under mesh_auto_lod. Off by default; read once.
+    /// </summary>
+    /// <remarks>A trunk is 300 to 2,000 triangles and ships no coarser level, so every tree in view draws
+    /// it whole: about a third of Oakfield's tree triangles. The levels switch by the shared
+    /// mesh_lod_pixels rule, as the props' do.</remarks>
+    public static bool TrunksEnabled { get; } = ReadTrunks();
+
+    private static bool ReadTrunks()
+    {
+        try
+        {
+            return Refii.Core.Engine_RefiiConfig.Bool(Refii.Core.Engine_RefiiConfig.Read(out _), TrunkKey, false);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 
     private static bool ReadFarLevels()
     {

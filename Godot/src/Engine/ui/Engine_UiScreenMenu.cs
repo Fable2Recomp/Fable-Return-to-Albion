@@ -1193,9 +1193,11 @@ public sealed class Engine_UiScreenMenu
 	/// A MOD'S ROW WITH NO HOST ACTION COMMITS NOTHING. It has no row in the guest's list and no
 	/// guest record behind its (EventType, id): `MenuHighlight` by its name finds nothing, so the
 	/// guest's select or A would act on whichever of its own rows its cursor last held, and an
-	/// identity push hands a screen handler an id whose record lookup fails — the furniture
-	/// upgrade handler ignores that failure (`bl sub_825CC2F0` 0x8299caf4, result overwritten at
-	/// 0x8299cafc) and reads through the unfilled output (`sub_827647F8` 0x82764814).
+	/// identity push hands a screen handler an id whose record lookup fails. A furniture level the
+	/// hero holds no card for: the Page2 filler `sub_8299C710` (disc `sub_828F22B8`) drops
+	/// `sub_825CC2F0`'s answer (`bl` 0x8299CAF4 / 0x828F269C, r3 overwritten by `subf` at
+	/// 0x8299CAFC / 0x828F26A4) and reads through the unfilled card (`sub_827647F8` 0x82764814);
+	/// the upgrade `sub_826B6A18` tests it (`clrlwi r11,r3,24; beq` 0x826B6AF0 / 0x8259BC58).
 	/// </summary>
 	private static bool RefusesModRow(Engine_UiExpandableMenu.Item row, string label)
 	{
@@ -1228,13 +1230,27 @@ public sealed class Engine_UiScreenMenu
 		source.ScreenAction(Engine_UiScreenInput.Select);
 	}
 
-	private static bool RunHostAction(Engine_UiExpandableMenu.Item row, string label)
+	private static bool RunHostAction(Engine_UiExpandableMenu.Item row, string label) =>
+		row.Command is { Length: > 0 } action && RunAction(row, label, action);
+
+	/// <summary>
+	/// The screen's own verb for its rows (<see cref="Engine_UiScreenTemplate.RowAction"/>), the
+	/// row's full id stated in it. False when the screen states none.
+	/// </summary>
+	private bool RunRowAction(Engine_UiExpandableMenu.Item row, string label)
 	{
-		if (row.Command is not { Length: > 0 } action)
+		if (Engine_UiTemplates.Screen(ScreenId)?.RowAction is not { Length: > 0 } verb)
 		{
 			return false;
 		}
 
+		int id = (row.IdHigh << 16) + row.IdLow;
+		return RunAction(row, label, verb.Replace(Engine_UiScreenTemplate.RowIdToken,
+			id.ToString(System.Globalization.CultureInfo.InvariantCulture), System.StringComparison.Ordinal));
+	}
+
+	private static bool RunAction(Engine_UiExpandableMenu.Item row, string label, string action)
+	{
 		Engine_UiCommandResult ran = Engine_UiCommands.Run(action, new Engine_UiCommandContext(
 			Engine_UiCommandList.Screen, Row: row.Name, Player: Engine_UiModMenus.MenuPlayer)
 		{
@@ -1324,7 +1340,7 @@ public sealed class Engine_UiScreenMenu
 				return true;
 			}
 
-			if (RunHostAction(row, label) || RefusesModRow(row, label))
+			if (RunHostAction(row, label) || RefusesModRow(row, label) || RunRowAction(row, label))
 			{
 				return true;
 			}
@@ -1449,7 +1465,7 @@ public sealed class Engine_UiScreenMenu
 		//
 		// It is checked before `Committable` on purpose — a row with a host action needs no
 		// guest identity, which is the whole point of having one.
-		if (RunHostAction(row, label) || RefusesModRow(row, label))
+		if (RunHostAction(row, label) || RefusesModRow(row, label) || RunRowAction(row, label))
 		{
 			return true;
 		}

@@ -74,10 +74,14 @@ bool BackoffEnabled() {
 
 }  // namespace
 
-void MaybeBackOffBeforeGuestYield(uint32_t lr) {
+void MaybeBackOffBeforeGuestYield(uint32_t lr, uint32_t max_sleep_us) {
   if (!BackoffEnabled()) {
     return;
   }
+
+  // A raised ceiling moves the work gap with it, so its own sleep never reads as work.
+  const uint32_t ceiling_us = max_sleep_us > kMaxSleepUs ? max_sleep_us : kMaxSleepUs;
+  const uint64_t work_gap_us = kWorkGapUs + (ceiling_us - kMaxSleepUs);
 
   const uint64_t now_us = NowMicroseconds();
   const uint64_t gap_us = now_us - t_run.last_yield_us;
@@ -86,7 +90,7 @@ void MaybeBackOffBeforeGuestYield(uint32_t lr) {
   // here — the hook cannot see what the guest did in between. Either one restarts the
   // run, so a thread that is genuinely working never escalates.
   const bool same_place = (lr == t_run.last_lr) && t_run.last_yield_us != 0u;
-  const bool spinning = same_place && gap_us <= kWorkGapUs;
+  const bool spinning = same_place && gap_us <= work_gap_us;
   // Saturates rather than wrapping: past the threshold the exact count means nothing,
   // and an unbounded counter would eventually wrap back through the fast path.
   t_run.length = spinning ? (t_run.length < kFastYields ? t_run.length + 1u : kFastYields)
@@ -100,8 +104,8 @@ void MaybeBackOffBeforeGuestYield(uint32_t lr) {
   }
 
   t_run.sleep_us = (t_run.sleep_us == 0u) ? kMinSleepUs : t_run.sleep_us * 2u;
-  if (t_run.sleep_us > kMaxSleepUs) {
-    t_run.sleep_us = kMaxSleepUs;
+  if (t_run.sleep_us > ceiling_us) {
+    t_run.sleep_us = ceiling_us;
   }
 
   // Header-only, not rex::thread::Sleep, DELIBERATELY. This compiles into the payload,

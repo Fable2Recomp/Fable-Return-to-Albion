@@ -28,7 +28,7 @@ namespace Refii.AndroidRuntime;
 /// entity's bake mode is the probe (1) or none (0), never amb3, and under the modern model every mode
 /// but amb3 is the same picture, so the amb3 fetch goes. Two components, the two-sided builds' fade
 /// discard and 56 vertex instructions fewer. Also, where the low-memory tier folds no material flags
-/// (`lite_material_folds_low_ram = "off"`), a character's builds take the flags that split no build
+/// (`lite_material_folds_low_ram = "off"`, no longer the default), a character's builds take the flags that split no build
 /// (FoldScope.Const), since they are builds of their own already.</para>
 /// <para>`android_character_normal_maps` (`full`): `fast` gives characters `lite_normal_maps = "fast"`
 /// (FABLE_LITE_NM_DERIV): the tangent frame from screen derivatives, flat across each triangle, so the

@@ -59,21 +59,6 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// </summary>
 	public const string PortraitName = "screenshot";
 
-	/// <summary>The ordinals of the cards' portrait elements in walk (card) order, at most <see cref="MaxCards"/>.</summary>
-	public static System.Collections.Generic.List<int> PortraitOrdinals(Refii.Ui.Engine_UiScreen screen)
-	{
-		var ordinals = new System.Collections.Generic.List<int>();
-		for (int i = 0; i < screen.Nodes.Length && ordinals.Count < MaxCards; ++i)
-		{
-			if (string.Equals(screen.Nodes[i].Name, PortraitName, System.StringComparison.Ordinal))
-			{
-				ordinals.Add(i);
-			}
-		}
-
-		return ordinals;
-	}
-
 	/// <summary>One card's place in the fan, in the <c>loadgame</c> component's own space.</summary>
 	public readonly struct Pose
 	{
@@ -210,32 +195,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	private readonly List<Save> _saves = new();
 
 	/// <summary>
-	/// Which of the six card slots the first save is drawn on, 1-based — the guest's
-	/// `screen+76`, which is what centres a short list instead of left-aligning it. The guest
-	/// computes it from the count alone at 0x826E0660..0x826E0698, transcribed here:
-	///
-	/// <code>
-	/// 826e0670  cmplwi cr6, r11, 2       ; r11 = (screen+88 - screen+84) >> 2
-	/// 826e0674  beq    cr6, -> li r11, 3
-	/// 826e0678  ble    cr6, -> stw r24   ; count &lt;= 1
-	/// 826e067c  cmplwi cr6, r11, 4
-	/// 826e0680  bgt    cr6, -> stw r24   ; count &gt; 4
-	/// 826e0684  li     r11, 2            ; count is 3 or 4
-	/// </code>
-	///
-	/// Computed rather than read so the panel lays itself out without a guest; the guest's own
-	/// number is carried alongside so a disagreement can be reported.
+	/// The slot the first save is on, 1-based — the guest's own, which centres a short list: the
+	/// load fan's StampSaveCard r6 (`sub_826E1408`, r6 = index + root+0x4C), the co-op picker's
+	/// `+396`. Follows <see cref="SetSaves"/>.
 	/// </summary>
-	public static int BaseSlotFor(int count) => count switch
-	{
-		2 => 3,
-		3 or 4 => 2,
-		// One save never reaches the carousel (that path commits directly at 0x826E0470); five
-		// or six must start at card 1 or the last would index a seventh card.
-		_ => 1,
-	};
-
-	/// <summary>The slot the first save is on, 1-based. Follows <see cref="SetSaves"/>.</summary>
 	public int BaseSlot { get; private set; } = 1;
 
 	/// <summary>The card slot a save is drawn on, 0-based into <see cref="Fan"/>.</summary>
@@ -474,10 +437,10 @@ public partial class Engine_FrontEndSaveCards : Node3D
 	/// Puts a list of saves on the fan and selects the first. More than six is truncated rather
 	/// than refused, and <see cref="Describe"/> says so — the guest's write path returns 0 once
 	/// six exist, so a longer list means the caller's storage query disagrees with its cap.
-	/// <paramref name="baseSlot"/> is the guest's own first card where it states one: the co-op
+	/// <paramref name="baseSlot"/> is the guest's own first card (<see cref="BaseSlot"/>): the co-op
 	/// picker centres even a single save (`sub_8243B070`: one or two saves start at card 3).
 	/// </summary>
-	public void SetSaves(IReadOnlyList<Save> saves, int? baseSlot = null)
+	public void SetSaves(IReadOnlyList<Save> saves, int baseSlot)
 	{
 		_saves.Clear();
 		for (int i = 0; i < saves.Count && i < MaxCards; i++)
@@ -485,7 +448,7 @@ public partial class Engine_FrontEndSaveCards : Node3D
 			_saves.Add(saves[i]);
 		}
 
-		BaseSlot = baseSlot is >= 1 and <= MaxCards ? baseSlot.Value : BaseSlotFor(_saves.Count);
+		BaseSlot = System.Math.Clamp(baseSlot, 1, MaxCards);
 		Cursor = 0;
 		_lockLeft = _lockRight = 0.0;
 		ApplyPortraits();

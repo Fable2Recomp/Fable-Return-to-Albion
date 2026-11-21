@@ -3073,6 +3073,7 @@ public partial class GameDebugServer : Node
 						["levelsDropped"] = Refii.Models.Engine_MdlMesh.LodLevelsDropped,
 					},
 					["meshCompression"] = Refii.AndroidRuntime.AndroidMeshCompression.Stats(),
+					["displacement"] = Refii.AndroidRuntime.AndroidDisplacementGate.Describe((GameEntities.Current?.GetViewport() ?? GetViewport())?.GetCamera3D()),
 					["fps"] = Performance.GetMonitor(Performance.Monitor.TimeFps),
 					// The frames that froze, each with the phases in it. Per-phase peaks decay independently,
 					// so two peaking in one report can be seconds apart; this is one frame, whole.

@@ -57,13 +57,18 @@ public static class Engine_LevelShadowMaps
 
 	/// <summary>
 	/// Automatically selects the optimal number of static fixture lights packed per shadow map
-	/// slice for a given <paramref name="atlasResolution"/> preset (2K -> 36 [6x6], 4K/8K -> 64 [8x8]).
+	/// slice for a given <paramref name="atlasResolution"/> preset (2K -> 36 [6x6], 4K -> 64 [8x8], 8K -> 121 [11x11]).
 	/// </summary>
 	public static int GetLightsPerMapForResolution(int atlasResolution)
 	{
+		if (atlasResolution >= 8192)
+		{
+			return 121; // 11x11 grid: 744x744 per light at 8K (halves slice count & VRAM vs 8x8 while keeping >2.1x linear res over 2K)
+		}
+
 		if (atlasResolution >= 4096)
 		{
-			return 64; // 8x8 grid: 512x512 per light at 4K, 1024x1024 per light at 8K
+			return 64; // 8x8 grid: 512x512 per light at 4K
 		}
 
 		if (atlasResolution >= 2048)
@@ -322,7 +327,23 @@ public static class Engine_LevelShadowMaps
 		int texelBytes = sliceCount * container.AtlasSize * container.AtlasSize * sizeof(ushort);
 		int totalBytes = 32 + lightCount * 24 + texelBytes;
 		byte[] buffer = new byte[totalBytes];
-		Span<byte> span = buffer.AsSpan();
+		using var ms = new MemoryStream(buffer, writable: true);
+		WriteToStream(ms, container);
+		return buffer;
+	}
+
+	/// <summary>
+	/// Streams a <see cref="StaticShadowMapContainer"/> in compact <c>.shadows</c> Version 2 format directly
+	/// to <paramref name="stream"/> without allocating a duplicate multi-megabyte Large Object Heap byte array.
+	/// </summary>
+	public static void WriteToStream(Stream stream, StaticShadowMapContainer container)
+	{
+		int lightCount = container.LightRects.Count;
+		int sliceCount = Math.Max(1, container.SliceCount);
+		int texelCount = sliceCount * container.AtlasSize * container.AtlasSize;
+		int headerAndTableBytes = 32 + lightCount * 24;
+		byte[] headerBuffer = new byte[headerAndTableBytes];
+		Span<byte> span = headerBuffer.AsSpan();
 
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(0, 4), Magic);
 		BinaryPrimitives.WriteUInt32LittleEndian(span.Slice(4, 4), Version);
@@ -348,9 +369,56 @@ public static class Engine_LevelShadowMaps
 			offset += 24;
 		}
 
-		ReadOnlySpan<byte> rawTexels = MemoryMarshal.AsBytes(container.Texels.AsSpan());
-		rawTexels.CopyTo(span.Slice(offset, texelBytes));
-		return buffer;
+		stream.Write(span);
+		ReadOnlySpan<ushort> texelSpan = container.Texels.AsSpan(0, Math.Min(container.Texels.Length, texelCount));
+		ReadOnlySpan<byte> rawTexels = MemoryMarshal.AsBytes(texelSpan);
+		const int chunkSize = 256 * 1024;
+		int pos = 0;
+		while (pos < rawTexels.Length)
+		{
+			int len = Math.Min(chunkSize, rawTexels.Length - pos);
+			stream.Write(rawTexels.Slice(pos, len));
+			pos += len;
+		}
+	}
+
+	/// <summary>
+	/// Streams <paramref name="container"/> to a temporary sibling file and atomically renames it onto
+	/// <paramref name="diskPath"/> so readers never observe truncated <c>.shadows</c> files and no LOH copy is allocated.
+	/// </summary>
+	public static void WriteToFileAtomic(string diskPath, StaticShadowMapContainer container)
+	{
+		string? dir = Path.GetDirectoryName(diskPath);
+		if (!string.IsNullOrEmpty(dir))
+		{
+			Directory.CreateDirectory(dir);
+		}
+
+		string tempPath = $"{diskPath}.{Guid.NewGuid():N}.tmp";
+		try
+		{
+			using (var fs = new FileStream(tempPath, FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, bufferSize: 65536))
+			{
+				WriteToStream(fs, container);
+			}
+
+			File.Move(tempPath, diskPath, overwrite: true);
+		}
+		catch
+		{
+			try
+			{
+				if (File.Exists(tempPath))
+				{
+					File.Delete(tempPath);
+				}
+			}
+			catch
+			{
+			}
+
+			throw;
+		}
 	}
 
 	/// <summary>
@@ -876,15 +944,50 @@ public static class Engine_LevelShadowMaps
 
 	private static void BindAtlasTexture(StaticShadowMapContainer? container)
 	{
-		long uploadBytes = container is null
-			? 4096L
-			: System.Math.Max(4096L, (long)System.Math.Max(1, container.SliceCount) * container.AtlasSize * container.AtlasSize * sizeof(ushort));
-		Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () => BindAtlasTextureOnMainThread(container));
+		if (container is null)
+		{
+			Refii.Core.Engine_ServerSyncs.RunGpuUpload(4096L, () => BindAtlasTextureOnMainThread(null, null));
+			return;
+		}
+
+		int sliceCount = Math.Max(1, container.SliceCount);
+		int sliceTexelCount = container.AtlasSize * container.AtlasSize;
+		int sliceByteCount = sliceTexelCount * sizeof(ushort);
+		if (container.Texels.Length < sliceCount * sliceTexelCount)
+		{
+			return;
+		}
+
+		// Construct temporary Image slices on the calling worker thread before marshaling the final
+		// Texture2DArray upload onto the main thread, minimizing main-thread time.
+		var preparedSlices = new Image[sliceCount];
+		long uploadBytes = System.Math.Max(4096L, (long)sliceCount * sliceByteCount);
+		try
+		{
+			byte[] rawBytes = new byte[sliceByteCount];
+			for (int s = 0; s < sliceCount; s++)
+			{
+				MemoryMarshal.AsBytes(container.Texels.AsSpan(s * sliceTexelCount, sliceTexelCount)).CopyTo(rawBytes);
+				preparedSlices[s] = Image.CreateFromData(
+					container.AtlasSize, container.AtlasSize, false, Image.Format.Rh, rawBytes);
+			}
+
+			// Free the CPU half-float array (up to 256+ MB at 4K) before waiting on main-thread GPU upload.
+			container.Texels = Array.Empty<ushort>();
+			Refii.Core.Engine_ServerSyncs.RunGpuUpload(uploadBytes, () => BindAtlasTextureOnMainThread(container, preparedSlices));
+		}
+		finally
+		{
+			for (int i = 0; i < preparedSlices.Length; i++)
+			{
+				preparedSlices[i]?.Dispose();
+			}
+		}
 	}
 
-	private static void BindAtlasTextureOnMainThread(StaticShadowMapContainer? container)
+	private static void BindAtlasTextureOnMainThread(StaticShadowMapContainer? container, Image[]? preparedSlices)
 	{
-		if (container is null)
+		if (container is null || preparedSlices is null || preparedSlices.Length == 0)
 		{
 			if (_fallbackTextureArray is null || !GodotObject.IsInstanceValid(_fallbackTextureArray))
 			{
@@ -906,42 +1009,22 @@ public static class Engine_LevelShadowMaps
 			return;
 		}
 
-		int sliceCount = Math.Max(1, container.SliceCount);
-		int sliceTexelCount = container.AtlasSize * container.AtlasSize;
-		int sliceByteCount = sliceTexelCount * sizeof(ushort);
-		if (container.Texels.Length < sliceCount * sliceTexelCount)
-		{
-			return;
-		}
-
 		var sliceImages = new Godot.Collections.Array<Image>();
 		var textureArray = new Texture2DArray();
 		Error err;
 		try
 		{
-			byte[] rawBytes = new byte[sliceByteCount];
-			for (int s = 0; s < sliceCount; s++)
+			for (int s = 0; s < preparedSlices.Length; s++)
 			{
-				MemoryMarshal.AsBytes(container.Texels.AsSpan(s * sliceTexelCount, sliceTexelCount)).CopyTo(rawBytes);
-				var img = Image.CreateFromData(
-					container.AtlasSize, container.AtlasSize, false, Image.Format.Rh, rawBytes);
-				sliceImages.Add(img);
+				sliceImages.Add(preparedSlices[s]);
 			}
 
 			err = textureArray.CreateFromImages(sliceImages);
 		}
 		finally
 		{
-			for (int i = 0; i < sliceImages.Count; i++)
-			{
-				sliceImages[i]?.Dispose();
-			}
-
 			sliceImages.Clear();
 		}
-
-		// Free the CPU half-float array (up to 256+ MB at 4K) now that slices are on the GPU.
-		container.Texels = Array.Empty<ushort>();
 
 		if (err == Error.Ok)
 		{
@@ -952,7 +1035,7 @@ public static class Engine_LevelShadowMaps
 		else
 		{
 			textureArray.Dispose();
-			GD.PrintErr($"[shadow-map] failed to create Texture2DArray from {sliceCount} slices: {err}");
+			GD.PrintErr($"[shadow-map] failed to create Texture2DArray from {preparedSlices.Length} slices: {err}");
 		}
 	}
 
@@ -1019,13 +1102,24 @@ public static class Engine_LevelShadowMaps
 
 	public sealed class BvhTree
 	{
+		/// <summary>Subtree presence bit: at least one descendant triangle carries <see cref="BvhTriangle.FlagShadowCaster"/>.</summary>
+		public const uint SubtreeHasShadowCaster = 1u;
+
+		/// <summary>Subtree presence bit: at least one descendant triangle carries both <see cref="BvhTriangle.FlagAoOccluder"/> and <see cref="BvhTriangle.FlagTerrain"/>.</summary>
+		public const uint SubtreeHasTerrainAo = 2u;
+
+		/// <summary>Subtree presence bit: at least one non-terrain descendant triangle carries <see cref="BvhTriangle.FlagAoOccluder"/>.</summary>
+		public const uint SubtreeHasPropAo = 4u;
+
 		private struct Node
 		{
 			public Vector3 Min;
 			public Vector3 Max;
 			public int LeftOrFirst;
-			public int Count; // > 0 for leaf, 0 for internal node (Right = LeftOrFirst + 1)
+			public int Count; // > 0 for leaf (1..4), <= 0 for internal node (-subtreeMask; Right = LeftOrFirst + 1)
 		}
+
+		private readonly record struct SubtreeSummary(uint Mask, bool HasProps, Vector3 PropMin, Vector3 PropMax);
 
 		private readonly BvhTriangle[] _triangles;
 		private Node[] _nodes;
@@ -1035,6 +1129,28 @@ public static class Engine_LevelShadowMaps
 		public int NodeCount => _nodeCount;
 		public Vector3 RootMin => _nodeCount > 0 ? _nodes[0].Min : Vector3.Zero;
 		public Vector3 RootMax => _nodeCount > 0 ? _nodes[0].Max : Vector3.Zero;
+
+		/// <summary>Whether the tree contains at least one non-terrain triangle (<c>(Flags &amp; FlagTerrain) == 0</c>).</summary>
+		public bool HasPropBounds { get; }
+
+		/// <summary>Minimum world-space AABB corner across all non-terrain triangles in this BVH.</summary>
+		public Vector3 PropMin { get; }
+
+		/// <summary>Maximum world-space AABB corner across all non-terrain triangles in this BVH.</summary>
+		public Vector3 PropMax { get; }
+
+		/// <summary>Maps a triangle's <see cref="BvhTriangle.Flags"/> to its subtree presence bitmask (<c>1u | 2u | 4u</c>).</summary>
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		public static uint SubtreeBitForTriangleFlags(uint triFlags)
+		{
+			uint mask = (triFlags & BvhTriangle.FlagShadowCaster) != 0u ? SubtreeHasShadowCaster : 0u;
+			if ((triFlags & BvhTriangle.FlagAoOccluder) != 0u)
+			{
+				mask |= (triFlags & BvhTriangle.FlagTerrain) != 0u ? SubtreeHasTerrainAo : SubtreeHasPropAo;
+			}
+
+			return mask;
+		}
 
 		/// <summary>Bytes of the GPU node buffer: 32 a node (min, first-or-left, max, count).</summary>
 		public int GpuNodeBytes => _nodeCount > 0 && _triangles.Length > 0 ? _nodeCount * 32 : 32;
@@ -1133,7 +1249,10 @@ public static class Engine_LevelShadowMaps
 
 			_nodes = new Node[Math.Max(1, _triangles.Length * 2)];
 			_nodeCount = 1;
-			BuildRecursive(0, 0, _triangles.Length);
+			SubtreeSummary rootSummary = BuildRecursive(0, 0, _triangles.Length, 0);
+			HasPropBounds = rootSummary.HasProps;
+			PropMin = rootSummary.HasProps ? rootSummary.PropMin : Vector3.Zero;
+			PropMax = rootSummary.HasProps ? rootSummary.PropMax : Vector3.Zero;
 
 			// The build reserves the worst case, two nodes a triangle; give back what it did not use.
 			if (_nodeCount < _nodes.Length)
@@ -1142,7 +1261,44 @@ public static class Engine_LevelShadowMaps
 			}
 		}
 
-		private void BuildRecursive(int nodeIdx, int start, int count)
+		private SubtreeSummary MakeLeaf(int nodeIdx, int start, int count)
+		{
+			_nodes[nodeIdx].LeftOrFirst = start;
+			_nodes[nodeIdx].Count = count;
+
+			uint mask = 0u;
+			bool hasProps = false;
+			Vector3 pMin = new(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+			Vector3 pMax = new(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+			int end = start + count;
+			for (int i = start; i < end; i++)
+			{
+				ref readonly BvhTriangle tri = ref _triangles[i];
+				mask |= SubtreeBitForTriangleFlags(tri.Flags);
+				if ((tri.Flags & BvhTriangle.FlagTerrain) == 0u)
+				{
+					hasProps = true;
+					pMin = pMin.Min(tri.Min);
+					pMax = pMax.Max(tri.Max);
+				}
+			}
+
+			return new SubtreeSummary(mask, hasProps, pMin, pMax);
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		private static float HalfSurfaceArea(Vector3 bMin, Vector3 bMax)
+		{
+			Vector3 d = bMax - bMin;
+			if (d.X < 0.0f || d.Y < 0.0f || d.Z < 0.0f)
+			{
+				return 0.0f;
+			}
+
+			return (d.X * d.Y) + (d.Y * d.Z) + (d.Z * d.X);
+		}
+
+		private SubtreeSummary BuildRecursive(int nodeIdx, int start, int count, int depth)
 		{
 			Vector3 bMin = new(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
 			Vector3 bMax = new(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
@@ -1162,39 +1318,150 @@ public static class Engine_LevelShadowMaps
 			_nodes[nodeIdx].Min = bMin;
 			_nodes[nodeIdx].Max = bMax;
 
-			if (count <= 4)
+			if (count <= 4 || depth >= 30)
 			{
-				_nodes[nodeIdx].LeftOrFirst = start;
-				_nodes[nodeIdx].Count = count;
-				return;
+				return MakeLeaf(nodeIdx, start, count);
 			}
 
 			Vector3 extent = cMax - cMin;
-			int axis = 0;
+			float maxExtent = MathF.Max(extent.X, MathF.Max(extent.Y, extent.Z));
+			if (maxExtent <= 1e-6f)
+			{
+				if (count <= 8)
+				{
+					return MakeLeaf(nodeIdx, start, count);
+				}
+
+				int halfMid = start + (count >> 1);
+				return SplitAtMid(nodeIdx, start, end, count, depth, halfMid);
+			}
+
+			int bestAxis = 0;
 			if (extent.Y > extent.X && extent.Y >= extent.Z)
 			{
-				axis = 1;
+				bestAxis = 1;
 			}
 			else if (extent.Z > extent.X && extent.Z >= extent.Y)
 			{
-				axis = 2;
+				bestAxis = 2;
 			}
 
-			float splitPos = axis == 0
+			float bestSplitPos = bestAxis == 0
 				? (cMin.X + cMax.X) * 0.5f
-				: axis == 1
+				: bestAxis == 1
 					? (cMin.Y + cMax.Y) * 0.5f
 					: (cMin.Z + cMax.Z) * 0.5f;
+
+			// 8-bin Surface Area Heuristic (SAH) across active centroid axes to isolate large architectural/terrain
+			// triangles from dense prop clusters, cutting GPU shadow and AO ray-node intersections by ~2-3x.
+			if (count >= 10)
+			{
+				const int Bins = 8;
+				Span<Vector3> binMin = stackalloc Vector3[Bins];
+				Span<Vector3> binMax = stackalloc Vector3[Bins];
+				Span<int> binCount = stackalloc int[Bins];
+				Span<float> leftArea = stackalloc float[Bins - 1];
+				Span<int> leftSum = stackalloc int[Bins - 1];
+
+				float bestSahCost = float.PositiveInfinity;
+				Vector3 posInf = new(float.PositiveInfinity, float.PositiveInfinity, float.PositiveInfinity);
+				Vector3 negInf = new(float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
+
+				for (int candAxis = 0; candAxis < 3; candAxis++)
+				{
+					float axisExtent = candAxis == 0 ? extent.X : candAxis == 1 ? extent.Y : extent.Z;
+					if (axisExtent < maxExtent * 0.35f || axisExtent <= 1e-5f)
+					{
+						continue;
+					}
+
+					float axisMin = candAxis == 0 ? cMin.X : candAxis == 1 ? cMin.Y : cMin.Z;
+					float scale = Bins / axisExtent;
+
+					for (int b = 0; b < Bins; b++)
+					{
+						binMin[b] = posInf;
+						binMax[b] = negInf;
+						binCount[b] = 0;
+					}
+
+					for (int i = start; i < end; i++)
+					{
+						ref readonly BvhTriangle tri = ref _triangles[i];
+						float c = candAxis == 0 ? tri.Centroid.X : candAxis == 1 ? tri.Centroid.Y : tri.Centroid.Z;
+						int bin = (int)((c - axisMin) * scale);
+						if (bin < 0) bin = 0;
+						else if (bin >= Bins) bin = Bins - 1;
+
+						binCount[bin]++;
+						binMin[bin] = binMin[bin].Min(tri.Min);
+						binMax[bin] = binMax[bin].Max(tri.Max);
+					}
+
+					Vector3 curLMin = posInf;
+					Vector3 curLMax = negInf;
+					int curLCount = 0;
+					for (int s = 0; s < Bins - 1; s++)
+					{
+						if (binCount[s] > 0)
+						{
+							curLCount += binCount[s];
+							curLMin = curLMin.Min(binMin[s]);
+							curLMax = curLMax.Max(binMax[s]);
+						}
+
+						leftSum[s] = curLCount;
+						leftArea[s] = curLCount > 0 ? HalfSurfaceArea(curLMin, curLMax) : 0.0f;
+					}
+
+					Vector3 curRMin = posInf;
+					Vector3 curRMax = negInf;
+					int curRCount = 0;
+					for (int s = Bins - 2; s >= 0; s--)
+					{
+						int rBin = s + 1;
+						if (binCount[rBin] > 0)
+						{
+							curRCount += binCount[rBin];
+							curRMin = curRMin.Min(binMin[rBin]);
+							curRMax = curRMax.Max(binMax[rBin]);
+						}
+
+						int lCount = leftSum[s];
+						if (lCount > 0 && curRCount > 0)
+						{
+							float rArea = HalfSurfaceArea(curRMin, curRMax);
+							float cost = (leftArea[s] * lCount) + (rArea * curRCount);
+							if (cost < bestSahCost)
+							{
+								bestSahCost = cost;
+								bestAxis = candAxis;
+								bestSplitPos = axisMin + ((s + 1) * (axisExtent * (1.0f / Bins)));
+							}
+						}
+					}
+				}
+
+				if (count <= 6)
+				{
+					float parentArea = MathF.Max(HalfSurfaceArea(bMin, bMax), 1e-8f);
+					float leafCost = parentArea * count;
+					if (bestSahCost >= leafCost * 0.95f)
+					{
+						return MakeLeaf(nodeIdx, start, count);
+					}
+				}
+			}
 
 			int mid = start;
 			for (int i = start; i < end; i++)
 			{
-				float c = axis == 0
+				float c = bestAxis == 0
 					? _triangles[i].Centroid.X
-					: axis == 1
+					: bestAxis == 1
 						? _triangles[i].Centroid.Y
 						: _triangles[i].Centroid.Z;
-				if (c < splitPos)
+				if (c < bestSplitPos)
 				{
 					(_triangles[i], _triangles[mid]) = (_triangles[mid], _triangles[i]);
 					mid++;
@@ -1206,20 +1473,238 @@ public static class Engine_LevelShadowMaps
 				mid = start + (count >> 1);
 			}
 
-			int leftIdx = _nodeCount;
-			_nodeCount += 2;
-			if (_nodeCount > _nodes.Length)
+			return SplitAtMid(nodeIdx, start, end, count, depth, mid);
+		}
+
+		private SubtreeSummary SplitAtMid(int nodeIdx, int start, int end, int count, int depth, int mid)
+		{
+			int leftIdx = System.Threading.Interlocked.Add(ref _nodeCount, 2) - 2;
+			if (leftIdx + 2 > _nodes.Length)
 			{
-				_nodes[nodeIdx].LeftOrFirst = start;
-				_nodes[nodeIdx].Count = count;
-				return;
+				System.Threading.Interlocked.Add(ref _nodeCount, -2);
+				return MakeLeaf(nodeIdx, start, count);
 			}
 
-			_nodes[nodeIdx].LeftOrFirst = leftIdx;
-			_nodes[nodeIdx].Count = 0;
+			SubtreeSummary leftSummary = default;
+			SubtreeSummary rightSummary = default;
+			if (count >= 32768 && depth < 4 && System.Environment.ProcessorCount > 2)
+			{
+				Parallel.Invoke(
+					() => leftSummary = BuildRecursive(leftIdx, start, mid - start, depth + 1),
+					() => rightSummary = BuildRecursive(leftIdx + 1, mid, end - mid, depth + 1));
+			}
+			else
+			{
+				leftSummary = BuildRecursive(leftIdx, start, mid - start, depth + 1);
+				rightSummary = BuildRecursive(leftIdx + 1, mid, end - mid, depth + 1);
+			}
 
-			BuildRecursive(leftIdx, start, mid - start);
-			BuildRecursive(leftIdx + 1, mid, end - mid);
+			uint combinedMask = leftSummary.Mask | rightSummary.Mask;
+			_nodes[nodeIdx].LeftOrFirst = leftIdx;
+			_nodes[nodeIdx].Count = -(int)combinedMask;
+
+			bool hasProps = leftSummary.HasProps || rightSummary.HasProps;
+			Vector3 pMin = leftSummary.HasProps && rightSummary.HasProps
+				? leftSummary.PropMin.Min(rightSummary.PropMin)
+				: leftSummary.HasProps ? leftSummary.PropMin : rightSummary.PropMin;
+			Vector3 pMax = leftSummary.HasProps && rightSummary.HasProps
+				? leftSummary.PropMax.Max(rightSummary.PropMax)
+				: leftSummary.HasProps ? leftSummary.PropMax : rightSummary.PropMax;
+			return new SubtreeSummary(combinedMask, hasProps, pMin, pMax);
+		}
+
+		/// <summary>
+		/// Builds a compact cropped SAH <see cref="BvhTree"/> containing only AO-participating triangles
+		/// (<c>FlagAoOccluder | FlagTerrain</c>) whose XZ bounds overlap the cropped AO rectangle expanded by
+		/// <paramref name="margin"/> meters. Returns <see langword="this"/> when pruning saves fewer than 15% of triangles.
+		/// </summary>
+		public BvhTree BuildCroppedAoBvh(
+			float cropOriginLocalX,
+			float cropOriginLocalZ,
+			float cropSpanX,
+			float cropSpanZ,
+			float margin)
+		{
+			if (_triangles.Length < 4096)
+			{
+				return this;
+			}
+
+			// World X is mirrored (-localX), so local [origin .. origin + span] maps to world [-(origin + span) .. -origin].
+			float minWX = -(cropOriginLocalX + cropSpanX) - margin;
+			float maxWX = -cropOriginLocalX + margin;
+			float minWZ = cropOriginLocalZ - margin;
+			float maxWZ = cropOriginLocalZ + cropSpanZ + margin;
+			const uint aoMask = BvhTriangle.FlagAoOccluder | BvhTriangle.FlagTerrain;
+
+			var kept = new List<BvhTriangle>(_triangles.Length / 2);
+			for (int i = 0; i < _triangles.Length; i++)
+			{
+				ref readonly BvhTriangle tri = ref _triangles[i];
+				if ((tri.Flags & aoMask) == 0u)
+				{
+					continue;
+				}
+
+				if (tri.Max.X < minWX || tri.Min.X > maxWX || tri.Max.Z < minWZ || tri.Min.Z > maxWZ)
+				{
+					continue;
+				}
+
+				kept.Add(tri);
+			}
+
+			if (kept.Count == 0 || kept.Count > (_triangles.Length * 85) / 100)
+			{
+				return this;
+			}
+
+			return new BvhTree(kept.ToArray());
+		}
+
+		/// <summary>
+		/// Precomputes a <paramref name="gridRes"/>x<paramref name="gridRes"/> 2D XZ lookup table of
+		/// <c>(aoSubtreeRoot, propColSubtreeRoot)</c> pairs over the cropped AO rectangle so the GPU compute
+		/// shader never performs global top-down <c>find_local_root</c> walks per texel.
+		/// </summary>
+		public int[] BuildXzSubtreeGrid(
+			float cropOriginLocalX,
+			float cropOriginLocalZ,
+			float cropSpanX,
+			float cropSpanZ,
+			float aoRadius,
+			int gridRes = 256)
+		{
+			int res = Math.Clamp(gridRes, 8, 512);
+			var grid = new int[res * res * 2];
+			if (_triangles.Length == 0 || _nodeCount <= 0)
+			{
+				Array.Fill(grid, -1);
+				return grid;
+			}
+
+			float minY = RootMin.Y - 1.0f;
+			float maxY = RootMax.Y + 1.0f;
+			float cellSpanX = MathF.Max(cropSpanX, 1e-4f) / res;
+			float cellSpanZ = MathF.Max(cropSpanZ, 1e-4f) / res;
+			float aoPad = MathF.Max(0.1f, aoRadius + 0.06f);
+
+			Parallel.For(0, res, gz =>
+			{
+				float lz0 = cropOriginLocalZ + (gz * cellSpanZ);
+				float lz1 = lz0 + cellSpanZ;
+				int rowBase = gz * res * 2;
+				for (int gx = 0; gx < res; gx++)
+				{
+					float lx0 = cropOriginLocalX + (gx * cellSpanX);
+					float lx1 = lx0 + cellSpanX;
+					float wx0 = -lx1;
+					float wx1 = -lx0;
+
+					int aoRoot = FindLocalSubtreeRoot(
+						new Vector3(wx0 - aoPad, minY, lz0 - aoPad),
+						new Vector3(wx1 + aoPad, maxY, lz1 + aoPad),
+						SubtreeHasPropAo | SubtreeHasTerrainAo);
+					int colRoot = aoRoot >= 0
+						? FindLocalSubtreeRoot(
+							new Vector3(wx0 - 0.04f, minY, lz0 - 0.04f),
+							new Vector3(wx1 + 0.04f, maxY, lz1 + 0.04f),
+							SubtreeHasPropAo)
+						: -1;
+
+					int cellIdx = rowBase + (gx * 2);
+					grid[cellIdx] = aoRoot;
+					grid[cellIdx + 1] = colRoot;
+				}
+			});
+
+			return grid;
+		}
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		private static bool OverlapsAabb(in Node node, Vector3 boxMin, Vector3 boxMax) =>
+			node.Max.X >= boxMin.X && node.Min.X <= boxMax.X &&
+			node.Max.Y >= boxMin.Y && node.Min.Y <= boxMax.Y &&
+			node.Max.Z >= boxMin.Z && node.Min.Z <= boxMax.Z;
+
+		[MethodImpl(MethodImplOptions.AggressiveInlining)]
+		private bool NodeMatchesSubtreeMask(in Node node, uint requiredSubtreeMask)
+		{
+			if (requiredSubtreeMask == 0u)
+			{
+				return true;
+			}
+
+			if (node.Count <= 0)
+			{
+				return ((uint)(-node.Count) & requiredSubtreeMask) != 0u;
+			}
+
+			int end = node.LeftOrFirst + node.Count;
+			for (int i = node.LeftOrFirst; i < end; i++)
+			{
+				if ((SubtreeBitForTriangleFlags(_triangles[i].Flags) & requiredSubtreeMask) != 0u)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		/// <summary>
+		/// Descends from the root while at most one child overlaps <c>[boxMin, boxMax]</c> and carries
+		/// <paramref name="requiredSubtreeMask"/>. Returns <c>-1</c> if no matching triangles overlap the box,
+		/// or the deepest single enclosing node index (<c>&gt;= 0</c>) from which all bounded rays can start.
+		/// </summary>
+		public int FindLocalSubtreeRoot(Vector3 boxMin, Vector3 boxMax, uint requiredSubtreeMask = 0u)
+		{
+			if (_triangles.Length == 0 || _nodeCount <= 0)
+			{
+				return -1;
+			}
+
+			if (!OverlapsAabb(in _nodes[0], boxMin, boxMax) || !NodeMatchesSubtreeMask(in _nodes[0], requiredSubtreeMask))
+			{
+				return -1;
+			}
+
+			int cur = 0;
+			for (int step = 0; step < 64; step++)
+			{
+				ref readonly Node node = ref _nodes[cur];
+				if (node.Count > 0)
+				{
+					return cur;
+				}
+
+				int leftIdx = node.LeftOrFirst;
+				int rightIdx = leftIdx + 1;
+				bool hitL = OverlapsAabb(in _nodes[leftIdx], boxMin, boxMax) &&
+				            NodeMatchesSubtreeMask(in _nodes[leftIdx], requiredSubtreeMask);
+				bool hitR = OverlapsAabb(in _nodes[rightIdx], boxMin, boxMax) &&
+				            NodeMatchesSubtreeMask(in _nodes[rightIdx], requiredSubtreeMask);
+				if (hitL && hitR)
+				{
+					return cur;
+				}
+
+				if (hitL)
+				{
+					cur = leftIdx;
+					continue;
+				}
+
+				if (hitR)
+				{
+					cur = rightIdx;
+					continue;
+				}
+
+				return -1;
+			}
+
+			return cur;
 		}
 
 		/// <summary>
@@ -1277,7 +1762,8 @@ public static class Engine_LevelShadowMaps
 		/// <summary>
 		/// Traces a ray from <paramref name="origin"/> along unit <paramref name="dir"/> over
 		/// [tMin, tMax] and returns the closest hit distance and geometric surface normal for triangles
-		/// satisfying <c>(tri.Flags &amp; flagMask) == flagExpected</c>.
+		/// satisfying <c>(tri.Flags &amp; flagMask) == flagExpected</c>, optionally starting at a narrowed
+		/// <paramref name="startNode"/> and pruning internal nodes with <paramref name="requiredSubtreeMask"/>.
 		/// </summary>
 		[MethodImpl(MethodImplOptions.AggressiveInlining)]
 		public bool TraceClosestHit(
@@ -1288,11 +1774,13 @@ public static class Engine_LevelShadowMaps
 			out float hitDist,
 			out Vector3 hitNormal,
 			uint flagMask = BvhTriangle.FlagShadowCaster,
-			uint flagExpected = BvhTriangle.FlagShadowCaster)
+			uint flagExpected = BvhTriangle.FlagShadowCaster,
+			int startNode = 0,
+			uint requiredSubtreeMask = 0u)
 		{
 			hitDist = tMax;
 			hitNormal = Vector3.Up;
-			if (_triangles.Length == 0 || _nodeCount <= 0)
+			if (_triangles.Length == 0 || _nodeCount <= 0 || startNode < 0 || startNode >= _nodeCount)
 			{
 				return false;
 			}
@@ -1301,7 +1789,7 @@ public static class Engine_LevelShadowMaps
 			float invY = MathF.Abs(dir.Y) > 1e-8f ? 1.0f / dir.Y : MathF.CopySign(1e8f, dir.Y);
 			float invZ = MathF.Abs(dir.Z) > 1e-8f ? 1.0f / dir.Z : MathF.CopySign(1e8f, dir.Z);
 
-			if (!IntersectAabb(origin, invX, invY, invZ, _nodes[0].Min, _nodes[0].Max, tMin, hitDist, out _))
+			if (!IntersectAabb(origin, invX, invY, invZ, _nodes[startNode].Min, _nodes[startNode].Max, tMin, hitDist, out _))
 			{
 				return false;
 			}
@@ -1309,7 +1797,7 @@ public static class Engine_LevelShadowMaps
 			Span<int> stack = stackalloc int[64];
 			Span<float> tstack = stackalloc float[64];
 			int sp = 0;
-			int nodeIdx = 0;
+			int nodeIdx = startNode;
 			bool anyHit = false;
 
 			while (true)
@@ -1338,8 +1826,12 @@ public static class Engine_LevelShadowMaps
 				{
 					int leftIdx = node.LeftOrFirst;
 					int rightIdx = leftIdx + 1;
-					bool hitL = IntersectAabb(origin, invX, invY, invZ, _nodes[leftIdx].Min, _nodes[leftIdx].Max, tMin, hitDist, out float tminL);
-					bool hitR = IntersectAabb(origin, invX, invY, invZ, _nodes[rightIdx].Min, _nodes[rightIdx].Max, tMin, hitDist, out float tminR);
+					bool maskL = requiredSubtreeMask == 0u || NodeMatchesSubtreeMask(in _nodes[leftIdx], requiredSubtreeMask);
+					bool maskR = requiredSubtreeMask == 0u || NodeMatchesSubtreeMask(in _nodes[rightIdx], requiredSubtreeMask);
+					float tminL = 0.0f;
+					float tminR = 0.0f;
+					bool hitL = maskL && IntersectAabb(origin, invX, invY, invZ, _nodes[leftIdx].Min, _nodes[leftIdx].Max, tMin, hitDist, out tminL);
+					bool hitR = maskR && IntersectAabb(origin, invX, invY, invZ, _nodes[rightIdx].Min, _nodes[rightIdx].Max, tMin, hitDist, out tminR);
 
 					if (hitL && hitR)
 					{
@@ -1485,6 +1977,48 @@ public static class Engine_LevelShadowMaps
 		float SpotCosLimit);
 
 	/// <summary>
+	/// Computes the tightest axis-aligned world bounding box enclosing every active ray emitted by
+	/// <paramref name="light"/> (full sphere for omni lights, exact spherical-cap cone AABB for acute spotlights).
+	/// </summary>
+	public static void ComputeBakeLightBounds(in BakeLightSpec light, out Vector3 boxMin, out Vector3 boxMax)
+	{
+		float r = MathF.Max(0.0f, light.MaxRange);
+		if (!light.IsSpot || light.SpotCosLimit <= 0.0f)
+		{
+			Vector3 rVec = new(r, r, r);
+			boxMin = light.WorldOrigin - rVec;
+			boxMax = light.WorldOrigin + rVec;
+			return;
+		}
+
+		Vector3 fwd = light.SpotForward.Normalized();
+		float cosTheta = Math.Clamp(light.SpotCosLimit, 0.0f, 1.0f);
+		float sinTheta = MathF.Sqrt(MathF.Max(0.0f, 1.0f - cosTheta * cosTheta));
+		const float pad = 0.05f;
+
+		static void ConeAxisExtrema(float fa, float cosLimit, float sinLimit, out float minDir, out float maxDir)
+		{
+			maxDir = fa >= cosLimit ? 1.0f : MathF.Max(0.0f, fa * cosLimit + MathF.Sqrt(MathF.Max(0.0f, 1.0f - fa * fa)) * sinLimit);
+			float negFa = -fa;
+			float maxNeg = negFa >= cosLimit ? 1.0f : MathF.Max(0.0f, negFa * cosLimit + MathF.Sqrt(MathF.Max(0.0f, 1.0f - negFa * negFa)) * sinLimit);
+			minDir = -maxNeg;
+		}
+
+		ConeAxisExtrema(fwd.X, cosTheta, sinTheta, out float minDx, out float maxDx);
+		ConeAxisExtrema(fwd.Y, cosTheta, sinTheta, out float minDy, out float maxDy);
+		ConeAxisExtrema(fwd.Z, cosTheta, sinTheta, out float minDz, out float maxDz);
+
+		boxMin = new Vector3(
+			light.WorldOrigin.X + r * minDx - pad,
+			light.WorldOrigin.Y + r * minDy - pad,
+			light.WorldOrigin.Z + r * minDz - pad);
+		boxMax = new Vector3(
+			light.WorldOrigin.X + r * maxDx + pad,
+			light.WorldOrigin.Y + r * maxDy + pad,
+			light.WorldOrigin.Z + r * maxDz + pad);
+	}
+
+	/// <summary>
 	/// Bakes a <see cref="StaticShadowMapContainer"/> from a pre-built <see cref="BvhTree"/> and a
 	/// list of shadow-casting lights, partitioned across multiple atlas slices according to <paramref name="lightsPerMap"/>.
 	/// </summary>
@@ -1495,7 +2029,24 @@ public static class Engine_LevelShadowMaps
 		int lightsPerMap,
 		float placedReachScale,
 		float interiorReachScale,
-		Func<bool>? isCancelled = null)
+		Func<bool>? isCancelled = null) =>
+		BakeFromBvh(worldBvh, lights, atlasResolution, lightsPerMap, placedReachScale, interiorReachScale, isCancelled, liveGameplayPaced: false, gpuSession: null);
+
+	/// <summary>
+	/// Bakes a <see cref="StaticShadowMapContainer"/> from a pre-built <see cref="BvhTree"/>, optionally sharing
+	/// <paramref name="gpuSession"/> with a subsequent ground-AO pass and using gentle frame yields when
+	/// <paramref name="liveGameplayPaced"/> is true.
+	/// </summary>
+	internal static StaticShadowMapContainer BakeFromBvh(
+		BvhTree worldBvh,
+		IReadOnlyList<BakeLightSpec> lights,
+		int atlasResolution,
+		int lightsPerMap,
+		float placedReachScale,
+		float interiorReachScale,
+		Func<bool>? isCancelled,
+		bool liveGameplayPaced,
+		Engine_GpuBvhBaker.GpuBakeSession? gpuSession)
 	{
 		atlasResolution = Math.Clamp(atlasResolution, 64, 16384);
 		lightsPerMap = Math.Clamp(lightsPerMap, 1, 256);
@@ -1556,7 +2107,9 @@ public static class Engine_LevelShadowMaps
 		        sliceTexelCount,
 		        texelAngle,
 		        texels,
-		        isCancelled))
+		        isCancelled,
+		        liveGameplayPaced,
+		        gpuSession))
 		{
 			return new StaticShadowMapContainer
 			{
@@ -1711,6 +2264,73 @@ public static class Engine_LevelShadowMaps
 	}
 
 	/// <summary>
+	/// Builds the shared static world <see cref="BvhTree"/> and bake inputs directly from an already-parsed
+	/// <see cref="Engine_LevelProps.StaticLightingBakeSnapshot"/> captured during <c>level-build</c>, avoiding
+	/// duplicate GDB/GMD/GHF parsing while decoding <c>.mdl</c> caster meshes and assembling world triangles in parallel.
+	/// </summary>
+	public static bool TryBuildWorldGeometryFromSnapshot(
+		LevelEntry level,
+		Engine_LevelProps.StaticLightingBakeSnapshot snapshot,
+		Func<string, byte[]?> read,
+		Func<bool>? isCancelled,
+		out BvhTree? worldBvh,
+		out List<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
+		out HashSet<uint> lightHosts,
+		out HashSet<string> fixtureModelPaths,
+		out List<BakeLightSpec> bakeLights,
+		out List<GhfHeights> terrainHeights,
+		out string gdbPath,
+		out int triangleCount,
+		out string error)
+	{
+		worldBvh = null;
+		propBlocks = snapshot.PropBlocks;
+		lightHosts = snapshot.LightHosts;
+		fixtureModelPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		bakeLights = new List<BakeLightSpec>();
+		terrainHeights = new List<GhfHeights>();
+		gdbPath = snapshot.GdbPath;
+		triangleCount = 0;
+		error = string.Empty;
+
+		if (isCancelled?.Invoke() == true)
+		{
+			error = "cancelled";
+			return false;
+		}
+
+		var terrainTriangles = new List<BvhTriangle>(65536);
+		if (snapshot.TerrainHeights.Count != 0)
+		{
+			foreach (GhfHeights heights in snapshot.TerrainHeights)
+			{
+				terrainHeights.Add(heights);
+				AppendDecodedTerrainTriangles(heights, terrainTriangles);
+			}
+		}
+		else
+		{
+			Engine_LevelVfsConfig.Apply(level, read);
+			Engine_LevelManifest.TryResolve(level, read, out ScenarioManifest? manifest, out _, out _);
+			AppendTerrainTriangles(level, manifest, read, terrainTriangles, terrainHeights);
+		}
+
+		return AssembleWorldBvhFromResolvedData(
+			propBlocks,
+			lightHosts,
+			snapshot.LightHostModels,
+			snapshot.ResolvedLights,
+			terrainTriangles,
+			read,
+			isCancelled,
+			out worldBvh,
+			out fixtureModelPaths,
+			out bakeLights,
+			out triangleCount,
+			out error);
+	}
+
+	/// <summary>
 	/// Extracts all static world triangles (terrain + static shadow-casting props), resolved
 	/// static prop blocks, terrain heightfields, and placed light specs for <paramref name="level"/>,
 	/// building a shared <see cref="BvhTree"/> that both shadow-map baking and level AO baking can use.
@@ -1758,10 +2378,45 @@ public static class Engine_LevelShadowMaps
 			return false;
 		}
 
-		// Filter to active placed lights and compute their world-space origins & ranges.
-		// In modern lighting mode (Engine_LevelLights.PlacedShadowsEnabled), all placed lights cast shadows,
-		// not just the 1-2 fixtures per region that had CastShadows=true on Xbox 360.
+		var terrainTriangles = new List<BvhTriangle>(65536);
+		AppendTerrainTriangles(level, manifest, read, terrainTriangles, terrainHeights);
+
+		return AssembleWorldBvhFromResolvedData(
+			propBlocks,
+			lightHosts,
+			lightHostModels,
+			resolvedLights,
+			terrainTriangles,
+			read,
+			isCancelled: null,
+			out worldBvh,
+			out fixtureModelPaths,
+			out bakeLights,
+			out triangleCount,
+			out error);
+	}
+
+	private static bool AssembleWorldBvhFromResolvedData(
+		List<Engine_LevelProps.StaticShadowPropBlock> propBlocks,
+		HashSet<uint> lightHosts,
+		HashSet<string> lightHostModels,
+		List<Engine_LevelLights.ResolvedLightInstance> resolvedLights,
+		List<BvhTriangle> terrainTriangles,
+		Func<string, byte[]?> read,
+		Func<bool>? isCancelled,
+		out BvhTree? worldBvh,
+		out HashSet<string> fixtureModelPaths,
+		out List<BakeLightSpec> bakeLights,
+		out int triangleCount,
+		out string error)
+	{
+		worldBvh = null;
+		fixtureModelPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 		bakeLights = new List<BakeLightSpec>(resolvedLights.Count);
+		triangleCount = 0;
+		error = string.Empty;
+
+		// Filter to active placed lights and compute their world-space origins & ranges.
 		foreach (Engine_LevelLights.ResolvedLightInstance item in resolvedLights)
 		{
 			if (item.Light.Range <= 0.05f || item.Light.Intensity <= 0.0f)
@@ -1769,10 +2424,8 @@ public static class Engine_LevelShadowMaps
 				continue;
 			}
 
-			// Match runtime range envelope via the CVar-backed ComputeMaxBakeRange helper.
 			float maxRange = Engine_LevelLights.ComputeMaxBakeRange(item);
 			Vector3 localOrigin = item.Transform.Origin;
-			// Root node carries Scale = (-1, 1, 1), so world X is negated relative to region-local X.
 			Vector3 worldOrigin = new(-localOrigin.X, localOrigin.Y, localOrigin.Z);
 
 			bool isSpot = item.Light.Type == Engine_LevelLights.LightTypeSpot;
@@ -1790,8 +2443,6 @@ public static class Engine_LevelShadowMaps
 				spotCosLimit));
 		}
 
-		// Collect model paths of any prop block that hosts a light (so .engine_level or GMD layout
-		// duplicates of streetlamps/lanterns with instanceHash == 0 are also excluded).
 		foreach (string hostModel in lightHostModels)
 		{
 			if (!IsStructuralLightHostModel(hostModel))
@@ -1819,18 +2470,52 @@ public static class Engine_LevelShadowMaps
 			}
 		}
 
-		var terrainTriangles = new List<BvhTriangle>(65536);
+		// Decode unique shadow-caster .mdl meshes in parallel across cores.
+		int workerDop = Math.Max(1, System.Environment.ProcessorCount - 2);
+		var uniqueCasterJobs = new Dictionary<string, (string Path, bool IsTree)>(StringComparer.OrdinalIgnoreCase);
+		for (int b = 0; b < propBlocks.Count; b++)
+		{
+			Engine_LevelProps.StaticShadowPropBlock block = propBlocks[b];
+			if (block.Foliage)
+			{
+				continue;
+			}
 
-		// 1. Add main terrain triangles.
-		AppendTerrainTriangles(level, manifest, read, terrainTriangles, terrainHeights);
+			bool isTree = block.ModelClass == PropModelClass.Tree;
+			string casterPath = isTree ? block.ShadowModelPath : block.ModelPath;
+			if (casterPath.Length == 0)
+			{
+				continue;
+			}
 
-		// 2. Add static world prop triangles (lamp shadow casters carry FlagShadowCaster | FlagAoOccluder;
-		// light-fixture / brazier / candelabra hosts and non-lamp-shadow props carry FlagAoOccluder so
-		// fire pits, candelabras, pedestals, and decorative statues ground cleanly into floor AO without
-		// blocking their own hosted lamps).
-		// Counted first so the world's triangles go straight into one array of the exact size: a growing
-		// list and its copy held about three times the triangles at the peak (gigabytes in a large town).
+			string key = isTree ? $"tree_shadow|{casterPath}" : casterPath;
+			uniqueCasterJobs.TryAdd(key, (casterPath, isTree));
+		}
+
+		if (uniqueCasterJobs.Count > 1 && workerDop > 1)
+		{
+			Parallel.ForEach(
+				uniqueCasterJobs.Values,
+				new ParallelOptions { MaxDegreeOfParallelism = workerDop },
+				job =>
+				{
+					if (isCancelled?.Invoke() == true)
+					{
+						return;
+					}
+
+					_ = GetShadowCasterTriangles(job.Path, read, isTreeShadowModel: job.IsTree);
+				});
+		}
+
+		if (isCancelled?.Invoke() == true)
+		{
+			error = "cancelled";
+			return false;
+		}
+
 		var casterVerts = new Vector3[]?[propBlocks.Count];
+		var blockTriOffsets = new int[propBlocks.Count];
 		long total = terrainTriangles.Count;
 		for (int b = 0; b < propBlocks.Count; b++)
 		{
@@ -1854,26 +2539,30 @@ public static class Engine_LevelShadowMaps
 			}
 
 			casterVerts[b] = modelVerts;
+			blockTriOffsets[b] = (int)total;
 			total += (long)(modelVerts.Length / 3) * block.Instances.Count;
 		}
 
 		var worldTriangles = new BvhTriangle[total];
 		terrainTriangles.CopyTo(worldTriangles);
-		int filled = terrainTriangles.Count;
-		terrainTriangles = null;
+		int terrainCount = terrainTriangles.Count;
+		terrainTriangles.Clear();
 
-		for (int b = 0; b < propBlocks.Count; b++)
+		HashSet<string> localFixturePaths = fixtureModelPaths;
+		Action<int> populateBlock = b =>
 		{
 			Vector3[]? modelVerts = casterVerts[b];
-			if (modelVerts is null)
+			if (modelVerts is null || isCancelled?.Invoke() == true)
 			{
-				continue;
+				return;
 			}
 
 			Engine_LevelProps.StaticShadowPropBlock block = propBlocks[b];
 			bool isTree = block.ModelClass == PropModelClass.Tree;
 			string casterPath = isTree ? block.ShadowModelPath : block.ModelPath;
-			bool isFixtureModel = fixtureModelPaths.Contains(block.ModelPath) || IsLightFixtureModel(casterPath);
+			bool isFixtureModel = localFixturePaths.Contains(block.ModelPath) || IsLightFixtureModel(casterPath);
+			int writeIdx = blockTriOffsets[b];
+			int modelTriVerts = (modelVerts.Length / 3) * 3;
 
 			for (int i = 0; i < block.Instances.Count; i++)
 			{
@@ -1887,17 +2576,35 @@ public static class Engine_LevelShadowMaps
 				uint triFlags = BvhTriangle.FlagAoOccluder | (castsLampShadow ? BvhTriangle.FlagShadowCaster : 0u);
 
 				Transform3D inst = block.Instances[i];
-				for (int v = 0; v + 2 < modelVerts.Length; v += 3)
+				for (int v = 0; v < modelTriVerts; v += 3)
 				{
 					Vector3 a = MirrorX(inst * modelVerts[v]);
 					Vector3 b2 = MirrorX(inst * modelVerts[v + 1]);
 					Vector3 c = MirrorX(inst * modelVerts[v + 2]);
-					worldTriangles[filled++] = new BvhTriangle(a, b2, c, triFlags);
+					worldTriangles[writeIdx++] = new BvhTriangle(a, b2, c, triFlags);
 				}
+			}
+		};
+
+		if (total - terrainCount >= 16384 && propBlocks.Count > 1 && workerDop > 1)
+		{
+			Parallel.For(0, propBlocks.Count, new ParallelOptions { MaxDegreeOfParallelism = workerDop }, populateBlock);
+		}
+		else
+		{
+			for (int b = 0; b < propBlocks.Count; b++)
+			{
+				populateBlock(b);
 			}
 		}
 
-		triangleCount = filled;
+		if (isCancelled?.Invoke() == true)
+		{
+			error = "cancelled";
+			return false;
+		}
+
+		triangleCount = (int)total;
 		worldBvh = new BvhTree(worldTriangles);
 		return true;
 	}
@@ -2001,6 +2708,38 @@ public static class Engine_LevelShadowMaps
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	internal static Vector3 MirrorX(Vector3 v) => new(-v.X, v.Y, v.Z);
 
+	/// <summary>
+	/// Returns true when <paramref name="path"/> refers to a distant non-playable vista backdrop heightfield
+	/// (<c>/vistas/</c> or <c>\vistas\</c>) outside the playable region.
+	/// </summary>
+	public static bool IsVistaHeightfieldPath(string path)
+	{
+		if (string.IsNullOrEmpty(path))
+		{
+			return false;
+		}
+
+		return path.Contains("/vistas/", StringComparison.OrdinalIgnoreCase) ||
+		       path.Contains("\\vistas\\", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static void AppendDecodedTerrainTriangles(GhfHeights heights, List<BvhTriangle> into)
+	{
+		TerrainMesh mesh = Engine_GhfTerrain.BuildMesh(heights);
+		float[] pos = mesh.Positions;
+		int[] idx = mesh.Indices;
+		for (int i = 0; i + 2 < idx.Length; i += 3)
+		{
+			int i0 = idx[i] * 3;
+			int i1 = idx[i + 1] * 3;
+			int i2 = idx[i + 2] * 3;
+			Vector3 a = new(-pos[i0], pos[i0 + 1], pos[i0 + 2]);
+			Vector3 b = new(-pos[i1], pos[i1 + 1], pos[i1 + 2]);
+			Vector3 c = new(-pos[i2], pos[i2 + 1], pos[i2 + 2]);
+			into.Add(new BvhTriangle(a, b, c, BvhTriangle.FlagShadowCaster | BvhTriangle.FlagTerrain | BvhTriangle.FlagAoOccluder));
+		}
+	}
+
 	private static void AppendTerrainTriangles(
 		LevelEntry level,
 		ScenarioManifest? manifest,
@@ -2018,7 +2757,8 @@ public static class Engine_LevelShadowMaps
 		{
 			foreach (string line in manifest.Ghf)
 			{
-				if (Engine_LevelManifest.TryResolvePath(line, read, out string resolved))
+				if (Engine_LevelManifest.TryResolvePath(line, read, out string resolved) &&
+				    !IsVistaHeightfieldPath(resolved))
 				{
 					ghfPaths.Add(resolved);
 				}
@@ -2034,19 +2774,7 @@ public static class Engine_LevelShadowMaps
 			}
 
 			decodedTerrains?.Add(heights);
-			TerrainMesh mesh = Engine_GhfTerrain.BuildMesh(heights);
-			float[] pos = mesh.Positions;
-			int[] idx = mesh.Indices;
-			for (int i = 0; i + 2 < idx.Length; i += 3)
-			{
-				int i0 = idx[i] * 3;
-				int i1 = idx[i + 1] * 3;
-				int i2 = idx[i + 2] * 3;
-				Vector3 a = new(-pos[i0], pos[i0 + 1], pos[i0 + 2]);
-				Vector3 b = new(-pos[i1], pos[i1 + 1], pos[i1 + 2]);
-				Vector3 c = new(-pos[i2], pos[i2 + 1], pos[i2 + 2]);
-				into.Add(new BvhTriangle(a, b, c, BvhTriangle.FlagShadowCaster | BvhTriangle.FlagTerrain | BvhTriangle.FlagAoOccluder));
-			}
+			AppendDecodedTerrainTriangles(heights, into);
 		}
 	}
 

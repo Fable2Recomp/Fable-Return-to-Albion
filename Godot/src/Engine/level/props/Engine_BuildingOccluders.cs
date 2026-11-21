@@ -45,8 +45,7 @@ public static class Engine_BuildingOccluders
     public static long Triangles;
 
     /// <summary>The launch setting; read once.</summary>
-    public static bool Enabled => _enabled ??= Refii.Core.Engine_RefiiConfig.Bool(
-        Refii.Core.Engine_RefiiConfig.Read(out _), "occlusion_culling", false);
+    public static bool Enabled => _enabled ??= Refii.AndroidRuntime.AndroidOcclusionAuto.Builds;
 
     /// <summary>Queues a streamed building prop for its occluders, one per placement.</summary>
     /// <param name="instance">The prop node, already holding <paramref name="mesh"/>.</param>
@@ -63,6 +62,7 @@ public static class Engine_BuildingOccluders
     /// <summary>Makes queued occluders within the frame's budget; the prop streamer calls it each frame.</summary>
     public static void Pump()
     {
+        Refii.AndroidRuntime.AndroidOcclusionAuto.Tick();
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
         while (Pending.Count > 0 &&
             System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds < BudgetMs)
@@ -96,9 +96,10 @@ public static class Engine_BuildingOccluders
             }
         }
         Placed += count;
+        Refii.AndroidRuntime.AndroidOcclusionAuto.Track(instance, mesh, placements);
 
         // The window draws the world; the occluders mean nothing until its viewport tests them.
-        if (instance.GetViewport() is { UseOcclusionCulling: false } viewport)
+        if (!Refii.AndroidRuntime.AndroidOcclusionAuto.Auto && instance.GetViewport() is { UseOcclusionCulling: false } viewport)
         {
             viewport.UseOcclusionCulling = true;
         }
@@ -196,6 +197,7 @@ public static class Engine_BuildingOccluders
     {
         Shapes.Clear();
         Pending.Clear();
+        Refii.AndroidRuntime.AndroidOcclusionAuto.Clear();
         Placed = 0;
         Triangles = 0;
     }

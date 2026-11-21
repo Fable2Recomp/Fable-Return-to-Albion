@@ -260,32 +260,19 @@ public static int SurfacesWithLods;
         var sourceVertices = new List<int>(meshVertices);
         bool modernStaticAo = !Engine_ClassicMaterial.Active &&
             Refii.Lighting.Engine_LightingFrame.ModernModel &&
-            info.SkinnedCount <= 8 &&
             info.MovementMode != 2 &&
-            sourceVertexTotal > 0;
-        float[] modelSelfAo = System.Array.Empty<float>();
-        if (modernStaticAo)
-        {
-            if (Engine_ModelSelfAo.TryGetModelSelfAoFast(data, info, surfaces, sourceVertexTotal, virtualPath, out float[] fastSelfAo))
-            {
-                modelSelfAo = fastSelfAo;
-            }
-            else if (sourceVertexTotal <= 4096)
-            {
-                modelSelfAo = Engine_ModelSelfAo.GetOrComputeModelSelfAo(data, info, surfaces, sourceVertexTotal, virtualPath);
-            }
-            else
-            {
-                bool includeGround = info.SkinnedCount == 0 && info.MovementMode != 1;
-                modelSelfAo = Engine_ModelSelfAo.ComputeFastCreviceAndBaseAo(surfaces, sourceVertexTotal, includeGround);
-                Engine_ModelSelfAo.QueueBackgroundSelfAoBake(surfaces, sourceVertexTotal, includeGround, virtualPath);
-            }
-        }
+            meshVertices > 0;
+        var emittedSelfAo = new List<float>(modernStaticAo ? meshVertices : 0);
+        bool modernStaticAoFlag = modernStaticAo;
+        float[][] surfaceSelfAo = modernStaticAo
+            ? Engine_ModelSelfAo.GetOrComputeSurfaceSelfAo(info, surfaces, virtualPath)
+            : System.Array.Empty<float[]>();
         var pendingSurfaces = new List<(Godot.Collections.Array Arrays, Godot.Collections.Dictionary? Lods, float[]? LevelTable, string Name, Material? Material)>(surfaces.Count);
         long totalEstimatedBytes = 0L;
 
-        foreach (MdlGeometry geo in surfaces)
+        for (int surfaceIndex = 0; surfaceIndex < surfaces.Count; surfaceIndex++)
         {
+            MdlGeometry geo = surfaces[surfaceIndex];
             if (geo.VertexCount == 0 || geo.TriangleCount == 0)
             {
                 continue;
@@ -493,17 +480,33 @@ public static int SurfacesWithLods;
                 arrays[(int)Mesh.ArrayType.Custom2] = tb;
                 System.Threading.Interlocked.Increment(ref SurfacesWithTransfer);
             }
-            else if (modernStaticAo && modelSelfAo.Length > 0 && !treeStreams && geo.SourceVertices.Length > 0)
+            else if (modernStaticAo && !treeStreams &&
+                (uint)surfaceIndex < (uint)surfaceSelfAo.Length &&
+                surfaceSelfAo[surfaceIndex].Length == vertexCount)
             {
-                arrays[(int)Mesh.ArrayType.Color] = Engine_ModelSelfAo.BuildColorStream(modelSelfAo, geo);
+                var colors = new Color[vertexCount];
+                float[] surfAo = surfaceSelfAo[surfaceIndex];
+                for (int v = 0; v < vertexCount; v++)
+                {
+                    colors[v] = new Color(1.0f, 1.0f, 1.0f, surfAo[v]);
+                }
+
+                arrays[(int)Mesh.ArrayType.Color] = colors;
             }
 
             // Wind comes from the mesh header, not the material: the file states a movement mode
             // per mesh (1 low plant, 2 tree), and every mesh carrying it is vegetation
             // (src/tools/WindGate.cs). So the mesh's statement is part of the shared material's
             // identity, never a mutation of a material another surface also holds.
+            bool checkExplicitTwins = info.MovementMode == 0 &&
+                !info.SwaysInWind &&
+                info.MeshKind is not (1 or 4) &&
+                !string.IsNullOrEmpty(geo.Material?.Diffuse) &&
+                (Refii.Textures.Engine_TexLibrary.HeaderFlags(geo.Material.Diffuse, Engine_BnkMeshLoader.ReadTextureHeader) & 0xA0) != 0;
+            bool explicitBothSides = checkExplicitTwins && geo.HasExplicitBothSides;
+
             Material? material =
-                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis);
+                Engine_MdlMaterial.TryCreateShared(geo.Material, info, geo.AuthoredNormals, tangentBasis, explicitBothSides);
             if (material is null)
             {
                 ReportFallback(virtualPath, geo.Name, geo.Material);
@@ -529,6 +532,18 @@ public static int SurfacesWithLods;
             else
             {
                 sourceVertices.AddRange(System.Linq.Enumerable.Repeat(-1, vertexCount));
+            }
+
+            if (modernStaticAoFlag)
+            {
+                if ((uint)surfaceIndex < (uint)surfaceSelfAo.Length && surfaceSelfAo[surfaceIndex].Length == vertexCount)
+                {
+                    emittedSelfAo.AddRange(surfaceSelfAo[surfaceIndex]);
+                }
+                else
+                {
+                    emittedSelfAo.AddRange(System.Linq.Enumerable.Repeat(1.0f, vertexCount));
+                }
             }
 
             surfaceRegions.Add(geo.Region);
@@ -563,9 +578,9 @@ public static int SurfacesWithLods;
             mesh.SetMeta(SourceVertexMapMeta, sourceMap);
         }
         mesh.SetMeta(SourceVertexTotalMeta, sourceVertexTotal);
-        if (modelSelfAo.Length > 0)
+        if (emittedSelfAo.Count > 0)
         {
-            mesh.SetMeta(SelfAoMeta, modelSelfAo);
+            mesh.SetMeta(SelfAoMeta, emittedSelfAo.ToArray());
         }
         mesh.SetMeta(SurfaceRegionsMeta, surfaceRegions.ToArray());
         if (info.FileBoundingSphere.Length == 4)

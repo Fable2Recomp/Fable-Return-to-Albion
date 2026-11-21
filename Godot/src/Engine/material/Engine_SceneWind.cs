@@ -30,7 +30,10 @@ public static class Engine_SceneWind
     }
 
     /// <summary>Reads the frame and publishes the globals. Main thread, once a frame.</summary>
-    public static void Pump()
+    public static void Pump() => Pump(0f);
+
+    /// <summary>Reads the frame and publishes the wind and display-interpolated tree sway globals. Main thread, once a frame.</summary>
+    public static void Pump(float worldDelta)
     {
         Refii.Level.Engine_GuestAtmosphere.Read();
         Vector3 direction = Vector3.Zero;
@@ -50,8 +53,11 @@ public static class Engine_SceneWind
                 100f * s / (Row1 + 1e-10f));
         }
 
-        // The trees' wind and clock (fable_tree_sway.gdshaderinc), every frame: the clock moves.
-        Refii.Level.Engine_GuestAtmosphere.StepTrees(Refii.Level.Engine_GuestAtmosphere.Seconds());
+        // The trees' wind and interpolated clock (fable_tree_sway.gdshaderinc), every display frame.
+        float treeTime = worldDelta > 0f
+            ? Refii.Level.Engine_GuestAtmosphere.InterpolatedSeconds(worldDelta)
+            : Refii.Level.Engine_GuestAtmosphere.Seconds();
+        Refii.Level.Engine_GuestAtmosphere.StepTrees(treeTime);
         RenderingServer.GlobalShaderParameterSet(TreeWindName,
             new Vector4(direction.X, direction.Y, direction.Z, Refii.Level.Engine_GuestAtmosphere.TreeSpeed));
         RenderingServer.GlobalShaderParameterSet(TreeClockName,

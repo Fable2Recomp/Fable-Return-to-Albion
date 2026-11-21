@@ -496,6 +496,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Scenery Draw Distance",
                 "Multiplier on foliage, rocks, and distant scenery draw distances (1x = Xbox 360).",
                 new NumericRange(0.5, 3.0, 0.25, "x"), Order: 220),
+            [Refii.Physics.Engine_ClothBody.DistanceScaleKey] = new(
+                SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Cloth & Banner Wind Distance",
+                "Multiplier on how far banners, flags, and garments blow in the wind (1x = Xbox 360; 0 = Off).",
+                new NumericRange(0.0, 4.0, 0.25, "x", ZeroLabel: "Off", AllowGreater: true), Order: 222),
             ["corpse_lifetime_seconds"] = new(
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Corpse Persistence Time",
                 "How long fallen enemy and creature corpses remain visible before fading out (0 = original game; no upper cap in config).",

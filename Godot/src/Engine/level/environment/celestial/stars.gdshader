@@ -12,10 +12,12 @@ varying float v_value;
 void vertex() {
 	vec4 hash = fract(VERTEX.x * vec4(732.051, 236.068, 645.751, 141.421));
 
-	vec2 dir_xy = (hash.xy * 2.0) - 1.0;
-	float len_sq = dot(dir_xy, dir_xy) + (hash.z * hash.z);
-	float inv_len = inversesqrt(abs(len_sq));
-	vec3 direction = vec3(dir_xy * inv_len, hash.z * inv_len);
+	vec2 dir_xz = (hash.xy * 2.0) - 1.0;
+	float up_y = (hash.z * 0.98) + 0.02;
+	float len_sq = dot(dir_xz, dir_xz) + (up_y * up_y);
+	float inv_len = inversesqrt(max(len_sq, 1e-6));
+	// Godot world space is +Y up; keep all stars on the upper sky hemisphere above the horizon.
+	vec3 direction = vec3(dir_xz.x * inv_len, up_y * inv_len, dir_xz.y * inv_len);
 
 	vec4 phase = fract((star_phase_rate * TIME) * (hash.xywz + 1.0));
 	float twinkle = max(max(phase.x, phase.y), max(phase.z, phase.w));
@@ -27,7 +29,8 @@ void vertex() {
 		v_value = 0.0;
 	} else {
 		vec4 clip = PROJECTION_MATRIX * vec4(view_pos, 1.0);
-		vec2 ndc = (clip.xy / clip.w) + (UV * (star_point_size / VIEWPORT_SIZE));
+		float safe_w = abs(clip.w) > 1e-5 ? clip.w : 1e-5;
+		vec2 ndc = (clip.xy / safe_w) + (UV * (star_point_size / VIEWPORT_SIZE));
 
 		float far_depth = step(0.5, -PROJECTION_MATRIX[2][2]);
 		POSITION = vec4(ndc, mix(far_depth, 1.0 - far_depth, star_depth_bias), 1.0);

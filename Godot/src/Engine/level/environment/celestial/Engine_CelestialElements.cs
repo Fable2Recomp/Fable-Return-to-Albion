@@ -101,6 +101,13 @@ public static partial class Engine_CelestialElements
 
     public const int DefaultMoonPhase = 4;
 
+    /// <summary>
+    /// Negative render priorities keep all celestial billboards behind clouds (-10) and water (0),
+    /// so depth_draw_never ocean surfaces occlude stars and rising/setting discs below the horizon.
+    /// </summary>
+    public const int StarsRenderPriority = -21;
+    public const int BaseRenderPriority = -20;
+
     public const float CullExtent = 100000.0f;
 
     private static readonly AtmosphereState _frameAtmosphere = new();
@@ -261,7 +268,7 @@ public static partial class Engine_CelestialElements
         }
 
         float[] element = ElementParams(theme);
-        int priority = container.GetChildCount();
+        int priority = BaseRenderPriority + container.GetChildCount();
 
         if (theme.HasSunBeamsTexture &&
             container.GetNodeOrNull<MeshInstance3D>(Path_SunBeams) is null)
@@ -355,7 +362,7 @@ public static partial class Engine_CelestialElements
 
         if (container.GetNodeOrNull<MeshInstance3D>(Path_Stars) is null)
         {
-            MeshInstance3D? stars = Stars(element[5], priority++);
+            MeshInstance3D? stars = Stars(element[5], StarsRenderPriority);
             if (stars is not null)
             {
                 container.AddChild(stars);

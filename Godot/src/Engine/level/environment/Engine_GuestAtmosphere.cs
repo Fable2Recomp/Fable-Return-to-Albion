@@ -39,6 +39,40 @@ public static class Engine_GuestAtmosphere
     public static float TreePhase { get; private set; }
 
     private static float _phaseClock = float.NaN;
+    private static double _smoothedGuestSeconds = double.NaN;
+
+    /// <summary>
+    /// Advances a smoothed display-rate clock locked to <paramref name="rawGuestSeconds"/> so swaying
+    /// trees and foliage shadows glide at the display refresh rate instead of stepping on 15 Hz guest ticks.
+    /// Pure helper safe for headless unit tests.
+    /// </summary>
+    public static double StepInterpolatedSeconds(ref double smoothed, double rawGuestSeconds, float worldDelta)
+    {
+        if (!double.IsFinite(rawGuestSeconds))
+        {
+            return smoothed;
+        }
+
+        if (!double.IsFinite(smoothed) || System.Math.Abs(rawGuestSeconds - smoothed) > 0.5)
+        {
+            smoothed = rawGuestSeconds;
+            return smoothed;
+        }
+
+        if (worldDelta <= 0f)
+        {
+            return smoothed;
+        }
+
+        double predicted = smoothed + worldDelta;
+        double err = rawGuestSeconds - predicted;
+        double steer = System.Math.Clamp(
+            err * System.Math.Min(1.0, worldDelta * 6.0),
+            -worldDelta * 0.35,
+            worldDelta * 0.50);
+        smoothed = predicted + steer;
+        return smoothed;
+    }
 
     /// <summary>
     /// Steps the trees' phase to <paramref name="time"/>: R+0x254 += clamp(speed, 0, 10) * dt from a
@@ -61,6 +95,21 @@ public static class Engine_GuestAtmosphere
     {
         double seconds = Refii.Entities.Engine_DrawnFrame.GuestSeconds;
         return double.IsFinite(seconds) ? (float)seconds : (float)(Time.GetTicksMsec() / 1000.0);
+    }
+
+    /// <summary>
+    /// Display-rate interpolated guest seconds advanced by <paramref name="worldDelta"/> between guest ticks.
+    /// </summary>
+    public static float InterpolatedSeconds(float worldDelta)
+    {
+        double raw = Refii.Entities.Engine_DrawnFrame.GuestSeconds;
+        if (!double.IsFinite(raw))
+        {
+            _smoothedGuestSeconds = double.NaN;
+            return (float)(Time.GetTicksMsec() / 1000.0);
+        }
+
+        return (float)StepInterpolatedSeconds(ref _smoothedGuestSeconds, raw, worldDelta);
     }
 
     /// <summary>Takes a frame block already read (the classic feed's). Main thread.</summary>

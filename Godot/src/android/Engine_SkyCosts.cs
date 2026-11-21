@@ -48,6 +48,9 @@ public static class Engine_SkyCosts
     private static (Godot.Environment.ReflectionSource Reflect, Godot.Environment.AmbientSource Ambient,
         Godot.Environment.BGMode Background, bool Sdfgi, bool VolumetricFog, Sky.RadianceSizeEnum? Size, bool Unread)? _last;
 
+    /// <summary>Whether <see cref="ApplyRadiance"/> last found the radiance map unread (false before it has looked).</summary>
+    public static bool RadianceKnownUnread => _last is { Unread: true };
+
     /// <summary>Debug: what <see cref="ApplyRadiance"/> last saw (the `render` op's skyRadianceInputs); built only when asked.</summary>
     public static string? LastInputs => _last is { } l
         ? $"reflect={l.Reflect} ambient={l.Ambient} bg={l.Background} sdfgi={l.Sdfgi} vfog={l.VolumetricFog} " +
@@ -96,6 +99,7 @@ public static class Engine_SkyCosts
     /// </summary>
     public static void ApplyRadiance(Godot.Environment environment)
     {
+        Refii.AndroidRuntime.AndroidFableAmbientOff.Watch(environment);
         if (_leanSky is null && !RadianceLean)
         {
             return;

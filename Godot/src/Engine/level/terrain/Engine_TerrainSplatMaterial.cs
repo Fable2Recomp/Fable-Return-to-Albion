@@ -709,7 +709,7 @@ public static partial class Engine_TerrainSplatMaterial
         // The entry's one flag carries "a height was solved", which is what `hasHeight` reports.
         // Encoded as BC1 (4 bpp) rather than uncompressed RGB8 (which Vulkan/D3D12 expand to 32 bpp
         // RGBA8), reducing terrain cavity VRAM and upload staging by 8x.
-        string recipe = $"terrain-cavity-bc1|{size}|{strength.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}|{(solveHeight ? "h" : "-")}";
+        string recipe = $"terrain-cavity-bc1-v2|{size}|{strength.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}|{(solveHeight ? "h" : "-")}";
         bool compressed = true;
         System.Threading.Tasks.Parallel.For(0, baseSlices.Length, i =>
         {

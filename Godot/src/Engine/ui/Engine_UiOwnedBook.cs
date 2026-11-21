@@ -542,45 +542,13 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 		foreach (Engine_UiSlideStatements.Write write in Engine_UiSlideStatements.WritesSince(
 			PresentationAddress, Document.Nodes[0].Element.NameHash, _toldOpened))
 		{
-			if (!write.IsActive && write.Ordinal == ordinal &&
-				(write.Attribute & ~Engine_UiSlideStatements.ScaledOpacity) == attribute)
+			if (!write.IsActive && write.Ordinal == ordinal && write.Attribute == attribute)
 			{
-				last = StoredValue(write, last);
+				last = System.BitConverter.UInt32BitsToSingle(write.Value);
 			}
 		}
 
 		return last;
-	}
-
-	/// <summary>
-	/// The value a told write leaves stored: as told, or SetOpacity_p's raw argument scaled over
-	/// <paramref name="before"/> (the element's opacity before it — the authored one when null).
-	/// </summary>
-	private float StoredValue(Engine_UiSlideStatements.Write write, float? before)
-	{
-		float value = System.BitConverter.UInt32BitsToSingle(write.Value);
-		if ((write.Attribute & Engine_UiSlideStatements.ScaledOpacity) == 0)
-		{
-			return value;
-		}
-
-		return Engine_UiSlideStatements.SetOpacityValue(value, before ?? CurrentOpacity(write.Ordinal));
-	}
-
-	/// <summary>An element's opacity (0..100) as the book stands it: its track or told write, else the file's.</summary>
-	private float CurrentOpacity(int ordinal)
-	{
-		if (_playback is { } playback &&
-			playback.Values[(ordinal * Engine_UiSlidePlayback.Channels) + (int)Engine_UiSlidePlayback.Channel.Opacity] is var v &&
-			!float.IsNaN(v))
-		{
-			return v;
-		}
-
-		return Document is not null && ordinal >= 0 && ordinal < Document.Nodes.Length &&
-			Document.Nodes[ordinal].Element.TryGetAttribute(Engine_UiElementResolve.OpacityAttribute, out BgfAttribute authored)
-				? authored.AsFloat()
-				: 100f;
 	}
 
 	/// <summary>The last told write applied to the playback.</summary>
@@ -666,11 +634,6 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 			if (write.IsActive)
 			{
 				_playback.TellActive(write.Ordinal, write.Value != 0, write.Sequence);
-			}
-			else if ((write.Attribute & Engine_UiSlideStatements.ScaledOpacity) != 0)
-			{
-				_playback.Tell(write.Ordinal, write.Attribute & ~Engine_UiSlideStatements.ScaledOpacity,
-					System.BitConverter.SingleToUInt32Bits(StoredValue(write, null)), write.Sequence);
 			}
 			else
 			{

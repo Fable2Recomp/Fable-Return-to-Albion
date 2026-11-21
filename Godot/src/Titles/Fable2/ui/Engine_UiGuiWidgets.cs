@@ -138,16 +138,20 @@ public sealed class Engine_UiGuiWidgets
 	}
 
 	// ================= THE MINIGAME TALLY ===================================================
+	//
+	// Screen 11's handler (vtable TU1 0x820AE3F0, disc 0x820C09D4) holds five 20-byte rows from
+	// `handler+28`: +0 claimed, +4 shown, +8 target, +12 the `MiniGameAmount%d` name (toggle and
+	// text), +16 `MiniGameName%d`. This is that model, drawn by the `minigame` page provider.
 
 	/// <summary>One row of the tally: a label and a number that counts up to its target.</summary>
 	public sealed class MiniGameRow
 	{
 		public string Label = string.Empty;
 
-		/// <summary>What is on screen right now.</summary>
+		/// <summary>What is on screen right now (`row+4`).</summary>
 		public int Displayed;
 
-		/// <summary>Where it is counting to.</summary>
+		/// <summary>Where it is counting to (`row+8`).</summary>
 		public int Target;
 	}
 
@@ -162,20 +166,41 @@ public sealed class Engine_UiGuiWidgets
 	/// <summary>The tally is up.</summary>
 	public bool MiniGameUp { get; private set; }
 
-	/// <summary>`GUI.TurnOnMiniGameComplete(title, button)` — the caller resolves both tags.</summary>
-	public void TurnOnMiniGame()
+	/// <summary>`MiniGameTitle` as `TurnOnMiniGameComplete` stated it, resolved.</summary>
+	public string MiniGameTitle { get; private set; } = string.Empty;
+
+	/// <summary>`MiniGameButton` as `TurnOnMiniGameComplete` stated it, resolved.</summary>
+	public string MiniGameButton { get; private set; } = string.Empty;
+
+	/// <summary>Screen 11 has been seen up since the tally opened: its leaving is the close.</summary>
+	private bool _miniGameSeen;
+
+	/// <summary>
+	/// `GUI.TurnOnMiniGameComplete(title, button)` (TU1 0x82306BF0 → `sub_823CDCB0`, disc 0x82908818 →
+	/// `sub_8258CBE8`): latches `handler+40` (0x823CDCC4 / 0x8258CBFC), sets screen 11 (0x823CDD08 /
+	/// 0x8258CC40) and publishes `MiniGameTitle` (0x823CDD58 / 0x8258CC90) and `MiniGameButton`
+	/// (0x823CDD9C / 0x8258CCD4); the rows stay as they were. The caller resolves both tags.
+	/// </summary>
+	public void TurnOnMiniGame(string title, string button)
 	{
+		if (!MiniGameUp)
+		{
+			_miniGameSeen = false;
+		}
+
 		MiniGameUp = true;
+		MiniGameTitle = title;
+		MiniGameButton = button;
 		++Generation;
 	}
 
 	/// <summary>
-	/// `GUI.AddAmountToMiniGameComplete(label, amount)` — "add" means ADD A ROW.
+	/// `GUI.AddAmountToMiniGameComplete(label, amount)` (TU1 0x82306CA0 → `sub_823CDDB8`, disc
+	/// 0x829088C8 → `sub_8258CCF0`) — "add" means CLAIM A ROW: the first free one is claimed
+	/// (0x823CDE1C / 0x8258CD54), toggled on (0x823CDE5C / 0x8258CD94), labelled (0x823CDE9C /
+	/// 0x8258CDD4), given the amount as its target (0x823CDEA0 / 0x8258CDD8) and shown at 0
+	/// (0x823CDEAC / 0x8258CDE4). With no free row the call does nothing.
 	/// </summary>
-	/// <remarks>
-	/// The amount is assigned, not accumulated (`stw r26, 8(r31)`), so two calls with the same
-	/// label make two rows. A sixth call finds no free row and is dropped with no error.
-	/// </remarks>
 	public MiniGameRow? AddMiniGameAmount(string label, int amount)
 	{
 		if (_miniGame.Count >= MiniGameRows)
@@ -189,7 +214,11 @@ public sealed class Engine_UiGuiWidgets
 		return row;
 	}
 
-	/// <summary>`GUI.TurnOffMiniGameComplete()`.</summary>
+	/// <summary>
+	/// The close (TU1 `sub_823CDF10`, disc `sub_8258CE48`): every row released and shown at 0
+	/// (0x823CDF4C / 0x8258CE84), its toggle off (0x823CDF8C / 0x8258CEC4), the screen exited
+	/// (0x823CDFC4 / 0x8258CEFC). `GUI.TurnOffMiniGameComplete()` is one caller.
+	/// </summary>
 	public void TurnOffMiniGame()
 	{
 		if (!MiniGameUp)
@@ -198,46 +227,121 @@ public sealed class Engine_UiGuiWidgets
 		}
 
 		MiniGameUp = false;
+		_miniGameSeen = false;
 		_miniGame.Clear();
 		++Generation;
 	}
 
 	/// <summary>
-	/// The confirm press: first fast-forwards the tally, second closes it.
+	/// Screen 11 is or is not the in-game GUI's screen. The close's other callers — the A press
+	/// (0x823CDCA0 / 0x8258CBD8) and the handler's vtable slot 9 — exit the screen (0x823CDFC4 /
+	/// 0x8258CEFC), so the tally that was seen up and is up no more has closed.
 	/// </summary>
-	/// <returns>True when the widget closed.</returns>
+	public void ObserveMiniGameScreen(bool up)
+	{
+		if (!MiniGameUp)
+		{
+			return;
+		}
+
+		if (up)
+		{
+			_miniGameSeen = true;
+		}
+		else if (_miniGameSeen)
+		{
+			TurnOffMiniGame();
+		}
+	}
+
+	/// <summary>
+	/// A on the tally (`lhGuiMinigameCompletedScreen_HandleAction`, code 6): every row shown below
+	/// its target, signed (`cmpw` / `bge` 0x823CDC3C / 0x8258CB74), is shown at its target
+	/// (0x823CDC44 / 0x8258CB7C) — a counting-down row never snaps. The close it makes when no row
+	/// moved (0x823CDC98 / 0x8258CBD0) is the guest's own.
+	/// </summary>
+	/// <returns>True when a row snapped.</returns>
 	public bool ConfirmMiniGame()
 	{
 		bool snapped = false;
 		foreach (MiniGameRow row in _miniGame)
 		{
-			if (row.Displayed != row.Target)
+			if (row.Displayed < row.Target)
 			{
 				row.Displayed = row.Target;
 				snapped = true;
 			}
 		}
 
-		++Generation;
 		if (snapped)
 		{
-			return false;
+			++Generation;
 		}
 
-		TurnOffMiniGame();
-		return true;
+		return snapped;
+	}
+
+	/// <summary>
+	/// Advances the tally by <paramref name="frames"/> GUI ticks. The handler's update (TU1
+	/// `sub_823CDBA0`, disc `sub_8258CAD8`, vtable +16, run by the GUI tick for the current screen at
+	/// 0x8229AD70 / 0x8229A930) steps the rows in order and stops at the first that moved
+	/// (0x823CDBDC / 0x8258CB14). A row (TU1 `sub_823CD688`, disc `sub_8258C5C0`) moves while it is
+	/// short of its target — below a positive one, above a negative one — by 1, 19, 199 … one order
+	/// per digit of what it shows, clamped onto the target (0x823CD73C..0x823CD770 /
+	/// 0x8258C674..0x8258C6A8).
+	/// </summary>
+	public void StepMiniGame(uint frames)
+	{
+		if (!MiniGameUp)
+		{
+			return;
+		}
+
+		bool moved = false;
+		for (uint f = 0; f < frames && StepMiniGameOnce(); ++f)
+		{
+			moved = true;
+		}
+
+		if (moved)
+		{
+			++Generation;
+		}
+	}
+
+	private bool StepMiniGameOnce()
+	{
+		foreach (MiniGameRow row in _miniGame)
+		{
+			bool down = row.Target < 0;
+			if (down ? row.Displayed <= row.Target : row.Displayed >= row.Target)
+			{
+				continue;
+			}
+
+			int step = down ? -1 : 1;
+			for (int value = row.Displayed; Math.Abs(value) >= 10; value /= 10)
+			{
+				step = (10 * step) + (down ? -9 : 9);
+			}
+
+			int next = row.Displayed + step;
+			row.Displayed = down ? Math.Max(next, row.Target) : Math.Min(next, row.Target);
+			return true;
+		}
+
+		return false;
 	}
 
 	// ================= THE CLOCKS ===========================================================
 
 	/// <summary>
-	/// Runs every widget's own motion for one frame.
+	/// Runs the golf meter's own motion for one frame; the tally steps on GUI ticks (<see cref="StepMiniGame"/>).
 	/// </summary>
 	public void Tick(double delta)
 	{
 		float dt = (float)delta;
-		bool changed = TickGolf(dt) | TickMiniGame();
-		if (changed)
+		if (TickGolf(dt))
 		{
 			++Generation;
 		}
@@ -272,42 +376,5 @@ public sealed class Engine_UiGuiWidgets
 		GolfInSweetSpot = GolfAngle > GolfAngleCentre - GolfSweetHalfWidth &&
 			GolfAngle < GolfAngleCentre + GolfSweetHalfWidth;
 		return true;
-	}
-
-	/// <summary>
-	/// Advances the tally — one row per tick, by a step that grows with the digit count.
-	/// </summary>
-	/// <remarks>
-	/// The guest breaks on the first row that moved, so rows count up in order, not together.
-	/// The step is 1, 19, 199, 1999 … one order of magnitude per digit, clamped so the last step
-	/// hits the target exactly.
-	/// </remarks>
-	private bool TickMiniGame()
-	{
-		if (!MiniGameUp)
-		{
-			return false;
-		}
-
-		foreach (MiniGameRow row in _miniGame)
-		{
-			if (row.Displayed == row.Target)
-			{
-				continue;
-			}
-
-			bool down = row.Target < 0;
-			int step = down ? -1 : 1;
-			for (int value = row.Displayed; Math.Abs(value) >= 10; value /= 10)
-			{
-				step = (10 * step) + (down ? -9 : 9);
-			}
-
-			int next = row.Displayed + step;
-			row.Displayed = down ? Math.Max(next, row.Target) : Math.Min(next, row.Target);
-			return true;
-		}
-
-		return false;
 	}
 }

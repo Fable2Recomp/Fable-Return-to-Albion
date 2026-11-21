@@ -632,14 +632,26 @@ public sealed class Engine_UiScreenTemplate
 
 	/// <summary>
 	/// The screen's handler chooses the row from the HIGHLIGHTED ROW, never from a pushed event:
-	/// options (`sub_826DA228` asks `sub_826C1B50` @0x826da3ec and takes the page as its type − 70),
-	/// furniture and decoration (`sub_826B6A18`, `sub_826B7550`). (The logbook's A reaches no C++ —
+	/// options (`sub_826DA228` asks `sub_826C1B50` @0x826da3ec and takes the page as its type − 70)
+	/// and decoration (`sub_826B7550`). (The logbook's A reaches no C++ —
 	/// `sub_826D96F0` 36 fires `OnPressA` only, which no Lua receives now — and its page follows
 	/// the stated highlighted row.) A press on such a screen states the row as highlighted
 	/// (`StateHighlightedRow`, which `sub_826C1B50` answers from) and then sends the screen's own
 	/// A (code 36). An identity push at these handlers answers only the scroll sounds.
 	/// </summary>
 	public bool CommitsByHighlight;
+
+	/// <summary>The token <see cref="RowAction"/> replaces with the pressed row's full id.</summary>
+	public const string RowIdToken = "{id}";
+
+	/// <summary>
+	/// The verb a press on this screen's rows runs (`rowAction`), <see cref="RowIdToken"/> replaced by
+	/// the row's full id (`IdLow + (IdHigh &lt;&lt; 16)`, as the guest's populate spawned it): the
+	/// screen's stated call by argument, never its handler reading the guest's highlight. A row's
+	/// own command wins. Upgrade furniture (26) states `Furniture:upgrade:{id}`: its rows are levels
+	/// (`sub_8299D910`), and the verb runs `sub_826B6A18`'s transaction on that level.
+	/// </summary>
+	public string RowAction = string.Empty;
 
 	/// <summary>
 	/// The menu template this screen's list is built from when the WIDGET NAMES NONE.

@@ -23,10 +23,6 @@ void TellGotoSlideEnd(uint8_t* base, uint32_t timeline, uint32_t element, uint32
 /// After the attribute writer (`sub_82284798`), unless a track or a slide entry made the write.
 void TellAttribute(uint8_t* base, uint32_t store, uint32_t element, uint32_t attribute, uint32_t value);
 
-/// After a text writer (`sub_82425DD0` SetText / `sub_82425F40` SetTextFromTag): the element's live
-/// string, read back from its text record once the writer has stored it.
-void TellText(uint8_t* base, uint32_t element);
-
 /// After the flags writer (`sub_82284BE8`): only `active` (0x2000) is a statement.
 void TellFlags(uint8_t* base, uint32_t store, uint32_t element, uint32_t mask, bool on);
 

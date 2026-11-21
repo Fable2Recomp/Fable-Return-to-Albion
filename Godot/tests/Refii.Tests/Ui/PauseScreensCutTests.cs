@@ -10,7 +10,7 @@ using Refii.Ui;
 
 /// <summary>
 /// The pause screens' statements Godot takes from the guest: the shop's third query answer, the
-/// adjuster's told value, the world map's emphasis by name, the purse every list screen tells, the
+/// adjuster's render statement, the world map's emphasis by name, the purse every list screen tells, the
 /// gift list's gold row and decoration's Y. Pure .NET — no Godot runtime.
 /// </summary>
 [TestSuite]
@@ -51,15 +51,28 @@ public class PauseScreensCutTests
 		AssertThat(warnings.Count).IsEqual(1);
 	}
 
-	/// <summary>The adjuster's value is read back from the widget's own render (`sub_826B8BB0`).</summary>
+	/// <summary>The adjuster is drawn from its widget's render statement (`sub_826B8BB0`), keyed by
+	/// the widget: the latest render wins, its flags format the value and its step gates the arrows.</summary>
 	[TestCase]
-	public void AdjusterValueReadsFromTheRenderedText()
+	public void AdjusterValueIsTheWidgetsRenderStatement()
 	{
-		AssertThat(Engine_UiGuiBoxes.AdjusterState.ParseDisplay("+25%")).IsEqual(25);
-		AssertThat(Engine_UiGuiBoxes.AdjusterState.ParseDisplay("-60%")).IsEqual(-60);
-		AssertThat(Engine_UiGuiBoxes.AdjusterState.ParseDisplay("<gold_img>1,500")).IsEqual(1500);
-		AssertThat(Engine_UiGuiBoxes.AdjusterState.ParseDisplay("0")).IsEqual(0);
-		AssertThat(Engine_UiGuiBoxes.AdjusterState.ParseDisplay(string.Empty)).IsNull();
+		Engine_UiNumericRender.Clear();
+		const uint widget = 0x40123418u;
+		AssertThat(Engine_UiNumericRender.Of(widget)).IsNull();
+
+		Engine_UiNumericRender.Stated(widget, 20, -60, 25, 5, 0);
+		Engine_UiNumericRender.Stated(widget, 25, -60, 25, 5, 4 | 2);
+		Engine_UiGuiBoxes.AdjusterState state = Engine_UiNumericRender.Of(widget)!;
+		AssertThat(state.Value).IsEqual(25);
+		AssertThat(state.Display).IsEqual("+25%");
+		AssertThat(state.CanIncrease).IsFalse();
+		AssertThat(state.CanDecrease).IsTrue();
+
+		Engine_UiNumericRender.Stated(widget, 1500, 0, 5000, 100, 1);
+		AssertThat(Engine_UiNumericRender.Of(widget)!.Display).IsEqual("1500");
+		AssertThat(Engine_UiNumericRender.Of(0u)).IsNull();
+		Engine_UiNumericRender.Clear();
+		AssertThat(Engine_UiNumericRender.Of(widget)).IsNull();
 	}
 
 	/// <summary>
@@ -122,11 +135,14 @@ public class PauseScreensCutTests
 		AssertThat(authored.Screens[25].FlipAction).IsEqual(string.Empty);
 	}
 
-	/// <summary>The logbook's told expression icon stands inside the page Godot owns.</summary>
+	/// <summary>
+	/// The logbook's expression icon is the provider's, from the row's record `IconGraphic`
+	/// (FillExpression `sub_829BCDF0` 0x829bcee8 stores that name's hash): no told guest unit.
+	/// </summary>
 	[TestCase]
-	public void LogbookExpressionIconIsAGuestUnit()
+	public void LogbookExpressionIconIsTheProvidersNotTold()
 	{
 		Engine_UiTemplateSet authored = Fable2UiTemplates.AuthoredDefaults();
-		AssertThat(authored.Screens[17].GuestTextUnits).Contains("ExpressionsPage.Contents.Icon");
+		AssertThat(authored.Screens[17].GuestTextUnits).NotContains("ExpressionsPage.Contents.Icon");
 	}
 }

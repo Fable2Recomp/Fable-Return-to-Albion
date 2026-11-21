@@ -32,8 +32,8 @@ float fable_evaluate_prop_baked_ao(float color_alpha, vec3 world_pos) {
 #include "res://src/android/fable_lite_ground_ao.gdshaderinc"
 #endif
 
-// THE AO WEIGHTS, fable_lighting's four (left out of every lite build): the phone's switches, and
-// fable_direct_ao's AO copied to a local so FABLE_LITE_MEDIUMP can relax it.
+// THE AO WEIGHTS, fable_lighting's four (left out of every lite build): the phone's switches.
+float fable_screen_ao_union(float macro_ao, vec2 screen_uv, uint cam_layers) { return max(macro_ao, 0.0); }
 #ifdef FABLE_LITE_NO_BAKED_AO
 float fable_apply_ao_strength(float raw_ao) { return 1.0; }
 float fable_direct_ao(float combined_ao) { return 1.0; }
@@ -56,13 +56,20 @@ float fable_apply_ao_strength(float raw_ao) {
 #endif
 }
 
+// FULL PRECISION, NEVER FABLE_LITE_MP (`lite_half_precision_lighting`). With this weight relaxed, an
+// Adreno 640 (Galaxy S10e, OnePlus 7 Pro) drew every lite surface that faces the sun or the moon pure
+// white under the modern model, which is the only model that compiles it (the fable model's builds
+// take FABLE_LITE_NO_BAKED_AO, above); the faces turned away, which light() skips, kept their colour.
+// The S25+ (Adreno 830) drew it right. On the S10e at Low, 2026-11-14: half precision on is white by
+// day and night, on with FABLE_LITE_NO_DIRECT_AO is right, and on with this weight at full precision
+// is right. One mix per light, so the relaxed form bought nothing measurable. Here and in
+// fable_lite_lean_light's directional branch (LiteHalfPrecisionLightingTests).
 float fable_direct_ao(float combined_ao) {
 #ifdef FABLE_LITE_NO_DIRECT_AO
 	return 1.0;
 #else
-	FABLE_LITE_MP float w = max(0.0, min(1.0, FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT));
-	FABLE_LITE_MP float ao = combined_ao;
-	return mix(1.0, max(ao, 0.0), w);
+	float w = max(0.0, min(1.0, FABLE_UNIFIED * FABLE_AO_LIGHT_AFFECT));
+	return mix(1.0, max(combined_ao, 0.0), w);
 #endif
 }
 #endif

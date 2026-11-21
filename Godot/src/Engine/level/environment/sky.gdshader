@@ -3,9 +3,20 @@ shader_type sky;
 #include "res://src/Engine/level/environment/sky_dome.gdshaderinc"
 
 uniform sampler2D in_scatter_lut : hint_default_black, filter_linear, repeat_disable;
+#ifdef FABLE_SKY_GLOBALS
+// `sky_dome_globals` (android/AndroidSkyGlobals.cs): read from globals, so no material write
+// marks the sky dirty and its radiance map is not re-filtered.
+global uniform vec3 atmos_sun;
+global uniform vec3 fable_sky_beta_rayleigh;
+global uniform vec3 fable_sky_beta_mie;
+#define beta_rayleigh fable_sky_beta_rayleigh
+#define beta_mie fable_sky_beta_mie
+#define sun_engine atmos_sun
+#else
 uniform vec3 beta_rayleigh = vec3(0.001, 0.0015, 0.004);
 uniform vec3 beta_mie = vec3(0.0056, 0.0064, 0.0105);
 uniform vec3 sun_engine = vec3(1.0, 0.0, 0.0);
+#endif
 uniform float horizon_distance = 1900.0;
 
 void sky() {

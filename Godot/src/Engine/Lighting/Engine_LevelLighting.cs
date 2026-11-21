@@ -39,17 +39,42 @@ public static class Engine_LevelLighting
 
 	public const float CascadeSplitNear = 35.0f;
 
-	public const float CascadeSplitFour1 = 18.0f;
+	public const float CascadeSplitFour1 = 12.0f;
 
-	public const float CascadeSplitFour2 = 50.0f;
+	public const float CascadeSplitFour2 = 34.0f;
 
-	public const float CascadeSplitFour3 = 110.0f;
+	public const float CascadeSplitFour3 = 78.0f;
 
 	public const float CascadeSplitMid = 110.0f;
 
 	public const float CascadeSplitFar = 240.0f;
 
 	public const float NearSlopeBias = 2.0f;
+
+	public const float FourSplitSlopeBias = 1.30f;
+
+	/// <summary>
+	/// Computes normalized directional shadow cascade split ratios (<c>Split1, Split2, Split3</c>)
+	/// for <paramref name="splits"/> and <paramref name="distance"/>. Pure helper for headless tests.
+	/// </summary>
+	public static (float Split1, float Split2, float Split3) ComputeCascadeSplits(int splits, float distance)
+	{
+		if (distance <= 0.0f)
+		{
+			return (0.1f, 0.3f, 0.6f);
+		}
+
+		float nearMetres = splits > 2 ? CascadeSplitFour1 : CascadeSplitNear;
+		float split1 = Mathf.Clamp(nearMetres / distance, 0.05f, 0.5f);
+		if (splits <= 2)
+		{
+			return (split1, 0.5f, 0.8f);
+		}
+
+		float split2 = Mathf.Clamp(CascadeSplitFour2 / distance, split1 + 0.05f, 0.8f);
+		float split3 = Mathf.Clamp(Mathf.Min(CascadeSplitFour3, distance * 0.8f) / distance, split2 + 0.05f, 0.95f);
+		return (split1, split2, split3);
+	}
 
 	/// <summary>`sun_shadow_splits`: cascades by day, 2 or 4 (defaults to 4 on desktop, 2 on mobile).</summary>
 	public static int SunSplits => _sunSplits ??= ReadSunSplits();
@@ -259,18 +284,21 @@ public static class Engine_LevelLighting
 		if (light.DirectionalShadowMaxDistance != distance) light.DirectionalShadowMaxDistance = distance;
 		if (light.DirectionalShadowFadeStart != 0.85f) light.DirectionalShadowFadeStart = 0.85f;
 
+		float desiredNormalBias = splits >= 4 ? FourSplitSlopeBias : NearSlopeBias;
+		if (MathF.Abs(light.ShadowNormalBias - desiredNormalBias) > 0.01f)
+		{
+			light.ShadowNormalBias = desiredNormalBias;
+		}
+
 		if (distance > 0f)
 		{
-			float nearMetres = splits > 2 ? CascadeSplitFour1 : CascadeSplitNear;
-			float split1 = Mathf.Clamp(nearMetres / distance, 0.05f, 0.5f);
+			(float split1, float split2, float split3) = ComputeCascadeSplits(splits, distance);
 			if (Mathf.Abs(light.DirectionalShadowSplit1 - split1) > 0.001f)
 			{
 				light.DirectionalShadowSplit1 = split1;
 			}
 			if (splits > 2)
 			{
-				float split2 = Mathf.Clamp(CascadeSplitFour2 / distance, split1 + 0.05f, 0.8f);
-				float split3 = Mathf.Clamp(Mathf.Min(CascadeSplitFour3, distance * 0.8f) / distance, split2 + 0.05f, 0.95f);
 				if (Mathf.Abs(light.DirectionalShadowSplit2 - split2) > 0.001f) light.DirectionalShadowSplit2 = split2;
 				if (Mathf.Abs(light.DirectionalShadowSplit3 - split3) > 0.001f) light.DirectionalShadowSplit3 = split3;
 			}
@@ -291,10 +319,10 @@ public static class Engine_LevelLighting
 		var aimed = new Transform3D(basis, Vector3.Zero);
 		bool inTree = light.IsInsideTree();
 		Transform3D currentTransform = inTree ? light.GlobalTransform : light.Transform;
-		// Angular hysteresis (~0.085 deg): prevents sub-arcminute per-frame time-of-day float drift
-		// from rotating the orthographic cascade boxes and shimmering distant shadow edges every frame.
-		if ((currentTransform.Basis.Z - aimed.Basis.Z).LengthSquared() > 2.25e-6f ||
-		    (currentTransform.Basis.Y - aimed.Basis.Y).LengthSquared() > 2.25e-6f)
+		// Smooth display-rate sun rotation driven by SunClockInterpolator (zero 0.085 deg step jumps;
+		// exact 1e-12 epsilon skips redundant server updates while the clock is frozen).
+		if ((currentTransform.Basis.Z - aimed.Basis.Z).LengthSquared() > 1e-12f ||
+		    (currentTransform.Basis.Y - aimed.Basis.Y).LengthSquared() > 1e-12f)
 		{
 			Refii.Core.Engine_InstanceUpdates.Note(Refii.Core.Engine_InstanceUpdates.Source.Light);
 			if (inTree) light.GlobalTransform = aimed;
@@ -459,6 +487,11 @@ public static class Engine_LevelLighting
 		{
 			new Refii.Fx.Engine_FxDepthCaptureEffect { View = view },
 		};
+		if (!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
+		    string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal))
+		{
+			effects.Add(new Engine_ScreenSpaceAoEffect { View = view });
+		}
 		if (Refii.Models.Engine_ClassicMaterial.Active)
 		{
 			// The classic look's screen-space sun shadow mask, between the depth prepass and the
@@ -509,6 +542,9 @@ public static class Engine_LevelLighting
 						break;
 					case Refii.Fx.Engine_FxDepthCaptureEffect depthCapture:
 						depthCapture.ReleaseNow(releaseStaticFallbacks);
+						break;
+					case Engine_ScreenSpaceAoEffect ssaoEffect:
+						ssaoEffect.ReleaseNow(releaseStaticFallbacks);
 						break;
 					case Refii.Models.Engine_ClassicScreenShadow classicShadow:
 						classicShadow.ReleaseNow(releaseStaticFallbacks);
@@ -644,8 +680,31 @@ public static class Engine_LevelLighting
 
 	private static int _lastSsaoQualityTier = -1;
 
+	/// <summary>
+	/// Whether the Forward+ <see cref="Engine_ScreenSpaceAoEffect"/> PreOpaque GTAO pass should run this frame.
+	/// </summary>
+	public static bool ShouldRunCustomScreenSpaceAo() =>
+		!Refii.Core.Engine_AppRoot.IsTestHost &&
+		!Refii.Models.Engine_ClassicMaterial.Active &&
+		!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
+		string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal) &&
+		(SsaoOverride ?? (Engine_LightingFrame.ModernModel &&
+			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
+			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f));
+
 	private static void ConfigureScreenSpaceAo(Godot.Environment environment, bool unified)
 	{
+		// On Forward+, Engine_ScreenSpaceAoEffect runs unified dual-scale GTAO in PreOpaque and folds
+		// directly into combined_ao (covering custom light(), EMISSION, depth_prepass_alpha cutouts,
+		// and Debug View 11). Disable Godot's opaque-only Environment SSAO so GPU work is never duplicated.
+		if (!Refii.AndroidRuntime.AndroidBakedShadows.KeepsOneBake &&
+		    string.Equals(RenderingServer.GetCurrentRenderingMethod(), "forward_plus", StringComparison.Ordinal))
+		{
+			Engine_ScreenSpaceAoEffect.RegisterGlobals();
+			if (environment.SsaoEnabled) environment.SsaoEnabled = false;
+			return;
+		}
+
 		bool enableSsao = SsaoOverride ?? (unified &&
 			Engine_LevelAmbientOcclusion.BakedAoEnabled &&
 			Engine_LevelAmbientOcclusion.BakedAoScale > 0.01f &&
@@ -666,7 +725,7 @@ public static class Engine_LevelLighting
 				: RenderingServer.EnvironmentSsaoQuality.High;
 			RenderingServer.EnvironmentSetSsaoQuality(
 				quality,
-				tier <= 2,
+				tier == 1,
 				0.5f,
 				2,
 				35.0f,
@@ -674,14 +733,14 @@ public static class Engine_LevelLighting
 		}
 
 		if (Refii.AndroidRuntime.AndroidEnvironmentWrites.Unchanged(environment, 1, Engine_LevelAmbientOcclusion.BakedAoScale)) return;
-		if (environment.SsaoRadius != 0.42f) environment.SsaoRadius = 0.42f;
-		float ssaoIntensity = 1.30f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
+		if (environment.SsaoRadius != 0.52f) environment.SsaoRadius = 0.52f;
+		float ssaoIntensity = 1.65f * Math.Clamp(Engine_LevelAmbientOcclusion.BakedAoScale, 0.0f, 2.0f);
 		if (environment.SsaoIntensity != ssaoIntensity) environment.SsaoIntensity = ssaoIntensity;
 		if (environment.SsaoPower != 1.35f) environment.SsaoPower = 1.35f;
-		if (environment.SsaoDetail != 0.85f) environment.SsaoDetail = 0.85f;
-		if (environment.SsaoHorizon != 0.04f) environment.SsaoHorizon = 0.04f;
-		if (environment.SsaoSharpness != 0.72f) environment.SsaoSharpness = 0.72f;
-		if (environment.SsaoLightAffect != 0.18f) environment.SsaoLightAffect = 0.18f;
+		if (environment.SsaoDetail != 1.00f) environment.SsaoDetail = 1.00f;
+		if (environment.SsaoHorizon != 0.08f) environment.SsaoHorizon = 0.08f;
+		if (environment.SsaoSharpness != 0.85f) environment.SsaoSharpness = 0.85f;
+		if (environment.SsaoLightAffect != 0.34f) environment.SsaoLightAffect = 0.34f;
 	}
 
 	public static void ConfigureEnvironment(Godot.Environment environment, LightingFrame frame)
@@ -692,7 +751,6 @@ public static class Engine_LevelLighting
 		}
 
 		if (environment.TonemapMode != Godot.Environment.ToneMapper.Linear) environment.TonemapMode = Godot.Environment.ToneMapper.Linear;
-		Engine_LevelBakedLighting.PublishThemeLighting(frame);
 
 		// ONE FILL FOR EVERY SURFACE, AND GODOT CARRIES IT. The lit shaders no longer switch
 		// Godot's ambient off, so exactly one side may supply the fill or it is counted twice:
@@ -712,6 +770,14 @@ public static class Engine_LevelLighting
 		ConfigureGlobalIllumination(environment, unified, frame.HasSky);
 		ConfigureScreenSpaceAo(environment, unified);
 
+		bool sdfgiActive = environment.SdfgiEnabled;
+		float floorShare = sdfgiActive ? Engine_LightingFrame.ModernFloorShare : 0.15f;
+		bool routeThemeAmbient = unified && !sdfgiActive;
+		Engine_LevelBakedLighting.PublishThemeLighting(
+			frame,
+			routeThemeAmbient ? floorShare : 1.0f,
+			out Vector3 themeAmbient);
+
 		// Sky reflections are not part of this: the materials carry their own environment map.
 		if (environment.ReflectedLightSource != Godot.Environment.ReflectionSource.Disabled) environment.ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled;
 
@@ -729,25 +795,28 @@ public static class Engine_LevelLighting
 		{
 			// GODOT'S AMBIENT IS THE GI'S SKY LIGHT, NOT A FLOOR: inside a cascade the engine replaces
 			// it with the trace (`ambient_light = diffuse`), so it lands only where the sky is seen
-			// — which is what the guest's BAKE did. It carries the bake's share of the fill,
-			// `mean bake * LightmapColour`, in the theme's own colour; the flat floor is the
-			// global `fable_ambient_colour` the shader emits. `ambient_light_scale` scales both.
-			float[] sky =
+			// — which is what the guest's BAKE did. When SDFGI is disabled, we also fold `(1 - floorShare)`
+			// of the theme's `AmbientColour * AmbientEnergy` into Godot's AmbientLight alongside `skyBake`
+			// (leaving `floorShare` in `fable_ambient_colour`), preserving exact energy conservation while
+			// allowing Godot's per-pixel SSAO to occlude architectural crevices day and night.
+			float skyBakeR = Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[0];
+			float skyBakeG = Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[1];
+			float skyBakeB = Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[2];
+			float[] godotAmbient =
 			{
-				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[0],
-				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[1],
-				Engine_LightingFrame.MeanAuthoredBake * frame.LightmapColour[2],
+				skyBakeR + (routeThemeAmbient ? themeAmbient.X : 0f),
+				skyBakeG + (routeThemeAmbient ? themeAmbient.Y : 0f),
+				skyBakeB + (routeThemeAmbient ? themeAmbient.Z : 0f),
 			};
-			if (frame.HasSky)
+			if (frame.HasSky || !sdfgiActive)
 			{
-				float peak = MathF.Max(sky[0], MathF.Max(sky[1], sky[2]));
+				float peak = MathF.Max(godotAmbient[0], MathF.Max(godotAmbient[1], godotAmbient[2]));
 				if (environment.AmbientLightSource != Godot.Environment.AmbientSource.Color) environment.AmbientLightSource = Godot.Environment.AmbientSource.Color;
 				Color skyColour = peak > 0f
-					? Engine_LightColour.ForGodot(new Color(sky[0] / peak, sky[1] / peak, sky[2] / peak))
+					? Engine_LightColour.ForGodot(new Color(godotAmbient[0] / peak, godotAmbient[1] / peak, godotAmbient[2] / peak))
 					: Colors.Black;
 				if (environment.AmbientLightColor != skyColour) environment.AmbientLightColor = skyColour;
-				// The GI's half of the bake; the other half is the flat floor below.
-				float traced = 1f - Engine_LightingFrame.ModernFloorShare;
+				float traced = 1f - floorShare;
 				float skyEnergy = peak * traced * ambientScale;
 				if (environment.AmbientLightEnergy != skyEnergy) environment.AmbientLightEnergy = skyEnergy;
 			}
@@ -760,8 +829,8 @@ public static class Engine_LevelLighting
 				if (environment.AmbientLightEnergy != 0f) environment.AmbientLightEnergy = 0f;
 			}
 
-			float floor = Engine_LightingFrame.ModernFloorShare * ambientScale;
-			LastFillFloor.Set(FableFillFloorName, new Vector3(sky[0] * floor, sky[1] * floor, sky[2] * floor));
+			float floor = floorShare * ambientScale;
+			LastFillFloor.Set(FableFillFloorName, new Vector3(skyBakeR * floor, skyBakeG * floor, skyBakeB * floor));
 		}
 		else
 		{

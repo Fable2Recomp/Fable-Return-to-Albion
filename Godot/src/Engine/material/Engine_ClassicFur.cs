@@ -1034,6 +1034,8 @@ public partial class Engine_ClassicFur : Node
         Godot.Collections.Array arrays = Engine_MdlSurfaceArrays.Of(source, surface);
         Vector3[] vertices = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
         Vector3[] normals = arrays[(int)Mesh.ArrayType.Normal].AsVector3Array();
+        float[] tangents = arrays[(int)Mesh.ArrayType.Tangent].VariantType == Variant.Type.Nil
+            ? Array.Empty<float>() : arrays[(int)Mesh.ArrayType.Tangent].AsFloat32Array();
         Vector2[] uvs = arrays[(int)Mesh.ArrayType.TexUV].AsVector2Array();
         int[] bones = arrays[(int)Mesh.ArrayType.Bones].VariantType == Variant.Type.Nil
             ? Array.Empty<int>() : arrays[(int)Mesh.ArrayType.Bones].AsInt32Array();
@@ -1041,12 +1043,14 @@ public partial class Engine_ClassicFur : Node
             ? Array.Empty<float>() : arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array();
         int[] indices = arrays[(int)Mesh.ArrayType.Index].AsInt32Array();
         int n = vertices.Length;
+        bool hasTangents = n > 0 && tangents.Length == n * 4;
         int influences = n > 0 && bones.Length == n * 8 ? 8 : 4;
 
         var remap = new int[n];
         Array.Fill(remap, -1);
         var outVertices = new List<Vector3>();
         var outNormals = new List<Vector3>();
+        var outTangents = hasTangents ? new List<float>() : null;
         var outUvs = new List<Vector2>();
         var outBones = new List<int>();
         var outWeights = new List<float>();
@@ -1064,6 +1068,14 @@ public partial class Engine_ClassicFur : Node
             remap[v] = outVertices.Count;
             outVertices.Add(vertices[v]);
             outNormals.Add(v < normals.Length ? normals[v] : Vector3.Up);
+            if (outTangents is not null)
+            {
+                int tBase = v * 4;
+                outTangents.Add(tangents[tBase]);
+                outTangents.Add(tangents[tBase + 1]);
+                outTangents.Add(tangents[tBase + 2]);
+                outTangents.Add(tangents[tBase + 3]);
+            }
             outUvs.Add(v < uvs.Length ? uvs[v] : Vector2.Zero);
             for (int k = 0; k < influences && bones.Length != 0; k++)
             {
@@ -1109,6 +1121,10 @@ public partial class Engine_ClassicFur : Node
         shell.Resize((int)Mesh.ArrayType.Max);
         shell[(int)Mesh.ArrayType.Vertex] = outVertices.ToArray();
         shell[(int)Mesh.ArrayType.Normal] = outNormals.ToArray();
+        if (outTangents is not null && outTangents.Count == outVertices.Count * 4)
+        {
+            shell[(int)Mesh.ArrayType.Tangent] = outTangents.ToArray();
+        }
         shell[(int)Mesh.ArrayType.TexUV] = outUvs.ToArray();
         shell[(int)Mesh.ArrayType.Color] = outColours.ToArray();
         shell[(int)Mesh.ArrayType.Custom0] = outLanes.ToArray();

@@ -486,6 +486,6 @@ public class StaticShadowMapTests
 		AssertThat(Engine_LevelShadowMaps.GetLightsPerMapForResolution(128)).IsEqual(16);
 		AssertThat(Engine_LevelShadowMaps.GetLightsPerMapForResolution(2048)).IsEqual(36);
 		AssertThat(Engine_LevelShadowMaps.GetLightsPerMapForResolution(4096)).IsEqual(64);
-		AssertThat(Engine_LevelShadowMaps.GetLightsPerMapForResolution(8192)).IsEqual(64);
+		AssertThat(Engine_LevelShadowMaps.GetLightsPerMapForResolution(8192)).IsEqual(121);
 	}
 }

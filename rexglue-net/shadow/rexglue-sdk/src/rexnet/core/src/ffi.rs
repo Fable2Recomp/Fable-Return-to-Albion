@@ -18,9 +18,9 @@
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
 use tokio::sync::{mpsc, Notify};
@@ -631,6 +631,40 @@ unsafe fn send_command(handle: *mut RexNetHandle, cmd: Command) -> i32 {
     .unwrap_or(REXNET_ERR_ENGINE)
 }
 
+/// REFII: when the last event was handed out, in microseconds since [`quiet_origin`].
+static LAST_EVENT_US: AtomicU64 = AtomicU64::new(0);
+
+/// REFII: how long without an event before the pump may take the idle wait.
+const QUIET_AFTER: Duration = Duration::from_secs(2);
+
+fn quiet_origin() -> Instant {
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    *ORIGIN.get_or_init(Instant::now)
+}
+
+/// REFII: `REFII_REXNET_IDLE_WAIT_MS` (Android's `android_rexnet_idle_wait_ms`), 17-1000; 0 = unset.
+fn idle_wait_ms() -> u32 {
+    static IDLE: OnceLock<u32> = OnceLock::new();
+    *IDLE.get_or_init(|| {
+        std::env::var("REFII_REXNET_IDLE_WAIT_MS")
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok())
+            .filter(|ms| (17..=1000).contains(ms))
+            .unwrap_or(0)
+    })
+}
+
+/// REFII: the pump's wait. The caller's timeout, or the idle wait once no event has come for
+/// [`QUIET_AFTER`]: no game traffic, so no session in play. An event still wakes the pump at once;
+/// only the shim's housekeeping (join and invite timeouts) then runs less often.
+pub(crate) fn pump_wait_ms(asked_ms: u32, idle_ms: u32, quiet: Duration) -> u32 {
+    if idle_ms > asked_ms && quiet >= QUIET_AFTER {
+        idle_ms
+    } else {
+        asked_ms
+    }
+}
+
 /// Block the calling thread until an event is queued or `timeout_ms`
 /// elapses. Returns true if woken by an event. A wake with an empty queue is
 /// possible (the event was drained by another poll) and harmless.
@@ -649,7 +683,11 @@ pub unsafe extern "C" fn rexnet_wait_event(handle: *mut RexNetHandle, timeout_ms
         // entered, and tokio panics ("there is no reactor running") on every call; the
         // pump then retried immediately and wrote 43 million panics to stdout (b172).
         let wait = handle.evt_notify.notified();
-        let timeout = Duration::from_millis(timeout_ms as u64);
+        let quiet = quiet_origin().elapsed().saturating_sub(Duration::from_micros(
+            LAST_EVENT_US.load(Ordering::Relaxed),
+        ));
+        let timeout =
+            Duration::from_millis(pump_wait_ms(timeout_ms, idle_wait_ms(), quiet) as u64);
         handle
             .runtime
             .block_on(async move { tokio::time::timeout(timeout, wait).await })
@@ -674,6 +712,7 @@ pub unsafe extern "C" fn rexnet_poll_event(
         let Ok(mut rx) = handle.evt_rx.lock() else { return false };
         match rx.try_recv() {
             Ok(event) => {
+                LAST_EVENT_US.store(quiet_origin().elapsed().as_micros() as u64, Ordering::Relaxed);
                 fill_event(&mut *out, event);
                 true
             }
@@ -1223,5 +1262,20 @@ unsafe fn slice_owned(ptr: *const u8, len: u32) -> Vec<u8> {
         Vec::new()
     } else {
         std::slice::from_raw_parts(ptr, len as usize).to_vec()
+    }
+}
+
+#[cfg(test)]
+mod refii_pump_wait_tests {
+    use super::*;
+
+    #[test]
+    fn idle_wait_only_after_quiet_and_only_when_longer() {
+        let quiet = QUIET_AFTER;
+        let busy = QUIET_AFTER - Duration::from_millis(1);
+        assert_eq!(pump_wait_ms(16, 0, quiet), 16);
+        assert_eq!(pump_wait_ms(16, 250, busy), 16);
+        assert_eq!(pump_wait_ms(16, 250, quiet), 250);
+        assert_eq!(pump_wait_ms(16, 10, quiet), 16);
     }
 }

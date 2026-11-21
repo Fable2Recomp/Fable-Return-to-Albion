@@ -1,0 +1,29 @@
+diff --git a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+--- a/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
++++ b/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.cpp
+@@ -1008,6 +1008,16 @@
+ 			framebuffer = rb_data->get_color_fbs(RenderBufferDataForwardMobile::FB_CONFIG_RENDER_PASS, resolve_depth_buffer && supports_depth_resolve);
+ 			global_pipeline_data_required.use_separate_post_pass = true;
+ 		}
++
++		// godot-patches/0016: when the 3D pass is the depth buffer's only user this frame (opaque,
++		// sky and transparent in one pass, no MSAA resolve, depth of field, compositor effect or debug
++		// view after it), its contents need not be written back to memory. The next frame clears it.
++		// The render graph still stores it if a later command this frame reads it.
++		const bool depth_not_stored = GLOBAL_GET_CACHED(bool, "rendering/renderer/depth_not_stored_mobile") &&
++				merge_transparent_pass && !ce_has_post_transparent && !use_msaa && !has_depth_texture_override &&
++				get_debug_draw_mode() == RSE::VIEWPORT_DEBUG_DRAW_DISABLED &&
++				!(p_render_data->environment.is_valid() && RSG::camera_attributes->camera_attributes_uses_dof(p_render_data->camera_attributes));
++		RD::get_singleton()->texture_set_discardable(rb->get_depth_texture(), depth_not_stored);
+ 		samplers = rb->get_samplers();
+ 
+ 		hdr_render_target = RendererRD::TextureStorage::get_singleton()->render_target_is_using_hdr(rb->get_render_target());
+@@ -3590,6 +3600,8 @@
+ 	GLOBAL_DEF("rendering/renderer/sun_shadow_skip_facing_away_mobile", false);
+ 	GLOBAL_DEF("rendering/renderer/light_skip_out_of_range_mobile", false);
+ 	GLOBAL_DEF("rendering/renderer/light_buffer_skips_unlit_mobile", false);
++	// The 3D depth buffer not written back when nothing after the 3D pass reads it (godot-patches/0016).
++	GLOBAL_DEF("rendering/renderer/depth_not_stored_mobile", false);
+ 
+ 	disable_ubershaders = RD::get_singleton()->get_driver_workarounds().disable_ubershaders;
+ 	if (disable_ubershaders) {

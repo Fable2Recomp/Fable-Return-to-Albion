@@ -203,7 +203,7 @@ public static class AndroidTextureUpload
                 prepared = image;
             }
 
-            texture.SetImage(prepared);
+            AndroidTextureRefresh.Write(texture, prepared, unconverted: ReferenceEquals(prepared, image));
             RecordUpload(TextureUploadKind.Replace2D, image, prepared);
         }
         finally { if (!ReferenceEquals(prepared, image)) prepared.Dispose(); }

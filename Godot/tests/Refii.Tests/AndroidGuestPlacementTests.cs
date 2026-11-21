@@ -2,6 +2,7 @@ using GdUnit4;
 using Refii.AndroidRuntime;
 using Refii.Launcher.Core;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using static GdUnit4.Assertions;
 
@@ -58,12 +59,50 @@ public sealed class AndroidGuestPlacementTests
         AssertThat(AndroidGuestPlacement.IsGameThread(Encoding.ASCII.GetBytes("Game"))).IsFalse();
     }
 
-    /// <summary>`android_host_off_prime`: off unless refii.toml says true.</summary>
+    /// <summary>`android_host_off_prime`: on unless refii.toml says false (since 2026-11-19).</summary>
     [TestCase]
-    public void OffPrimeIsOffUnlessConfigured()
+    public void OffPrimeIsOnUnlessConfiguredOff()
     {
-        AssertThat(AndroidGuestPlacement.OffPrimeConfigured(new Dictionary<string, string>())).IsFalse();
+        AssertThat(AndroidGuestPlacement.OffPrimeConfigured(new Dictionary<string, string>())).IsTrue();
+        AssertThat(AndroidGuestPlacement.OffPrimeConfigured(new Dictionary<string, string> { [AndroidGuestPlacement.OffPrimeKey] = "false" })).IsFalse();
         AssertThat(AndroidGuestPlacement.OffPrimeConfigured(new Dictionary<string, string> { [AndroidGuestPlacement.OffPrimeKey] = "true" })).IsTrue();
+    }
+
+    /// <summary>The setting's declared default matches the code's: on.</summary>
+    [TestCase]
+    public void OffPrimeSettingDefaultsOn()
+    {
+        RuntimeCVarDefinition definition = RuntimeCVarSet.All.First(d => d.Name == AndroidGuestPlacement.OffPrimeKey);
+        AssertThat(definition.DefaultValue).IsEqual("true");
+    }
+
+    /// <summary>
+    /// `android_guest_core_follow_ceiling`: the CPUs with the highest current ceiling. A Galaxy S10e with its prime
+    /// core capped at 1.71 GHz and its gold cores at 2.42 GHz gives the gold cores; uncapped, the prime core.
+    /// </summary>
+    [TestCase]
+    public void FollowingTheCeilingPicksTheCoresAllowedToRunFastest()
+    {
+        var capped = new Dictionary<int, long> { [0] = 1785600, [1] = 1785600, [2] = 1785600, [3] = 1785600,
+            [4] = 2419200, [5] = 2419200, [6] = 2419200, [7] = 1708800 };
+        AssertThat(AndroidGuestPlacement.FastestNow(capped)).ContainsExactly(4, 5, 6);
+        capped[7] = 2841600;
+        AssertThat(AndroidGuestPlacement.FastestNow(capped)).ContainsExactly(7);
+        AssertThat(AndroidGuestPlacement.FastestNow(new Dictionary<int, long> { [0] = 1, [1] = 1 })).IsEmpty();
+        AssertThat(RuntimeCVarsGodot.Definitions.Single(d => d.Name == AndroidGuestPlacement.FollowCeilingKey).DefaultValue).IsEqual("false");
+    }
+
+    /// <summary>
+    /// `android_guest_prime_core` pins Fable 2's game thread only. Pinned, Fable 3 crashed loading a save on
+    /// a Galaxy S25+ in about half of tries; unpinned, in none of 8.
+    /// </summary>
+    [TestCase]
+    public void ThePrimeCorePinIsForFable2Only()
+    {
+        AssertThat(AndroidGuestPlacement.PinsGameThread(true, Refii.Core.Engine_Title.Fable2)).IsTrue();
+        AssertThat(AndroidGuestPlacement.PinsGameThread(true, Refii.Core.Engine_Title.Fable3)).IsFalse();
+        AssertThat(AndroidGuestPlacement.PinsGameThread(false, Refii.Core.Engine_Title.Fable2)).IsFalse();
+        AssertThat(AndroidGuestPlacement.PinsGameThread(false, Refii.Core.Engine_Title.Fable3)).IsFalse();
     }
 
     /// <summary>Another thread loses the prime cores and keeps the rest; one holding only the prime

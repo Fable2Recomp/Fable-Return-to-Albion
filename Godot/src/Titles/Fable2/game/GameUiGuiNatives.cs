@@ -60,6 +60,7 @@ public partial class GameUi
 		}
 
 		_guiRoutesReady = true;
+		Fable2PageProviders.Widgets = _widgets;
 
 		// The fade family is deliberately not routed: the host draws the pixels from the guest's
 		// own state object at `*(GUI+64)` — `+0` progress `t`, `+4` duration in seconds,
@@ -284,22 +285,50 @@ public partial class GameUi
 			}
 		});
 
-		// The modal router's opener stating its box: kind, modal id, text (display_box_hooks.cpp).
+		// The modal router's opener stating its box: kind, modal id, text (display_box_hooks.cpp); an
+		// adjuster then its value, min, max, step, flags and its widget, hex.
 		_guiNatives.Register("@Modal.Open", call =>
 		{
 			if (uint.TryParse(call.Argument(0).Text, out uint kind) &&
 				uint.TryParse(call.Argument(1).Text, out uint id))
 			{
 				Engine_UiModalText.Stated(kind, id, call.Argument(2).Text ?? string.Empty);
-				if (kind == 5u && call.Arguments.Count >= 8 &&
+				if (kind == 5u && call.Arguments.Count >= 9 &&
 					int.TryParse(call.Argument(3).Text, out int value) &&
 					int.TryParse(call.Argument(4).Text, out int min) &&
 					int.TryParse(call.Argument(5).Text, out int max) &&
 					int.TryParse(call.Argument(6).Text, out int step) &&
-					int.TryParse(call.Argument(7).Text, out int flags))
+					int.TryParse(call.Argument(7).Text, out int flags) &&
+					uint.TryParse(call.Argument(8).Text, System.Globalization.NumberStyles.HexNumber,
+						System.Globalization.CultureInfo.InvariantCulture, out uint widget))
 				{
-					Engine_UiModalText.StatedAdjuster(id, value, min, max, step, flags);
+					Engine_UiModalText.StatedAdjuster(id, value, min, max, step, flags, widget);
 				}
+			}
+		});
+
+		// The adjuster widget's render `sub_826B8BB0` stating what it shows (display_box_hooks.cpp):
+		// widget, value, min, max, step, flags.
+		_guiNatives.Register("@Adjuster.Render", call =>
+		{
+			if (GuestAddress(call) is { } widget &&
+				int.TryParse(call.Argument(1).Text, out int value) &&
+				int.TryParse(call.Argument(2).Text, out int min) &&
+				int.TryParse(call.Argument(3).Text, out int max) &&
+				int.TryParse(call.Argument(4).Text, out int step) &&
+				int.TryParse(call.Argument(5).Text, out int flags))
+			{
+				Engine_UiNumericRender.Stated(widget, value, min, max, step, flags);
+			}
+		});
+
+		// The Orb box's player card stating its name `sub_823DB850` r5 (display_box_hooks.cpp): the
+		// menu-box controller and the name.
+		_guiNatives.Register("@GamerCard.Name", call =>
+		{
+			if (GuestAddress(call) is { } box)
+			{
+				Engine_UiDisplayBoxes.GamerCardNamed(box, call.Argument(1).Text ?? string.Empty);
 			}
 		});
 
@@ -588,7 +617,8 @@ public partial class GameUi
 
 		// `SetJobMultiplierLevel(value)` — the value, not an index: printed with `%d` onto
 		// `JobMultiplier.Group.Text` and stored verbatim. Which slide plays depends on how it
-		// moved against the cached one — see the model.
+		// moved against the cached one — see the model, which the HUD draws (StateJobMultiplier).
+		// The native still runs: an increase plays `SE_GUI_MULTIPLIER_UP` (0x823CAD14 / 0x82819834).
 		_guiNatives.Register("SetJobMultiplierLevel", call =>
 			_boxes.SetJobMultiplier((int)call.Argument(0).Number));
 
@@ -649,13 +679,13 @@ public partial class GameUi
 		//
 		// "Add" means add a ROW, not add to a total: the amount is assigned to the row this call
 		// claims. Five rows; a sixth is dropped silently.
+		// The native still runs: its `handler+40` latch gates the close and its EnterGuiMode is the
+		// pause. Each tag is one Babel lookup, `sub_8230E0E8` / disc `sub_82301D40` (title 0x82306C4C /
+		// 0x82908874, button 0x82306C34 / 0x8290885C).
 		_guiNatives.Register("TurnOnMiniGameComplete", call =>
-		{
-			_widgets.TurnOnMiniGame();
-			_screens.StateText("MiniGameTitle", Localise(call, 0));
-			_screens.StateText("MiniGameButton",
-				Engine_UiGuiText.Resolve(call.Argument(1).Text, _presentation?.Strings));
-		});
+			_widgets.TurnOnMiniGame(
+				Engine_UiGuiText.Resolve(call.Argument(0).Text, _presentation?.Strings),
+				Engine_UiGuiText.Resolve(call.Argument(1).Text, _presentation?.Strings)));
 
 		_guiNatives.Register("TurnOffMiniGameComplete", _ => _widgets.TurnOffMiniGame());
 
@@ -889,7 +919,7 @@ public partial class GameUi
 		foreach (string name in new[]
 		{
 			"DisplayCrimeScreen", "DisplayShopScreen", "DisplayRealEstateScreen",
-			"DisplayReceivedItem", "ShowCreditsScreen",
+			"DisplayReceivedItem",
 		})
 		{
 			_guiNatives.Observe(name, ownedScreen);
@@ -968,10 +998,11 @@ public partial class GameUi
 			["SetInteractiveCutsceneBorder"] =
 				"one byte, `stb r3, 0xA(elemMgr)` at 0x82306174 — same as the mode byte beside it, " +
 				"and with the same gap: no reader located",
-			["AddWorldIcon"] = "world icons are read from the guest's icon LIST, not from the calls",
-			["AddWorldIconWithOffset"] = "world icons are read from the guest's icon LIST",
-			["RemoveWorldIcon"] = "world icons are read from the guest's icon LIST",
-			["FillWorldIconSetEyeIsOpen"] = "world icons are read from the guest's icon LIST",
+			["AddWorldIcon"] = "only a request: the icons are stated at their own Init, Update and destructor " +
+				"(world_icon_hooks.cpp, RefiiHostGetWorldSprites)",
+			["AddWorldIconWithOffset"] = "only a request: the icons are stated at their own entries",
+			["RemoveWorldIcon"] = "only a request: the icons are stated at their own entries",
+			["FillWorldIconSetEyeIsOpen"] = "only a request: the icons are stated at their own entries",
 			["SetExperienceShouldShowAbilities"] =
 				"a BOOL at +0 of the `HUDExperience` widget (`stb r3, 0(r9)` at 0x82307510), not " +
 				"a flag on any screen — the guest's save serialiser names it " +
@@ -1047,5 +1078,124 @@ public partial class GameUi
 		}
 
 		return Engine_UiGuiText.Substitute(text, values);
+	}
+
+	// ---- THE JOB MULTIPLIER AND THE MINIGAME TALLY, DRAWN FROM THEIR NATIVES ---------------
+
+	/// <summary>`hud.bgf`'s multiplier root and its text (`sub_823CAAD8`'s names `unk_83497B90` / `unk_83497B94`).</summary>
+	private const string JobMultiplierRoot = "Layer.JobMultiplier";
+
+	private const string JobMultiplierTextPath = "Layer.JobMultiplier.Group.Text";
+
+	private Engine_UiHudStand? _jobStand;
+	private int _jobRoot = -1;
+	private int _jobText = -1;
+	private uint _jobPresentation;
+	private ulong _jobMoves;
+	private int _jobSlide;
+
+	/// <summary>
+	/// The multiplier (`GUI+80+20`: +0 the root, +4 the text) stands on what `SetJobMultiplierLevel` and
+	/// `TurnJobMulitplierOff` state (Engine_UiGuiBoxes): the root's slide and the text; the guest's own
+	/// writes of them are dropped. The HUD's build (`sub_823CA428` 0x823CA5AC → `sub_823CAAD8`, disc
+	/// `sub_828195F8`) enters the root on slide 4 (0x823CAB94 / 0x828196B4). The root's opacity —
+	/// 0 at the build (0x823CABA0 / 0x828196C0), 100 from zero (`sub_823CABB0` 0x823CACCC / 0x828197EC)
+	/// — is no slide's (the slides write `Group`) and stays the store's statement.
+	/// </summary>
+	private void StateJobMultiplier(Engine_UiHudStand stand)
+	{
+		if (!ReferenceEquals(stand, _jobStand))
+		{
+			_jobRoot = stand.Find(JobMultiplierRoot);
+			_jobText = stand.Find(JobMultiplierTextPath);
+			if (_jobRoot < 0 || _jobText < 0)
+			{
+				GD.PushWarning("[job-multiplier] hud.bgf has no Layer.JobMultiplier / Group.Text; the multiplier is not drawn");
+			}
+
+			stand.OwnSlide(_jobRoot);
+			stand.OwnText(_jobText);
+		}
+
+		if (_jobRoot < 0 || _jobText < 0)
+		{
+			_jobStand = stand;
+			return;
+		}
+
+		if (_hudAddress != _jobPresentation)
+		{
+			_jobPresentation = _hudAddress;
+			_jobSlide = 4;
+			stand.StateSlide(_jobRoot, _jobSlide);
+		}
+		else if (!ReferenceEquals(stand, _jobStand) && _jobSlide > 0)
+		{
+			stand.StateSlide(_jobRoot, _jobSlide);
+			if (_boxes.JobMultiplierText.Length != 0)
+			{
+				stand.StateText(_jobText, _boxes.JobMultiplierText);
+			}
+		}
+
+		_jobStand = stand;
+		if (_boxes.JobMultiplierMoves == _jobMoves)
+		{
+			return;
+		}
+
+		_jobMoves = _boxes.JobMultiplierMoves;
+		_jobSlide = _boxes.JobMultiplierSlide;
+		stand.StateSlide(_jobRoot, _jobSlide);
+		if (_boxes.JobMultiplierText.Length != 0)
+		{
+			stand.StateText(_jobText, _boxes.JobMultiplierText);
+		}
+
+		GD.Print($"[job-multiplier] level {_boxes.JobMultiplier}: slide {_jobSlide}, text '{_boxes.JobMultiplierText}'");
+	}
+
+	/// <summary>
+	/// The game is gone and its in-game GUI with it (LeaveGame): the next game's GUI starts with no
+	/// multiplier level and no tally rows.
+	/// </summary>
+	private void LeaveGuiNativeModels()
+	{
+		_boxes.ResetJobMultiplier();
+		_jobPresentation = 0;
+		_jobMoves = _boxes.JobMultiplierMoves;
+		_jobSlide = 0;
+		_widgets.TurnOffMiniGame();
+	}
+
+	/// <summary>The minigame tally's screen id (`li r4,0xB` in both builds' TurnOn, 0x823CDD00 / 0x8258CC38).</summary>
+	private const uint MiniGameScreenId = 11u;
+
+	private uint _tallyFrame;
+
+	/// <summary>
+	/// The tally steps once per guest frame (Engine_GuestFrame, one per HF pass): with the GUI active,
+	/// as the tally's EnterGuiMode makes it, the game loop opens the GUI's tick window on every
+	/// iteration, not only on game ticks (0x8227711C → `sub_821A1140` 0x821A11D8, disc 0x8227703C →
+	/// `sub_821A11E8` 0x821A1280). It closes when screen 11 is seen leaving.
+	/// </summary>
+	private void StepMiniGameTally()
+	{
+		uint frame = Refii.Core.Engine_GuestFrame.Frame;
+		uint frames = unchecked(frame - _tallyFrame);
+		_tallyFrame = frame;
+		if (!_widgets.MiniGameUp)
+		{
+			return;
+		}
+
+		_widgets.ObserveMiniGameScreen(Refii.Host.HostBridge.GetPauseState() is { ScreenId: MiniGameScreenId });
+		if (!_widgets.MiniGameUp)
+		{
+			GD.Print("[minigame] screen 11 left: the tally closed");
+			return;
+		}
+
+		_widgets.StepMiniGame(frames);
 	}
 }

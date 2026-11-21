@@ -72,16 +72,16 @@ public sealed class WaterMeshAndQualityTests
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Low))
 			.IsEqual(new WaterMirrorSpec(false, 256, 4, 50f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Balanced))
-			.IsEqual(new WaterMirrorSpec(false, 256, 4, 200f, 4f));
+			.IsEqual(new WaterMirrorSpec(true, 256, 4, 800f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.High))
-			.IsEqual(new WaterMirrorSpec(true, 256, 3, 225f, 4f));
+			.IsEqual(new WaterMirrorSpec(true, 320, 3, 1200f, 3.5f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Ultra))
-			.IsEqual(new WaterMirrorSpec(true, 384, 2, 300f, 3f));
+			.IsEqual(new WaterMirrorSpec(true, 384, 2, float.PositiveInfinity, 3f));
 
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Low, hasPlanarMirror: false)).IsEqual(0);
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Low, hasPlanarMirror: true)).IsEqual(0);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: false)).IsEqual(14);
-		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: true)).IsEqual(14);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: false)).IsEqual(12);
+		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Balanced, hasPlanarMirror: true)).IsEqual(12);
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.High, hasPlanarMirror: false)).IsEqual(18);
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.High, hasPlanarMirror: true)).IsEqual(18);
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Ultra, hasPlanarMirror: false)).IsEqual(24);
@@ -266,5 +266,22 @@ public sealed class WaterMeshAndQualityTests
 
 		AssertThat(Regex.IsMatch(fragBody, @"\btexture\s*\(")).IsFalse();
 		AssertThat(Regex.IsMatch(lightBody, @"\breturn\b")).IsFalse();
+
+		// Full-frame planar mirror (no planar_edge border box fade), front-to-back SSR crossing, and VistaOcean coastal edge feather.
+		AssertThat(clean.Contains("planar_edge", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("prev_in_front", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("foreground_occluder", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("body_edge_sea(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("meniscus", StringComparison.Ordinal)).IsFalse();
+
+		// Celestial billboards & stars sort behind RenderPriority = 0 water and place stars on the +Y upper sky hemisphere.
+		string starsPath = Path.Combine(FindGodotRoot(), "src", "Engine", "level", "environment", "celestial", "stars.gdshader");
+		string starsClean = StripShaderComments(File.ReadAllText(starsPath));
+		AssertThat(starsClean.Contains("vec3(dir_xz.x * inv_len, up_y * inv_len, dir_xz.y * inv_len)", StringComparison.Ordinal)).IsTrue();
+
+		string celestialCsPath = Path.Combine(FindGodotRoot(), "src", "Engine", "level", "environment", "celestial", "Engine_CelestialElements.cs");
+		string celestialCs = File.ReadAllText(celestialCsPath);
+		AssertThat(celestialCs.Contains("StarsRenderPriority = -21;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(celestialCs.Contains("BaseRenderPriority = -20;", StringComparison.Ordinal)).IsTrue();
 	}
 }

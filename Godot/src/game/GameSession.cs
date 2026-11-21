@@ -326,9 +326,10 @@ public partial class GameSession : Node
 					}
 					else if (Refii.Fx.Engine_ModernDrunk.Drawn > 0)
 					{
-						Refii.Fx.Engine_FxDisplacement.NotifyActive();
+						Refii.AndroidRuntime.AndroidDisplacementGate.WakeDrunk();
 					}
 					Refii.Fx.Engine_DisplacementMeshes.Pump();
+					Refii.AndroidRuntime.AndroidDisplacementGate.AfterPump();
 				}
 			}
 		}

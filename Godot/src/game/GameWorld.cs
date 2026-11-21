@@ -1009,7 +1009,8 @@ public partial class GameWorld : Node3D
 		// THEN THE LIGHT-COUNT PIPELINES (`android_pipeline_warmup`, Mobile only): every surface
 		// the level holds drawn beside the camera under each light count play can give it.
 		bool uploadsPending = Refii.Core.Engine_ServerSyncs.PendingUploadCount > 0;
-		bool worldReady = !propsPending && !entitiesPending && !uploadsPending && classicWait.Length == 0;
+		bool lightingBakePending = Refii.Lighting.Engine_LevelShadowPrebuild.IsLoadBakePending;
+		bool worldReady = !propsPending && !entitiesPending && !uploadsPending && !lightingBakePending && classicWait.Length == 0;
 		if (worldReady)
 		{
 			if (!ReadyForWarmupAndSettle)
@@ -1045,6 +1046,11 @@ public partial class GameWorld : Node3D
 			Refii.Core.Engine_LoadTimeline.Mark("entities");
 		}
 
+		if (!lightingBakePending)
+		{
+			Refii.Core.Engine_LoadTimeline.Mark("lighting-bake");
+		}
+
 		if (worldReady)
 		{
 			Refii.Core.Engine_LoadTimeline.Mark("world");
@@ -1064,8 +1070,12 @@ public partial class GameWorld : Node3D
 			// whether the streamer is progressing slowly or not progressing at all.
 			if (_propHoldFrames % PropHoldReportFrames == 0)
 			{
+				string bakeDiag = lightingBakePending
+					? $"lighting bake ({Refii.Lighting.Engine_LevelShadowPrebuild.LoadBakeStatus}), "
+					: string.Empty;
 				GD.Print($"[game-world] still holding the guest for {_standing}: " +
 					$"{done}/{total} prop(s) streamed ({settling} bake(s) or variant(s) to apply), " +
+					bakeDiag +
 					$"classic waiting on {(classicWait.Length != 0 ? classicWait : "nothing")}, " +
 					(pipelineWait.Length != 0 ? $"pipeline warm-up waiting on {pipelineWait}, " : "") + "entities waiting on " +
 					$"{(_entities is { } e ? e.ReleaseWait : "no feed")}, {_readyFrames} settle frame(s) " +

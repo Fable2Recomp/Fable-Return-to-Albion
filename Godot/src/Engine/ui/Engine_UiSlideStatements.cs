@@ -23,18 +23,6 @@ public static class Engine_UiSlideStatements
 	/// <summary>The last entry and play state told to one element.</summary>
 	public readonly record struct Told(int Slide, ulong Sequence, bool? Paused, ulong PauseSequence);
 
-	/// <summary>
-	/// The top bit of a told attribute id: SetOpacity_p's RAW argument (`sub_82426078`), stated at
-	/// its entry for an element with no attribute store. The setter scales it by 1024 when the
-	/// element's current opacity is below 0.09765625 (`flt_83319B60` / `flt_82101240`,
-	/// 0x824260e0..0x824260fc) — the current value is the reader's.
-	/// </summary>
-	public const uint ScaledOpacity = 0x80000000u;
-
-	/// <summary>The value SetOpacity_p stores for <paramref name="raw"/> over an element at <paramref name="current"/>.</summary>
-	public static float SetOpacityValue(float raw, float current) =>
-		current < 0.09765625f ? raw * 1024f : raw;
-
 	/// <summary>One attribute or `active` write told to an element, in statement order.</summary>
 	public readonly record struct Write(int Ordinal, uint Attribute, uint Value, bool IsActive, ulong Sequence);
 
@@ -77,6 +65,12 @@ public static class Engine_UiSlideStatements
 
 	/// <summary>Bumped by every statement.</summary>
 	public static ulong Sequence { get; private set; }
+
+	/// <summary>
+	/// A sequence for a statement Godot makes itself (a slide it states from a call's arguments):
+	/// later than everything told so far, in the same order the playback reads the guest's.
+	/// </summary>
+	public static ulong Stamp() => ++Sequence;
 
 	/// <summary>
 	/// What <paramref name="presentation"/> holds under <paramref name="rootHash"/>, started clean

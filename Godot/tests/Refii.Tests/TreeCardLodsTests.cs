@@ -127,4 +127,93 @@ public sealed class TreeCardLodsTests
         AssertThat(Engine_TreeCardLods.Build(indices, vertices, float.NaN).Count).IsEqual(0);
         AssertThat(Engine_TreeCardLods.Build(new int[9], 3, 10f).Count).IsEqual(0);
     }
+
+    /// <summary>A trunk of <paramref name="islands"/> two-triangle index islands that share positions with
+    /// their neighbours (UV seams), then <paramref name="clusters"/> separate fans of
+    /// <paramref name="clusterTriangles"/> triangles, each at its own place.</summary>
+    private static (int[] Indices, Godot.Vector3[] Positions) SeamedTree(int islands, int clusters, int clusterTriangles)
+    {
+        var indices = new List<int>();
+        var positions = new List<Godot.Vector3>();
+        for (int i = 0; i < islands; i++)
+        {
+            // Quad i spans y in [i, i + 1]: its top edge sits on quad i + 1's bottom edge, on other vertices.
+            int at = positions.Count;
+            positions.AddRange(new[] { new Godot.Vector3(0, i, 0), new Godot.Vector3(1, i, 0), new Godot.Vector3(0, i + 1, 0), new Godot.Vector3(1, i + 1, 0) });
+            indices.AddRange(new[] { at, at + 1, at + 2, at + 2, at + 1, at + 3 });
+        }
+
+        for (int c = 0; c < clusters; c++)
+        {
+            int hub = positions.Count;
+            positions.Add(new Godot.Vector3(10 + (c * 3), 0, 0));
+            for (int t = 0; t <= clusterTriangles; t++)
+            {
+                positions.Add(new Godot.Vector3(10 + (c * 3) + 1, t * 0.01f, 1));
+            }
+
+            for (int t = 0; t < clusterTriangles; t++)
+            {
+                indices.AddRange(new[] { hub, hub + 1 + t, hub + 2 + t });
+            }
+        }
+
+        return (indices.ToArray(), positions.ToArray());
+    }
+
+    [TestCase]
+    public void ClustersThinWhereTheCardRuleFindsNothing()
+    {
+        (int[] indices, Godot.Vector3[] positions) = SeamedTree(20, 300, 12);
+        AssertThat(Engine_TreeCardLods.Build(indices, positions.Length, 10f).Count).IsEqual(0);
+
+        List<(float Key, int[] Indices)> levels = Engine_TreeCardLods.Build(
+            indices, positions.Length, 10f, false, positions, Engine_TreeCardLods.ClusterTriangles);
+        AssertThat(levels.Count).IsEqual(2);
+        var trunk = Triangles(indices.Take(20 * 6).ToArray());
+        foreach ((_, int[] level) in levels)
+        {
+            // The seamed trunk is one piece by position and stays whole; clusters go whole.
+            AssertThat(trunk.IsSubsetOf(Triangles(level))).IsTrue();
+            AssertThat((level.Length - (20 * 6)) % 36).IsEqual(0);
+        }
+
+        AssertThat((levels[0].Indices.Length - (20 * 6)) / 36).IsBetween(135, 165);
+        AssertThat((levels[1].Indices.Length - (20 * 6)) / 36).IsBetween(60, 90);
+    }
+
+    [TestCase]
+    public void WithoutPositionsATrunksSeamIslandsWouldThin()
+    {
+        // The reason clusters join by position: by index alone the trunk's islands are cards.
+        (int[] indices, Godot.Vector3[] positions) = SeamedTree(200, 0, 0);
+        AssertThat(Engine_TreeCardLods.Build(indices, positions.Length, 10f).Count).IsGreater(0);
+        AssertThat(Engine_TreeCardLods.Build(
+            indices, positions.Length, 10f, false, positions, Engine_TreeCardLods.ClusterTriangles).Count).IsEqual(0);
+    }
+
+    [TestCase]
+    public void AClusterOverTheLimitIsKept()
+    {
+        (int[] indices, Godot.Vector3[] positions) = SeamedTree(0, 100, Engine_TreeCardLods.ClusterTriangles + 1);
+        AssertThat(Engine_TreeCardLods.Build(
+            indices, positions.Length, 10f, true, positions, Engine_TreeCardLods.ClusterTriangles).Count).IsEqual(0);
+    }
+
+    [TestCase]
+    public void ATrunkIsASurfaceOfLargePiecesJoinedByPosition()
+    {
+        // A seamed trunk is one piece by position; a crown of clusters is not a trunk; nor is a mix that is mostly leaves.
+        (int[] trunk, Godot.Vector3[] trunkAt) = SeamedTree(200, 0, 0);
+        AssertThat(Engine_TreeCardLods.IsTrunk(trunk, trunkAt.Length, trunkAt)).IsTrue();
+        (int[] crown, Godot.Vector3[] crownAt) = SeamedTree(0, 100, 12);
+        AssertThat(Engine_TreeCardLods.IsTrunk(crown, crownAt.Length, crownAt)).IsFalse();
+        (int[] mixed, Godot.Vector3[] mixedAt) = SeamedTree(50, 100, 12);
+        AssertThat(Engine_TreeCardLods.IsTrunk(mixed, mixedAt.Length, mixedAt)).IsFalse();
+        // A few twigs on a trunk leave it a trunk.
+        (int[] twiggy, Godot.Vector3[] twiggyAt) = SeamedTree(200, 5, 12);
+        AssertThat(Engine_TreeCardLods.IsTrunk(twiggy, twiggyAt.Length, twiggyAt)).IsTrue();
+        // Without positions nothing is called a trunk.
+        AssertThat(Engine_TreeCardLods.IsTrunk(trunk, trunkAt.Length, default)).IsFalse();
+    }
 }

@@ -97,7 +97,8 @@ public class GraphicsPresetLowTests
         AssertThat(GraphicsPresets.LowValues["sun_shadow_distance"]).IsEqual("0");
         AssertThat(GraphicsPresets.LowValues["placed_light_limit"]).IsEqual("4");
         AssertThat(GraphicsPresets.LowValues["lite_shadowless"]).IsEqual("true");
-        AssertThat(GraphicsPresets.LowValues["android_low_ram_mode"]).IsEqual("on");
+        // The low-memory tier is the phone's own setting, in no preset (revision 22).
+        AssertThat(GraphicsPresets.LowValues.ContainsKey("android_low_ram_mode")).IsFalse();
     }
 
     [TestCase]

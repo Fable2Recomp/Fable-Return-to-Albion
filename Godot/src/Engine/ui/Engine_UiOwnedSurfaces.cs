@@ -69,6 +69,11 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 		Engine_UiSlideStatements.Of(Address, _rootHash, _joins.GamerTagReveal) is { Slide: 2 } reveal &&
 		reveal.Sequence > _openedAt;
 
+	/// <summary>
+	/// The text the guest told an element since this box opened. Only the card's SCORE is read so:
+	/// the fill writes `card+44` (`sub_8281F010` 0x8281f1d0), which the card's own profile read
+	/// sets (`sub_8281EF80` 0x8281eff0, setting 0x10040006) — no call states it.
+	/// </summary>
 	private string? Told(int ordinal) =>
 		ordinal < 0 ? null : Engine_UiSlideStatements.TextOf(Address, _rootHash, ordinal, _openedAt);
 
@@ -96,7 +101,7 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 		// within 0.3 s is refused whether or not the stick recentred.
 	}
 
-	protected override string Unstated => "no populate was stated and no row text was told";
+	protected override string Unstated => "no populate was stated for the box that is up";
 
 	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
@@ -105,39 +110,27 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 			return false;
 		}
 
-		// THE POPULATE'S TITLE AND ROWS (`sub_823DC400` writes exactly these into `Group.Title`
-		// and each row's `Choice1.Frame.Choice1`) when its statement is the box that is up — the
-		// controller is one object, so an open statement with the box's row count is it. Else
-		// the texts the guest told those elements, by ordinal. The selection stays the guest's,
-		// the lever its accept reads.
-		var labels = new string?[Engine_UiMenuBox.MaxOptions];
-		string? title;
-		if (Engine_UiStatedBoxes.Current.Menu is { } stated && stated.Model.Options.Count == _box.Count)
+		// THE POPULATE'S TITLE AND ROWS, as its statement carries them: `sub_823DC400` (disc
+		// `sub_8240C630`) is the one writer of `Group.Title` (`box+32`, 0x823dc444 / 0x8240c674) and
+		// each row's `Choice1.Frame.Choice1` (its resolved tag, 0x823dc580 / 0x8240c7b0) — those names'
+		// only users (0x83497CF0 / 0x83497CFC, disc 0x83497BE0 / 0x83497BEC) — and every populate that
+		// returns 1 is stated, a row's enable (`sub_823DBBD0`) included. The controller is one object,
+		// so an open statement with the box's row count is the box that is up. The selection stays
+		// the guest's, the lever its accept reads.
+		if (Engine_UiStatedBoxes.Current.Menu is not { } stated || stated.Model.Options.Count != _box.Count)
 		{
-			title = stated.Model.Text;
-			for (int i = 0; i < labels.Length && i < stated.Model.Options.Count; ++i)
-			{
-				labels[i] = stated.Model.Options[i].Label;
-			}
+			return false;
 		}
-		else
-		{
-			bool told = false;
-			for (int i = 0; i < labels.Length && i < _box.Count; ++i)
-			{
-				labels[i] = Told(_joins.Labels[i]);
-				told |= labels[i] is not null;
-			}
 
-			title = Told(_joins.Title);
-			if (!told && title is null)
-			{
-				return false;
-			}
+		var labels = new string?[Engine_UiMenuBox.MaxOptions];
+		string title = stated.Model.Text;
+		for (int i = 0; i < labels.Length && i < stated.Model.Options.Count; ++i)
+		{
+			labels[i] = stated.Model.Options[i].Label;
 		}
 
 		bool gamerTag = GamerTagShown();
-		string? gamerName = gamerTag ? Told(_joins!.GamerName) : null;
+		string? gamerName = gamerTag ? stated.GamerName : null;
 		string? gamerScore = gamerTag ? Told(_joins!.GamerScore) : null;
 		if (!Changed($"{title}|{string.Join('\u001F', labels)}|{_box.Count}|{_box.Selected}|" +
 			$"{_box.EnabledMask}|{_box.Cancelable}|{gamerTag}|{gamerName}|{gamerScore}"))
@@ -148,10 +141,8 @@ public sealed class Engine_UiMenuBoxSurface : Engine_UiModalSurface<Engine_UiMen
 		View.ShowStated(title, labels, _box.Count, _box.Selected,
 			_box.EnabledMask, _box.Cancelable, gamerTag, gamerName, gamerScore);
 		GD.Print($"[game-ui] menu box up — '{title}', {_box.Count} option(s), " +
-			$"selected {_box.Selected}, enabled 0x{_box.EnabledMask:X}" +
-			(Engine_UiStatedBoxes.Current.Menu is { } menu && menu.Model.Options.Count == _box.Count
-				? $" (populate of 0x{menu.Address:X8})"
-				: " (told texts)"));
+			$"selected {_box.Selected}, enabled 0x{_box.EnabledMask:X} (populate of 0x{stated.Address:X8})" +
+			(gamerTag ? $", card '{gamerName}' (stated) score '{gamerScore}' (told)" : string.Empty));
 		return true;
 	}
 
@@ -636,12 +627,12 @@ public sealed class Engine_UiQuerySurface : Engine_UiModalSurface<Engine_UiQuery
 
 /// <summary>
 /// The owned numeric adjuster (modal mode 5, or a DISPLAY adjuster from
-/// `GUI.DisplayNumericAdjusterParams`). Drawn from what the opener STATED: the router's
-/// `sub_8236FCA8(…, value, min, max, step, flags)` or the display box's Open, its widget at
-/// `box+24` (display_box_hooks.cpp; <see cref="Engine_UiStatedBoxes.Box.Adjuster"/>). The steps go
-/// to the guest as its own codes, each with its release — its handler steps and commits its own
-/// value — and the value drawn is the one the widget tells (ToldValue); the arrows are gated by
-/// the room left at that value.
+/// `GUI.DisplayNumericAdjusterParams`). Opened by what the opener STATED: the router's
+/// `sub_8236FCA8(…, value, min, max, step, flags)` or the display box's Open, each naming its
+/// widget (display_box_hooks.cpp). Drawn from that widget's render statement
+/// (<see cref="Engine_UiNumericRender"/>): value, bounds, step and flags as `sub_826B8BB0` reads
+/// them. The steps go to the guest as its own codes, each with its release — its handler steps and
+/// commits its own value, and re-renders it.
 /// </summary>
 public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNumericBox>
 {
@@ -694,58 +685,28 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 	protected override Engine_UiNumericBox Build(Engine_UiTheme? art) =>
 		Engine_UiNumericBox.FromPatternBook(art);
 
-	protected override void Join(Engine_UiScreen document)
-	{
+	protected override void Join(Engine_UiScreen document) =>
 		_joins = Engine_UiNumericBox.Resolve(document);
-		_rootHash = document.Nodes.Length > 0 ? document.Nodes[0].Element.NameHash : 0u;
-	}
-
-	/// <summary>The document root's name hash — how told statements key this presentation.</summary>
-	private uint _rootHash;
-
-	/// <summary>The told sequence when this adjuster opened: its value text must come after it.</summary>
-	private ulong _openedAt;
-
-	private bool _open;
 
 	protected override bool IsOpen(Engine_UiModel.PauseState? pause)
 	{
-		bool open;
 		if (pause is { AdjusterUp: true } state)
 		{
 			_modalId = state.ModalId;
 			_display = null;
-			open = true;
-		}
-		else
-		{
-			_display = Engine_UiStatedBoxes.Current.ShowingAdjuster;
-			open = _display is not null;
+			return true;
 		}
 
-		if (open && !_open)
-		{
-			_openedAt = Engine_UiSlideStatements.Sequence;
-		}
-
-		_open = open;
-		return open;
+		_display = Engine_UiStatedBoxes.Current.ShowingAdjuster;
+		return _display is not null;
 	}
 
-	/// <summary>
-	/// THE VALUE THE GUEST HOLDS, as its widget writes it: every step (`sub_826B8CF0` /
-	/// `sub_826B8DD0`) moves the widget's value (`+0x2C`) and re-renders it into the box's value
-	/// text (`sub_826B8BB0`: `lhGuiElement_SetText(*(w+8), *(w+4), …)` at 0x826b8c78), told. The
-	/// widget's step is its own — it divides by ten near a bound (0x826b8d50..0x826b8d6c) — so
-	/// the value is read, never stepped here. Null before the guest's first render.
-	/// </summary>
-	private int? ToldValue()
-	{
-		return _joins is not null && _joins.Value >= 0 &&
-			Engine_UiSlideStatements.TextOf(Address, _rootHash, _joins.Value, _openedAt) is { Length: > 0 } told
-				? Engine_UiGuiBoxes.AdjusterState.ParseDisplay(told)
-				: null;
-	}
+	/// <summary>The widget the open named: the router's `gui28[16]`, the display box's `box+24`.</summary>
+	private uint Widget =>
+		_display is { } box
+			? uint.TryParse(box.Field(5), System.Globalization.NumberStyles.HexNumber,
+				System.Globalization.CultureInfo.InvariantCulture, out uint widget) ? widget : 0u
+			: Engine_UiModalText.AdjusterWidget(_modalId);
 
 	protected override string Unstated => _display is not null
 		? $"the display adjuster 0x{_display.Address:X8} stated no widget"
@@ -753,9 +714,17 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 
 	protected override void Released() => _repeat = 0.0;
 
-	/// <summary>The stated adjuster that is up, or null when its open was not stated.</summary>
+	/// <summary>
+	/// THE WIDGET'S LATEST RENDER (`sub_826B8BB0`), re-stated by every step: the guest's step is its
+	/// own — it divides by ten near a bound (0x826b8d50..0x826b8d6c) — so the value is never stepped
+	/// here. Before the first render, the open's own numbers; null when the open was not stated.
+	/// </summary>
 	private Engine_UiGuiBoxes.AdjusterState? Stated =>
-		_display is { } box ? box.Adjuster : Engine_UiModalText.Adjuster(_modalId);
+		_display is { } box
+			? box.Adjuster is null ? null : Engine_UiNumericRender.Of(Widget) ?? box.Adjuster
+			: Engine_UiModalText.Adjuster(_modalId) is { } opened
+				? Engine_UiNumericRender.Of(Widget) ?? opened
+				: null;
 
 	protected override bool ApplyHost(Engine_UiPresentationHost host)
 	{
@@ -763,11 +732,6 @@ public sealed class Engine_UiNumericSurface : Engine_UiModalSurface<Engine_UiNum
 		if (View is null || _joins is null || body is null || Stated is not { } stated)
 		{
 			return false;
-		}
-
-		if (ToldValue() is { } guest)
-		{
-			stated.Value = guest;
 		}
 
 		string value = stated.Display;

@@ -2,89 +2,22 @@ namespace Refii.Tests.Ui;
 
 using System;
 using System.Collections.Generic;
-using System.IO;
 using GdUnit4;
-using Refii.Bnk;
 using Refii.Core;
 using Refii.Titles.Fable2;
 using Refii.Ui;
 using static GdUnit4.Assertions;
 
 /// <summary>
-/// The front end after the UI cut: the guest's dialog reads the texts its writer TOLD
-/// (`sub_826E40E0`), a headless presentation made again at the same address starts its told
-/// state clean (a new serial), and the title's dialog is drawn once, by the host. No Godot type
-/// is built.
+/// The front end after the UI cut: its load cards and dialog are taken as their entries stated
+/// them (`sub_826E1408`, `sub_826E40E0`), a headless presentation made again at the same address
+/// starts its told state clean (a new serial), and the title's dialog is drawn once, by the host.
+/// No Godot type is built.
 /// </summary>
 [TestSuite]
 public sealed class FrontEndAuditFixTests
 {
 	private static uint H(string name) => Engine_GameHash.Sdbm(name);
-
-	private static UiNode Node(List<UiNode> all, string name, UiNode? parent)
-	{
-		var node = new UiNode
-		{
-			Ordinal = all.Count,
-			Name = name,
-			Parent = parent,
-			Element = new BgfElement { NameHash = H(name), ParentOrdinal = parent?.Ordinal ?? -1 },
-		};
-		parent?.Children.Add(node);
-		all.Add(node);
-		return node;
-	}
-
-	/// <summary>
-	/// Component_0(0) → { Group(1) → OK(2) ; Layer(3) → { dialog(4) → Group(5) → { yousure(6),
-	/// OK(7), cancel(8) } } }: a `Group.OK` outside the dialog that a name search would also find.
-	/// </summary>
-	private static Engine_UiScreen Screen()
-	{
-		var all = new List<UiNode>();
-		UiNode root = Node(all, "Component_0", null);
-		Node(all, "OK", Node(all, "Group", root));
-		UiNode group = Node(all, "Group", Node(all, "dialog", Node(all, "Layer", root)));
-		Node(all, "yousure", group);
-		Node(all, "OK", group);
-		Node(all, "cancel", group);
-		return new Engine_UiScreen { Name = "frontendmainmenu", Nodes = all.ToArray(), Roots = new[] { root } };
-	}
-
-	/// <summary>`GuiElement_Resolve_p` with no start element: `Layer` under the root, then each segment a direct child.</summary>
-	[TestCase]
-	public void DialogPathsResolveUnderLayer()
-	{
-		Engine_UiScreen screen = Screen();
-		AssertThat(Engine_UiFrontEndScreens.ElementAt(screen, "dialog.Group.yousure")?.Ordinal).IsEqual(6);
-		AssertThat(Engine_UiFrontEndScreens.ElementAt(screen, "dialog.Group.OK")?.Ordinal).IsEqual(7);
-		AssertThat(Engine_UiFrontEndScreens.ElementAt(screen, "dialog.Group.cancel")?.Ordinal).IsEqual(8);
-		AssertThat(Engine_UiFrontEndScreens.ElementAt(screen, "Group.OK")).IsNull();
-		AssertThat(Engine_UiFrontEndScreens.ElementAt(screen, "dialog.Group.icon")).IsNull();
-	}
-
-	/// <summary>The dialog shows what the writer told after the raise began; an earlier raise's text is not it.</summary>
-	[TestCase]
-	public void DialogTextIsTheToldTextSinceTheRaise()
-	{
-		const uint presentation = 0x4D0A1000u;
-		Engine_UiScreen screen = Screen();
-		uint root = H("Component_0");
-
-		Engine_UiSlideStatements.ApplyText(presentation, root, 6u, "Old question");
-		ulong since = Engine_UiSlideStatements.Sequence;
-		AssertThat(Engine_UiFrontEndScreens.DialogText(screen, presentation, "yousure", since)).IsEqual(string.Empty);
-
-		Engine_UiSlideStatements.ApplyText(presentation, root, 7u, "Accept");
-		Engine_UiSlideStatements.ApplyText(presentation, root, 6u, "No saves were found.");
-		Engine_UiSlideStatements.ApplyText(presentation, root, 8u, string.Empty);
-		AssertThat(Engine_UiFrontEndScreens.DialogText(screen, presentation, "yousure", since)).IsEqual("No saves were found.");
-		AssertThat(Engine_UiFrontEndScreens.DialogText(screen, presentation, "OK", since)).IsEqual("Accept");
-		AssertThat(Engine_UiFrontEndScreens.DialogText(screen, presentation, "cancel", since)).IsEqual(string.Empty);
-
-		// Another presentation's statements are not this one's.
-		AssertThat(Engine_UiFrontEndScreens.DialogText(screen, presentation + 0x100u, "OK", 0)).IsEqual(string.Empty);
-	}
 
 	private const uint Rebuilt = 0x4D0B2000u;
 
@@ -154,51 +87,53 @@ public sealed class FrontEndAuditFixTests
 		AssertThat(authored.Screens[1010].OwnedElsewhere.Contains("dialog")).IsTrue();
 	}
 
-	private static Engine_UiScreen? Shipped(string file)
+	private static Engine_UiModel.GuiNativeCall Call(string name, params string[] arguments)
 	{
-		string? bank = null;
-		for (string? at = AppContext.BaseDirectory; at is not null && bank is null; at = Path.GetDirectoryName(at))
+		var list = new List<Engine_UiModel.GuiNativeArgument>();
+		foreach (string argument in arguments)
 		{
-			string direct = Path.Combine(at, "assets", "Fable2", "game", "data", "guiscripts.bnk");
-			bank = File.Exists(direct) ? direct : null;
+			list.Add(new Engine_UiModel.GuiNativeArgument(Engine_UiModel.GuiNativeArgumentKind.String, argument));
 		}
 
-		if (bank is null || !BnkArchive.TryOpen(bank, out BnkArchive? archive, out _))
-		{
-			Console.WriteLine($"[front-end] no packaged install beside the tree; {file} is not read here");
-			return null;
-		}
-
-		using (archive)
-		{
-			foreach (BnkEntry entry in archive!.Entries)
-			{
-				if (entry.RelativePath.EndsWith(file + ".bgf", StringComparison.OrdinalIgnoreCase))
-				{
-					return Engine_UiScreen.Parse(file, archive.ReadEntryBytes(entry), null);
-				}
-			}
-		}
-
-		return null;
+		return new Engine_UiModel.GuiNativeCall(name, list);
 	}
 
-	/// <summary>The writer's three paths name the shipped files' dialog texts.</summary>
+	/// <summary>StampSaveCard's statements: each save on the card the guest stamped, a later opening's only.</summary>
 	[TestCase]
-	public void TheShippedDialogTextsResolve()
+	public void SaveCardsAreTakenAsStated()
 	{
-		if (Shipped("frontendmainmenu") is { } menu)
-		{
-			AssertThat(Engine_UiFrontEndScreens.ElementAt(menu, "dialog.Group.yousure")?.Ordinal).IsEqual(3682);
-			AssertThat(Engine_UiFrontEndScreens.ElementAt(menu, "dialog.Group.OK")?.Ordinal).IsEqual(3683);
-			AssertThat(Engine_UiFrontEndScreens.ElementAt(menu, "dialog.Group.cancel")?.Ordinal).IsEqual(3690);
-		}
+		var stated = new Engine_FrontEndStated();
+		AssertThat(stated.CardsSince(0, 2) is null).IsTrue();
 
-		if (Shipped("frontendstartupscreen") is { } title)
-		{
-			AssertThat(Engine_UiFrontEndScreens.ElementAt(title, "dialog.Group.yousure")?.Ordinal).IsEqual(68);
-			AssertThat(Engine_UiFrontEndScreens.ElementAt(title, "dialog.Group.OK")?.Ordinal).IsEqual(69);
-			AssertThat(Engine_UiFrontEndScreens.ElementAt(title, "dialog.Group.cancel")?.Ordinal).IsEqual(76);
-		}
+		stated.SaveCard(Call("@FrontEnd.SaveCard", "0", "3", "1A2B3C4D"));
+		AssertThat(stated.CardsSince(0, 2) is null).IsTrue();
+		stated.SaveCard(Call("@FrontEnd.SaveCard", "1", "4", "0000BEEF"));
+		List<Engine_FrontEndStated.Card>? cards = stated.CardsSince(0, 2);
+		AssertThat(cards is { Count: 2 }).IsTrue();
+		AssertThat(cards![0].Slot).IsEqual(3);
+		AssertThat(cards[0].Texture).IsEqual(0x1A2B3C4Du);
+		AssertThat(cards[1].Slot).IsEqual(4);
+		AssertThat(cards[1].Texture).IsEqual(0xBEEFu);
+
+		ulong opened = stated.Sequence;
+		AssertThat(stated.CardsSince(opened, 2) is null).IsTrue();
+		stated.SaveCard(Call("@FrontEnd.SaveCard", "0", "1", "00000001"));
+		AssertThat(stated.CardsSince(opened, 1)?[0].Slot == 1).IsTrue();
+	}
+
+	/// <summary>OpenDialog's statement: owner, texts, allow-cancel, cancel tag and glyph as called.</summary>
+	[TestCase]
+	public void TheDialogIsTakenAsStated()
+	{
+		var stated = new Engine_FrontEndStated();
+		stated.OpenDialog(Call("@FrontEnd.Dialog", "4D0A1000", "Accept", "No saves were found.", "1",
+			"GUI_BUTTONS_CANCEL", "00C0FFEE"));
+		AssertThat(stated.LastDialog is { } dialog && dialog.Owner == 0x4D0A1000u && dialog.Ok == "Accept" &&
+			dialog.Body == "No saves were found." && dialog.AllowCancel && dialog.CancelTag == "GUI_BUTTONS_CANCEL" &&
+			dialog.Glyph == 0xC0FFEEu).IsTrue();
+
+		ulong first = stated.LastDialog!.Value.Sequence;
+		stated.OpenDialog(Call("@FrontEnd.Dialog", "4D0A1000", "GUI_OK", "Body", "0", "", "00000002"));
+		AssertThat(stated.LastDialog is { AllowCancel: false, CancelTag: "" } again && again.Sequence > first).IsTrue();
 	}
 }

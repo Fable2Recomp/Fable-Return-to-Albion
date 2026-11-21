@@ -991,6 +991,10 @@ constexpr const char* kActionInventoryForPrefix = "InventoryFor:";
 /// abilities bought or given back, see DispatchAbilityAction.
 constexpr const char* kActionAbilityPrefix = "Ability:";
 
+/// `Furniture:upgrade:<level>` — the furniture screen's upgrade on a stated level, see
+/// DispatchFurnitureAction.
+constexpr const char* kActionFurniturePrefix = "Furniture:";
+
 /// THE IN-GAME GUI'S OWN ACTIONS run inside the guest's Lua window, not before the tick body.
 ///
 /// `sub_82426470` executes a posted chunk only while `GUI+0x64` is set; the game loop
@@ -2095,6 +2099,22 @@ bool DispatchDye(PPCContext& ctx, uint8_t* base, const std::string& arguments) {
     REXLOG_INFO("Refii guest-tick pump: Inventory:dye — slot {} of {} target 0x{:08X} was dyed; "
                 "scrubbed (sub_826CAE08)", slot + 1u, worn ? "worn" : "carried", target_hash);
   } else {
+    // The caller's tutorial step before the apply, `sub_826D3108` 0x826D3184..0x826D31B0 (disc
+    // `sub_8257EBA0` 0x8257EC1C..0x8257EC48): t = *(G+168); HasDisplayedTutorial(t, 28)
+    // (0x82450870 / 0x824FDA50, a leaf that keeps r4 and r7, so the second call's r4 is 28) ->
+    // CompleteTutorial(t, 28) (0x82450918 / 0x824FDAF8). Saved: the record's DisplayedCount +40
+    // and Completed +44 are written by `sub_8244E250` from lhSaveManager_WriteSave.
+    const uint32_t root = LoadGuestU32(base, refii::guest::Address(0x83496AB8u));
+    const uint32_t game = LooksLikeGuestPointer(root) ? LoadGuestU32(base, root + 12u) : 0u;
+    const uint32_t tutorials = LooksLikeGuestPointer(game) ? LoadGuestU32(base, game + 168u) : 0u;
+    PPCFunc* displayed = FindGuestFunction(refii::guest::Address(0x82450870u));
+    PPCFunc* complete = FindGuestFunction(refii::guest::Address(0x82450918u));
+    if (LooksLikeGuestPointer(tutorials) && displayed != nullptr && complete != nullptr &&
+        (call(displayed, tutorials, 28u, 0u, 0u) & 0xFFu) != 0u) {
+      call(complete, tutorials, 28u, 0u, 0u);
+      REXLOG_INFO("Refii guest-tick pump: Inventory:dye — tutorial 28 completed (sub_826D3108's "
+                  "step)");
+    }
     call(apply, 0u, dye_ref, target_ref, slot);
     REXLOG_INFO("Refii guest-tick pump: Inventory:dye — dyed slot {} of {} target 0x{:08X} with "
                 "0x{:08X} (sub_826CAB78)", slot + 1u, worn ? "worn" : "carried", target_hash,
@@ -3019,6 +3039,31 @@ bool DispatchAbilityAction(PPCContext& ctx, uint8_t* base, const std::string& bo
               done      ? (unlearn ? "one level given back" : "bought")
               : unlearn ? "refused (no level to give back)"
                         : "refused (maxed, or not enough experience)");
+  return true;
+}
+
+extern "C" int32_t RefiiFurnitureUpgrade(PPCContext* ctx, uint8_t* base, int32_t level);
+
+/// `Furniture:upgrade:<level>` — the transaction of the furniture screen's A (`sub_826B6A18`, disc
+/// `sub_8259BB80`) on the level the row states (`Float1 + (Float2 << 16)`, as `sub_8299D910`
+/// spawned it), never the guest's highlight; RefiiFurnitureUpgrade (mod_events.cpp) runs it.
+bool DispatchFurnitureAction(PPCContext& ctx, uint8_t* base, const std::string& body) {
+  constexpr const char* kUpgrade = "upgrade:";
+  const bool upgrade = body.rfind(kUpgrade, 0) == 0;
+  const char* digits = upgrade ? body.c_str() + std::strlen(kUpgrade) : body.c_str();
+  char* end = nullptr;
+  const long level = upgrade ? std::strtol(digits, &end, 10) : -1;
+  if (end == nullptr || end == digits || *end != '\0' || level < 0 || level > 0xFFFF) {
+    REXLOG_INFO("Refii guest-tick pump: 'Furniture:{}' is not upgrade:<level> — dropped", body);
+    return true;
+  }
+  static constexpr const char* kOutcome[] = {
+      "upgraded", "no targeted piece", "the piece is not upgradeable", "already installed",
+      "no unlock card for it", "the level was not set (cancelled or refused)",
+  };
+  const int32_t outcome = RefiiFurnitureUpgrade(&ctx, base, static_cast<int32_t>(level));
+  REXLOG_INFO("Refii guest-tick pump: Furniture:upgrade:{} — {}", level,
+              outcome >= 0 && outcome < 6 ? kOutcome[outcome] : "?");
   return true;
 }
 
@@ -5944,9 +5989,10 @@ bool DispatchMenuEventDirect(PPCContext& ctx, uint8_t* base, const std::string& 
 
   // Furniture/decoration (26/27) and options (18) do not act on the event at all: their choice
   // is made in the input handler's 36 arm from the highlighted row (`sub_826B6A18`,
-  // `sub_826DA228` @0x826da3ec), which `sub_826C1B50` answers from Godot's stated row — the host
-  // commits those screens with `ScreenAction:36` (Engine_UiScreenTemplate.CommitsByHighlight);
-  // an event pushed at them answers only the scroll sounds, as the guest's switch says.
+  // `sub_826B7550`, `sub_826DA228` @0x826da3ec), which `sub_826C1B50` answers from Godot's stated
+  // row. The host commits 27 and 18 with `ScreenAction:36` (Engine_UiScreenTemplate.CommitsByHighlight)
+  // and 26 with `Furniture:upgrade:<level>` (DispatchFurnitureAction); an event pushed at them
+  // answers only the scroll sounds, as the guest's switch says.
 
   switch (refii::guest::ToTu1(slot)) {
     case 0x826C2660u: case 0x826A26E8u: case 0x826D1800u: case 0x826D4D58u:
@@ -9418,6 +9464,9 @@ void DrainOnGuestThread(PPCContext& ctx, uint8_t* base, bool ui_pass) {
       ran = DispatchAbilityAction(ctx, base,
                                   name.substr(std::strlen(kActionAbilityPrefix)));
       refii_bridge_ui_data_changed();
+    } else if (name.rfind(kActionFurniturePrefix, 0) == 0) {
+      ran = DispatchFurnitureAction(ctx, base, name.substr(std::strlen(kActionFurniturePrefix)));
+      refii_bridge_ui_data_changed();
     } else if (name == kActionRegisterPlayer) {
       ran = DispatchRegisterPlayer(ctx, base);
     } else if (name.rfind(kActionPauseSavingPrefix, 0) == 0) {
@@ -10450,8 +10499,6 @@ REFII_MENU_BOUNDARY_HOOK(rex_lhGuiShopScreen_PopulateMenu)
 REFII_MENU_BOUNDARY_HOOK(rex_lhGuiLogbookScreen_PopulateMenu)
 REFII_MENU_BOUNDARY_HOOK(rex_lhGuiGiftGoldScreen_PopulateMenu)
 
-// The main menu's rebuild also resets every load card's portrait to blank.tex (0x826e2118),
-// stated where it takes each card (gui_headless_presentation.cpp, RefiiHeadlessStampCardBlank).
 REX_EXTERN(rex_lhGui_FrontendRoot_PopulateMainMenu) {
   REX_FUNC_PROLOGUE();
   refii_bridge_menu_spawn_begin_for(PopulatingScreenId(base));

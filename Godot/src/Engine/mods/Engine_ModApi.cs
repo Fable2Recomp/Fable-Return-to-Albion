@@ -688,7 +688,7 @@ public static class ModApi
 				F("seen", "bool", "always true"),
 				F("player", "int32_t", MenuPlayerMeaning),
 			}),
-		new ModApiEvent("MenuClosed", "menu_closed", 58, "rex_lhGuiManager_ExitScreen (r3 the GUI manager), when it really leaves menu mode",
+		new ModApiEvent("MenuClosed", "menu_closed", 58, "rex_lhGuiManager_ExitScreen / rex_lhGuiManager_ExitGuiModeQuiet (r3 the GUI manager), when it really leaves menu mode",
 			"The game left its menu mode.",
 			string.Empty,
 			new[]

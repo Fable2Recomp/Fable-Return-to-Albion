@@ -295,8 +295,9 @@ public sealed partial class Engine_WaterReflection : Node
             int activeMirrors = classicActive
                 ? _bodies.Count
                 : (activeSpec.Enabled && dominantModern is not null ? 1 : 0);
+            string farDesc = float.IsPositiveInfinity(activeSpec.FarPlane) ? "view far" : $"far {activeSpec.FarPlane:0}m";
             string desc = activeSpec.Enabled && activeMirrors > 0
-                ? $"{activeSpec.TileHeight}p (cadence {activeSpec.Cadence}, far {activeSpec.FarPlane:0}m)"
+                ? $"{activeSpec.TileHeight}p (cadence {activeSpec.Cadence}, {farDesc})"
                 : "SSR-only (0 SubViewports)";
             GD.Print($"[water] {activeMirrors}/{_bodies.Count} planar reflection body(s), {desc}, {_shared} surface(s) sharing one");
         }
@@ -352,12 +353,16 @@ public sealed partial class Engine_WaterReflection : Node
         _view = null;
     }
 
+    private static Vector2I MirrorSizeFor(Vector2 screen, int tileH) =>
+        new(Mathf.Clamp(Mathf.RoundToInt(tileH * screen.X / Mathf.Max(screen.Y, 1f)), 1, 4 * tileH), tileH);
+
     /// <summary>One mirror's viewport and camera, parented here; <paramref name="view"/> seeds its range.</summary>
     private MirrorRig NewMirror(Camera3D view, WaterMirrorSpec spec)
     {
+        Vector2 initialScreen = view.GetViewport()?.GetVisibleRect().Size ?? new Vector2(16f, 9f);
         var viewport = new SubViewport
         {
-            Size = new Vector2I(spec.TileHeight, spec.TileHeight),
+            Size = MirrorSizeFor(initialScreen, spec.TileHeight),
 
             // SHARED WORLD, which is the opposite of what the front end's viewport wants. The
             // UI sets OwnWorld3D so its cameras cannot see the world; a reflection is nothing
@@ -730,14 +735,31 @@ public sealed partial class Engine_WaterReflection : Node
             chosen.Camera.KeepAspect = source.KeepAspect;
         }
 
-        // Hardware near-plane clip of submerged geometry near the mirrored camera when above water.
+        float far = MirrorFar(source.Far, spec);
+        Transform3D mirroredTransform = Mirror(eye, chosenBody.Height);
+
+        // Frustum-tight water-plane near bound: every point on or above y = chosenBody.Height
+        // inside the mirrored frustum has z >= hAbove / (max(F.y, 0) + |U.y|*tanY + |R.y|*tanX).
         float near = source.Near;
         if (!chosenBody.IsClassicOrGuest)
         {
             float hAbove = eye.Origin.Y - chosenBody.Height;
-            if (hAbove > 0.35f && fov <= 105f)
+            if (hAbove > 0.25f && fov <= 125f)
             {
-                near = Mathf.Max(near, Mathf.Min(hAbove * 0.35f, 4.0f));
+                float aspect = screen.X / Mathf.Max(screen.Y, 1f);
+                float halfTan = Mathf.Tan(Mathf.DegToRad(fov * 0.5f));
+                float tanY = source.KeepAspect == Camera3D.KeepAspectEnum.Width
+                    ? halfTan / Mathf.Max(aspect, 1e-3f)
+                    : halfTan;
+                float tanX = source.KeepAspect == Camera3D.KeepAspectEnum.Width
+                    ? halfTan
+                    : halfTan * aspect;
+                Vector3 fwd = -mirroredTransform.Basis.Column2;
+                Vector3 up = mirroredTransform.Basis.Column1;
+                Vector3 right = mirroredTransform.Basis.Column0;
+                float denom = Mathf.Max(fwd.Y, 0f) + (Mathf.Abs(up.Y) * tanY) + (Mathf.Abs(right.Y) * tanX);
+                float zWaterMin = hAbove / Mathf.Max(denom, 1e-3f);
+                near = Mathf.Max(source.Near, Mathf.Min(zWaterMin * 0.94f, far * 0.25f));
             }
         }
         if (chosen.Camera.Near != near)
@@ -745,7 +767,6 @@ public sealed partial class Engine_WaterReflection : Node
             chosen.Camera.Near = near;
         }
 
-        float far = MirrorFar(source.Far, spec);
         if (chosen.Camera.Far != far)
         {
             chosen.Camera.Far = far;
@@ -759,14 +780,12 @@ public sealed partial class Engine_WaterReflection : Node
         // THE SCREEN'S ASPECT. Both water shaders address the mirror by the screen position, so
         // it has to cover what the screen covers: square, it held only the middle of a 16:9 view
         // stretched across the whole width.
-        int tileH = spec.TileHeight;
-        var size = new Vector2I(
-            Mathf.Clamp(Mathf.RoundToInt(tileH * screen.X / Mathf.Max(screen.Y, 1f)), 1, 4 * tileH), tileH);
+        Vector2I size = MirrorSizeFor(screen, spec.TileHeight);
         if (chosen.Viewport.Size != size)
         {
             chosen.Viewport.Size = size;
         }
-        chosen.Camera.GlobalTransform = Mirror(eye, chosenBody.Height);
+        chosen.Camera.GlobalTransform = mirroredTransform;
         chosen.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Once;
         chosen.RenderedEye = eye;
         chosen.RenderedFrame = _frame;

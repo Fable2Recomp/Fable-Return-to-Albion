@@ -12,6 +12,9 @@ public static class Engine_MdlExtraLods
     /// <summary>Thinned tree levels added (Engine_TreeCardLods). Run total.</summary>
     public static int TreeCardLevels;
 
+    /// <summary>The fewest indices a trunk needs to get generated levels: a far model's trunk is about 100 triangles.</summary>
+    internal const int TrunkMinIndices = 150;
+
     /// <summary>The levels for a surface that has none of its own, or null when neither setting gives any.</summary>
     /// <param name="surface">The surface's arrays so far: its positions, normals and indices.</param>
     internal static Engine_MdlSurfaceArrays.Levels? For(
@@ -32,14 +35,23 @@ public static class Engine_MdlExtraLods
             }
 
             Vector3 span = high - low;
+            bool clusters = Engine_TreeCardLods.ClustersEnabled;
             foreach ((float key, int[] level) in Engine_TreeCardLods.Build(
                 indices, vertices.Length, System.MathF.Max(span.X, System.MathF.Max(span.Y, span.Z)),
-                Engine_TreeCardLods.FarLevelsEnabled))
+                Engine_TreeCardLods.FarLevelsEnabled, clusters ? vertices : default,
+                clusters ? Engine_TreeCardLods.ClusterTriangles : Engine_TreeCardLods.CardTriangles))
             {
                 levels ??= new Engine_MdlSurfaceArrays.Levels();
                 levels.Add(key, level);
                 System.Threading.Interlocked.Increment(ref TreeCardLevels);
             }
+        }
+
+        // A tree's trunk and boughs: generated levels under `tree_trunk_lod`.
+        if (levels is null && info.MovementMode == 2 && Engine_TreeCardLods.TrunksEnabled && Engine_MdlAutoLod.Enabled &&
+            Engine_TreeCardLods.IsTrunk(indices, vertices.Length, vertices))
+        {
+            levels = Engine_MdlAutoLod.GenerateFor(vertices, indices.Length, surface, far: true, minIndices: TrunkMinIndices);
         }
 
         // Still none and not a tree (trees thin only by their cards, above): generated levels on a phone

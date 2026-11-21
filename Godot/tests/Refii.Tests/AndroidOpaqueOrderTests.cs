@@ -71,4 +71,25 @@ public sealed class AndroidOpaqueOrderTests
             finally { GraphicsPresets.Offered = offered; }
         }
     }
+
+    /// <summary>The front-to-back switch: off by default, named for a phone, and nothing on an engine without the patch.</summary>
+    [TestCase, RequireGodotRuntime]
+    public void FrontToBackIsOffByDefaultAndLeavesAnUnpatchedEngineAlone()
+    {
+        RuntimeCVarDefinition row = RuntimeCVarSet.All.First(d => d.Name == AndroidOpaqueOrder.FrontToBackKey);
+        AssertThat(row.DefaultValue).IsEqual("false");
+        bool offered = GraphicsPresets.Offered;
+        try
+        {
+            GraphicsPresets.Offered = true;
+            AssertThat(AndroidSettingNames.Name(AndroidOpaqueOrder.FrontToBackKey)).IsNotNull();
+        }
+        finally { GraphicsPresets.Offered = offered; }
+
+        // The desktop's official engine has no such setting: asking for the order must not create it.
+        bool known = Godot.ProjectSettings.HasSetting(AndroidOpaqueOrder.FrontToBackSetting);
+        AndroidOpaqueOrder.ApplyFrontToBack(true);
+        AssertThat(Godot.ProjectSettings.HasSetting(AndroidOpaqueOrder.FrontToBackSetting)).IsEqual(known);
+        AndroidOpaqueOrder.ApplyFrontToBack(false);
+    }
 }

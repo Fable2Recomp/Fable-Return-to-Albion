@@ -38,6 +38,10 @@ public static class Engine_ModernFur
     private static readonly StringName OcclusionName = "fur_occlusion";
     private static readonly StringName SlicesName = "fur_slices";
     private static readonly StringName AlbedoName = "albedo_tex";
+    private static readonly StringName NormalName = "normal_tex";
+    private static readonly StringName HasNormalName = "has_normal";
+    private static readonly StringName OrmName = "orm_tex";
+    private static readonly StringName HasOrmName = "has_orm";
     private static readonly StringName PbrName = "is_pbr";
     private static readonly StringName ProbeRName = "probe_r";
     private static readonly StringName ProbeGName = "probe_g";
@@ -54,6 +58,8 @@ public static class Engine_ModernFur
         public required MeshInstance3D Source;
         public required MeshInstance3D Shell;
         public required ShaderMaterial[] Passes;
+        public required ArrayMesh ShellMesh;
+        public ShaderMaterial? LastSkin;
         public required float Length;
         public int Linked = -1;
         public int Stagger;
@@ -239,8 +245,7 @@ public static class Engine_ModernFur
             pass.SetShaderParameter(SlicesName, slices);
             if (skin is not null)
             {
-                pass.SetShaderParameter(AlbedoName, skin.GetShaderParameter(AlbedoName));
-                pass.SetShaderParameter(PbrName, skin.GetShaderParameter(PbrName));
+                CopySkinParameters(pass, skin);
             }
             passes[i] = pass;
         }
@@ -250,6 +255,7 @@ public static class Engine_ModernFur
             Mesh = shellMesh,
             Skin = mesh.Skin,
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            GIMode = mesh.GIMode,
             Layers = mesh.Layers,
             MaterialOverride = passes[0],
         };
@@ -264,6 +270,8 @@ public static class Engine_ModernFur
             Source = mesh,
             Shell = shell,
             Passes = passes,
+            ShellMesh = shellMesh,
+            LastSkin = skin,
             Length = fur[8],
             Stagger = FurredById.Count % ShareFrames,
         };
@@ -335,9 +343,35 @@ public static class Engine_ModernFur
         return furred.DepthPasses = passes;
     }
 
-    /// <summary>The source's ambient probe, bake mode and tint, onto the shells without calling GetInstanceShaderParameter.</summary>
+    /// <summary>Copies albedo, normal, ORM, and PBR flags from the underlying skin surface onto a fur shell pass.</summary>
+    private static void CopySkinParameters(ShaderMaterial pass, ShaderMaterial skin)
+    {
+        pass.SetShaderParameter(AlbedoName, skin.GetShaderParameter(AlbedoName));
+        pass.SetShaderParameter(NormalName, skin.GetShaderParameter(NormalName));
+        pass.SetShaderParameter(HasNormalName, skin.GetShaderParameter(HasNormalName));
+        pass.SetShaderParameter(OrmName, skin.GetShaderParameter(OrmName));
+        pass.SetShaderParameter(HasOrmName, skin.GetShaderParameter(HasOrmName));
+        pass.SetShaderParameter(PbrName, skin.GetShaderParameter(PbrName));
+    }
+
+    /// <summary>The source's ambient probe, bake mode, skin maps and tint, onto the shells without calling GetInstanceShaderParameter.</summary>
     private static void Share(Furred furred)
     {
+        ShaderMaterial? currentSkin = SkinOf(furred.Source, furred.ShellMesh);
+        if (currentSkin is not null && !ReferenceEquals(currentSkin, furred.LastSkin))
+        {
+            furred.LastSkin = currentSkin;
+            for (int i = 0; i < furred.Passes.Length; i++)
+            {
+                CopySkinParameters(furred.Passes[i], currentSkin);
+            }
+        }
+
+        if (furred.Shell.GIMode != furred.Source.GIMode)
+        {
+            furred.Shell.GIMode = furred.Source.GIMode;
+        }
+
         Refii.Lighting.Engine_LevelBakedLighting.ReadInstanceLighting(
             furred.Source,
             staticProp: false,

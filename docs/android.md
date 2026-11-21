@@ -36,7 +36,7 @@ co-op work, with the gaps listed at the end.
   The Android [graphics presets](#android-graphics-preset) turn them on, and a desktop
   neither shows nor writes the presets.
 - **Godot.** The desktop keeps the official 4.7.1 editor and binaries. The Android
-  templates carry nine engine patches (`tools/android/godot-patches/README.md`); the four
+  templates carry seventeen engine patches (`tools/android/godot-patches/README.md`); the four
   C# binding races they fix (0004, 0005, 0007, 0008) are not Android-specific, only rarer on
   desktop.
 
@@ -220,14 +220,32 @@ with a 30 FPS cap either way. A 20 FPS cap is the player's choice in Options.
 
 | Preset | Render scale | Sun shadow | Also |
 |---|---|---|---|
-| Low | 40% | none | the nearest four placed lights, trees to 300 m, half the undergrowth, no normal maps, the modern lighting without ground-contact shadows |
-| Medium | 45% | none | more lights and distance than Low |
-| High | 50% | where the theme casts one | 16 placed lights, three quarters of the undergrowth, every same-picture shortcut |
+| Low | 40% | none | the nearest four placed lights, a quarter of the undergrowth, no normal maps, flat-lit leaves and cut-outs, props lit at their corners, trees thinned and swapped to far models early, the modern lighting without ground-contact shadows |
+| Medium | 45% | none | more lights and distance than Low, flat-lit cut-outs, trees thinned with distance |
+| High | 50% | where the theme casts one | 16 placed lights, three quarters of the undergrowth, trees thinned with distance |
 | Ultra | 67% | longer | the 360's model detail, the desktop's prop distances, 32 placed lights, the ground's bump |
+
+What a preset may trade for frame rate: Low, anything that doesn't look broken; Medium, small
+compromises that stay close to the Xbox 360's look; High, only what a player wouldn't notice in play;
+Ultra, only what shows in a side-by-side screenshot. A saving that leaves the picture unchanged goes in
+every preset: nearest-first drawing of solid surfaces (engine patch 0012), the sun-shadow and lamp skips
+(engine patch 0014, see [A mod's own light() on a phone](#a-mods-own-light-on-a-phone)), fog trims, a
+prop shader per bake mode, building occlusion in towns (`occlusion_culling` `auto`), a heat-haze layer
+that runs only while a haze source is on screen, and coarser generated levels for far scenery.
+
+Every preset draws far trees as pictures of their models (`tree_billboards`), as the Xbox 360 game did;
+Ultra starts them at three times the usual distance. The pictures are captured once per area and again
+when the light changes, so they don't change as the camera turns. Medium draws hedges and other cut-outs
+depth first (`android_cutout_depth_prepass`, engine patch 0017) so the layers they hide aren't shaded.
 
 Each preset sets its lighting model (`android_modern_lighting`): the modern one for Low, the fable
 one for Medium, High and Ultra. It changes at the next start. A phone that stored the retired Low
 (lean) preset moves to Low.
+
+Game speed on these phones is limited by the guest's game thread. It runs on the fastest core at a
+raised priority (`android_guest_prime_core`), and every other thread is kept off that core
+(`android_host_off_prime`), including threads the game thread creates, which would otherwise inherit
+its one-core placement. Fable 3 is not pinned.
 
 Low and Medium suit a 5-6 GB phone such as the OnePlus 7 Pro, Medium and High an 8 GB Adreno 640
 phone such as the Galaxy S10e, High and Ultra a Snapdragon 8 Elite such as the Galaxy S25+. An
@@ -240,9 +258,12 @@ instead of 1024 (`sun_shadow_map`). Both are rows in Options' Graphics settings:
 and **Shadow quality**.
 
 The low-memory tier (`android_low_ram_mode`) trades a little picture and waiting for memory: normal
-maps and large colour maps one size smaller where the GPU has no BC formats, the pause and Items menus built when first opened, no
-shader folds, and a bound on the hero's decoded texture sources. `auto` turns it on under 7 GB of
-memory, and the Low preset sets `on`. A new install under 7 GB starts on Low.
+maps and large colour maps one size smaller where the GPU has no BC formats, the pause and Items menus
+built when first opened, and a bound on the hero's decoded texture sources. Material shortcuts stay on
+(`lite_material_folds_low_ram` `all`). It is the phone's own setting, not part of a preset, so changing
+it doesn't make the preset read Custom: `auto` (the default) turns it on under 7 GB of memory, and
+**Low-memory mode** (Launch options, Advanced) sets it from the next start. A new install under 7 GB
+starts on Low.
 
 Finished character composites are kept in `cache/<Title>/composites/<build>` in the form they upload,
 up to 256 MB, longest unused first out. `android_composite_cache = false` turns that off.
@@ -368,6 +389,24 @@ taps on a touchscreen: a finger lands on it as the mouse's left button, a swipe 
 wheel does, and the touch controls draw only Options and a Close pill (Start) over it — their pad
 does not reach the game here. Give every key the screen offers a button to tap when
 `host.touch_mode()` is true; a typed field needs a keyboard a phone does not have.
+
+## A mod's own light() on a phone
+
+A mod's own `light()` function runs on a phone too, where every graphics preset skips two pieces of
+lighting work the game's own shaders never use (engine patch 0014). The rest of the lighting API is in
+the modding guide's [Lights](../Godot/docs/modding/effects.md#lights).
+
+- **No sun shadow on faces turned away from the sun.** Where the surface's normal is turned more than about
+  97 degrees from the sun (`dot(NORMAL, LIGHT) < -0.125`), the sun's shadow is not looked up, so the sun's
+  `ATTENUATION` is 1 there, as if unshadowed. Shade such faces with `ATTENUATION` only where `dot(NORMAL, LIGHT)`
+  is above 0, as the game's shaders do. Godot's own wrap, backlight and transmittance keep the full shadow.
+- **No call for a lamp out of range.** `light()` is not called for an omni or spot light whose `ATTENUATION`
+  at the pixel is zero: past its range, or outside a spot's cone. A shader that adds light without multiplying
+  by `ATTENUATION` gets nothing there.
+
+A desktop does neither. The settings that turn them back are `android_sun_shadow_skip_facing_away`
+(**Skip shadow on unlit sides**) and `android_lamp_skip_out_of_range` (**Lamps stop at their range**): set either
+to `false` in `refii.toml`, and the graphics preset then reads as Custom.
 
 ## A game module compiled on a PC
 

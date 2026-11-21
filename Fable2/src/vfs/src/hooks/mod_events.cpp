@@ -14,6 +14,7 @@
 // failing is a handler's `return true` — the cancel. Chunks run on the guest thread inside the
 // seam, as native handlers do, never nested inside another event's chunk.
 
+#include "gui/gui_menu_chunks.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -181,6 +182,7 @@ PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_EnterGuiMode);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_ExitScreen);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_SetScreen);
 PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_EnterGuiModeQuiet);
+PPC_EXTERN_FUNC(__imp__rex_lhGuiManager_ExitGuiModeQuiet);
 PPC_EXTERN_FUNC(rex_lhGameFlow_IsGuiActive);
 PPC_EXTERN_FUNC(__imp__rex_lhPaintMap_DaySetAt);
 PPC_EXTERN_FUNC(__imp__rex_lhMenuBox_Close);
@@ -4491,6 +4493,7 @@ REX_EXTERN(rex_lhGuiManager_OpenExpressionWheel) {
     return;
   }
   refii::vfs::g_wheel_player = static_cast<int32_t>(Load32(base, record + 36u));
+  refii_bridge_set_expression_wheel_player(refii::vfs::g_wheel_player);
   refii::vfs::g_wheel_highlighted = refii_mod_selected_expression(base, refii::vfs::g_wheel_player);
   if (AnySubscriber(REFII_EVENT_EXPRESSION_WHEEL)) {
     refii::vfs::RaiseExpressionWheel(entry, base, refii::vfs::g_wheel_player, true, refii::vfs::g_wheel_highlighted);
@@ -4505,6 +4508,7 @@ REX_EXTERN(rex_lhGuiManager_CloseExpressionWheel) {
   if (quick != 0 && Load8(base, refii::vfs::WheelOpenByte(quick)) != 0) {
     const int32_t player = refii::vfs::WheelPlayer(base);
     refii::vfs::g_wheel_player = 0;
+    refii_bridge_set_expression_wheel_player(0);
     refii::vfs::g_wheel_highlighted = 0;
     if (AnySubscriber(REFII_EVENT_EXPRESSION_WHEEL)) {
       refii::vfs::RaiseExpressionWheel(ctx, base, player, false, 0u);
@@ -5869,8 +5873,13 @@ REX_EXTERN(rex_CECOpinionReaction_SendIconRemoved) {
 // relationship icon's intensity the villager's love (`sub_82820A78`, comp47 +0x2C against the
 // thresholds +0x70/+0x74). Player two's icons run in player two's opinion scope for their villager
 // (the icon's entity, the weak reference at +24 whose block +28 holds it): hero two lent and their
-// opinion swapped in. TU1 0x82241AD8.
-REX_EXTERN(rex_lhWorldIcon_Update) {
+// opinion swapped in. TU1 0x82241AD8. After it ran, the icon is stated for Godot
+// (world_icon_hooks.cpp).
+void RefiiWorldIcon3DUpdated(const PPCContext& entry, uint8_t* base, uint32_t icon);
+
+namespace {
+
+void RunWorldIconUpdate(PPCContext& ctx, uint8_t* base) {
   const uint32_t icon = ctx.r3.u32;
   const uint32_t two = refii_mod_player_hero(base, 2);
   if (t_opinion_depth != 0 || (ctx.r4.u32 & 0xFFu) == 0u || icon < 0x10000u || two == 0u ||
@@ -5898,6 +5907,14 @@ REX_EXTERN(rex_lhWorldIcon_Update) {
   __imp__rex_lhWorldIcon_Update(ctx, base);
   refii::mods::StoreU32(base, players + 108u, holder);
   refii_bridge_hero_slot_return();
+}
+
+}  // namespace
+
+REX_EXTERN(rex_lhWorldIcon_Update) {
+  const PPCContext entry = ctx;
+  RunWorldIconUpdate(ctx, base);
+  RefiiWorldIcon3DUpdated(entry, base, entry.r3.u32);
 }
 
 // VILLAGERS ACTING ON HOW THEY FEEL ABOUT PLAYER TWO. Beyond deeds, the per-frame math, speech and
@@ -6755,19 +6772,146 @@ REX_EXTERN(rex_CECBuilding_RedecorateUpdate) {
   __imp__rex_CECBuilding_RedecorateUpdate(ctx, base);
 }
 
-// TU1 0x826B6A18 (r3 the furniture screen).
-REX_EXTERN(rex_lhGuiFurnitureScreen_Upgrade) {
+namespace {
+// An upgrade is hero two's when player two started the redecorating and the menus are player two's.
+bool FurnitureForTwo(uint8_t* base) {
   bool two_redecorates = false;
   for (const auto& [building, player] : g_redecorating) {
     two_redecorates = two_redecorates || player == 2;
   }
-  const bool for_two = two_redecorates && refii_mod_menu_player(base) == 2;
+  return two_redecorates && refii_mod_menu_player(base) == 2;
+}
+}  // namespace
+
+// TU1 0x826B6A18 (r3 the furniture screen).
+REX_EXTERN(rex_lhGuiFurnitureScreen_Upgrade) {
+  const bool for_two = FurnitureForTwo(base);
   PPCContext entry = ctx;
   HouseholdScope scope(entry, base, for_two ? refii_mod_player_hero(base, 2) : 0u);
   const bool previous = t_furniture_for_two;
   t_furniture_for_two = for_two;
   __imp__rex_lhGuiFurnitureScreen_Upgrade(ctx, base);
   t_furniture_for_two = previous;
+}
+
+// `Furniture:upgrade:<level>` (guest_tick_pump.cpp): the transaction of the furniture screen's A,
+// `sub_826B6A18` (disc `sub_8259BB80`), on the STATED level instead of the highlight
+// (`lhGuiMenu_GetHighlightedItemData` 0x826B6AC0 / 0x8259BC28), under the same household scope.
+// The two emphasis statements `sub_826C1A50` makes (0x826B6B70, 0x826B6BCC) are made here from
+// the spawned rows' names; not called: the label lookups `sub_826B6678`, `sub_82764688` and
+// `this+348 = -1` (0x826B6D5C / 0x8259BEC4).
+//
+//   sub_826B61C8(_, &F)                 0x826B6A34 / 0x8259BB9C   r3 unused; F = comp68 of the
+//                                                                 menu player's comp77 target
+//   !*(u8*)(F+12) -> stop               0x826B6A48 / 0x8259BBB0
+//   L == *(F+16) -> stop                0x826B6AD8 / 0x8259BC40
+//   sub_825CC2F0(F, L, &card)           0x826B6AEC / 0x8259BC54   (disc sub_82561F10); false ->
+//                                                                 release, stop (0x826B6AF0 / 0x8259BC58)
+//   *(F+20) == 3: L 1->2, 2->4          0x826B6AFC..0x826B6B20 / 0x8259BC64..0x8259BC88
+//   cost = sub_825CBFC8(F, L)           0x826B6B2C / 0x8259BC94   (disc sub_82561BE8)
+//   sub_825CC5B0(F, &card)              0x826B6BE0 / 0x8259BD48   (disc sub_825621D0) takes the card
+//   CECUpgradeableFurniture_SetLevel(F, L, cost)  0x826B6BF0 / 0x8259BD58 (disc 0x82561480), through
+//                                                 the hook below (furniture_upgraded, its cancel)
+//   hero = lhEntity_GetModel(**(*(G+88)+4))  0x826B6C10 / 0x8259BD78 (`sub_8222C1B8` / `sub_8222C210`);
+//     hero && (*(u8*)(hero+144) & 0x40) && comp69 -> sub_828D4218(comp69)  0x826B6D54 / 0x8259BEBC
+//   card[0] -> lhTrackedObject_RemoveHandleRef(card[0], &card)  0x826B6D78 / 0x8259BEE0
+//
+// Hero one's slot `**(*(G+88)+4)+108` is what `sub_825CC2F0`, `sub_825CC5B0` and `sub_828D4218`
+// read the hero through; HouseholdScope lends hero two into it for hero two's upgrade.
+// Returns 0 done, 1 no targeted piece, 2 the piece is not upgradeable, 3 the level is installed,
+// 4 the hero holds no unlock card for it, 5 the level was not set (a mod cancelled it, or SetLevel
+// refused it).
+extern "C" int32_t RefiiFurnitureUpgrade(PPCContext* ctx, uint8_t* base, int32_t level) {
+  if (ctx == nullptr || base == nullptr) return 1;
+  const bool for_two = FurnitureForTwo(base);
+  PPCContext entry = *ctx;
+  HouseholdScope scope(entry, base, for_two ? refii_mod_player_hero(base, 2) : 0u);
+  const bool previous = t_furniture_for_two;
+  t_furniture_for_two = for_two;
+
+  const PPCContext saved = *ctx;
+  const uint32_t frame = refii::mods::Frame(saved, 0x200u).r1.u32;
+  const uint32_t piece_out = frame + 0x100u;
+  const uint32_t card = frame + 0x110u;
+  const auto call = [&](uint32_t tu1, uint32_t r3, uint32_t r4 = 0u, uint32_t r5 = 0u) -> uint32_t {
+    PPCContext work = refii::mods::Frame(saved, 0x200u);
+    work.r3.u64 = r3;
+    work.r4.u64 = r4;
+    work.r5.u64 = r5;
+    return CallGuest(work, base, refii::guest::Address(tu1)) ? work.r3.u32 : 0u;
+  };
+  const auto plausible = [](uint32_t at) { return at >= 0x10000u && at < 0xC0000000u; };
+
+  int32_t result = 0;
+  refii::mods::StoreU32(base, piece_out, 0u);
+  const uint32_t piece = (call(0x826B61C8u, 0u, piece_out) & 0xFFu) != 0u ? Load32(base, piece_out) : 0u;
+  if (!plausible(piece)) {
+    result = 1;
+  } else if (base[piece + 12u] == 0u) {
+    result = 2;
+  } else if (static_cast<int32_t>(Load32(base, piece + 16u)) == level) {
+    result = 3;
+  } else {
+    for (uint32_t word = 0; word < 4u; ++word) refii::mods::StoreU32(base, card + word * 4u, 0u);
+    if ((call(0x825CC2F0u, piece, static_cast<uint32_t>(level), card) & 0xFFu) == 0u) {
+      result = 4;
+    } else {
+      int32_t stated = level;
+      if (static_cast<int32_t>(Load32(base, piece + 20u)) == 3) {
+        stated = stated == 1 ? 2 : stated == 2 ? 4 : stated;
+      }
+      const uint32_t cost = call(0x825CBFC8u, piece, static_cast<uint32_t>(stated));
+      const uint32_t previous_level = Load32(base, piece + 16u);
+      call(0x825CC5B0u, piece, card);
+      call(0x825CB860u, piece, static_cast<uint32_t>(stated), cost);
+      // SetLevel's `sub_825CBEB0` stores the level back in row terms at F+16 (0x825CBF44).
+      result = static_cast<int32_t>(Load32(base, piece + 16u)) == level ? 0 : 5;
+
+      // THE ROWS' EMPHASIS, as the original states it before the transaction: `sub_826C1A50(menu,
+      // name, 0)` for the installed level's row (0x826B6B70 / disc 0x8259BCD8) and `(menu, name, 1)`
+      // for the chosen one (0x826B6BCC / 0x8259BD34) — each `Float1`, `String1`, then
+      // `g_Menu:SetItemEmphasis()` on `lhGuiPresentationSet_GetCurrent(*(GUI+56))`. The names are
+      // the ones the guest spawned those rows under (a row's id is its level, its event type 0);
+      // stated once the level is set, so a cancelled upgrade moves no mark.
+      if (result == 0) {
+        const uint32_t gui = Load32(base, refii::guest::Address(0x83496B08u));
+        const uint32_t set = plausible(gui) ? Load32(base, gui + 56u) : 0u;
+        const uint32_t presentation = plausible(set) ? call(0x823DCBE0u, set) : 0u;
+        const auto emphasise = [&](uint32_t row_level, float on) {
+          char name[128] = {};
+          const bool named = refii_bridge_menu_last_spawned_row_name(0, row_level, name, sizeof(name));
+          REXLOG_INFO("Refii furniture: level {} row '{}' emphasis {} on presentation 0x{:08X}{}", row_level, name,
+                      on, presentation, named && presentation != 0u ? "" : " — NOT stated");
+          if (presentation != 0u && named) {
+            refii::vfs::StageMenuAttribute("Float1", std::string(), on, true);
+            refii::vfs::StageMenuAttribute("String1", name, 0.0f, false);
+            refii::vfs::RunMenuChunk("g_Menu:SetItemEmphasis()", presentation);
+          }
+        };
+        emphasise(previous_level, 0.0f);
+        emphasise(static_cast<uint32_t>(level), 1.0f);
+      }
+
+      const uint32_t root = Load32(base, refii::guest::Address(0x83496AB8u));
+      const uint32_t game = plausible(root) ? Load32(base, root + 12u) : 0u;
+      const uint32_t manager = plausible(game) ? Load32(base, game + 88u) : 0u;
+      const uint32_t cell = plausible(manager) ? Load32(base, manager + 4u) : 0u;
+      const uint32_t players = plausible(cell) ? Load32(base, cell) : 0u;
+      const uint32_t hero = plausible(players) ? call(0x8222C1B8u, players) : 0u;
+      if (plausible(hero) && (base[hero + 144u] & 0x40u) != 0u) {
+        if (const uint32_t properties = refii_mod_component(base, hero, 69u)) {
+          call(0x828D4218u, properties);
+        }
+      }
+    }
+    if (const uint32_t held = Load32(base, card); held != 0u) {
+      call(0x82764DC0u, held, card);
+    }
+    refii::mods::StoreU32(base, card, 0u);
+  }
+
+  t_furniture_for_two = previous;
+  return result;
 }
 
 // TU1 0x825CB860 (r3 the piece's comp68, r4 the level).
@@ -7542,6 +7686,30 @@ REX_EXTERN(rex_lhGuiManager_ExitScreen) {
                        Load32(base, manager + 40u) == 1u && GuiActive(ctx, base);
   const int32_t player = closing ? MenuOwnerNow(ctx, base) : 0;
   __imp__rex_lhGuiManager_ExitScreen(ctx, base);
+  if (closing) {
+    MenuClosedEvent e{};
+    PPCContext e_ctx = ctx;
+    e.ctx = &e_ctx;
+    e.base = base;
+    e.seen = true;
+    e.player = player;
+    Dispatch(e);
+  }
+}
+
+// The second way out, the quiet entry's exit (the credits, the network): r3 = the manager. Only
+// while the quiet byte is set (`lbz +0x26` 0x823701c8 / disc `+0x25` 0x823383c0, set by the quiet
+// entry at 0x8237016c / 0x82338364) does it pop the GUI gameflow mode (`sub_82318800(…, 1)`
+// 0x823701fc / disc `sub_8233A280` 0x823383f4) and clear the byte (0x823703cc / 0x823385c4).
+// TU1 0x82370178 / disc 0x82338370.
+REX_EXTERN(rex_lhGuiManager_ExitGuiModeQuiet) {
+  REX_FUNC_PROLOGUE();
+  const uint32_t manager = ctx.r3.u32;
+  const uint32_t gate = refii::guest::Pick(38u, 37u);
+  const bool closing = AnySubscriber(REFII_EVENT_MENU_CLOSED) && manager != 0 && Load8(base, manager + gate) != 0 &&
+                       GuiActive(ctx, base);
+  const int32_t player = closing ? MenuOwnerNow(ctx, base) : 0;
+  __imp__rex_lhGuiManager_ExitGuiModeQuiet(ctx, base);
   if (closing) {
     MenuClosedEvent e{};
     PPCContext e_ctx = ctx;

@@ -1518,7 +1518,7 @@ public static partial class ModValidate
 	private static readonly string[] ScreenTextKeys =
 	{
 		"name", "menuScript", "previewAnchor", "pageElement", "menu", "provider", "revealedAccept", "revealedBack",
-		"flipAction", "scrollContent", "scrollMask", "scrollBar", "flowMeasured", "flowBase", "flowTailAnchor",
+		"flipAction", "rowAction", "scrollContent", "scrollMask", "scrollBar", "flowMeasured", "flowBase", "flowTailAnchor",
 		"presentation", "pageRootUnit", "backdropUnit", "boxPresentation",
 	};
 

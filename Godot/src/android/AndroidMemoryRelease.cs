@@ -312,7 +312,8 @@ public static class AndroidMemoryRelease
     /// phone that needs the room: smaller normal maps (<see cref="Refii.Textures.AndroidTextureUpload"/>),
     /// menus built when first opened (<see cref="Refii.Ui.Engine_UiBookPrebuild"/>), no shader folds
     /// (Engine_ShaderSpecialisation) and a bound on the hero's decoded texture sources. On by the
-    /// phone's memory, and on any phone under the Low preset, which sets it. Read once, when the game starts.
+    /// phone's memory, or as `android_low_ram_mode` says: the phone's own setting, which no graphics preset
+    /// sets (the Low preset set it on for any phone until revision 22). Read once, when the game starts.
     /// </summary>
     public static bool LowRamMode => LowRam.Value;
 
