@@ -611,18 +611,21 @@ public static class Engine_UiNetworkSource
 				return "You have been invited to this game.\n\nA joins it.";
 
 			case "mod":
-				// THE AUTHOR'S OWN WORDS, from the package's mod.toml.
+				// THE AUTHOR'S OWN WORDS, from the package's mod.toml — each `{KEY}` in them resolved
+				// from the mod's text, as the row's title is (BuildMods).
 				if (ModInfo(peer) is not { } meta)
 				{
 					return "This mod is enabled but its package is missing from the mods folder.";
 				}
 
-				string by = meta.Author.Length == 0 ? string.Empty : $" by {meta.Author}";
+				string author = Refii.Mods.ModText.Game(meta.Author);
+				string described = Refii.Mods.ModText.Game(meta.Description);
+				string by = author.Length == 0 ? string.Empty : $" by {author}";
 				string version = meta.Version.Length == 0 ? string.Empty : $"Version {meta.Version}{by}.";
-				string credit = version.Length != 0 ? version : by.Length != 0 ? $"By {meta.Author}." : string.Empty;
-				return meta.Description.Length == 0
+				string credit = version.Length != 0 ? version : by.Length != 0 ? $"By {author}." : string.Empty;
+				return described.Length == 0
 					? credit
-					: credit.Length == 0 ? meta.Description : $"{meta.Description}\n\n{credit}";
+					: credit.Length == 0 ? described : $"{described}\n\n{credit}";
 
 			case "none":
 				// THE PAGE AN EMPTY SECTION HAS: what fills it, written where the player is
