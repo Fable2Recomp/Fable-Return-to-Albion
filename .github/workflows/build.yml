@@ -89,7 +89,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build pkg-config python3 \
-            libx11-dev libx11-xcb-dev libxcb1-dev libwayland-dev libvulkan-dev
+            libx11-dev libx11-xcb-dev libxcb1-dev libwayland-dev libvulkan-dev \
+            xvfb mesa-vulkan-drivers libvulkan1 \
+            libxcursor1 libxinerama1 libxrandr2 libxi6 libxkbcommon0 libfontconfig1 libgl1
           clang-20 --version
           cmake --version
 
@@ -128,8 +130,11 @@ jobs:
       - name: Configure
         run: cmake --preset "${{ matrix.preset }}"
 
+      # Under a virtual display, with Mesa's software Vulkan: packaging compiles every shader
+      # first (refii_shader_check), and that runs Godot with a real rendering driver — headless
+      # uses the dummy renderer, which passes a shader that cannot compile.
       - name: Build, test and package
-        run: cmake --build --preset "${{ matrix.preset }}"
+        run: xvfb-run -a cmake --build --preset "${{ matrix.preset }}"
 
       - name: Upload package
         uses: actions/upload-artifact@v4

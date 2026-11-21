@@ -172,6 +172,14 @@ function(refii_rexglue_shadow_link_sdk_tree)
         set(_refii_rexglue_sdk_shadow_file
             "${REFII_REXGLUE_SHADOW_BUILD_DIR}/${_refii_rexglue_sdk_file}"
         )
+        # A DANGLING SYMLINK HAS NOTHING TO LINK. The glob lists it as a file, and where git
+        # checks symlinks out as symlinks (core.symlinks, on by default on GitHub's Windows
+        # runners) MoltenVK's `Demos/Cube/include/cube` and its siblings point into an
+        # `External/` tree only its own fetch script creates. CREATE_LINK then fails the whole
+        # configure on a macOS-only dependency. EXISTS follows the link, so it is false for these.
+        if(NOT EXISTS "${_refii_rexglue_sdk_source_file}")
+            continue()
+        endif()
         get_filename_component(_refii_rexglue_sdk_shadow_parent
             "${_refii_rexglue_sdk_shadow_file}"
             DIRECTORY

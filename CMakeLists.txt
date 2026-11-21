@@ -995,11 +995,17 @@ endwhile()
 string(CONFIGURE "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT}" REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT @ONLY)
 file(WRITE "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}" "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT}")
 unset(REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT)
+# dxc-bin names its folders x64 and arm64.
+if(REFII_GODOT_ARCH STREQUAL "arm64")
+    set(_refii_dxc_lib_arch "arm64")
+else()
+    set(_refii_dxc_lib_arch "x64")
+endif()
 set(REFII_PACKAGE_RUNTIME_SEARCH_DIRS
     "${REFII_LIBRARY_OUTPUT_DIR}"
     "$<TARGET_FILE_DIR:rex::runtime>"
     "$<TARGET_FILE_DIR:rex::TracyClient>"
-    "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/x64"
+    "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/${_refii_dxc_lib_arch}"
 )
 
 
