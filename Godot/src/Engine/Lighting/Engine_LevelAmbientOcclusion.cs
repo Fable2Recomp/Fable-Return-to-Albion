@@ -57,7 +57,7 @@ public sealed class StaticAoContainer
 public static class Engine_LevelAmbientOcclusion
 {
 	public const uint Magic = 0x4F414652u; // "RFAO" little-endian
-	public const uint Version = 3u;
+	public const uint Version = 4u;
 	public const int BytesPerGroundAoTexel = 4;
 	public const int PropAtlasRowWidth = 2048;
 	public const int MaxPropAtlasRows = 8192;
@@ -235,6 +235,7 @@ public static class Engine_LevelAmbientOcclusion
 
 	private static void PublishAoParametersOnMainThread()
 	{
+		Engine_ScreenSpaceAoEffect.RegisterGlobals();
 		bool active = BakedAoEnabled && Engine_LightingFrame.ModernModel;
 		float strength = active ? BakedAoStrength : 0.0f;
 		float lightAffect = active ? AoLightAffect : 0.0f;
@@ -1452,11 +1453,41 @@ public static class Engine_LevelAmbientOcclusion
 						float walkY = ghfY;
 						float walkAo = terrAo;
 						bool foundArch = false;
+						bool hasSealedFloor = false;
+						float sealedFloorY = ghfY;
 
 						if (localBvh.TriangleCount > 0)
 						{
 							float curY = hasGhf ? (ghfY - 0.60f) : (bvhMinY - 0.25f);
 							float maxScanY = bvhMaxY + 0.50f;
+
+							bool ProbeFloorAt(float px, float pz, float candFloorY)
+							{
+								return localBvh.TraceClosestHit(
+									new Vector3(px, candFloorY + 0.16f, pz),
+									Vector3.Down, 0.0f, 0.32f, out _, out Vector3 nf, archMask, archExpected) && MathF.Abs(nf.Y) >= 0.62f;
+							}
+
+							bool HasContinuous2DFloor(float candFloorY)
+							{
+								const float r1 = 0.32f;
+								const float r2 = 0.64f;
+								bool px1 = ProbeFloorAt(worldX + r1, worldZ, candFloorY);
+								bool nx1 = ProbeFloorAt(worldX - r1, worldZ, candFloorY);
+								bool spanX = (px1 && nx1)
+									|| (px1 && ProbeFloorAt(worldX + r2, worldZ, candFloorY))
+									|| (nx1 && ProbeFloorAt(worldX - r2, worldZ, candFloorY));
+								if (!spanX)
+								{
+									return false;
+								}
+
+								bool pz1 = ProbeFloorAt(worldX, worldZ + r1, candFloorY);
+								bool nz1 = ProbeFloorAt(worldX, worldZ - r1, candFloorY);
+								return (pz1 && nz1)
+									|| (pz1 && ProbeFloorAt(worldX, worldZ + r2, candFloorY))
+									|| (nz1 && ProbeFloorAt(worldX, worldZ - r2, candFloorY));
+							}
 
 							for (int stepIdx = 0; stepIdx < 8; stepIdx++)
 							{
@@ -1485,6 +1516,16 @@ public static class Engine_LevelAmbientOcclusion
 									continue;
 								}
 
+								bool elevatedAboveSupport = (hasGhf && candY > ghfY + 0.45f) ||
+									(hasSealedFloor && candY > sealedFloorY + 0.35f);
+								if (elevatedAboveSupport && !HasContinuous2DFloor(candY))
+								{
+									// Reject isolated crate lids, fence pillar caps, gravestone tops, and statue heads
+									// so walkY remains anchored on the underlying terrain or plaza support floor.
+									curY = candY + 0.04f;
+									continue;
+								}
+
 								Vector3 upN = candN.Y < 0.0f ? -candN : candN;
 								bool blocked = localBvh.TraceClosestHit(
 									new Vector3(worldX, candY + 0.03f, worldZ),
@@ -1504,8 +1545,13 @@ public static class Engine_LevelAmbientOcclusion
 									break;
 								}
 
-								if (headDist < 0.35f)
+								if (headDist < 0.22f)
 								{
+									if (!hasSealedFloor)
+									{
+										hasSealedFloor = true;
+										sealedFloorY = candY;
+									}
 									curY = candY + 0.015f + headDist;
 									continue;
 								}
@@ -1519,8 +1565,20 @@ public static class Engine_LevelAmbientOcclusion
 									break;
 								}
 
+								if (!hasSealedFloor)
+								{
+									hasSealedFloor = true;
+									sealedFloorY = candY;
+								}
 								curY = candY + 0.015f + headDist;
 							}
+						}
+
+						if (!foundArch && hasSealedFloor)
+						{
+							walkY = sealedFloorY;
+							walkAo = MinTerrainContactAo;
+							foundArch = true;
 						}
 
 						if (!hasGhf && foundArch)

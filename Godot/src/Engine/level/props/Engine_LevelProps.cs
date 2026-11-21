@@ -1204,6 +1204,7 @@ public static partial class Engine_LevelProps
                 {
                     built[i] = toBatch * block.Instances[spatialBatch[i]];
                     Refii.Level.Engine_PropShadow.WriteSlot(slots, i * BatchStride, built[i]);
+                    slots[i * BatchStride + 15] = 1.0f;
                 }
 
                 // Kept beside the batch, so nothing later has to read the buffer back through

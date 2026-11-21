@@ -205,6 +205,7 @@ public static class Engine_TexOrm
 
 					float combinedConc = (0.50f * maxConc) + (0.50f * sumConc);
 
+					float minFloor = 0.28f;
 					if (hasHeight && wideGate > 0.01f)
 					{
 						int xmH = wrap ? (((x - rHeight) % width) + width) % width : Math.Max(0, x - rHeight);
@@ -220,9 +221,10 @@ public static class Engine_TexOrm
 						float curH = solvedHeight[row + x] * (1.0f / 255.0f);
 						float recess = MathF.Max(0.0f, neighborMean - curH) * 1.8f * wideGate;
 						combinedConc = MathF.Max(combinedConc, (combinedConc * 0.78f) + recess);
+						minFloor = Math.Clamp(0.28f - (recess * 0.30f), 0.18f, 0.28f);
 					}
 
-					float occlusion = Math.Clamp(1.0f - (combinedConc * gain), 0.28f, 1.0f);
+					float occlusion = Math.Clamp(1.0f - (combinedConc * gain), minFloor, 1.0f);
 					cavity[row + x] = (byte)Math.Clamp(MathF.Round(occlusion * 255.0f), 0.0f, 255.0f);
 				}
 			}
