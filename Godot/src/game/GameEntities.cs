@@ -7211,6 +7211,206 @@ public partial class GameEntities : Node3D
     /// question this answers is "the animator drove the rig, so why did nothing move" — by
     /// showing whether the bones moved and whether a mesh is bound to them at all.
     /// </summary>
+    /// <summary>For the debug channel: one rig's local rotations against the mdl rest, the guest reference and the guest live pose.</summary>
+    public List<string>? DescribeLocalSources(uint address, string filter) =>
+        _skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? skeleton)
+            ? skeleton.DescribeLocalSources(address, filter)
+            : null;
+
+    /// <summary>
+    /// For the debug channel: one rig skinned here from what Godot holds — the mesh's own vertex,
+    /// bone and weight arrays, the skin's binds and the skeleton's global poses — against the same
+    /// vertices carried rigidly by <paramref name="anchor"/>. States the binds that are not their
+    /// bone's inverse rest, the bones posed with a scale, the furthest vertices with their
+    /// influences, and every node under the rig.
+    /// </summary>
+    public Dictionary<string, object?>? DescribeSkinning(uint address, string anchor)
+    {
+        if (!_nodes.TryGetValue(address, out MeshInstance3D? node) ||
+            !_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig))
+        {
+            return null;
+        }
+
+        Skeleton3D sk = rig.Node;
+        int bones = sk.GetBoneCount();
+        var result = new Dictionary<string, object?>
+        {
+            ["node"] = node.GetPath().ToString(),
+            ["skeletonPath"] = node.Skeleton.ToString(),
+            ["bones"] = bones,
+            ["skinIsRigs"] = ReferenceEquals(node.Skin, rig.Skin),
+        };
+
+        var tree = new List<string>();
+        void Walk(Node at, int depth)
+        {
+            if (tree.Count >= 64)
+            {
+                return;
+            }
+
+            string shown = at is Node3D spatial ? $" visible={spatial.Visible}" : string.Empty;
+            string mesh = at is MeshInstance3D instance
+                ? $" mesh={instance.Mesh?.GetSurfaceCount() ?? 0} surfaces skin={(instance.Skin is null ? "none" : instance.Skin.GetBindCount().ToString())} layers={instance.Layers:X}"
+                : string.Empty;
+            tree.Add($"{new string(' ', depth * 2)}{at.Name} [{at.GetType().Name}]{shown}{mesh}");
+            foreach (Node child in at.GetChildren())
+            {
+                Walk(child, depth + 1);
+            }
+        }
+
+        Walk(node, 0);
+        result["tree"] = tree;
+
+        Skin? skin = node.Skin;
+        if (skin is null || node.Mesh is not ArrayMesh mesh)
+        {
+            result["error"] = "no skin or not an ArrayMesh";
+            return result;
+        }
+
+        int binds = skin.GetBindCount();
+        var palette = new Transform3D[binds];
+        var badBinds = new List<string>();
+        for (int i = 0; i < binds; ++i)
+        {
+            int bone = skin.GetBindBone(i);
+            string named = skin.GetBindName(i).ToString();
+            if (bone < 0 && named.Length != 0)
+            {
+                bone = sk.FindBone(named);
+            }
+
+            if (bone < 0 || bone >= bones)
+            {
+                badBinds.Add($"bind {i}: no bone (bone={bone} name='{named}')");
+                palette[i] = Transform3D.Identity;
+                continue;
+            }
+
+            Transform3D bind = skin.GetBindPose(i);
+            Transform3D atRest = sk.GetBoneGlobalRest(bone) * bind;
+            float offOrigin = atRest.Origin.Length();
+            Vector3 scale = atRest.Basis.Scale;
+            float offBasis = (atRest.Basis.X - Vector3.Right).Length() + (atRest.Basis.Y - Vector3.Up).Length() +
+                (atRest.Basis.Z - Vector3.Back).Length();
+            if (bone != i || offOrigin > 1e-3f || offBasis > 1e-3f)
+            {
+                badBinds.Add($"bind {i} -> bone {bone} '{sk.GetBoneName(bone)}': rest*bind origin={offOrigin:0.0000} basisOff={offBasis:0.0000} scale=({scale.X:0.000},{scale.Y:0.000},{scale.Z:0.000})");
+            }
+
+            palette[i] = sk.GetBoneGlobalPose(bone) * bind;
+        }
+
+        result["binds"] = binds;
+        result["bindsNotInverseRest"] = badBinds;
+
+        var scaled = new List<string>();
+        for (int b = 0; b < bones; ++b)
+        {
+            Vector3 poseScale = sk.GetBonePoseScale(b);
+            Vector3 globalScale = sk.GetBoneGlobalPose(b).Basis.Scale;
+            if ((poseScale - Vector3.One).Length() > 1e-3f || (globalScale - Vector3.One).Length() > 1e-3f)
+            {
+                scaled.Add($"{b} '{sk.GetBoneName(b)}' pose=({poseScale.X:0.000},{poseScale.Y:0.000},{poseScale.Z:0.000}) global=({globalScale.X:0.000},{globalScale.Y:0.000},{globalScale.Z:0.000})");
+            }
+        }
+
+        result["scaledBones"] = scaled;
+
+        int anchorBone = sk.FindBone(anchor);
+        result["anchor"] = anchorBone < 0 ? "none: displacement is from the bind position" : sk.GetBoneName(anchorBone);
+        Transform3D rigid = anchorBone >= 0 && anchorBone < binds ? palette[anchorBone] : Transform3D.Identity;
+
+        var surfaces = new List<object?>();
+        for (int surface = 0; surface < mesh.GetSurfaceCount(); ++surface)
+        {
+            Godot.Collections.Array arrays = mesh.SurfaceGetArrays(surface);
+            Vector3[] positions = arrays[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+            int[] ids = arrays[(int)Mesh.ArrayType.Bones].AsInt32Array();
+            float[] weights = arrays[(int)Mesh.ArrayType.Weights].AsFloat32Array();
+            int per = positions.Length == 0 ? 0 : ids.Length / positions.Length;
+            var worst = new List<(float Distance, int Vertex)>();
+            int outOfRange = 0;
+            int badSum = 0;
+            for (int v = 0; v < positions.Length && per > 0; ++v)
+            {
+                Vector3 skinned = Vector3.Zero;
+                float sum = 0f;
+                for (int k = 0; k < per; ++k)
+                {
+                    float w = weights[(v * per) + k];
+                    int id = ids[(v * per) + k];
+                    if (w <= 0f)
+                    {
+                        continue;
+                    }
+
+                    if (id < 0 || id >= binds)
+                    {
+                        ++outOfRange;
+                        continue;
+                    }
+
+                    skinned += (palette[id] * positions[v]) * w;
+                    sum += w;
+                }
+
+                if (Mathf.Abs(sum - 1f) > 0.02f)
+                {
+                    ++badSum;
+                }
+
+                float distance = sum > 0f ? ((skinned / sum) - (rigid * positions[v])).Length() : 0f;
+                worst.Add((distance, v));
+            }
+
+            worst.Sort((a, b) => b.Distance.CompareTo(a.Distance));
+            var top = new List<string>();
+            for (int i = 0; i < System.Math.Min(12, worst.Count); ++i)
+            {
+                int v = worst[i].Vertex;
+                var influences = new List<string>();
+                for (int k = 0; k < per; ++k)
+                {
+                    float w = weights[(v * per) + k];
+                    int id = ids[(v * per) + k];
+                    if (w > 0f)
+                    {
+                        influences.Add($"{(id >= 0 && id < bones ? sk.GetBoneName(id) : "?" + id)}@{w:0.00}");
+                    }
+                }
+
+                top.Add($"v{v} moved {worst[i].Distance:0.000} at ({positions[v].X:0.00},{positions[v].Y:0.00},{positions[v].Z:0.00}) {string.Join(' ', influences)}");
+            }
+
+            int over = 0;
+            foreach ((float distance, int _) in worst)
+            {
+                if (distance > 0.5f)
+                {
+                    ++over;
+                }
+            }
+
+            surfaces.Add(new Dictionary<string, object?>
+            {
+                ["surface"] = surface,
+                ["vertices"] = positions.Length,
+                ["influencesPerVertex"] = per,
+                ["idsOutOfRange"] = outOfRange,
+                ["weightSumsOff"] = badSum,
+                ["movedOverHalfUnit"] = over,
+                ["furthest"] = top,
+            });
+        }
+
+        result["surfaces"] = surfaces;
+        return result;
+    }
+
     public Dictionary<string, object?>? DescribeBones(uint address)
     {
         if (!_nodes.TryGetValue(address, out MeshInstance3D? node))

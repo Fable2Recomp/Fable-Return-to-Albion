@@ -141,13 +141,9 @@ elseif(APPLE)
     set(REFII_SHADER_DXC_TOOL "${REFII_SHADER_DXC_ROOT}/bin/${REFII_SHADER_DXC_ARCH}/dxc-macos")
     set(REFII_SHADER_DXC_LIB_DIR "${REFII_SHADER_DXC_ROOT}/lib/${REFII_SHADER_DXC_ARCH}")
 else()
-    if(REFII_SHADER_DXC_ARCH STREQUAL "arm64")
-        message(FATAL_ERROR
-            "Vendored dxc-bin does not currently provide dxc-linux for arm64 hosts"
-        )
-    endif()
-    set(REFII_SHADER_DXC_TOOL "${REFII_SHADER_DXC_ROOT}/bin/x64/dxc-linux")
-    set(REFII_SHADER_DXC_LIB_DIR "${REFII_SHADER_DXC_ROOT}/lib/x64")
+    # dxc-bin ships dxc-linux and libdxcompiler.so for arm64 beside the x64 ones.
+    set(REFII_SHADER_DXC_TOOL "${REFII_SHADER_DXC_ROOT}/bin/${REFII_SHADER_DXC_ARCH}/dxc-linux")
+    set(REFII_SHADER_DXC_LIB_DIR "${REFII_SHADER_DXC_ROOT}/lib/${REFII_SHADER_DXC_ARCH}")
 endif()
 
 set(REFII_SHADER_DXC_UPSTREAM_URL
@@ -219,8 +215,12 @@ elseif(APPLE)
 else()
     set(_refii_shader_library_files
         "${REFII_SHADER_DXC_LIB_DIR}/libdxcompiler.so"
-        "${REFII_SHADER_DXC_LIB_DIR}/libdxil.so"
     )
+    # The DXIL signer, where dxc-bin has one for the architecture: x64 does, arm64 does not.
+    # Nothing on Linux needs signed DXIL (shader_sbk_pipeline.cpp), so its absence states nothing.
+    if(EXISTS "${REFII_SHADER_DXC_LIB_DIR}/libdxil.so")
+        list(APPEND _refii_shader_library_files "${REFII_SHADER_DXC_LIB_DIR}/libdxil.so")
+    endif()
 endif()
 set(REFII_SHADER_TOOL_FILES "${_refii_shader_tool_files}" PARENT_SCOPE)
 set(REFII_SHADER_LIBRARY_FILES "${_refii_shader_library_files}" PARENT_SCOPE)

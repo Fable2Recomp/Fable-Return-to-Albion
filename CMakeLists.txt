@@ -413,7 +413,11 @@ function(refii_apply_generated_payload_compile_options target_name)
         )
     endif()
 
-    if(UNIX AND NOT APPLE AND NOT ANDROID)
+    # x86-64 ONLY. The large model is there because the ~300 MB module overflows x86-64's
+    # 32-bit PC-relative relocations. AArch64's default model reaches +-4 GB through ADRP and
+    # the linker adds range thunks to far branches, and Clang refuses the large model for
+    # position-independent code there outright ("only allowed with -fno-pic").
+    if(UNIX AND NOT APPLE AND NOT ANDROID AND REFII_TARGET_SUPPORTS_SSE41)
         target_compile_options("${target_name}" PRIVATE -mcmodel=large)
     endif()
 
@@ -995,11 +999,17 @@ endwhile()
 string(CONFIGURE "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT}" REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT @ONLY)
 file(WRITE "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT}" "${REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT}")
 unset(REFII_PACKAGE_STAGE_RUNTIME_DEPS_SCRIPT_CONTENT)
+# dxc-bin names its folders x64 and arm64.
+if(REFII_GODOT_ARCH STREQUAL "arm64")
+    set(_refii_dxc_lib_arch "arm64")
+else()
+    set(_refii_dxc_lib_arch "x64")
+endif()
 set(REFII_PACKAGE_RUNTIME_SEARCH_DIRS
     "${REFII_LIBRARY_OUTPUT_DIR}"
     "$<TARGET_FILE_DIR:rex::runtime>"
     "$<TARGET_FILE_DIR:rex::TracyClient>"
-    "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/x64"
+    "${CMAKE_SOURCE_DIR}/src/shader/thirdparty/XenosRecomp/thirdparty/dxc-bin/lib/${_refii_dxc_lib_arch}"
 )
 
 

@@ -358,6 +358,68 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiNetFriends(char* out, uint32_t capacity) {
 #endif
 }
 
+/// The node's view of the network, one record per line, the first field naming the record:
+///   `self \t peerId \t shardId \t virtualIp \t titleId` — shardId is empty outside a shard;
+///   `shard \t peerId \t name \t friend \t state \t hasSession \t sessionId` — a member of our
+///       shard heard within the liveness window (state: 0 offline, 1 online, 2 in game,
+///       3 joinable);
+///   `link \t peerId \t name \t virtualIp \t status \t degraded \t control \t friend \t relay
+///       \t rttMs` — a peer with a virtual address (status: 0 idle, 1 pending, 2 connected,
+///       3 lost; rttMs 0 when unmeasured).
+/// Names are RexNet's (§17.2): a friend's own, anyone else's pseudonym.
+REFII_HOST_ABI_EXPORT uint32_t RefiiNetNetwork(char* out, uint32_t capacity) {
+#if defined(REXGLUE_ENABLE_REXNET)
+    rex::net::RexNet* net = Net();
+    if (net == nullptr) {
+        return 0;
+    }
+
+    std::string text;
+    Field(text, "self", '\t');
+    Field(text, PeerText(net->local_peer_id()), '\t');
+    const std::optional<std::array<uint8_t, 16>> shard = net->current_shard_id();
+    Field(text, shard.has_value() ? HexOf(*shard) : std::string(), '\t');
+    FieldNum(text, net->local_vip(), '\t');
+    const rex::system::KernelState* state = rex::system::kernel_state();
+    FieldNum(text, state != nullptr ? state->title_id() : 0u, '\n');
+
+    if (!NetStillUp(net)) {
+        return 0;
+    }
+    for (const rex::net::RexNet::ShardMember& member : net->SnapshotShardMembers()) {
+        Field(text, "shard", '\t');
+        Field(text, PeerText(member.peer), '\t');
+        Field(text, member.display_name, '\t');
+        FieldNum(text, member.is_friend ? 1u : 0u, '\t');
+        FieldNum(text, member.state, '\t');
+        FieldNum(text, member.has_session ? 1u : 0u, '\t');
+        Field(text, member.has_session ? HexOf(member.session_id) : std::string(), '\n');
+    }
+
+    if (!NetStillUp(net)) {
+        return 0;
+    }
+    for (const rex::net::RexNet::Connection& connection : net->SnapshotConnections()) {
+        Field(text, "link", '\t');
+        Field(text, PeerText(connection.peer), '\t');
+        Field(text, connection.display_name, '\t');
+        FieldNum(text, connection.virtual_ip, '\t');
+        FieldNum(text, static_cast<uint32_t>(connection.status), '\t');
+        FieldNum(text, connection.degraded ? 1u : 0u, '\t');
+        FieldNum(text, connection.control_linked ? 1u : 0u, '\t');
+        FieldNum(text, connection.is_friend ? 1u : 0u, '\t');
+        FieldNum(text, connection.is_relay ? 1u : 0u, '\t');
+        FieldNum(text, net->PeerRttMs(connection.virtual_ip), '\n');
+    }
+
+    return Emit(text, out, capacity);
+#else
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}
+
 /// One record per inbound friend request: `peerId \t name \t note`.
 REFII_HOST_ABI_EXPORT uint32_t RefiiNetRequests(char* out, uint32_t capacity) {
 #if defined(REXGLUE_ENABLE_REXNET)

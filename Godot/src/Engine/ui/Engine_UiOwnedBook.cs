@@ -3657,11 +3657,15 @@ public sealed partial class Engine_UiOwnedBook : Node3D
 
 			lead = Mathf.Max(0f, highest - (windowY + windowHalf));
 
-			// The guest's overflow (`sub_829ED788` against `sub_829EDA40`'s bounds): the
-			// content's height less the window's. The binding just rewrote every stated
-			// position, so this is the authored (plus reflow) layout — this frame's offset has
-			// not been applied yet.
-			range = Mathf.Max(0f, (highest - lowest) - (100f * Mathf.Abs(mask.ScaleY)));
+			// The guest's overflow (`sub_829ED788` against `sub_829EDA40`'s bounds) is the
+			// content's height less the window's, which is what hangs below the window when the
+			// content's top is the window's. Measured as that — the window's bottom to the
+			// content's, after the lead — it is the same number there and still reaches the last
+			// line of a page whose content starts lower (the list books' page lays its paragraph
+			// under the place its picture would take, and lost that much off the end). The
+			// binding just rewrote every stated position, so this is the authored (plus reflow)
+			// layout — this frame's offset has not been applied yet.
+			range = Mathf.Max(0f, (windowY - windowHalf) - lowest + lead);
 		}
 
 		// The guest's rate (`sub_828C30A8`, ~3 units a 30 Hz tick at full stick) is the region's.

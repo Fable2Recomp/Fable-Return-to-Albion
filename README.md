@@ -115,9 +115,9 @@ flowchart LR
 
 ## Quick Start (Players)
 
-1. Download the latest release archive (`refii-<platform>-<arch>.zip`) from the [Releases](https://github.com/Fable2Recomp/Fable2Recomp/releases) tab.
+1. Download the latest release archive (`Fable Return to Albion-<platform>-<arch>.zip`) from the [Releases](https://github.com/Fable2Recomp/Fable-Return-to-Albion/releases) tab.
 2. Extract the archive into a folder of your choice.
-3. Launch `refii-launcher.exe` (Windows) or `./refii-launcher` (Linux).
+3. Launch `Fable Return to Albion.exe` (Windows) or `./Fable Return to Albion.x86_64` (Linux).
 4. Select your preferred game (**Fable II** or **Fable III**).
 5. Point the installer wizard to your dumped game disc image (`.iso`) and title update (`default.xexp` or TU package).
 6. Click **Install & Recompile** — the launcher will automatically extract assets, verify integrity, run code generation, and compile your native game payload.
@@ -146,8 +146,8 @@ flowchart LR
 Clone recursively to fetch the ReXGlue SDK and third-party dependencies:
 
 ```bash
-git clone --recursive https://github.com/Fable2Recomp/Fable2Recomp.git
-cd Fable2Recomp
+git clone --recursive https://github.com/Fable2Recomp/Fable-Return-to-Albion.git
+cd Fable-Return-to-Albion
 ```
 
 *If you already cloned without `--recursive`, initialize submodules with:*
@@ -173,6 +173,7 @@ cmake --preset linux-amd64-debug-netplay
 - `win-amd64-{debug,release,relwithdebinfo}-netplay`
 - `win-arm64-{debug,release,relwithdebinfo}-netplay`
 - `linux-amd64-{debug,release,relwithdebinfo}-netplay`
+- `linux-arm64-{debug,release,relwithdebinfo}-netplay`
 
 ### 3. Build & Package
 
@@ -204,7 +205,7 @@ Refii includes a content-addressed incremental build cache engine (`tools/build_
 | :--- | :--- |
 | `REFII_NO_BUILD_CACHE=1` | Disables the content-addressed test and packaging cache, forcing a completely fresh export, staging, and zip cycle. |
 | `REFII_FORCE_TESTS=1` | Forces all unit and feature tests to execute, bypassing cached test pass stamps even when source inputs have not changed. |
-| `REFII_NO_TESTS=1` | Rapid prototyping bypass: skips running GdUnit4 automated tests during MSBuild (`dotnet build Godot/refii-launcher.csproj -p:REFII_NO_TESTS=1`). |
+| `REFII_NO_TESTS=1` | Rapid prototyping bypass: skips running GdUnit4 automated tests during MSBuild (`dotnet build Godot/refii-launcher.csproj -p:REFII_NO_TESTS=1`) and, set in the environment, before packaging. The automated GitHub builds set it; local builds leave it unset and run the tests. |
 
 ### Automated Testing
 

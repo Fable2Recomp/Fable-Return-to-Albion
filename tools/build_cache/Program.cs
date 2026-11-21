@@ -220,7 +220,18 @@ public static class Program
         string? envGodotBin = Environment.GetEnvironmentVariable("GODOT_BIN");
         string effectiveGodotBin = string.IsNullOrWhiteSpace(envGodotBin) ? godotBin : envGodotBin;
 
-        int testExit = TestGateCommand.Execute(
+        // REFII_NO_TESTS=1 packages without the gate, as it builds without it (refii-launcher.csproj).
+        // The automated builds set it: four cold runners would each spend their time on the same
+        // suite a developer's own build has already run. Unset, as on any developer's machine,
+        // nothing is exported until the tests pass.
+        bool skipTests = string.Equals(
+            Environment.GetEnvironmentVariable("REFII_NO_TESTS"), "1", StringComparison.Ordinal);
+        if (skipTests)
+        {
+            Console.WriteLine("[test-cache] SKIPPED (REFII_NO_TESTS=1) - packaging without the unit & feature tests.");
+        }
+
+        int testExit = skipTests ? 0 : TestGateCommand.Execute(
             new TestGateOptions(
                 RepoRoot: repoRoot,
                 ProjectDir: projectDir,

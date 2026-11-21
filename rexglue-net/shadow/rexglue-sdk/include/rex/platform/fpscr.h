@@ -15,7 +15,18 @@
 
 #include <rex/types.h>
 
+// simde's sse.h says `#define NOMINMAX` before it includes <windows.h>, which it does only where
+// SSE is emulated (Windows on ARM64). The build already states NOMINMAX on the command line, as
+// 1, so that line is a redefinition and every translation unit warns. Taken off around the
+// include and put back: <windows.h> still sees it defined, by simde.
+#if defined(_WIN32)
+#pragma push_macro("NOMINMAX")
+#undef NOMINMAX
+#endif
 #include <simde/x86/sse.h>
+#if defined(_WIN32)
+#pragma pop_macro("NOMINMAX")
+#endif
 
 // SSE3 constants are missing from simde
 #ifndef _MM_DENORMALS_ZERO_MASK

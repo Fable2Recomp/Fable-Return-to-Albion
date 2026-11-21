@@ -1,0 +1,315 @@
+# Builds the packaged game for Linux and Windows, x86_64 and ARM64, from a clean checkout.
+#
+# No game data is needed: the recompiled game code is built on the player's machine from their own
+# copy, so this is the host, the launcher and the bundled toolchain only. The default CMake target
+# compiles the natives, exports the Godot app and writes the zip to out/package/ (the tests it
+# also runs on a developer's machine are skipped here: REFII_NO_TESTS).
+# Every platform builds natively on a runner of its own architecture, in the Release configuration.
+#
+#   pull request        build all four, keep the zips as run artifacts
+#   every night         if main moved since the last one: build, and replace the "nightly"
+#                       pre-release with that build (NIGHTLY DEV BUILD, dated, with its commits)
+#   tag beta-N or vN    build, then a DRAFT pre-release named for the tag: beta-7 is "Beta 7"
+#   manual run          from the Actions tab: builds, and publishes the same "nightly"
+#                       pre-release unless "publish" is unticked
+name: Build
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags: ['beta-*', 'v*']
+  schedule:
+    # 03:00 UTC. A schedule runs on the default branch only.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this build as the nightly dev build
+        type: boolean
+        default: true
+
+# A newer push to the same pull request or branch replaces the run in progress. Tag builds are
+# never cancelled.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+# The unit and feature tests are a developer's gate, run by every local build; here they are
+# skipped, so four cold runners do not each spend their time on the same suite.
+env:
+  REFII_NO_TESTS: '1'
+
+jobs:
+  # Whether there is anything to build. Only the nightly asks: it is skipped when the "nightly"
+  # tag already names this commit, so a quiet day publishes nothing.
+  changes:
+    name: Changes since the last nightly
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build=true
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            last=$(gh api "repos/${{ github.repository }}/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+            echo "nightly tag: ${last:-none}, head: $GITHUB_SHA"
+            if [ "$last" = "$GITHUB_SHA" ]; then
+              build=false
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            preset: linux-amd64-release-netplay
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            preset: linux-arm64-release-netplay
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Free disk space
+        # The build tree runs to gigabytes before the package; the image's preinstalled SDKs are not used.
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/swift /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Clang 20 and build dependencies
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 20
+          rm llvm.sh
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config python3 \
+            libx11-dev libx11-xcb-dev libxcb1-dev libwayland-dev libvulkan-dev \
+            xvfb mesa-vulkan-drivers libvulkan1 \
+            libxcursor1 libxinerama1 libxrandr2 libxi6 libxkbcommon0 libfontconfig1 libgl1
+          clang-20 --version
+          cmake --version
+
+      # The projects target net8.0 with LangVersion latest: the 10 SDK compiles them (it is what
+      # the tree is developed with) and the 8 runtime runs the tests.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The build uses ccache on its own when it is on PATH (cmake/refii_compiler_cache.cmake).
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.preset }}
+          max-size: 2G
+
+      # Godot, its export templates and Zig are fetched into tools/cache on first configure.
+      - name: Cache fetched tools
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tools-linux-${{ matrix.arch }}-${{ hashFiles('cmake/refii_fetch_godot.cmake', 'cmake/refii_fetch_zig.cmake') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-linux-${{ matrix.arch }}-${{ hashFiles('rexglue-net/rexglue-sdk/src/rexnet/core/Cargo.lock') }}
+          restore-keys: cargo-linux-${{ matrix.arch }}-
+
+      - name: Configure
+        run: cmake --preset "${{ matrix.preset }}"
+
+      # Under a virtual display, with Mesa's software Vulkan: packaging compiles every shader
+      # first (refii_shader_check), and that runs Godot with a real rendering driver — headless
+      # uses the dummy renderer, which passes a shader that cannot compile.
+      - name: Build, test and package
+        run: xvfb-run -a cmake --build --preset "${{ matrix.preset }}"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: out/package/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-2022
+            preset: win-amd64-release-netplay
+            msvc: x64
+            llvm_tag: llvmorg-20.1.8
+            llvm: LLVM-20.1.8-win64.exe
+          - arch: arm64
+            runner: windows-11-arm
+            preset: win-arm64-release-netplay
+            msvc: arm64
+            # Clang 22 here: this image carries Visual Studio 18, whose standard library
+            # refuses anything older (STL1000 "expected Clang 22 or newer").
+            llvm_tag: llvmorg-22.1.8
+            llvm: LLVM-22.1.8-woa64.exe
+    steps:
+      - name: Allow long paths
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # LLVM's own installer for the runner's architecture, so `clang` targets the machine it
+      # runs on: the presets name no target, and an x64 Clang under emulation would build x64.
+      - name: Install Clang and Ninja
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP '${{ matrix.llvm }}'
+          Invoke-WebRequest -Uri 'https://github.com/llvm/llvm-project/releases/download/${{ matrix.llvm_tag }}/${{ matrix.llvm }}' -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+          'C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          choco install ninja -y --no-progress
+          & 'C:\Program Files\LLVM\bin\clang.exe' --version
+          cmake --version
+
+      # The Windows SDK and MSVC runtime libraries Clang links against.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache fetched tools
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tools-windows-${{ matrix.arch }}-${{ hashFiles('cmake/refii_fetch_godot.cmake', 'cmake/refii_fetch_zig.cmake') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-windows-${{ matrix.arch }}-${{ hashFiles('rexglue-net/rexglue-sdk/src/rexnet/core/Cargo.lock') }}
+          restore-keys: cargo-windows-${{ matrix.arch }}-
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build, test and package
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: out/package/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  # A tagged release. The title is the tag said plainly — beta-7 is "Beta 7", beta-6a "Beta 6a" —
+  # and it is a DRAFT pre-release: nothing is public until it is reviewed and published by hand.
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            beta-*) title="Beta ${TAG#beta-}" ;;
+            *)      title="$TAG" ;;
+          esac
+          gh release create "$TAG" packages/*.zip \
+            --repo "${{ github.repository }}" \
+            --verify-tag --draft --prerelease \
+            --title "$title" \
+            --notes "$title, built from ${GITHUB_SHA::9}. Release configuration: Linux and Windows, x86_64 and ARM64."
+
+  # The nightly dev build: one rolling pre-release under the tag "nightly", replaced by each
+  # night's build, or by a manual run, and titled so it cannot be taken for a beta.
+  nightly:
+    name: Nightly dev build
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Replace the nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api "repos/${{ github.repository }}/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          {
+            echo "**Nightly dev build, not a release.** Built from \`${GITHUB_SHA::9}\` on $(date -u +%Y-%m-%d). Untested beyond the automated tests; expect breakage. Betas are the numbered releases."
+            echo
+            echo "Changes since the previous nightly:"
+            echo
+            if [ -n "$last" ] && git cat-file -e "$last^{commit}" 2>/dev/null; then
+              git log --no-merges --format='- %s (%h)' "$last..$GITHUB_SHA"
+            else
+              git log --no-merges --format='- %s (%h)' -n 20
+            fi
+          } > notes.md
+          gh release delete nightly --repo "${{ github.repository }}" --cleanup-tag --yes 2>/dev/null || true
+          gh release create nightly packages/*.zip \
+            --repo "${{ github.repository }}" \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Nightly dev build $(date -u +%Y-%m-%d) (${GITHUB_SHA::9})" \
+            --notes-file notes.md
