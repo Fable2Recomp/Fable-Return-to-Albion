@@ -173,6 +173,7 @@ cmake --preset linux-amd64-debug-netplay
 - `win-amd64-{debug,release,relwithdebinfo}-netplay`
 - `win-arm64-{debug,release,relwithdebinfo}-netplay`
 - `linux-amd64-{debug,release,relwithdebinfo}-netplay`
+- `linux-arm64-{debug,release,relwithdebinfo}-netplay`
 
 ### 3. Build & Package
 

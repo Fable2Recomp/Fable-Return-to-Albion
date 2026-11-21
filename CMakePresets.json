@@ -113,6 +113,30 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             }
+        },
+        {
+            "name": "linux-arm64-debug-netplay",
+            "displayName": "Linux ARM64 Netplay Debug",
+            "inherits": "linux-arm64-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "linux-arm64-release-netplay",
+            "displayName": "Linux ARM64 Netplay Release",
+            "inherits": "linux-arm64-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "linux-arm64-relwithdebinfo-netplay",
+            "displayName": "Linux ARM64 Netplay RelWithDebInfo",
+            "inherits": "linux-arm64-base",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
         }
     ],
     "buildPresets": [
@@ -157,6 +181,18 @@
         {
             "name": "linux-amd64-relwithdebinfo-netplay",
             "configurePreset": "linux-amd64-relwithdebinfo-netplay"
+        },
+        {
+            "name": "linux-arm64-debug-netplay",
+            "configurePreset": "linux-arm64-debug-netplay"
+        },
+        {
+            "name": "linux-arm64-release-netplay",
+            "configurePreset": "linux-arm64-release-netplay"
+        },
+        {
+            "name": "linux-arm64-relwithdebinfo-netplay",
+            "configurePreset": "linux-arm64-relwithdebinfo-netplay"
         }
     ]
 }
