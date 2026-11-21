@@ -158,12 +158,16 @@ jobs:
             runner: windows-2022
             preset: win-amd64-release-netplay
             msvc: x64
+            llvm_tag: llvmorg-20.1.8
             llvm: LLVM-20.1.8-win64.exe
           - arch: arm64
             runner: windows-11-arm
             preset: win-arm64-release-netplay
             msvc: arm64
-            llvm: LLVM-20.1.8-woa64.exe
+            # Clang 22 here: this image carries Visual Studio 18, whose standard library
+            # refuses anything older (STL1000 "expected Clang 22 or newer").
+            llvm_tag: llvmorg-22.1.8
+            llvm: LLVM-22.1.8-woa64.exe
     steps:
       - name: Allow long paths
         run: git config --system core.longpaths true
@@ -174,10 +178,10 @@ jobs:
 
       # LLVM's own installer for the runner's architecture, so `clang` targets the machine it
       # runs on: the presets name no target, and an x64 Clang under emulation would build x64.
-      - name: Install Clang 20 and Ninja
+      - name: Install Clang and Ninja
         run: |
           $installer = Join-Path $env:RUNNER_TEMP '${{ matrix.llvm }}'
-          Invoke-WebRequest -Uri 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/${{ matrix.llvm }}' -OutFile $installer
+          Invoke-WebRequest -Uri 'https://github.com/llvm/llvm-project/releases/download/${{ matrix.llvm_tag }}/${{ matrix.llvm }}' -OutFile $installer
           Start-Process -FilePath $installer -ArgumentList '/S' -Wait
           'C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           choco install ninja -y --no-progress

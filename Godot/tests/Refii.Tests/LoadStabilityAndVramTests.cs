@@ -227,13 +227,15 @@ public sealed class LoadStabilityAndVramTests
 			var workers = new Task[4];
 			for (int w = 0; w < workers.Length; w++)
 			{
-				workers[w] = Task.Run(() =>
-				{
-					pacer.RunGpuUpload(50L * mb, () => Interlocked.Increment(ref uploadedChunks));
-				});
+				// A thread of its own each: these block until the main frame drains them, and four
+				// blocking tasks on a pool another test has left busy (a four-core CI runner's pool
+				// starts with four threads) did not all start inside the wait.
+				workers[w] = Task.Factory.StartNew(
+					() => pacer.RunGpuUpload(50L * mb, () => Interlocked.Increment(ref uploadedChunks)),
+					CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 			}
 
-			AssertThat(SpinWait.SpinUntil(() => pacer.PendingWorkerUploads == 4, 2000)).IsTrue();
+			AssertThat(SpinWait.SpinUntil(() => pacer.PendingWorkerUploads == 4, 30000)).IsTrue();
 
 			var poseBatch = new Engine_ClipAnimator.PoseBatch();
 			int framesSimulated = 0;
@@ -261,7 +263,7 @@ public sealed class LoadStabilityAndVramTests
 				AssertThat(Engine_GiRefresh.HoldForWorldLoad).IsTrue();
 			}
 
-			AssertThat(Task.WaitAll(workers, TimeSpan.FromSeconds(2))).IsTrue();
+			AssertThat(Task.WaitAll(workers, TimeSpan.FromSeconds(30))).IsTrue();
 			AssertThat(Volatile.Read(ref uploadedChunks)).IsEqual(4);
 			AssertThat(framesSimulated).IsGreaterEqual(2);
 

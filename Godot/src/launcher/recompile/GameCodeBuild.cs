@@ -1348,7 +1348,12 @@ public static class GameCodeBuild
 
 		if (!OperatingSystem.IsWindows())
 		{
-			text.Append("link=-mcmodel=large\nlink=-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/lib\n");
+			if (UsesLargeCodeModel)
+			{
+				text.Append("link=-mcmodel=large\n");
+			}
+
+			text.Append("link=-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/lib\n");
 		}
 
 		if (File.Exists(Path.Combine(StdCxxDirectory, "order.txt")))
@@ -3104,6 +3109,15 @@ public static class GameCodeBuild
 		};
 
 	/// <summary>
+	/// Whether the module is compiled and linked under <c>-mcmodel=large</c>: x86-64 off Windows,
+	/// where the ~300 MB module overflows 32-bit PC-relative relocations without it. AArch64's
+	/// default model reaches far enough, and Clang refuses the large model for position-independent
+	/// code there. Matches refii_apply_generated_payload_compile_options in the top-level CMakeLists.
+	/// </summary>
+	private static bool UsesLargeCodeModel =>
+		!OperatingSystem.IsWindows() && RuntimeInformation.OSArchitecture == Architecture.X64;
+
+	/// <summary>
 	/// The flags every translation unit is compiled with.
 	/// </summary>
 	/// <remarks>
@@ -3176,11 +3190,12 @@ public static class GameCodeBuild
 			flags.Add("-msse4.1");
 		}
 
-		if (!OperatingSystem.IsWindows())
+		if (UsesLargeCodeModel)
 		{
 			flags.Add("-mcmodel=large");
 		}
-		else
+
+		if (OperatingSystem.IsWindows())
 		{
 			// Guest SEH scopes emit __try/__except, which traps hardware faults only under
 			// asynchronous EH; the SDK's own recomp targets set the same flag (REXGLUE_RECOMP_OPTIONS
@@ -3548,7 +3563,11 @@ public static class GameCodeBuild
 		arguments.InsertRange(0, TargetFlags());
 		if (!OperatingSystem.IsWindows())
 		{
-			arguments.Add("-mcmodel=large");
+			if (UsesLargeCodeModel)
+			{
+				arguments.Add("-mcmodel=large");
+			}
+
 			arguments.Add("-Wl,-rpath,$ORIGIN:$ORIGIN/..:$ORIGIN/lib");
 		}
 

@@ -413,7 +413,11 @@ function(refii_apply_generated_payload_compile_options target_name)
         )
     endif()
 
-    if(UNIX AND NOT APPLE AND NOT ANDROID)
+    # x86-64 ONLY. The large model is there because the ~300 MB module overflows x86-64's
+    # 32-bit PC-relative relocations. AArch64's default model reaches +-4 GB through ADRP and
+    # the linker adds range thunks to far branches, and Clang refuses the large model for
+    # position-independent code there outright ("only allowed with -fno-pic").
+    if(UNIX AND NOT APPLE AND NOT ANDROID AND REFII_TARGET_SUPPORTS_SSE41)
         target_compile_options("${target_name}" PRIVATE -mcmodel=large)
     endif()
 
