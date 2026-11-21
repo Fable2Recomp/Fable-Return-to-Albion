@@ -459,14 +459,14 @@ class CameraScript {
   /// `self[name]` when it is a CVector3: a full userdata whose payload (+16) is a pointer to the
   /// 16-byte vector, x y z at +0 +4 +8 (the constructor `sub_822405B8`: `*lua_newuserdata(L, 4) =
   /// block` at 0x822406DC, a CVector3 argument read as `(*udata)[4]` then `lvx128` at
-  /// 0x82240628). Finite, and within `within` metres of `near`, or false.
-  bool Vector(const char* name, const float* near, float within, float* xyz) {
+  /// 0x82240628). Finite, and within `within` metres of `around`, or false.
+  bool Vector(const char* name, const float* around, float within, float* xyz) {
     GetField(-1, name);
     bool ok = false;
     if (Tag(-1) == kTagUserdata) {
       const uint32_t udata = LoadU32(base_, Slot(-1));
       const uint32_t boxed = Plausible(udata) ? LoadU32(base_, udata + kUdataPayload) : 0u;
-      ok = Plausible(boxed) && ReadVector(boxed, near, within, xyz);
+      ok = Plausible(boxed) && ReadVector(boxed, around, within, xyz);
     }
     SetTop(-2);
     return ok;
@@ -512,7 +512,7 @@ class CameraScript {
   }
 
  private:
-  bool ReadVector(uint32_t at, const float* near, float within, float* xyz) const {
+  bool ReadVector(uint32_t at, const float* around, float within, float* xyz) const {
     if (!Plausible(at)) {
       return false;
     }
@@ -523,9 +523,9 @@ class CameraScript {
         return false;
       }
     }
-    const float dx = v[0] - near[0];
-    const float dy = v[1] - near[1];
-    const float dz = v[2] - near[2];
+    const float dx = v[0] - around[0];
+    const float dy = v[1] - around[1];
+    const float dz = v[2] - around[2];
     if (dx * dx + dy * dy + dz * dz > within * within) {
       return false;
     }

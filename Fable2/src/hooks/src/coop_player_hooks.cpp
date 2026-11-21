@@ -774,8 +774,8 @@ REX_EXTERN(rex_CECNetwork_SendTransform) {
     // Due by a tick but not yet by the guest's interval: backdate so its own test passes. 30
     // is its widest interval and `now - 30` must not wrap; a fresh component (last 0) is the
     // guest's. A player always; anyone else while in the guest's own near classes.
-    const bool near = Plausible(entity) && (IsPlayerBody(base, entity) || now - last <= 8u);
-    if (near && now >= 30u && last != 0u && now > last && now < last + 30u) {
+    const bool nearby = Plausible(entity) && (IsPlayerBody(base, entity) || now - last <= 8u);
+    if (nearby && now >= 30u && last != 0u && now > last && now < last + 30u) {
       StoreGuestU32(base, net + 252u, now - 30u);
     }
 
