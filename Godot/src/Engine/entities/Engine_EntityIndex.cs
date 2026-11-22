@@ -216,10 +216,7 @@ public static class Engine_EntityIndex
                 resource.SurfaceSetMaterial(added, item.Material);
             }
 
-            foreach (StringName meta in mesh.GetMetaList())
-            {
-                resource.SetMeta(meta, mesh.GetMeta(meta));
-            }
+            Refii.Models.Engine_MdlSurfaceArrays.CopyMeta(mesh, resource);
         });
     }
 

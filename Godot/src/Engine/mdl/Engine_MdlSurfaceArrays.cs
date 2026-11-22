@@ -277,6 +277,23 @@ public static class Engine_MdlSurfaceArrays
 		return read;
 	}
 
+	/// <summary>
+	/// Copies <paramref name="from"/>'s metadata onto <paramref name="to"/>, except the surface
+	/// records kept here: <paramref name="to"/>'s were recorded as its own surfaces were added, and
+	/// a copy made from another mesh's geometry (a morph, a baked pose) must keep them. Copying them
+	/// across hands every later <see cref="Of"/> of the copy the source's unmoved vertices.
+	/// </summary>
+	public static void CopyMeta(Mesh from, Mesh to)
+	{
+		foreach (StringName meta in from.GetMetaList())
+		{
+			if (meta != ArraysMeta && meta != LodsMeta)
+			{
+				to.SetMeta(meta, from.GetMeta(meta));
+			}
+		}
+	}
+
 	/// <summary>Drops a mesh's recorded arrays and keeps its level table; a later <see cref="Of"/> reads back from the GPU.</summary>
 	public static void Forget(Mesh mesh)
 	{

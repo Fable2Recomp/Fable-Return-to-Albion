@@ -271,10 +271,7 @@ public static class Engine_HeroMorph
             }
         });
 
-        foreach (StringName meta in neutral.GetMetaList())
-        {
-            result.SetMeta(meta, neutral.GetMeta(meta));
-        }
+        Refii.Models.Engine_MdlSurfaceArrays.CopyMeta(neutral, result);
 
         return result;
     }
