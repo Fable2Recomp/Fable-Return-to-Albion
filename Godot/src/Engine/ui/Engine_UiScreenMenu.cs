@@ -219,19 +219,30 @@ public sealed class Engine_UiScreenMenu
 	/// Every non-root row named in <paramref name="stated"/> takes the stated label; true when one
 	/// changed. Roots are <see cref="Engine_UiMenuModel.ApplyStatedLabels"/>'s.
 	/// </summary>
+	/// <remarks>
+	/// A row takes the label stated for its own name AND id where one is; a name stated once is
+	/// that row whatever id our row carries (a template row need not carry the guest's). A name
+	/// stated for several rows, none with this row's id, says nothing about it: the shop's Buy and
+	/// Sell rows for one item share a name, and the Sell row was taking the Buy row's caption.
+	/// </remarks>
 	public static bool JoinStatedLabels(IEnumerable<Engine_UiExpandableMenu.Item> rows,
 		IReadOnlyList<Engine_UiMenuModel.Row> stated)
 	{
-		Dictionary<string, string>? byName = null;
+		Dictionary<string, (string Label, int Count)>? byName = null;
+		Dictionary<(string Name, uint Id), string>? byRow = null;
 		foreach (Engine_UiMenuModel.Row row in stated)
 		{
-			if (!row.IsRoot && row.Name.Length != 0 && row.Label.Length != 0)
+			if (row.IsRoot || row.Name.Length == 0 || row.Label.Length == 0)
 			{
-				(byName ??= new Dictionary<string, string>(System.StringComparer.Ordinal))[row.Name] = row.Label;
+				continue;
 			}
+
+			byName ??= new Dictionary<string, (string, int)>(System.StringComparer.Ordinal);
+			byName[row.Name] = (row.Label, byName.TryGetValue(row.Name, out (string Label, int Count) known) ? known.Count + 1 : 1);
+			(byRow ??= new Dictionary<(string, uint), string>())[(row.Name, row.Id)] = row.Label;
 		}
 
-		if (byName is null)
+		if (byName is null || byRow is null)
 		{
 			return false;
 		}
@@ -239,9 +250,17 @@ public sealed class Engine_UiScreenMenu
 		bool changed = false;
 		foreach (Engine_UiExpandableMenu.Item item in rows)
 		{
-			if (item.Parent is not null && item.Name.Length != 0 &&
-				byName.TryGetValue(item.Name, out string? label) &&
-				!string.Equals(item.StatedLabel, label, System.StringComparison.Ordinal))
+			if (item.Parent is null || item.Name.Length == 0 ||
+				!byName.TryGetValue(item.Name, out (string Label, int Count) named))
+			{
+				continue;
+			}
+
+			string? label =
+				RowId(item, out uint id) && byRow.TryGetValue((item.Name, id), out string? own) ? own
+				: named.Count == 1 ? named.Label
+				: null;
+			if (label is not null && !string.Equals(item.StatedLabel, label, System.StringComparison.Ordinal))
 			{
 				item.StatedLabel = label;
 				changed = true;
@@ -249,6 +268,33 @@ public sealed class Engine_UiScreenMenu
 		}
 
 		return changed;
+	}
+
+	/// <summary>A row's full id, as the guest packs it (`Float1` low, `Float2` high); false for a row with none.</summary>
+	public static bool RowId(Engine_UiExpandableMenu.Item item, out uint id)
+	{
+		if (item.IdLow < 0)
+		{
+			id = 0u;
+			return false;
+		}
+
+		id = ((uint)item.IdHigh << 16) | ((uint)item.IdLow & 0xFFFFu);
+		return true;
+	}
+
+	/// <summary>The row the guest spoke of as selected: the one with that id under either name it has had.</summary>
+	private Engine_UiExpandableMenu.Item? FindSelected(Engine_UiMenuModel.SelectedRow selected)
+	{
+		foreach (Engine_UiExpandableMenu.Item item in Script.SpawnedItems)
+		{
+			if (RowId(item, out uint id) && selected.Names(item.Name, id))
+			{
+				return item;
+			}
+		}
+
+		return null;
 	}
 
 	private bool BuildBound(Engine_UiMenuTemplate template)
@@ -481,6 +527,41 @@ public sealed class Engine_UiScreenMenu
 			if (Menu.Find(named) is { } row)
 			{
 				row.Name = renamed;
+				moved = true;
+			}
+		}
+
+		// The same four, for the rows the runner identified by name AND id.
+		foreach (Engine_UiMenuModel.SelectedRow selected in stated.Selected)
+		{
+			if (FindSelected(selected) is not { } row)
+			{
+				continue;
+			}
+
+			if (selected.Ghosted is { } ghost && row.Ghosted != ghost)
+			{
+				row.Ghosted = ghost;
+				moved = true;
+			}
+
+			if (selected.Emphasis is { } emphasis && row.Emphasis != emphasis)
+			{
+				row.Emphasis = emphasis;
+				moved = true;
+			}
+
+			if (selected.Label is { } label &&
+				!string.Equals(row.StatedLabel, label, System.StringComparison.Ordinal))
+			{
+				row.StatedLabel = label;
+				row.TextTag = label;
+				moved = true;
+			}
+
+			if (!string.Equals(row.Name, selected.Name, System.StringComparison.Ordinal))
+			{
+				row.Name = selected.Name;
 				moved = true;
 			}
 		}

@@ -1205,6 +1205,43 @@ void refii_bridge_menu_spawn_row_labelled(const char* name, const char* parent, 
   refii::vfs::g_menu_generation.fetch_add(1, std::memory_order_relaxed);
 }
 
+// C++ linkage: this sits inside the file's `extern "C"` block, and its caller declares it mangled.
+extern "C++" {
+namespace refii::vfs {
+
+/// One captured row restated IN PLACE: the guest's own statements after a transaction, which
+/// rewrite a row without respawning it — `RefreshChildsButtonText` (the row `name` under
+/// `parent`), `RefreshSelectedButtonText` and `RenameSelectedButton` (the row `name` with id
+/// `*id`). The shop defers its repopulation until a header is highlighted (`sub_826AE270` on
+/// `screen+441`), so until then these are the only statement of the row's caption and name; a
+/// capture left at its spawn-time text made the host's list disagree with its own source on
+/// every refresh. Exactly one of `parent` and `id` selects the row; a null `new_name` or
+/// `new_label` leaves that field. False when the capture holds no such row.
+bool RestateCapturedMenuRow(const std::string& name, const std::string* parent, const uint32_t* id,
+                            const std::string* new_name, const std::string* new_label) {
+  std::lock_guard lock(g_menu_mutex);
+  bool restated = false;
+  for (std::vector<MenuRow>* rows : {&g_menu_building, &g_menu_rows}) {
+    for (MenuRow& row : *rows) {
+      if (row.name != name || (parent != nullptr && row.parent != *parent) ||
+          (id != nullptr && row.id != *id)) {
+        continue;
+      }
+      if (new_label != nullptr) row.label = *new_label;
+      if (new_name != nullptr) row.name = *new_name;
+      restated = true;
+      break;
+    }
+  }
+  if (restated) {
+    g_menu_generation.fetch_add(1, std::memory_order_relaxed);
+  }
+  return restated;
+}
+
+}  // namespace refii::vfs
+}  // extern "C++"
+
 int32_t refii_bridge_guest_tick_pump_wants_save_count(void) {
   return refii::vfs::g_resample.load(std::memory_order_relaxed) ? 1 : 0;
 }

@@ -133,6 +133,19 @@ constexpr uint32_t kUpgradeFurnitureScreen = 26u;
 /// (15), clothing (16), gift (25). Godot states their rows by the item's record hash.
 bool KeysRowsByTicket(uint32_t screen) { return screen == 15u || screen == 16u || screen == 25u; }
 
+/// The row whose MenuEvent the pump is dispatching right now; guest thread only.
+struct DispatchedRow {
+    bool active = false;
+    int32_t event_type = 0;
+    int32_t id = 0;
+    std::string name;
+};
+
+DispatchedRow& Dispatched() {
+    static DispatchedRow row;
+    return row;
+}
+
 bool StatedRowForCurrentScreen(uint8_t* base, AnsweredRow* row) {
     uint32_t stated_screen = 0;
     if (!refii_bridge_get_stated_highlight(&stated_screen, &row->event_type, &row->id, row->name,
@@ -140,7 +153,24 @@ bool StatedRowForCurrentScreen(uint8_t* base, AnsweredRow* row) {
         return false;
     }
     uint32_t current = 0;
-    return CurrentScreen(base, &current) && current == stated_screen;
+    if (!CurrentScreen(base, &current) || current != stated_screen) {
+        return false;
+    }
+
+    // THE ROW BEING COMMITTED IS THE HIGHLIGHTED ROW, for as long as its handler runs. In the
+    // guest an event comes from the highlighted row's own activation, so its handler's
+    // "selected" statements and highlighted-row reads are about that row. Ours is queued and
+    // drained a tick later, and Godot's cursor may have moved on by then: the shop's sold-out
+    // ghost and `SOLD` rename (`sub_826B0B90`) landed on the row the player had moved to.
+    const DispatchedRow& dispatched = Dispatched();
+    if (dispatched.active &&
+        (dispatched.id != row->id || dispatched.name != row->name)) {
+        row->event_type = dispatched.event_type;
+        row->id = dispatched.id;
+        std::snprintf(row->name, sizeof(row->name), "%s", dispatched.name.c_str());
+        row->label[0] = '\0';
+    }
+    return true;
 }
 
 }  // namespace
@@ -175,14 +205,27 @@ PendingString2& String2Answer() {
 
 namespace refii::vfs {
 
-bool StatedHighlightName(uint8_t* base, std::string* name) {
+bool StatedHighlightName(uint8_t* base, std::string* name, int32_t* id) {
     AnsweredRow row;
     if (!StatedRowForCurrentScreen(base, &row)) {
         return false;
     }
     *name = row.name;
+    if (id != nullptr) {
+        *id = row.id;
+    }
     return true;
 }
+
+void SetDispatchedRow(const std::string& name, int32_t event_type, int32_t id) {
+    DispatchedRow& row = Dispatched();
+    row.active = true;
+    row.event_type = event_type;
+    row.id = id;
+    row.name = name;
+}
+
+void ClearDispatchedRow() { Dispatched().active = false; }
 
 void AnswerNextFloat1(double value) {
     PendingFloat1& pending = Float1Answer();

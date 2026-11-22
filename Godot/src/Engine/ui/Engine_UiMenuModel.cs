@@ -33,6 +33,14 @@ public sealed class Engine_UiMenuModel
 	public const string HighlightedAttribute = "@Highlighted";
 
 	/// <summary>
+	/// Beside <see cref="HighlightedAttribute"/>: that row's id, in decimal text. A name is not an
+	/// identity — the shop spawns one item name under a Buy group and a Sell group, and once per
+	/// unstacked copy (`sub_826CE230`, 0x826ce2f4) — so a statement about "the selected row" is
+	/// kept by name AND id wherever the runner states both.
+	/// </summary>
+	public const string HighlightedIdAttribute = "@HighlightedId";
+
+	/// <summary>
 	/// The first chunk the guest runs on a presentation it initialises (`sub_823DCC70`, disc
 	/// `sub_823FE988`, at 0x823dcca8 / 0x823fe9c0): its Lua state, and so its menu, starts here.
 	/// </summary>
@@ -74,10 +82,66 @@ public sealed class Engine_UiMenuModel
 			string.Equals(Parent, "Root", System.StringComparison.Ordinal);
 	}
 
+	/// <summary>
+	/// What the guest said about one row while it was the selected row, kept by the row's name and
+	/// id: `SetSelectedItemGhosting`, `SetSelectedItemEmphasis`, `RefreshSelectedButtonText` and
+	/// `RenameSelectedButton`. Unset members were never stated.
+	/// </summary>
+	public sealed class SelectedRow
+	{
+		/// <summary>The row's name now — `RenameSelectedButton` moves it.</summary>
+		public required string Name { get; set; }
+
+		/// <summary>The name it had when the guest first spoke of it; a list not yet renamed still shows it.</summary>
+		public required string StatedAs { get; init; }
+
+		public required uint Id { get; init; }
+
+		public bool? Ghosted { get; set; }
+
+		public Engine_UiMenuConstants.Emphasis? Emphasis { get; set; }
+
+		public string? Label { get; set; }
+
+		/// <summary>Whether this is the statement kept for a row named <paramref name="name"/> with id <paramref name="id"/>.</summary>
+		public bool Names(string name, uint id) =>
+			Id == id &&
+			(string.Equals(Name, name, System.StringComparison.Ordinal) ||
+			 string.Equals(StatedAs, name, System.StringComparison.Ordinal));
+
+		public SelectedRow Copy() => new()
+		{
+			Name = Name, StatedAs = StatedAs, Id = Id, Ghosted = Ghosted, Emphasis = Emphasis, Label = Label,
+		};
+	}
+
 	/// <summary>One menu's state.</summary>
 	public sealed class Menu
 	{
 		public readonly List<Row> Rows = new();
+
+		/// <summary>
+		/// The selected-row statements whose row the runner identified by name and id
+		/// (<see cref="HighlightedIdAttribute"/>). Those it named only are in <see cref="Ghosting"/>,
+		/// <see cref="Emphases"/>, <see cref="Labels"/> and <see cref="Renames"/>.
+		/// </summary>
+		public readonly List<SelectedRow> Selected = new();
+
+		/// <summary>The kept statement for the selected row <paramref name="name"/> / <paramref name="id"/>, made on first use.</summary>
+		public SelectedRow SelectedFor(string name, uint id)
+		{
+			foreach (SelectedRow known in Selected)
+			{
+				if (known.Names(name, id))
+				{
+					return known;
+				}
+			}
+
+			var added = new SelectedRow { Name = name, StatedAs = name, Id = id };
+			Selected.Add(added);
+			return added;
+		}
 
 		/// <summary>`SetInitiallySelectedItem(N)` — 1-based, 0 when unstated.</summary>
 		public int InitiallySelected;
@@ -181,6 +245,7 @@ public sealed class Engine_UiMenuModel
 			Dictionary<string, Engine_UiMenuConstants.Emphasis> Emphases,
 			Dictionary<string, string> Labels,
 			Dictionary<string, string> Renames,
+			List<SelectedRow> Selected,
 			int InitiallySelected,
 			bool Settled,
 			string PopulationScript,
@@ -198,6 +263,7 @@ public sealed class Engine_UiMenuModel
 				new Dictionary<string, Engine_UiMenuConstants.Emphasis>(Emphases, System.StringComparer.Ordinal),
 				new Dictionary<string, string>(Labels, System.StringComparer.Ordinal),
 				new Dictionary<string, string>(Renames, System.StringComparer.Ordinal),
+				Selected.ConvertAll(row => row.Copy()),
 				InitiallySelected,
 				Settled,
 				PopulationScript,
@@ -223,6 +289,7 @@ public sealed class Engine_UiMenuModel
 			Copy(saved.Emphases, Emphases);
 			Copy(saved.Labels, Labels);
 			Copy(saved.Renames, Renames);
+			Selected.AddRange(saved.Selected);
 			InitiallySelected = saved.InitiallySelected;
 			Settled = saved.Settled;
 			PopulationScript = saved.PopulationScript;
@@ -239,6 +306,7 @@ public sealed class Engine_UiMenuModel
 			Emphases.Clear();
 			Labels.Clear();
 			Renames.Clear();
+			Selected.Clear();
 			Settled = false;
 			InitiallySelected = 0;
 		}
@@ -254,7 +322,27 @@ public sealed class Engine_UiMenuModel
 
 		public Row? Find(string name) =>
 			Rows.Find(row => string.Equals(row.Name, name, System.StringComparison.Ordinal));
+
+		/// <summary>
+		/// The row with this name AND id, else the first with the name: a list whose rows Godot
+		/// states by another id than the guest spawned them with (the item books state the record
+		/// hash, the guest a ticket) still finds its row.
+		/// </summary>
+		public Row? Find(string name, uint id) =>
+			Rows.Find(row => row.Id == id && string.Equals(row.Name, name, System.StringComparison.Ordinal)) ??
+			Find(name);
+
+		/// <summary>`GetMenuItem(parent).ChildItems` searched by name: the first row named <paramref name="name"/> under <paramref name="parent"/>.</summary>
+		public Row? FindUnder(string parent, string name) =>
+			Rows.Find(row =>
+				string.Equals(row.Name, name, System.StringComparison.Ordinal) &&
+				string.Equals(row.Parent, parent, System.StringComparison.Ordinal));
 	}
+
+	/// <summary>The selected row's id, where the runner stated one with its name.</summary>
+	private static bool HighlightedId(Engine_UiModel.MenuChunk chunk, out uint id) =>
+		uint.TryParse(chunk.Attribute(HighlightedIdAttribute), System.Globalization.NumberStyles.None,
+			System.Globalization.CultureInfo.InvariantCulture, out id);
 
 	private readonly Dictionary<uint, Menu> _menus = new();
 
@@ -466,15 +554,33 @@ public sealed class Engine_UiMenuModel
 				break;
 
 			case "RefreshButtonText":
-			case "RefreshChildsButtonText":
-				// Caption only. `RefreshChildsButtonText` also states `String4` (the parent key)
-				// but re-captions rather than reparents, so the parent is not written here.
+				// Caption only, on the row `String1` names.
 				if (menu.Find(chunk.Attribute("String1")) is { } recaptioned)
 				{
 					recaptioned.Label = chunk.Attribute("String2");
 				}
 
 				break;
+
+			case "RefreshChildsButtonText":
+			{
+				// Caption only, and ONLY AMONG `String4`'S CHILDREN: the script looks the row up in
+				// `GetMenuItem(String4).ChildItems` (`expandablemenuspawning.lua` main.3). After a
+				// sale the shop restates every Buy row this way (`sub_82995B00` from `sub_829949F8`,
+				// 0x82994e74), and a same-named Sell row must not take a Buy row's caption. With no
+				// parent stated, the row by name.
+				string parent = chunk.Attribute("String4");
+				string named = chunk.Attribute("String1");
+				// A restate that carries no caption text leaves the one the row was spawned with.
+				string caption = chunk.Attribute("String2");
+				Row? child = parent.Length != 0 ? menu.FindUnder(parent, named) : menu.Find(named);
+				if (child is not null && caption.Length != 0)
+				{
+					child.Label = caption;
+				}
+
+				break;
+			}
 
 			case "SetInitiallySelectedItem":
 				// The argument is in the chunk text, not staged — built by concatenation.
@@ -521,6 +627,17 @@ public sealed class Engine_UiMenuModel
 				}
 
 				bool ghost = chunk.Number("Float1") != 0f;
+				if (HighlightedId(chunk, out uint id))
+				{
+					menu.SelectedFor(selected, id).Ghosted = ghost;
+					if (menu.Find(selected, id) is { } identified)
+					{
+						identified.Ghosted = ghost;
+					}
+
+					break;
+				}
+
 				menu.Ghosting[selected] = ghost;
 				if (menu.Find(selected) is { } row)
 				{
@@ -541,6 +658,17 @@ public sealed class Engine_UiMenuModel
 				}
 
 				Engine_UiMenuConstants.Emphasis emphasis = EmphasisFrom(chunk.Number("Float1"));
+				if (HighlightedId(chunk, out uint id))
+				{
+					menu.SelectedFor(selected, id).Emphasis = emphasis;
+					if (menu.Find(selected, id) is { } identified)
+					{
+						identified.Emphasis = emphasis;
+					}
+
+					break;
+				}
+
 				menu.Emphases[selected] = emphasis;
 				if (menu.Find(selected) is { } row)
 				{
@@ -563,6 +691,17 @@ public sealed class Engine_UiMenuModel
 				}
 
 				string label = chunk.Attribute("String2");
+				if (HighlightedId(chunk, out uint id))
+				{
+					menu.SelectedFor(selected, id).Label = label;
+					if (menu.Find(selected, id) is { } identified)
+					{
+						identified.Label = label;
+					}
+
+					break;
+				}
+
 				menu.Labels[selected] = label;
 				if (menu.Find(selected) is { } row)
 				{
@@ -580,6 +719,18 @@ public sealed class Engine_UiMenuModel
 				if (selected.Length == 0 || renamed.Length == 0)
 				{
 					return;
+				}
+
+				if (HighlightedId(chunk, out uint id))
+				{
+					// The model row first: the kept statement answers to both names afterwards.
+					if (menu.Find(selected, id) is { } identified)
+					{
+						identified.Name = renamed;
+					}
+
+					menu.SelectedFor(selected, id).Name = renamed;
+					break;
 				}
 
 				menu.Renames[selected] = renamed;
@@ -636,8 +787,10 @@ public sealed class Engine_UiMenuModel
 	}
 
 	/// <summary>
-	/// `SpawnButton` — a new row, or an update in place where the name already exists: a
-	/// repopulation that did not clear first is restating rows, not duplicating them.
+	/// `SpawnButton` — a new row, or an update in place where the SAME row is stated again (name,
+	/// parent and id): a repopulation that did not clear first is restating rows, not duplicating
+	/// them. A name alone does not make it the same row — the script creates an item per call, and
+	/// the shop spawns one item name under Buy and under Sell, and once per unstacked copy.
 	/// </summary>
 	private static void Spawn(Menu menu, Engine_UiModel.MenuChunk chunk)
 	{
@@ -647,7 +800,12 @@ public sealed class Engine_UiMenuModel
 			return;
 		}
 
-		Row? row = menu.Find(name);
+		string parent = chunk.Attribute("String4");
+		uint id = PackedId(chunk);
+		Row? row = menu.Rows.Find(known =>
+			known.Id == id &&
+			string.Equals(known.Name, name, System.StringComparison.Ordinal) &&
+			string.Equals(known.Parent, parent, System.StringComparison.Ordinal));
 		if (row is null)
 		{
 			row = new Row { Name = name, Ordinal = menu.Rows.Count };
@@ -656,8 +814,8 @@ public sealed class Engine_UiMenuModel
 
 		row.Label = chunk.Attribute("String2");
 		row.Icon = chunk.Attribute("String3");
-		row.Parent = chunk.Attribute("String4");
-		row.Id = PackedId(chunk);
+		row.Parent = parent;
+		row.Id = id;
 		row.EventType = (int)chunk.Number("Float3");
 		row.Rating = (int)chunk.Number("Float4");
 

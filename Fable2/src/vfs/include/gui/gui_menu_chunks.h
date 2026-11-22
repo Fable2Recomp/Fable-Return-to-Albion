@@ -30,6 +30,11 @@ inline constexpr const char kPresentationInitChunk[] = "GUI:SetAsNotRunningInAna
 /// `CurrentHighlightIdx` named.
 inline constexpr const char kHighlightedAttribute[] = "@Highlighted";
 
+/// Beside it: that row's id as Godot states it, in decimal text (a float would round a record
+/// hash). A name is not an identity — the shop spawns the same item name under a Buy group and a
+/// Sell group, and once per unstacked copy (`sub_826CE230`, 0x826ce2f4).
+inline constexpr const char kHighlightedIdAttribute[] = "@HighlightedId";
+
 /// One staged attribute, as the C++ handed it to the stager.
 struct MenuChunkAttribute {
     std::string name;   // "String1", "Float3", …

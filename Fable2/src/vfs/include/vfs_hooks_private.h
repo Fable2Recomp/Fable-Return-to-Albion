@@ -221,7 +221,14 @@ constexpr uint32_t kFrontEndMainMenuList = 1010u;
 
 /// The NAME of the row Godot states as highlighted, when it is stated for the screen the GUI
 /// manager names current — the row `sub_826C1B50` answers with. Defined in hooks/gui_menu_hooks.cpp.
-bool StatedHighlightName(uint8_t* base, std::string* name);
+/// `id`, when asked for, is that row's id as Godot states it (a shop row's ticket).
+bool StatedHighlightName(uint8_t* base, std::string* name, int32_t* id = nullptr);
+
+/// The row whose MenuEvent is being dispatched: while set, it is the highlighted row every reader
+/// above answers with, whatever Godot's cursor has moved to since the press. Guest thread only;
+/// the dispatcher sets it around the handler call and clears it after.
+void SetDispatchedRow(const std::string& name, int32_t event_type, int32_t id);
+void ClearDispatchedRow();
 
 /// Arms the answer to the next `Float1` read through `sub_826B9210` (the getter hook in
 /// hooks/gui_menu_hooks.cpp): the runner states it for `g_Menu:CountSpawnedItems()`, whose
