@@ -910,6 +910,63 @@ public partial class GameWindow : Node
 		// Leave the window up on failure so the reason is readable; the user closes it.
 		DisplayServer.WindowSetTitle(
 			$"{Engine_Title.Active.RemakeName} — stopped ({reason})", (int)DisplayServer.MainWindowId);
+		ShowStopped(reason);
+	}
+
+	/// <summary>True once the session has stopped and its reason is on screen; any confirm or back then closes the game.</summary>
+	private bool _stoppedShown;
+
+	/// <summary>
+	/// The reason the session stopped, ON SCREEN. The title bar alone is not readable: a
+	/// borderless or fullscreen window has none, and the player was left on an empty dark window
+	/// that read as a hang. Above every game layer; text sized from the window so it stays legible.
+	/// </summary>
+	private void ShowStopped(string reason)
+	{
+		if (_stoppedShown || GameExit.Quitting)
+		{
+			return;
+		}
+
+		_stoppedShown = true;
+		var layer = new CanvasLayer { Name = "StoppedLayer", Layer = 126 };
+		var shade = new ColorRect { Color = new Color(0f, 0f, 0f, 0.82f), MouseFilter = Control.MouseFilterEnum.Ignore };
+		shade.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		layer.AddChild(shade);
+
+		float height = GetTree().Root.GetVisibleRect().Size.Y;
+		int body = Mathf.Max(18, Mathf.RoundToInt(height / 40f));
+		var text = new Label
+		{
+			Text = $"{Engine_Title.Active.RemakeName} stopped\n\n{reason}\n\n" +
+				$"The logs are in:\n{System.IO.Path.GetDirectoryName(GameLogPaths.GodotLog)}\n\n" +
+				"Press Esc, Enter or any pad button to close and return to the launcher.",
+			HorizontalAlignment = HorizontalAlignment.Center,
+			VerticalAlignment = VerticalAlignment.Center,
+			AutowrapMode = TextServer.AutowrapMode.WordSmart,
+			MouseFilter = Control.MouseFilterEnum.Ignore,
+		};
+		text.AddThemeFontSizeOverride("font_size", body);
+		text.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+		text.OffsetLeft = 48f;
+		text.OffsetRight = -48f;
+		layer.AddChild(text);
+		AddChild(layer);
+	}
+
+	public override void _Input(InputEvent @event)
+	{
+		if (!_stoppedShown || !@event.IsPressed() || @event.IsEcho())
+		{
+			return;
+		}
+
+		if (@event is InputEventJoypadButton ||
+			@event is InputEventKey { Keycode: Key.Escape or Key.Enter or Key.KpEnter or Key.Space })
+		{
+			GetViewport().SetInputAsHandled();
+			GameExit.ToDesktop(GetTree());
+		}
 	}
 
 	/// <summary>
