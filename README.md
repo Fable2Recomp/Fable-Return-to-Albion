@@ -15,6 +15,12 @@
 [![Recompiler](https://img.shields.io/badge/Recompiler-ReXGlue%20SDK-ff69b4)](https://github.com/rexglue/rexglue-sdk)
 [![License](https://img.shields.io/badge/License-GPL--2.0%20%2F%20MIT-green.svg)](#licensing)
 
+[![Linux x86_64](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/linux-x86_64.yml/badge.svg?branch=main)](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/linux-x86_64.yml)
+[![Linux ARM64](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/linux-arm64.yml/badge.svg?branch=main)](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/linux-arm64.yml)
+[![Windows x86_64](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/windows-x86_64.yml/badge.svg?branch=main)](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/windows-x86_64.yml)
+[![Windows ARM64](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/windows-arm64.yml/badge.svg?branch=main)](https://github.com/Fable2Recomp/Fable-Return-to-Albion/actions/workflows/windows-arm64.yml)
+[![Latest build](https://img.shields.io/github/v/release/Fable2Recomp/Fable-Return-to-Albion?include_prereleases&label=latest%20build)](https://github.com/Fable2Recomp/Fable-Return-to-Albion/releases)
+
 <p align="center">
   <a href="#about-the-project">About</a> •
   <a href="#key-features">Key Features</a> •

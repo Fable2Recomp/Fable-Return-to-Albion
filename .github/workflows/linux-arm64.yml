@@ -1,0 +1,48 @@
+# Linux ARM64: one workflow per platform, so each has its own status badge and its own history.
+# The steps are shared (reusable-build-linux.yml, reusable-publish.yml); releases.yml says when
+# a build publishes.
+#
+#   pull request        build, keep the zip as a run artifact
+#   tag beta-N or vN    build, then add the package to the tag's draft release
+#   manual run          build, and replace this platform's nightly package unless "publish" is
+#                       unticked. The nightly itself starts every platform this way.
+name: Linux ARM64
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    tags: ['beta-*', 'v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this build as this platform's nightly dev build
+        type: boolean
+        default: true
+
+# A newer push to the same pull request or branch replaces the run in progress. Tag builds are
+# never cancelled.
+concurrency:
+  group: linux-arm64-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-build-linux.yml
+    with:
+      arch: arm64
+      runner: ubuntu-24.04-arm
+      preset: linux-arm64-release-netplay
+      artifact: linux-arm64
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    permissions:
+      contents: write
+    uses: ./.github/workflows/reusable-publish.yml
+    with:
+      artifact: linux-arm64

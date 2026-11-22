@@ -1,0 +1,113 @@
+# The Windows build, shared by the per-architecture workflows (windows-x86_64.yml,
+# windows-arm64.yml). Builds natively on a runner of the stated architecture, in the stated CMake
+# preset, and leaves the package as the run artifact named by `artifact`.
+name: Build Windows (shared steps)
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: x86_64 or arm64
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      preset:
+        description: The CMake preset to configure and build
+        type: string
+        required: true
+      msvc:
+        description: The MSVC environment's architecture (x64, arm64)
+        type: string
+        required: true
+      llvm_tag:
+        description: The llvm-project release the Clang installer comes from
+        type: string
+        required: true
+      llvm:
+        description: The Clang installer's file name
+        type: string
+        required: true
+      artifact:
+        description: The name the package is uploaded under
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# The unit and feature tests are a developer's gate, run by every local build; here they are
+# skipped, so every cold runner does not spend its time on the same suite.
+env:
+  REFII_NO_TESTS: '1'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 240
+    steps:
+      - name: Allow long paths
+        run: git config --system core.longpaths true
+
+      # The whole checkout takes about three minutes; a runner that stops answering in it
+      # (seen on windows-11-arm) fails here instead of holding the job for hours.
+      - uses: actions/checkout@v4
+        timeout-minutes: 15
+        with:
+          submodules: recursive
+
+      # LLVM's own installer for the runner's architecture, so `clang` targets the machine it
+      # runs on: the presets name no target, and an x64 Clang under emulation would build x64.
+      - name: Install Clang and Ninja
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP '${{ inputs.llvm }}'
+          Invoke-WebRequest -Uri 'https://github.com/llvm/llvm-project/releases/download/${{ inputs.llvm_tag }}/${{ inputs.llvm }}' -OutFile $installer
+          Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+          'C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          choco install ninja -y --no-progress
+          & 'C:\Program Files\LLVM\bin\clang.exe' --version
+          cmake --version
+
+      # The Windows SDK and MSVC runtime libraries Clang links against.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ inputs.msvc }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache fetched tools
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tools-windows-${{ inputs.arch }}-${{ hashFiles('cmake/refii_fetch_godot.cmake', 'cmake/refii_fetch_zig.cmake') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-windows-${{ inputs.arch }}-${{ hashFiles('rexglue-net/rexglue-sdk/src/rexnet/core/Cargo.lock') }}
+          restore-keys: cargo-windows-${{ inputs.arch }}-
+
+      - name: Configure
+        run: cmake --preset ${{ inputs.preset }}
+
+      - name: Build, test and package
+        run: cmake --build --preset ${{ inputs.preset }}
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: out/package/*.zip
+          if-no-files-found: error
+          retention-days: 14
