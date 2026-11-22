@@ -43,11 +43,11 @@ public sealed class Fable2LauncherScreen : LauncherTitleScreen
 		new("Change Log", LauncherInfoSource.ProjectChangeLog),
 		new("Credits", LauncherInfoSource.ProjectContributors),
 		new("About", LauncherInfoSource.Text,
-			"[color=#daa520][font_size=16]Fable: Return to Albion[/font_size][/color]\n\n" +
+			"[color=#6b5312][font_size=16]Fable: Return to Albion[/font_size][/color]\n\n" +
 			"[color=#2b221b]A unified native PC remaster and recompilation hub for Fable 2 and Fable 3, " +
 			"built from your own Xbox 360 discs.[/color]\n\n" +
-			"[color=#8c7b6b]• [b]Fable 2[/b]: Install, mod (.f2mod), and play directly from the launch dock.\n" +
-			"• [b]Fable 3[/b] (Experimental): Early development support — install from disc and manage .f3mod packages alongside Fable 2.[/color]"),
+			"[color=#5a4e3e]• Fable 2: Install, mod (.f2mod), and play directly from the launch dock.\n" +
+			"• Fable 3 (Experimental): Early development support — install from disc and manage .f3mod packages alongside Fable 2.[/color]"),
 	};
 
 	public override IReadOnlyList<LauncherInfoTab> InfoTabs => Tabs;

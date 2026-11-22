@@ -29,10 +29,10 @@ public sealed class Fable3LauncherScreen : LauncherTitleScreen
 	public override IReadOnlyList<LauncherInfoTab> InfoTabs => new[]
 	{
 		new LauncherInfoTab("About", LauncherInfoSource.Text,
-			"[color=#daa520][font_size=16]Fable 3[/font_size][/color]\n\n" +
+			"[color=#6b5312][font_size=16]Fable 3[/font_size][/color]\n\n" +
 			"[color=#2b221b]Fable 3 is installed and built from your own disc, beside Fable 2. " +
 			"Support is in early development: the game is not playable yet.[/color]\n\n" +
-			"[color=#8c7b6b]Its settings are kept in " + Title.ConfigFileName + ", apart from Fable 2's, " +
+			"[color=#5a4e3e]Its settings are kept in " + Title.ConfigFileName + ", apart from Fable 2's, " +
 			"and only the settings Fable 3 reads are listed. Its mods are " + Title.ModExtension +
 			" packages, in its own mods folder.[/color]"),
 	};

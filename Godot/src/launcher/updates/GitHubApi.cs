@@ -135,6 +135,39 @@ public static class GitHubApi
 
     public static Task<string?> HttpGetAsync(string url) => GetStringAsync(url);
 
+    /// <summary>
+    /// A commit title without the pull request GitHub appends to a merged one: "Fix the map (#28)"
+    /// is "Fix the map" with <paramref name="pullRequest"/> "28". A title with no such ending is
+    /// returned whole, with <paramref name="pullRequest"/> empty.
+    /// </summary>
+    public static string SplitPullRequest(string title, out string pullRequest)
+    {
+        pullRequest = string.Empty;
+        string trimmed = title.TrimEnd();
+        int open = trimmed.LastIndexOf(" (#", StringComparison.Ordinal);
+        if (open <= 0 || !trimmed.EndsWith(')'))
+        {
+            return trimmed;
+        }
+
+        string number = trimmed[(open + 3)..^1];
+        if (number.Length == 0 || number.Length > 9)
+        {
+            return trimmed;
+        }
+
+        foreach (char digit in number)
+        {
+            if (digit < '0' || digit > '9')
+            {
+                return trimmed;
+            }
+        }
+
+        pullRequest = number;
+        return trimmed[..open];
+    }
+
     public static async Task<byte[]?> HttpGetBytesAsync(string url)
     {
         try
