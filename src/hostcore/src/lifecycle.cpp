@@ -37,9 +37,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <SDL3/SDL_events.h>
-#include <SDL3/SDL_hints.h>
-#include <SDL3/SDL_error.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -70,7 +67,6 @@ void FlushLogging();
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
 #include <rex/ui/windowed_app.h>
-#include <rex/ui/windowed_app_context_sdl.h>
 
 #include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>
@@ -329,8 +325,8 @@ REFII_HOST_ABI_EXPORT int RefiiHostStatus(char* out, std::size_t capacity) {
 /// guest's own blocking loop.
 ///
 /// SYNCHRONOUS, and it takes seconds — it loads the XEX and runs the guest's init. Call
-/// it from the host's main thread and accept the stall: SDL wants its main thread, and
-/// the previous arrangement (guest on a worker) left that unresolved.
+/// it from the host's main thread and accept the stall: that thread becomes the guest's UI
+/// thread, the one every later RefiiHostStep must come from.
 ///
 /// Returns 1 when the guest is initialised and ready to be stepped.
 #ifdef __linux__
@@ -441,7 +437,6 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
         ReclaimAbandonedGuestArenas();
 #endif
         ApplyEmbeddedEnvironment();
-        ReadyAndroidSdl();  // lifecycle_android.h
 
         // argv[0] then the flags. The game directory goes as an explicit flag, not
         // positionally: embedded, GetExecutableFolder() is the HOST's directory, so the
@@ -471,12 +466,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
         rex::cvar::Init(static_cast<int>(argv.size()), argv.data());
         rex::cvar::ApplyEnvironment();
 
-        hosted.context = std::make_unique<rex::ui::SDLWindowedAppContext>();
-        if (!hosted.context->Initialize()) {
-            hosted.status = std::string("SDL context init failed: ") + SDL_GetError();
-            WriteOut(hosted.status, out, capacity);
-            return 0;
-        }
+        // No display, no window system and no SDL: the stepped guest's context is its
+        // UI-thread queue alone (hosted_app_context.h).
+        hosted.context = std::make_unique<HostedAppContext>();
 
         hosted.app = CreateRefiiApp(*hosted.context);
         if (!hosted.app) {
@@ -522,10 +514,9 @@ REFII_HOST_ABI_EXPORT int RefiiHostInitialize(const char* game_directory, const 
 /// Advances the guest by one host frame. Returns 1 while it is still running.
 ///
 /// This is the loop body the guest would otherwise run for itself, minus the blocking
-/// wait. Headless there are no window or input events to dispatch — the only event that
-/// matters is the wakeup that carries pending UI-thread work, and
-/// ExecutePendingFunctionsFromUIThread services that directly. The queue is still
-/// drained so SDL does not accumulate events nobody reads.
+/// wait. Headless there are no window or input events to dispatch — the only work is the
+/// pending UI-thread functions, and ExecutePendingFunctionsFromUIThread services those
+/// directly.
 REFII_HOST_ABI_EXPORT int RefiiHostStep(void) {
     HostedGuest& hosted = Hosted();
     if (!hosted.initialized || hosted.finished) {
@@ -533,11 +524,6 @@ REFII_HOST_ABI_EXPORT int RefiiHostStep(void) {
     }
 
     try {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            // Deliberately dropped: with no window there is nothing to route them to.
-        }
-
         if (refii::hostcore::Title().before_step != nullptr) {
             refii::hostcore::Title().before_step();
         }
@@ -607,10 +593,6 @@ REFII_HOST_ABI_EXPORT int RefiiHostShutdown(char* out, std::size_t capacity) {
             const auto deadline =
                 std::chrono::steady_clock::now() + kShutdownPumpBudget;
             while (std::chrono::steady_clock::now() < deadline) {
-                SDL_Event event;
-                while (SDL_PollEvent(&event)) {
-                }
-
                 hosted.context->ExecutePendingFunctionsFromUIThread();
 
                 if (app->ShutdownThreadsFinished()) {

@@ -6017,7 +6017,14 @@ public static partial class HostBridge
 	/// </summary>
 	private static bool _watchdogUsable = true;
 
-	private static bool WatchdogReady => _watchdogUsable && TryGetAbiVersion() is not null;
+	/// <remarks>
+	/// On the library's own version, not <see cref="TryGetAbiVersion"/>: that refuses once the
+	/// session gives up on the guest, and the main thread is still drawing frames then. Gated on it,
+	/// the stamp stopped with a failed boot and the watchdog reported a stall every 30 s over a
+	/// game that was showing its reason for stopping.
+	/// </remarks>
+	private static bool WatchdogReady =>
+		_watchdogUsable && TryGetRawAbiVersion() is { } version && version == ExpectedAbiVersion;
 
 	private static void WatchdogMissing(EntryPointNotFoundException e)
 	{

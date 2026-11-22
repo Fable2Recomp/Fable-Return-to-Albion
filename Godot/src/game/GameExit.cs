@@ -23,8 +23,12 @@ public static class GameExit
 	public static void ToDesktop(SceneTree tree)
 	{
 		GD.Print("[game-exit] quitting the game; the launcher comes back");
+		Quitting = true;
 		tree.Quit();
 	}
+
+	/// <summary>True once the game has been asked to end: a session stopping after that is the exit, not a failure.</summary>
+	public static bool Quitting { get; private set; }
 
 	/// <summary>
 	/// Ends the game child the moment its scene root is being deleted.

@@ -40,7 +40,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <SDL3/SDL_events.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -71,7 +70,6 @@ void FlushLogging();
 #include <rex/system/xmemory.h>
 #include <rex/rex_app.h>
 #include <rex/ui/windowed_app.h>
-#include <rex/ui/windowed_app_context_sdl.h>
 
 #include <rex/filesystem/entry.h>
 #include <rex/filesystem/vfs.h>

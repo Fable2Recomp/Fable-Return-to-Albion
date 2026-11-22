@@ -26,7 +26,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
 #include <rex/ui/windowed_app.h>
-#include <rex/ui/windowed_app_context_sdl.h>
+
+#include "hosted_app_context.h"
 
 #ifndef _WIN32
 #include <setjmp.h>
@@ -52,8 +53,7 @@ struct TitleCallbacks {
     /// RefiiHostInitialize, once the guest's OnInitialize succeeded, the last-resort fault
     /// reporter is installed and the timer resolution raised; before it returns.
     void (*on_initialized)();
-    /// Each RefiiHostStep, after the SDL queue is drained and before the UI thread's pending
-    /// work runs.
+    /// Each RefiiHostStep, before the UI thread's pending work runs.
     void (*before_step)();
     /// Each RefiiHostStep, after the UI thread's pending work and before the quit check.
     void (*after_step)();
@@ -116,7 +116,8 @@ GuestSession& Session();
 /// The difference matters. RunRefiiEmbedded owns a blocking SDL loop — on netplay,
 /// SDL_WaitEvent — so hosting it means handing a thread over and getting it back when
 /// the guest decides. Here the host keeps its thread: it initialises the guest once,
-/// then pumps it a slice at a time from its own frame loop.
+/// then pumps it a slice at a time from its own frame loop, and the guest's context is
+/// that queue alone (HostedAppContext), with no SDL under it.
 
 /// How long shutdown pumps the UI thread waiting for the guest to stop.
 ///
@@ -125,7 +126,7 @@ GuestSession& Session();
 constexpr std::chrono::seconds kShutdownPumpBudget{15};
 
 struct HostedGuest {
-    std::unique_ptr<rex::ui::SDLWindowedAppContext> context;
+    std::unique_ptr<HostedAppContext> context;
     std::unique_ptr<rex::ui::WindowedApp> app;
     bool initialized = false;
     bool finished = false;

@@ -32,8 +32,8 @@ add_library(refii_hostcore STATIC
     ${REFII_HOSTCORE_ROOT}/src/godot_audio_effect.cpp
 )
 if(ANDROID)
-    # The platform services and SDL's event queue, readied for the guest Godot hosts on a phone,
-    # and the host backtrace below API33.
+    # The platform services readied for the guest Godot hosts on a phone, and the host backtrace
+    # below API33.
     target_sources(refii_hostcore PRIVATE ${REFII_HOSTCORE_ROOT}/src/lifecycle_android.cpp
         ${REFII_HOSTCORE_ROOT}/src/host_backtrace_android.cpp)
 endif()
@@ -72,12 +72,8 @@ target_link_libraries(refii_hostcore
 target_include_directories(refii_hostcore PUBLIC
     $<TARGET_PROPERTY:refii_achievement,INTERFACE_INCLUDE_DIRECTORIES>)
 
-# SDL headers: the stepped loop drains the event queue itself rather than handing a
-# thread to the guest's blocking SDL_WaitEvent. rex::runtime carries the linkage; this
-# is only for the declarations.
-if(TARGET SDL3::SDL3)
-    target_link_libraries(refii_hostcore PUBLIC SDL3::SDL3)
-endif()
+# No SDL: the stepped guest's context is its own queue (hosted_app_context.h), and the core names
+# no SDL symbol on any platform.
 
 # A title's host bridge: `target` (SHARED, OUTPUT_NAME refii_hostbridge) gets the whole core, the
 # no-dangling-symbols rule, and the language level the core is built at. The title adds its feeds.
@@ -88,16 +84,8 @@ endif()
 # nothing in any log. That was four "crashes to desktop" in one afternoon. Resolve everything at
 # link time instead; a weak reference (the renderer's optional ImGui hook) still resolves to null
 # and is allowed.
-#
-# SDL3 DIRECTLY AFTER THE CORE, ahead of rexruntime on the link line. The SDL target is a static
-# archive, and placed there it resolves the stepped loop's SDL_PollEvent from the archive into
-# the bridge itself rather than from librexruntime's copy, and the bridge exports that copy's
-# symbols — exactly the resolution and the export set the bridge had as one library.
 function(refii_link_hostcore target)
     target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,refii_hostcore>")
-    if(TARGET SDL3::SDL3)
-        target_link_libraries(${target} PRIVATE SDL3::SDL3)
-    endif()
     if(NOT WIN32)
         target_link_options(${target} PRIVATE -Wl,--no-undefined)
     endif()
