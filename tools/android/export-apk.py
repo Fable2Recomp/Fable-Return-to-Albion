@@ -64,6 +64,7 @@ def stage_install_service(project: Path) -> None:
     app = root.find("application")
     if app is None:
         raise ValueError("Android template has no application")
+    app.set(android + "debuggable", "false")
     for name in ("FOREGROUND_SERVICE", "FOREGROUND_SERVICE_DATA_SYNC", "FOREGROUND_SERVICE_SPECIAL_USE", "WAKE_LOCK"):
         permission = "android.permission." + name
         if not any(row.get(android + "name") == permission for row in root.findall("uses-permission")):
@@ -493,6 +494,10 @@ def install_template(templates: Path, project: Path, editor: Path) -> str:
                 target.write_bytes(archive.read(entry))
                 if path.name == "gradlew" and os.name != "nt":
                     target.chmod(0o755)
+    # Keep the Godot template variant used for on-device diagnostics, but disable
+    # Android OS debugging for the installed package.
+    with (build / "build.gradle").open("a", encoding="utf-8") as gradle:
+        gradle.write("\nandroid.buildTypes.debug.debuggable = false\n")
     return version
 
 

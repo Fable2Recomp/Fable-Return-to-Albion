@@ -10,12 +10,17 @@ public sealed record GitCommit(string Sha, string Message, string Author, string
 
 public sealed record GitContributor(string Login, string Name, string AvatarUrl, int Contributions);
 
-public static class GitHubApi
+/// <summary>Fetches repository information and release assets for the launcher.</summary>
+public static partial class GitHubApi
 {
     private const string UserAgent = "refii-launcher/1.0";
     private const int CommitsPerPage = 10;
 
-    private static readonly HttpClient Client = CreateClient();
+    private static readonly Lazy<HttpClient> Client = new(CreateClient);
+
+#if !GODOT_ANDROID
+    private static Task<HttpResponseMessage> GetResponseAsync(string url) => Client.Value.GetAsync(url);
+#endif
 
     private static HttpClient CreateClient()
     {
@@ -172,7 +177,7 @@ public static class GitHubApi
     {
         try
         {
-            using HttpResponseMessage response = await Client.GetAsync(url).ConfigureAwait(false);
+            using HttpResponseMessage response = await GetResponseAsync(url).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
                 return null;
@@ -196,7 +201,7 @@ public static class GitHubApi
     {
         try
         {
-            using HttpResponseMessage response = await Client.GetAsync(url).ConfigureAwait(false);
+            using HttpResponseMessage response = await GetResponseAsync(url).ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
                 return (await response.Content.ReadAsStringAsync().ConfigureAwait(false), string.Empty);
