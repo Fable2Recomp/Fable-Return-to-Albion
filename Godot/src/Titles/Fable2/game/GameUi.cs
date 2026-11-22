@@ -7503,6 +7503,10 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 		_surfaces.Message.StatedDisplayBox = _boxes.GuestMessageBox;
 		Fable2Input.DisplayMessageBoxUp = _boxes.GuestMessageBox != 0u;
+		if (_fade is not null)
+		{
+			_fade.UnderUi = _boxes.GuestMessageBox != 0u || Engine_UiDisplayBoxes.Open.Count != 0;
+		}
 
 		// A stated display box freed with no Close seen would stand its surface, masking the pad,
 		// over nothing: each stated address is re-checked against its class and open byte.
