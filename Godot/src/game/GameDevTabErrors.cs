@@ -157,6 +157,12 @@ public partial class GameDevErrorLog : Logger
 		string key = $"{where}|{message}";
 		double now = Time.GetTicksMsec() / 1000.0;
 
+		// The crash record carries the last of these: a fault inside the engine usually follows
+		// an error it reported, and the record is what a player sends.
+		Refii.Host.HostBridge.NoteEngineError(code.Length != 0 && code != message
+			? $"{kind} {where}: {message} [{code}]"
+			: $"{kind} {where}: {message}");
+
 		lock (Gate)
 		{
 			if (!Entries.TryGetValue(key, out Entry? entry))

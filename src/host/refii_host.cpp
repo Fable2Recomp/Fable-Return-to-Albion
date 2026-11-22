@@ -11,6 +11,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <csignal>
 #include <exception>
 #include <functional>
@@ -543,6 +546,32 @@ void WriteWindowsCrashRecord(const char* source,
                          physical ? " (physical view)" : "");
         }
     }
+    // What the machine had left. A null the engine dereferences is very often an allocation it
+    // could not make: commit is what Direct3D and the heap both fail on, well before physical
+    // memory runs out.
+    MEMORYSTATUSEX memoryStatus = {};
+    memoryStatus.dwLength = sizeof(memoryStatus);
+    if (GlobalMemoryStatusEx(&memoryStatus)) {
+        constexpr unsigned long long kMegabyte = 1024ull * 1024ull;
+        std::fprintf(crashLog, "memory_load_percent\t%lu\n",
+                     static_cast<unsigned long>(memoryStatus.dwMemoryLoad));
+        std::fprintf(crashLog, "physical_free_mb\t%llu of %llu\n",
+                     memoryStatus.ullAvailPhys / kMegabyte, memoryStatus.ullTotalPhys / kMegabyte);
+        std::fprintf(crashLog, "commit_free_mb\t%llu of %llu\n",
+                     memoryStatus.ullAvailPageFile / kMegabyte,
+                     memoryStatus.ullTotalPageFile / kMegabyte);
+        std::fprintf(crashLog, "address_space_free_mb\t%llu of %llu\n",
+                     memoryStatus.ullAvailVirtual / kMegabyte,
+                     memoryStatus.ullTotalVirtual / kMegabyte);
+    }
+    std::fprintf(crashLog, "engine_state\t%s\n", RefiiEngineState());
+    // The engine's last reported errors, newest last (RefiiNoteEngineError).
+    std::fprintf(crashLog, "engine_errors\n");
+    RefiiVisitEngineErrors(
+        [](void* file, const char* line) {
+            std::fprintf(static_cast<FILE*>(file), "  %s\n", line);
+        },
+        crashLog);
     // Everything above is on disk before anything below walks memory the fault just proved
     // unreliable.
     std::fflush(crashLog);
@@ -857,6 +886,102 @@ const std::filesystem::path& RefiiGetConfigPath() { return g_refii_config_path; 
 void RefiiSetLogDirectory(const std::filesystem::path& path) { g_refii_log_directory = path; }
 
 const std::filesystem::path& RefiiGetLogDirectory() { return g_refii_log_directory; }
+
+namespace {
+
+constexpr uint32_t kEngineErrorSlots = 32;
+constexpr size_t kEngineErrorLength = 384;
+
+struct EngineErrorSlot {
+    char text[kEngineErrorLength];
+    std::atomic<uint32_t> repeats;
+    uint32_t milliseconds;
+};
+
+EngineErrorSlot g_engine_errors[kEngineErrorSlots];
+/// Lines ever kept; the newest is slot (written - 1) % kEngineErrorSlots.
+std::atomic<uint32_t> g_engine_errors_written{0};
+std::mutex g_engine_errors_gate;
+
+}  // namespace
+
+void RefiiNoteEngineError(const char* text) {
+    if (text == nullptr || text[0] == '\0') {
+        return;
+    }
+    static const auto started = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+
+    std::lock_guard<std::mutex> lock(g_engine_errors_gate);
+    const uint32_t written = g_engine_errors_written.load(std::memory_order_relaxed);
+    // One line per record: the text is the engine's, and may carry its own breaks.
+    char line[kEngineErrorLength];
+    std::snprintf(line, sizeof(line), "%s", text);
+    for (char& c : line) {
+        if (c == '\n' || c == '\r' || c == '\t') {
+            c = ' ';
+        }
+    }
+    // An error raised every frame is one line with a count, so it cannot push the others out.
+    const uint32_t kept = written < kEngineErrorSlots ? written : kEngineErrorSlots;
+    for (uint32_t i = written - kept; i != written; ++i) {
+        EngineErrorSlot& known = g_engine_errors[i % kEngineErrorSlots];
+        if (std::strcmp(known.text, line) == 0) {
+            known.repeats.fetch_add(1, std::memory_order_relaxed);
+            known.milliseconds = static_cast<uint32_t>(elapsed.count());
+            return;
+        }
+    }
+    EngineErrorSlot& slot = g_engine_errors[written % kEngineErrorSlots];
+    std::memcpy(slot.text, line, sizeof(line));
+    slot.repeats.store(1, std::memory_order_relaxed);
+    slot.milliseconds = static_cast<uint32_t>(elapsed.count());
+    g_engine_errors_written.store(written + 1, std::memory_order_release);
+}
+
+namespace {
+/// Two copies and the index of the one a reader may take: the writer fills the other, then
+/// swaps, so a fault handler never reads a line half written.
+char g_engine_state[2][768];
+std::atomic<uint32_t> g_engine_state_current{0};
+}  // namespace
+
+void RefiiNoteEngineState(const char* text) {
+    if (text == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_engine_errors_gate);
+    const uint32_t next = g_engine_state_current.load(std::memory_order_relaxed) ^ 1u;
+    std::snprintf(g_engine_state[next], sizeof(g_engine_state[next]), "%s", text);
+    for (char& c : g_engine_state[next]) {
+        if (c == '\n' || c == '\r' || c == '\t') {
+            c = ' ';
+        }
+    }
+    g_engine_state_current.store(next, std::memory_order_release);
+}
+
+const char* RefiiEngineState() {
+    return g_engine_state[g_engine_state_current.load(std::memory_order_acquire)];
+}
+
+void RefiiVisitEngineErrors(void (*visit)(void* context, const char* line), void* context) {
+    // No lock: this runs in a fault handler, possibly on the thread that holds the gate. A
+    // line being written while it is read comes out torn, never out of bounds.
+    const uint32_t written = g_engine_errors_written.load(std::memory_order_acquire);
+    const uint32_t kept = written < kEngineErrorSlots ? written : kEngineErrorSlots;
+    for (uint32_t i = written - kept; i != written; ++i) {
+        const EngineErrorSlot& slot = g_engine_errors[i % kEngineErrorSlots];
+        char line[kEngineErrorLength + 48];
+        const int head = std::snprintf(
+            line, sizeof(line), "%u.%03u x%u ", slot.milliseconds / 1000u,
+            slot.milliseconds % 1000u, slot.repeats.load(std::memory_order_relaxed));
+        std::memcpy(line + head, slot.text, kEngineErrorLength);
+        line[head + kEngineErrorLength - 1] = '\0';
+        visit(context, line);
+    }
+}
 
 std::unique_ptr<rex::ui::WindowedApp> CreateRefiiApp(rex::ui::WindowedAppContext& app_context) {
 #if defined(_WIN32)

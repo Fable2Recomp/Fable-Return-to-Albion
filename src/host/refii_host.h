@@ -39,6 +39,22 @@ const std::filesystem::path& RefiiGetConfigPath();
 void RefiiSetLogDirectory(const std::filesystem::path& path);
 const std::filesystem::path& RefiiGetLogDirectory();
 
+/// The host engine's most recent errors, which a crash record carries: a fault inside the
+/// engine is usually the second half of an allocation it reported failing a moment earlier,
+/// and that report is otherwise only in a log the player rarely sends.
+///
+/// RefiiNoteEngineError keeps the last 32 distinct lines, folding a repeat of a kept line into
+/// its count. RefiiVisitEngineErrors hands them over in the order each was first seen, as
+/// "<seconds it was last seen, from the first note> x<count> <text>"; it takes no lock and
+/// allocates nothing, so a fault handler may call it.
+///
+/// RefiiNoteEngineState keeps ONE line, the newest: what the engine last said of itself
+/// (adapter, graphics memory in use, window). RefiiEngineState is that line, empty until stated.
+void RefiiNoteEngineError(const char* text);
+void RefiiNoteEngineState(const char* text);
+const char* RefiiEngineState();
+void RefiiVisitEngineErrors(void (*visit)(void* context, const char* line), void* context);
+
 std::unique_ptr<rex::ui::WindowedApp> CreateRefiiApp(rex::ui::WindowedAppContext& app_context);
 
 int RunRefiiEmbedded(

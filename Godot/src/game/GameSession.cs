@@ -274,6 +274,8 @@ public partial class GameSession : Node
 
 	private void session_processBody(double delta)
 	{
+		GameCrashContext.Tick(this, delta);
+
 		// The mods' settings, abilities and errors, and their godot/*.gd scripts under this node.
 		Refii.Mods.ModFrame.Pump(this, Refii.Host.HostBridge.IsGuestUp, _driving);
 
