@@ -33,6 +33,7 @@ class PhoneCompilerExportTests(unittest.TestCase):
             exporter.stage_install_service(project)
             android = '{http://schemas.android.com/apk/res/android}'
             root = ET.parse(manifest).getroot()
+            self.assertEqual(root.find('application').get(android+'debuggable'), 'false')
             service = root.find('application/service')
             self.assertEqual(service.get(android+'exported'), 'false')
             self.assertEqual(service.get(android+'stopWithTask'), 'false')

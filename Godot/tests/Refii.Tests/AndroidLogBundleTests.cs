@@ -70,11 +70,12 @@ public class AndroidLogBundleTests
     }
 
     [TestCase]
-    public void TestZipHoldsDeviceAndLogsWhileTheLogIsOpenForWriting()
+    public void TestLogsOnlyExportIncludesTheOpenLogAndExcludesSaves()
     {
         string user = TempDirectory(), downloads = TempDirectory();
         try
         {
+            WriteSave(user, "hero");
             Directory.CreateDirectory(Path.Combine(user, "logs"));
             Directory.CreateDirectory(Path.Combine(user, "runtime"));
             File.WriteAllText(Path.Combine(user, "runtime", "refii.toml"), "max_fps = 30\n");
@@ -87,7 +88,8 @@ public class AndroidLogBundleTests
             live.Flush();
 
             var now = new DateTime(2026, 10, 29, 9, 0, 0);
-            string first = AndroidLogBundle.Write(downloads, user, "Model: test\n", now);
+            string first = AndroidLogBundle.Write(downloads, user, "Model: test\n", now,
+                contents: AndroidLogBundle.Contents.Logs);
             string second = AndroidLogBundle.Write(downloads, user, "Model: test\n", now);
             AssertThat(Path.GetFileName(first)).IsEqual("Fable2-logs-2026-10-29_09-00-00.zip");
             AssertThat(Path.GetFileName(second)).IsEqual("Fable2-logs-2026-10-29_09-00-00-2.zip");

@@ -26,7 +26,7 @@ public partial class LauncherApp
     /// options drawer, which is no debug panel.</remarks>
     private static readonly string[] AndroidFileMenuItems =
     {
-        "Install from ISO", "Cancel installation", "", "Export logs and saves", "Export saves", "Import save", "",
+        "Install from ISO", "Cancel installation", "", "Export logs", "Export logs and saves", "Export saves", "Import save", "",
         "Show Announcements", "Show Launch Options", "Close",
     };
 
@@ -369,6 +369,8 @@ public partial class LauncherApp
                 _settingsTabs.CurrentTab = 2; RefreshDebugDrawer(); ShowSettingsDrawer(); return true;
             case "Cancel installation":
                 _phone?.CancelInstallation(); return true;
+            case "Export logs":
+                _phone?.Export(AndroidLogBundle.Contents.Logs); return true;
             case "Export saves":
                 _phone?.Export(AndroidLogBundle.Contents.Saves); return true;
             case "Export logs and saves":

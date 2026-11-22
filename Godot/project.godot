@@ -37,6 +37,7 @@ GameAssets="*res://src/Engine/Engine_GameAssets.cs"
 
 settings/profiler/max_timestamp_query_elements=4096
 file_logging/enable_file_logging=true
+file_logging/enable_file_logging.android=true
 file_logging/max_log_files=10
 
 [display]
