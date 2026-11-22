@@ -1,0 +1,112 @@
+# Where the builds are published. The builds themselves are one workflow per platform
+# (linux-x86_64.yml, linux-arm64.yml, windows-x86_64.yml, windows-arm64.yml), each with its own
+# status badge; this workflow owns the two releases they publish into.
+#
+#   tag beta-N or vN    creates the tag's DRAFT pre-release, named for the tag: beta-7 is
+#                       "Beta 7". The same tag starts every platform workflow, and each adds its
+#                       package when its build passes. Nothing is public until the draft is
+#                       reviewed and published by hand.
+#   every night         if main moved since the last nightly: moves the rolling "nightly"
+#                       pre-release to this commit (NIGHTLY DEV BUILD, dated, with its commits)
+#                       and starts every platform workflow, each replacing its own package.
+#   manual run          the nightly, whether or not main moved.
+#
+# A NEW PLATFORM is one more workflow file calling the shared steps, and one more line in
+# PLATFORM_WORKFLOWS below.
+name: Releases
+
+on:
+  push:
+    tags: ['beta-*', 'v*']
+  schedule:
+    # 03:00 UTC. A schedule runs on the default branch only.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PLATFORM_WORKFLOWS: linux-x86_64.yml linux-arm64.yml windows-x86_64.yml windows-arm64.yml
+
+jobs:
+  draft:
+    name: Draft release for the tag
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            beta-*) title="Beta ${TAG#beta-}" ;;
+            *)      title="$TAG" ;;
+          esac
+          if gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "$TAG already has a release; the platform builds add their packages to it."
+            exit 0
+          fi
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --verify-tag --draft --prerelease \
+            --title "$title" \
+            --notes "$title, built from ${GITHUB_SHA::9}. Release configuration. Each platform's package is added when its build passes."
+
+  # The nightly dev build: one rolling pre-release under the tag "nightly", titled so it cannot
+  # be taken for a beta. A platform whose build fails keeps its previous package.
+  nightly:
+    name: Nightly dev build
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move the nightly pre-release to this commit and start the platform builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          last=$(gh api "repos/$REPO/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          echo "nightly tag: ${last:-none}, head: $GITHUB_SHA"
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$last" = "$GITHUB_SHA" ]; then
+            echo "main has not moved since the last nightly; nothing to build."
+            exit 0
+          fi
+
+          {
+            echo "**Nightly dev build, not a release.** Built from \`${GITHUB_SHA::9}\` on $(date -u +%Y-%m-%d). Untested beyond the automated checks; expect breakage. Betas are the numbered releases."
+            echo
+            echo "Each platform's package is replaced when its own build passes, so a package's date says which night it is from."
+            echo
+            echo "Changes since the previous nightly:"
+            echo
+            if [ -n "$last" ] && [ "$last" != "$GITHUB_SHA" ] && git cat-file -e "$last^{commit}" 2>/dev/null; then
+              git log --no-merges --format='- %s (%h)' "$last..$GITHUB_SHA"
+            else
+              git log --no-merges --format='- %s (%h)' -n 20
+            fi
+          } > notes.md
+          title="Nightly dev build $(date -u +%Y-%m-%d) (${GITHUB_SHA::9})"
+
+          # The pre-release is kept and moved, never deleted: the previous packages stay
+          # downloadable until each platform's new one replaces it.
+          if gh release view nightly --repo "$REPO" > /dev/null 2>&1; then
+            gh api -X PATCH "repos/$REPO/git/refs/tags/nightly" -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release edit nightly --repo "$REPO" --prerelease --title "$title" --notes-file notes.md
+          else
+            gh release create nightly --repo "$REPO" --target "$GITHUB_SHA" --prerelease \
+              --title "$title" --notes-file notes.md
+          fi
+
+          for workflow in $PLATFORM_WORKFLOWS; do
+            gh workflow run "$workflow" --repo "$REPO" --ref "${{ github.ref_name }}" -f publish=true
+          done

@@ -1,0 +1,58 @@
+# Publishes one platform's package, shared by every platform workflow.
+#
+#   a tag (beta-N, vN)   the package joins the tag's DRAFT release, which releases.yml created
+#                        when the tag was pushed
+#   otherwise            the package replaces this platform's package in the rolling "nightly"
+#                        pre-release
+#
+# Each platform publishes its own package when its own build passes, so one platform failing
+# holds back only itself: the release keeps that platform's previous package (nightly) or lacks
+# it (a draft) until its workflow is re-run.
+name: Publish package (shared steps)
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: The run artifact holding the package
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: packages
+
+      - name: Add the package to the tag's draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # releases.yml creates the draft within a minute of the tag; a build takes far longer.
+          gh release view "$TAG" --repo "${{ github.repository }}" > /dev/null
+          gh release upload "$TAG" packages/*.zip --repo "${{ github.repository }}" --clobber
+
+      - name: Replace this platform's package in the nightly pre-release
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The nightly run of releases.yml has already moved the pre-release to this commit. A
+          # platform run by hand before any nightly exists makes the pre-release itself.
+          if ! gh release view nightly --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            gh release create nightly \
+              --repo "${{ github.repository }}" \
+              --target "$GITHUB_SHA" --prerelease \
+              --title "Nightly dev build $(date -u +%Y-%m-%d) (${GITHUB_SHA::9})" \
+              --notes "**Nightly dev build, not a release.** Untested beyond the automated checks; expect breakage. Betas are the numbered releases."
+          fi
+          gh release upload nightly packages/*.zip --repo "${{ github.repository }}" --clobber

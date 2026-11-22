@@ -244,6 +244,21 @@ public class ReleaseUpdatesTests
         AssertThat(GitHubApi.DescribeFailure(404, "", "")).Contains("404");
     }
 
+    [TestCase]
+    public void ACommitTitleGivesUpThePullRequestGitHubAppended()
+    {
+        AssertThat(GitHubApi.SplitPullRequest("Enhance AO with unified Forward+ (#27)", out string pr)).IsEqual("Enhance AO with unified Forward+");
+        AssertThat(pr).IsEqual("27");
+
+        // Only a trailing number in that form is a pull request.
+        AssertThat(GitHubApi.SplitPullRequest("Fix the map (again)", out pr)).IsEqual("Fix the map (again)");
+        AssertThat(pr).IsEqual(string.Empty);
+        AssertThat(GitHubApi.SplitPullRequest("Close (#12) early", out pr)).IsEqual("Close (#12) early");
+        AssertThat(pr).IsEqual(string.Empty);
+        AssertThat(GitHubApi.SplitPullRequest("(#5)", out pr)).IsEqual("(#5)");
+        AssertThat(pr).IsEqual(string.Empty);
+    }
+
     private static string Package(string directory, string name, params (string Path, string Text)[] files)
     {
         string path = Path.Combine(directory, name);

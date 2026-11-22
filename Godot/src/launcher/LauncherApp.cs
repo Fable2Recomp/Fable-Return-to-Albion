@@ -57,6 +57,8 @@ public partial class LauncherApp : Control
 	private bool _contributorsLoading = true;
 	private bool _contributorsLoaded;
 	private List<GitContributor> _contributors = new();
+	private readonly LauncherNews _news = new();
+	private string _infoBodyMadeFrom = string.Empty;
 
 	/// <summary>
 	/// Everything derived from the player's game — data, game code, classic shaders, modernized
@@ -129,6 +131,8 @@ public partial class LauncherApp : Control
 	private ReinstallPanel _reinstallPanel = null!;
 	private SavesPanel _savesPanel = null!;
 	private UpdatePanel _updatePanel = null!;
+	private Panel? _updateTabDot;
+	private Panel? _updateEdgeDot;
 	private GameLaunchDock? _launchDock;
 	private Refii.Core.Engine_Title _selectedManageTitle = Refii.Core.Engine_Title.Fable2;
 	private bool _lastPipelineStripVisible;
@@ -1089,13 +1093,18 @@ public partial class LauncherApp : Control
 		_artCredit.AddThemeConstantOverride("shadow_offset_x", 1);
 
 		// Announcements Drawer (Left Side):
+		// As solid as the settings drawer: the art behind a see-through card fights its text.
 		StyleBoxFlat infoBox = GlassCard();
+		infoBox.BgColor = LauncherTokens.ParchmentGlassStrong;
 		infoBox.ContentMarginLeft = LauncherTokens.Sp6;
 		infoBox.ContentMarginRight = LauncherTokens.Sp6;
 		infoBox.ContentMarginTop = LauncherTokens.Sp4;
 		infoBox.ContentMarginBottom = LauncherTokens.Sp6;
 		_infoPanel.AddThemeStyleboxOverride("panel", infoBox);
-		_infoPanel.Visible = true; // Open by default (left side)
+		// Closed until asked for (its edge tab, or File > Show Announcements). A phone's
+		// launcher is its drawers, and keeps them open.
+		bool drawersOpen = _phone != null;
+		_infoPanel.Visible = drawersOpen;
 
 		_drawerClose.MouseDefaultCursorShape = CursorShape.PointingHand;
 		_drawerClose.AddThemeColorOverride("font_color", LauncherTokens.SepiaInk);
@@ -1132,7 +1141,7 @@ public partial class LauncherApp : Control
 		_infoBody.AddThemeColorOverride("default_color", _infoStyle.Text);
 		_infoBody.AddThemeConstantOverride("line_separation", 5);
 
-		// Complete Debug & System Drawer (Settings, Modding, Reinstall) - Default Open:
+		// Complete Debug & System Drawer (Settings, Modding, Install, Saves, Updates):
 		var settingsBox = new StyleBoxFlat { BgColor = LauncherTokens.ParchmentGlassStrong };
 		settingsBox.BorderColor = new Color(LauncherTokens.Gold, 0.55f);
 		settingsBox.SetBorderWidthAll(1);
@@ -1145,7 +1154,7 @@ public partial class LauncherApp : Control
 		settingsBox.ContentMarginTop = LauncherTokens.Sp4;
 		settingsBox.ContentMarginBottom = LauncherTokens.Sp6;
 		_settingsDrawer.AddThemeStyleboxOverride("panel", settingsBox);
-		_settingsDrawer.Visible = true; // Open by default (right side)
+		_settingsDrawer.Visible = drawersOpen;
 
 		_settingsTitle.AddThemeColorOverride("font_color", _infoStyle.Text);
 		var settingsRule = new StyleBoxFlat { BgColor = new Color(0, 0, 0, 0) };
@@ -1176,8 +1185,9 @@ public partial class LauncherApp : Control
 		StyleTab(_settingsTab, "⚙", rightSide: true);
 		_infoTab.Pressed += ToggleInfoDrawer;
 		_settingsTab.Pressed += ToggleSettingsDrawer;
-		_infoTab.Visible = false; // hidden while info drawer is open
-		_settingsTab.Visible = false; // hidden while debug drawer is open
+		// Each is hidden while its drawer is open.
+		_infoTab.Visible = !_infoPanel.Visible;
+		_settingsTab.Visible = !_settingsDrawer.Visible;
 
 		_moddingPanel.SetTitle(_selectedManageTitle);
 		_reinstallPanel.SetTitle(_selectedManageTitle);
@@ -1676,6 +1686,7 @@ public partial class LauncherApp : Control
 		_settingsDrawerBasePos = layout.SettingsPos;
 		_settingsDrawer.Position = _settingsDrawerBasePos;
 		_settingsDrawer.Size = layout.SettingsSize;
+		RefreshUpdateDots();
 	}
 
 	/// <summary>Hide the info drawer (slides LEFT, off the left edge) and reveal
@@ -1770,6 +1781,7 @@ public partial class LauncherApp : Control
 	{
 		if (_phone != null) { RefreshAndroidState(); return; }
 
+		RefreshUpdateDots();
 		bool installedBuildExists = Installer.InstalledBuildExists();
 		// An update never stands in for Play: it is offered beside it (the Updates tab, and a
 		// question when one is found), so a player can always start the build they have.
@@ -1958,6 +1970,58 @@ public partial class LauncherApp : Control
 	}
 
 	/// <summary>Shows shared launch settings or platform installation controls.</summary>
+	/// <summary>A small red dot: there is a newer build on the player's channel.</summary>
+	private static Panel UpdateDot()
+	{
+		var dot = new Panel { MouseFilter = MouseFilterEnum.Ignore, Visible = false };
+		var fill = new StyleBoxFlat { BgColor = new Color("#c62828") };
+		fill.SetCornerRadiusAll(64);
+		fill.BorderColor = new Color(LauncherTokens.ParchmentLit, 0.9f);
+		fill.SetBorderWidthAll(1);
+		dot.AddThemeStyleboxOverride("panel", fill);
+		return dot;
+	}
+
+	/// <summary>
+	/// Shows the dot while <see cref="UpdateChecker.UpdateAvailable"/>: above the end of the
+	/// Updates tab's name, and on the drawer's edge tab, which is all there is to see of the
+	/// drawer while it is closed.
+	/// </summary>
+	private void RefreshUpdateDots()
+	{
+		int tab = Array.IndexOf(DebugTabs, "Updates");
+		if (tab < 0 || _settingsTabs is null || tab >= _settingsTabs.TabCount)
+		{
+			return;
+		}
+
+		if (_updateTabDot is null)
+		{
+			_updateTabDot = UpdateDot();
+			_settingsTabs.AddChild(_updateTabDot);
+			// The bar lays its tabs out when it draws: the name's place is only known then, and
+			// not at all while the drawer is closed.
+			_settingsTabs.Draw += RefreshUpdateDots;
+			_updateEdgeDot = UpdateDot();
+			_settingsTab.AddChild(_updateEdgeDot);
+		}
+
+		bool show = _updates.UpdateAvailable && _downloadProgress is null;
+		_updateTabDot.Visible = show;
+		_updateEdgeDot!.Visible = show;
+		if (!show)
+		{
+			return;
+		}
+
+		float side = LauncherScale.Px(9.0f);
+		Rect2 name = _settingsTabs.GetTabRect(tab);
+		_updateTabDot.Size = new Vector2(side, side);
+		_updateTabDot.Position = new Vector2(name.End.X - LauncherScale.Px(8.0f), name.Position.Y);
+		_updateEdgeDot.Size = new Vector2(side, side);
+		_updateEdgeDot.Position = new Vector2(-side * 0.5f, LauncherScale.Px(6.0f));
+	}
+
 	private void RefreshDebugDrawer()
 	{
 		if (RefreshAndroidDrawer()) return;
@@ -2020,89 +2084,85 @@ public partial class LauncherApp : Control
 		{
 			return;
 		}
-		if (ShowAndroidInstallationLog()) return;
+		if (ShowAndroidInstallationLog()) { _infoBodyMadeFrom = string.Empty; return; }
 
 		if (_infoTabList.Count == 0)
 		{
 			_infoBody.Text = string.Empty;
+			_infoBodyMadeFrom = string.Empty;
 			return;
 		}
 
 		LauncherInfoTab tab = _infoTabList[Mathf.Clamp(_infoTabs.CurrentTab, 0, _infoTabList.Count - 1)];
-		_infoBody.Text = tab.Source switch
+
+		// The pages are written call by call, which the label cannot tell from a change: what a
+		// page is made from is compared here, so a refresh that changes nothing leaves the
+		// player's place in it alone.
+		string made = string.Join('|', _infoTabs.CurrentTab, tab.Source, LauncherScale.Font(100),
+			_commitsLoading, _commitsLoaded, _commits.Count,
+			_contributorsLoading, _contributorsLoaded, _contributors.Count, _news.AvatarGeneration);
+		if (made == _infoBodyMadeFrom)
 		{
-			LauncherInfoSource.ProjectChangeLog => BuildChangeLogText(),
-			LauncherInfoSource.ProjectContributors => BuildCreditsText(),
-			_ => tab.Text,
-		};
+			return;
+		}
+
+		_infoBodyMadeFrom = made;
+		switch (tab.Source)
+		{
+			case LauncherInfoSource.ProjectChangeLog:
+				WriteChangeLog();
+				break;
+
+			case LauncherInfoSource.ProjectContributors:
+				WriteCredits();
+				break;
+
+			default:
+				_infoBody.Text = tab.Text;
+				break;
+		}
 	}
 
-	private string BuildChangeLogText()
+	private const string GitHubRetry = "Check your connection, or reopen the launcher.";
+
+	private void WriteChangeLog()
 	{
 		if (_commitsLoading)
 		{
-			return "[color=#8c7b6b]Fetching latest updates from GitHub...[/color]";
+			LauncherNews.WriteNotice(_infoBody, "Fetching the latest changes from GitHub...", string.Empty, failed: false);
 		}
-
-		if (!_commitsLoaded)
+		else if (!_commitsLoaded)
 		{
-			return "[color=#900c3f]Failed to load news from GitHub.[/color]\n" +
-				   "[color=#8c7b6b]Check network connection or relaunch the launcher.[/color]";
+			LauncherNews.WriteNotice(_infoBody, "The change log could not be loaded from GitHub.", GitHubRetry, failed: true);
 		}
-
-		if (_commits.Count == 0)
+		else if (_commits.Count == 0)
 		{
-			return "[color=#8c7b6b]No commits found for this repository.[/color]";
+			LauncherNews.WriteNotice(_infoBody, "No changes are listed for this project yet.", string.Empty, failed: false);
 		}
-
-		var builder = new System.Text.StringBuilder();
-		builder.Append("[color=#daa520][font_size=16]Latest Recomp Developments[/font_size][/color]\n\n");
-		foreach (GitCommit commit in _commits)
+		else
 		{
-			builder.Append("[color=#2b221b][b]• ").Append(commit.Message).Append("[/b][/color]\n");
-			builder.Append("[color=#8c7b6b][font_size=11]   commit [color=#daa520]").Append(commit.Sha).Append("[/color] by ").Append(commit.Author);
-			if (!string.IsNullOrEmpty(commit.Date))
-			{
-				builder.Append(" on ").Append(commit.Date);
-			}
-			builder.Append("[/font_size][/color]\n\n");
+			LauncherNews.WriteChangeLog(_infoBody, _commits);
 		}
-
-		return builder.ToString().TrimEnd();
 	}
 
-	private string BuildCreditsText()
+	private void WriteCredits()
 	{
 		if (_contributorsLoading)
 		{
-			return "[color=#8c7b6b]Loading contributors from GitHub...[/color]";
+			LauncherNews.WriteNotice(_infoBody, "Loading the contributors from GitHub...", string.Empty, failed: false);
 		}
-
-		if (!_contributorsLoaded)
+		else if (!_contributorsLoaded)
 		{
-			return "[color=#900c3f]Failed to load contributors from GitHub.[/color]\n" +
-				   "[color=#8c7b6b]Check network connection or relaunch the launcher.[/color]";
+			LauncherNews.WriteNotice(_infoBody, "The contributors could not be loaded from GitHub.", GitHubRetry, failed: true);
 		}
-
-		if (_contributors.Count == 0)
+		else if (_contributors.Count == 0)
 		{
-			return "[color=#8c7b6b]No contributors found for this repository.[/color]";
+			LauncherNews.WriteNotice(_infoBody, "No contributors are listed for this project yet.", string.Empty, failed: false);
 		}
-
-		var builder = new System.Text.StringBuilder();
-		builder.Append("[color=#daa520][font_size=16]Heroes of the Guild (Contributors)[/font_size][/color]\n");
-		builder.Append("[color=#8c7b6b][font_size=12]").Append(_contributors.Count).Append(" developers and modders[/font_size][/color]\n\n");
-		foreach (GitContributor contributor in _contributors)
+		else
 		{
-			builder.Append("[color=#2b221b][b]@").Append(contributor.Login).Append("[/b][/color]");
-			if (contributor.Name.Length != 0)
-			{
-				builder.Append(" [color=#8c7b6b](").Append(contributor.Name).Append(")[/color]");
-			}
-			builder.Append(" [color=#daa520]•[/color] [color=#8c7b6b]").Append(contributor.Contributions).Append(" contributions[/color]\n");
+			_news.WriteCredits(_infoBody, _contributors);
 		}
-
-		return builder.ToString().TrimEnd();
 	}
 
 	private async void InitPatches()
@@ -2141,6 +2201,8 @@ public partial class LauncherApp : Control
 		_contributorsLoaded = contributors is not null;
 		_contributorsLoading = false;
 		CallDeferred(nameof(RefreshInfoBody));
+
+		await _news.LoadAvatarsAsync(_contributors, RefreshInfoBody);
 	}
 
 	/// <summary>Handles primary button clicks on a specific card in <see cref="GameLaunchDock"/>.</summary>

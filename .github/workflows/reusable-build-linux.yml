@@ -1,0 +1,113 @@
+# The Linux build, shared by the per-architecture workflows (linux-x86_64.yml, linux-arm64.yml).
+# Builds natively on a runner of the stated architecture, in the stated CMake preset, and leaves
+# the package as the run artifact named by `artifact`. See releases.yml for how builds publish.
+name: Build Linux (shared steps)
+
+on:
+  workflow_call:
+    inputs:
+      arch:
+        description: x86_64 or arm64
+        type: string
+        required: true
+      runner:
+        type: string
+        required: true
+      preset:
+        description: The CMake preset to configure and build
+        type: string
+        required: true
+      artifact:
+        description: The name the package is uploaded under
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# The unit and feature tests are a developer's gate, run by every local build; here they are
+# skipped, so every cold runner does not spend its time on the same suite.
+env:
+  REFII_NO_TESTS: '1'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 180
+    steps:
+      # The whole checkout takes about three minutes; a runner that stops answering in it
+      # (seen on windows-11-arm) fails here instead of holding the job for hours.
+      - uses: actions/checkout@v4
+        timeout-minutes: 15
+        with:
+          submodules: recursive
+
+      - name: Free disk space
+        # The build tree runs to gigabytes before the package; the image's preinstalled SDKs are not used.
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/swift /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Install Clang 20 and build dependencies
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 20
+          rm llvm.sh
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build pkg-config python3 \
+            libx11-dev libx11-xcb-dev libxcb1-dev libwayland-dev libvulkan-dev \
+            xvfb mesa-vulkan-drivers libvulkan1 \
+            libxcursor1 libxinerama1 libxrandr2 libxi6 libxkbcommon0 libfontconfig1 libgl1
+          clang-20 --version
+          cmake --version
+
+      # The projects target net8.0 with LangVersion latest: the 10 SDK compiles them (it is what
+      # the tree is developed with) and the 8 runtime runs the tests.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The build uses ccache on its own when it is on PATH (cmake/refii_compiler_cache.cmake).
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ inputs.preset }}
+          max-size: 2G
+
+      # Godot, its export templates and Zig are fetched into tools/cache on first configure.
+      - name: Cache fetched tools
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tools-linux-${{ inputs.arch }}-${{ hashFiles('cmake/refii_fetch_godot.cmake', 'cmake/refii_fetch_zig.cmake') }}
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-linux-${{ inputs.arch }}-${{ hashFiles('rexglue-net/rexglue-sdk/src/rexnet/core/Cargo.lock') }}
+          restore-keys: cargo-linux-${{ inputs.arch }}-
+
+      - name: Configure
+        run: cmake --preset "${{ inputs.preset }}"
+
+      # Under a virtual display, with Mesa's software Vulkan: packaging compiles every shader
+      # first (refii_shader_check), and that runs Godot with a real rendering driver — headless
+      # uses the dummy renderer, which passes a shader that cannot compile.
+      - name: Build, test and package
+        run: xvfb-run -a cmake --build --preset "${{ inputs.preset }}"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: out/package/*.zip
+          if-no-files-found: error
+          retention-days: 14

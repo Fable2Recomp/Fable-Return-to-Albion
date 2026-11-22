@@ -18,6 +18,7 @@ public readonly struct LauncherLayout
 	public const float BaseDualDockHeight = 114.0f;
 	public const float BaseDualDockPipelineHeight = 166.0f;
 	public const float BasePanelPadding = 24.0f;
+	public const float BaseInfoHeight = 440.0f;
 	public const float BasePanelTopClearance = 56.0f;
 
 	private static float ClampFloat(float value, float minimum, float maximum) =>
@@ -86,14 +87,16 @@ public readonly struct LauncherLayout
 			actionPos.Y - warningHeight - LauncherScale.Px(12.0f));
 
 		// Info / News card on the LEFT (Changelog, Credits, About):
-		// Compact card anchored just above the warning pill (clearing the art credit line).
+		// A card anchored just above the warning pill (clearing the art credit line).
 		float infoWidth = ClampFloat(
 			viewportWidth * 0.38f, LauncherScale.Px(400.0f), LauncherScale.Px(500.0f));
 		float infoBottomLimit = warningPos.Y - LauncherScale.Px(36.0f);
 		float headerFloor = viewportPos.Y + menuBarHeight + LauncherScale.Px(24.0f);
 		float maxInfoHeight = Mathf.Max(LauncherScale.Px(150.0f), infoBottomLimit - headerFloor);
+		// Tall enough for four commits or eight contributors without scrolling, where the
+		// window has the room.
 		float infoHeight = Mathf.Clamp(
-			LauncherScale.Px(260.0f),
+			LauncherScale.Px(BaseInfoHeight),
 			Mathf.Min(LauncherScale.Px(180.0f), maxInfoHeight),
 			maxInfoHeight);
 

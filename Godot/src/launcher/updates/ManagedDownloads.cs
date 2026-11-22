@@ -36,7 +36,7 @@ public sealed record ReleaseBuild(
 
 /// <summary>
 /// THE UPDATE'S CONTRACT. The project publishes its builds as GitHub releases: numbered betas, and
-/// one rolling pre-release under the tag <c>nightly</c> (.github/workflows/build.yml), each
+/// one rolling pre-release under the tag <c>nightly</c> (.github/workflows/releases.yml), each
 /// carrying one package per platform named <c>&lt;app&gt;-&lt;platform&gt;-&lt;arch&gt;.zip</c>.
 /// The player picks a channel; the launcher takes that channel's newest build for this machine
 /// and extracts it over the install (<see cref="Refii.Launcher.Updates.ReleaseInstaller"/>).
