@@ -116,12 +116,15 @@ public static class Engine_UiDetailPages
 	/// </summary>
 	public static IReadOnlyDictionary<string, Godot.Vector3> Positions(
 		uint screenId, Refii.Host.HostBridge.OptionSliders sliders,
-		Engine_UiExpandableMenu.Item? row = null)
+		Engine_UiExpandableMenu.Item? row = null,
+		Refii.Host.HostBridge.HeroDerived hero = default)
 	{
 		// The row reaches the placements too: the options provider pins the picked page's
 		// contents by it (without it every page pinned Page1 and the Controls/Video/Audio
 		// pages stayed parked at x 430 / −400, off the leaf), the logbook its subject page.
-		Engine_UiPageContext page = Row(screenId, row) with { Sliders = sliders };
+		// The derived sample too: the logbook places its alignment and attractiveness pips by
+		// it, and without it they stay at the authored centre of their bars.
+		Engine_UiPageContext page = Row(screenId, row) with { Sliders = sliders, Hero = hero };
 		IReadOnlyDictionary<string, Godot.Vector3> stated =
 			Provider(screenId)?.Positions(page) ?? Engine_UiPageProviders.NoPositions;
 

@@ -1841,7 +1841,7 @@ public partial class GameUi : Node, IGameTitleUi
 				abilityBook.HostTextures =
 					Engine_UiDetailPages.Textures(state.ScreenId, _screenMenu?.Script.Highlighted);
 				abilityBook.HostPositions =
-					Engine_UiDetailPages.Positions(state.ScreenId, sliders, _screenMenu?.Script.Highlighted);
+					Engine_UiDetailPages.Positions(state.ScreenId, sliders, _screenMenu?.Script.Highlighted, hero);
 				abilityBook.HostActive =
 					Engine_UiDetailPages.Active(state.ScreenId, _screenMenu?.Script.Highlighted);
 				// The opacity claims ride here too: this path marks the frame filled, so the owned
