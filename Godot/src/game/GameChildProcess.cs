@@ -197,8 +197,16 @@ public static class GameChildProcess
 	/// <summary>Maximum staging buffer size in megabytes for upload pacing on unified memory GPUs.</summary>
 	public const int DefaultStagingBufferMaxSizeMb = 64;
 
-	/// <summary>Total D3D12 CBV/SRV/UAV descriptor heap capacity.</summary>
-	public const int DefaultD3D12MaxResourceDescriptors = 131072;
+	/// <summary>
+	/// Total D3D12 CBV/SRV/UAV descriptor heap capacity. Godot 4.7 allocates every live uniform set
+	/// from this one heap for as long as the set lives; when it is full, sets fail to create and the
+	/// release renderer faults drawing with a null one. 1,000,000 is the most a shader-visible heap
+	/// may hold on resource binding tier 1 and 2 hardware, so it is also the ceiling for an override.
+	/// </summary>
+	public const int DefaultD3D12MaxResourceDescriptors = MaxD3D12ResourceDescriptors;
+
+	/// <summary>Direct3D 12's shader-visible CBV/SRV/UAV heap limit on resource binding tiers 1 and 2.</summary>
+	public const int MaxD3D12ResourceDescriptors = 1000000;
 
 	/// <summary>Per-frame D3D12 CBV/SRV/UAV descriptor ring budget.</summary>
 	public const int DefaultD3D12MaxResourceDescriptorsPerFrame = 65536;
@@ -246,7 +254,7 @@ public static class GameChildProcess
 				? forcedLightingModel
 				: Refii.Core.Engine_RefiiConfig.String(config, "lighting_model", "modern"));
 		int maxResDesc = ReadPositiveIntOverride(
-			"REFII_D3D12_MAX_RESOURCE_DESCRIPTORS", DefaultD3D12MaxResourceDescriptors, 16384, 1048576);
+			"REFII_D3D12_MAX_RESOURCE_DESCRIPTORS", DefaultD3D12MaxResourceDescriptors, 16384, MaxD3D12ResourceDescriptors);
 		int maxResDescPerFrame = ReadPositiveIntOverride(
 			"REFII_D3D12_MAX_RESOURCE_DESCRIPTORS_PER_FRAME", DefaultD3D12MaxResourceDescriptorsPerFrame, 8192, maxResDesc);
 
