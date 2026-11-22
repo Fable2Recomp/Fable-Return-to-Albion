@@ -8678,7 +8678,10 @@ bool DispatchMenuEvent(PPCContext& ctx, uint8_t* base, const std::string& name, 
   // The screen's own handler, called with the event. The guest's Lua event queue
   // (`guieventqueue.lua`, drained by `sub_82370450`) is cut with the rest of its UI Lua, so a
   // class this build cannot call is reported, not pushed.
-  if (!DispatchMenuEventDirect(ctx, base, name, type, id)) {
+  refii::vfs::SetDispatchedRow(name, static_cast<int32_t>(type), static_cast<int32_t>(id));
+  const bool delivered = DispatchMenuEventDirect(ctx, base, name, type, id);
+  refii::vfs::ClearDispatchedRow();
+  if (!delivered) {
     REXLOG_INFO("Refii guest-tick pump: MenuEvent '{}' type={} id=0x{:08X} has no handler this "
                 "build calls — not delivered",
                 name, type, id);

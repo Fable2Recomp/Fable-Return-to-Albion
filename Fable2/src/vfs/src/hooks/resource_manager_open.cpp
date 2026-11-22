@@ -188,8 +188,12 @@ REX_EXTERN(rex_lhGui_RunLuaString) {
         chunk.find("g_Menu:RenameSelectedButton") != std::string::npos ||
         chunk.find("g_Menu:PushMenuState") != std::string::npos;
     std::string highlighted;
-    if (names_selected && refii::vfs::StatedHighlightName(base, &highlighted)) {
+    int32_t highlighted_id = 0;
+    if (names_selected && refii::vfs::StatedHighlightName(base, &highlighted, &highlighted_id)) {
       refii::vfs::StageMenuAttribute(refii::vfs::kHighlightedAttribute, highlighted, 0.0f,
+                                     /*is_number=*/false);
+      refii::vfs::StageMenuAttribute(refii::vfs::kHighlightedIdAttribute,
+                                     std::to_string(static_cast<uint32_t>(highlighted_id)), 0.0f,
                                      /*is_number=*/false);
     }
 

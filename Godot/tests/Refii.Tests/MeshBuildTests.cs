@@ -347,6 +347,41 @@ public class MeshBuildTests
 		AssertThat(none!.HasMeta(Engine_MdlTransfer.SurfaceDescriptorsMeta)).IsFalse();
 	}
 
+	/// <summary>
+	/// A composite reads a morphed part through its record, so the record must hold the moved
+	/// vertices: with the part's own metadata copied over it, every target was listed and nothing
+	/// moved (the hero's horns stayed inside the head).
+	/// </summary>
+	[TestCase]
+	[RequireGodotRuntime]
+	public void AMorphedPartRecordsItsMovedVertices()
+	{
+		static ArrayMesh Triangle(Vector3 apex)
+		{
+			var mesh = new ArrayMesh();
+			var arrays = new Godot.Collections.Array();
+			arrays.Resize((int)Mesh.ArrayType.Max);
+			arrays[(int)Mesh.ArrayType.Vertex] = new[] { Vector3.Zero, Vector3.Right, apex };
+			arrays[(int)Mesh.ArrayType.Index] = new[] { 0, 1, 2 };
+			Engine_MdlSurfaceArrays.Add(mesh, Mesh.PrimitiveType.Triangles, arrays, null);
+			return mesh;
+		}
+
+		ArrayMesh own = Triangle(Vector3.Up);
+		own.SetMeta("mdl_marker", 7);
+		ArrayMesh target = Triangle(Vector3.Up * 3f);
+
+		ArrayMesh blended = Refii.Hero.Engine_HeroMorph.Blend(own, new[] { (target, 1f) });
+
+		AssertThat(ReferenceEquals(blended, own)).IsFalse();
+		Vector3[] moved = Engine_MdlSurfaceArrays.Of(blended, 0)[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+		AssertThat(moved[2].Y).IsEqual(3f);
+		// The part's own record is untouched, and its other metadata still crosses.
+		Vector3[] kept = Engine_MdlSurfaceArrays.Of(own, 0)[(int)Mesh.ArrayType.Vertex].AsVector3Array();
+		AssertThat(kept[2].Y).IsEqual(1f);
+		AssertThat(blended.GetMeta("mdl_marker").AsInt32()).IsEqual(7);
+	}
+
 	[TestCase]
 	[RequireGodotRuntime]
 	public void ALevelTableIsTheOneTheDictionaryWouldGive()

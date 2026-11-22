@@ -23,7 +23,7 @@ public static partial class HostBridge
 	/// ABI this binding expects; bump together with the native `RefiiHostBridgeAbiVersion`.
 	/// The check is exact and `GameSession` treats a mismatch as fatal before the guest initialises.
 	/// </summary>
-	public const int ExpectedAbiVersion = 247;
+	public const int ExpectedAbiVersion = 248;
 
 	[DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
 	private static extern uint RefiiHostGetSaveRoot(byte[] output, uint capacity);
@@ -100,6 +100,34 @@ public static partial class HostBridge
 	}
 
 	private static int? _rawAbiVersion;
+
+	/// <summary>
+	/// Hands one error Godot reported to the bridge, which writes the last of them into a crash
+	/// record. Any thread; a no-op while the bridge is missing or of another ABI.
+	/// </summary>
+	public static void NoteEngineError(string text)
+	{
+		if (TryGetRawAbiVersion() != ExpectedAbiVersion)
+		{
+			return;
+		}
+
+		RefiiHostNoteEngineError(text);
+	}
+
+	/// <summary>
+	/// States Godot's own condition to the bridge in one line, replacing the last; a crash
+	/// record carries it. A no-op while the bridge is missing or of another ABI.
+	/// </summary>
+	public static void NoteEngineState(string text)
+	{
+		if (TryGetRawAbiVersion() != ExpectedAbiVersion)
+		{
+			return;
+		}
+
+		RefiiHostNoteEngineState(text);
+	}
 
 	/// <summary>Outcome of <see cref="ProbeGuestMemory"/>.</summary>
 	public readonly struct ProbeResult
@@ -9228,6 +9256,14 @@ public static partial class HostBridge
 	[DllImport(Library)]
 	private static extern void RefiiHostSetLogDirectory(
 		[MarshalAs(UnmanagedType.LPUTF8Str)] string path);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostNoteEngineError(
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string text);
+
+	[DllImport(Library)]
+	private static extern void RefiiHostNoteEngineState(
+		[MarshalAs(UnmanagedType.LPUTF8Str)] string text);
 
 	[DllImport(Library)]
 	private static extern int RefiiHostInitialize(

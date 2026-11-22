@@ -271,7 +271,7 @@ public sealed class Engine_UiMenuTemplate
 			}
 		}
 
-		if (SameNames(current, rows))
+		if (SameRows(current, rows))
 		{
 			// THE SAME ROWS, restated in place — re-emphasised (the world map's primary quest
 			// moving after `SetAsPrimary`), relabelled (an ability's rank in its name, a shop
@@ -292,6 +292,14 @@ public sealed class Engine_UiMenuTemplate
 					// primary quest moving are emphasis alone, and unreported they waited for the
 					// list to be rebuilt — on leaving the menu.
 					current[i].Emphasis = wanted;
+					restated = true;
+				}
+
+				// A row renamed in place (same id): the name is what a commit and the stated
+				// highlight carry, so it follows the source.
+				if (!string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal))
+				{
+					current[i].Name = rows[i].Name;
 					restated = true;
 				}
 
@@ -475,7 +483,14 @@ public sealed class Engine_UiMenuTemplate
 	}
 
 	/// <summary>The same rows in the same order, by NAME: everything else a row states is restated in place.</summary>
-	private static bool SameNames(
+	/// <summary>
+	/// Whether the source states the SAME ROWS the list stands on, in order: each by its name, or
+	/// by its id where the name alone moved. A row the guest renames in place is still that row —
+	/// the shop names one it sold out `SOLD` (`sub_826B0B90`, 0x826b0ca4) under its own ticket —
+	/// and treating the rename as a new row set respawned the whole group on every sale, which
+	/// ran the view's arrival and left the list a row off its cursor until the next move.
+	/// </summary>
+	private static bool SameRows(
 		List<Engine_UiExpandableMenu.Item> current,
 		IReadOnlyList<Engine_UiMenuSources.Row> rows)
 	{
@@ -486,7 +501,13 @@ public sealed class Engine_UiMenuTemplate
 
 		for (int i = 0; i < rows.Count; ++i)
 		{
-			if (!string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal))
+			if (string.Equals(current[i].Name, rows[i].Name, System.StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			if (rows[i].Id == 0u || current[i].EventType != rows[i].EventType ||
+				!Engine_UiScreenMenu.RowId(current[i], out uint id) || id != rows[i].Id)
 			{
 				return false;
 			}

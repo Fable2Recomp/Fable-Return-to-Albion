@@ -3161,6 +3161,82 @@ public static class GameCodeBuild
 			? new[] { "-target", "aarch64-windows-gnu" }
 			: Array.Empty<string>();
 
+	/// <summary>
+	/// The CPU every unit and the precompiled header are compiled for on ARM64 Linux, stated
+	/// once: zig detects the host CPU from the core the compiler happens to start on, so on a
+	/// machine with mixed cores (Cortex-X4 beside Cortex-A720) the header and a unit can name
+	/// different CPUs, and clang refuses the header. Empty where a target is stated
+	/// (<see cref="TargetFlags"/>), which already compiles for the generic CPU.
+	/// </summary>
+	private static readonly Lazy<string> HostArmCpu = new(() =>
+	{
+		if (RuntimeInformation.OSArchitecture != Architecture.Arm64 || !OperatingSystem.IsLinux())
+		{
+			return string.Empty;
+		}
+
+		try
+		{
+			return ArmCpuFlag(File.ReadAllText("/proc/cpuinfo"));
+		}
+		catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+		{
+			return ArmCpuFlag(string.Empty);
+		}
+	});
+
+	/// <summary>
+	/// The <c>-mcpu</c> flag for an ARM64 Linux host: the generic CPU plus the instruction sets
+	/// EVERY core in <paramref name="cpuInfo"/> (the text of <c>/proc/cpuinfo</c>) reports, so
+	/// the module runs on whichever core the scheduler picks.
+	/// </summary>
+	internal static string ArmCpuFlag(string cpuInfo)
+	{
+		HashSet<string>? common = null;
+		foreach (string line in cpuInfo.Split('\n'))
+		{
+			int colon = line.IndexOf(':');
+			if (colon < 0 || !line.AsSpan(0, colon).Trim().Equals("Features", StringComparison.OrdinalIgnoreCase))
+			{
+				continue;
+			}
+
+			var core = new HashSet<string>(
+				line[(colon + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+				StringComparer.Ordinal);
+			if (common is null)
+			{
+				common = core;
+			}
+			else
+			{
+				common.IntersectWith(core);
+			}
+		}
+
+		var flag = new StringBuilder("-mcpu=generic");
+		foreach ((string kernel, string zig) in ArmFeatures)
+		{
+			if (common is not null && common.Contains(kernel))
+			{
+				flag.Append('+').Append(zig);
+			}
+		}
+
+		return flag.ToString();
+	}
+
+	/// <summary>The kernel's name for an ARM64 instruction set, and zig's name for the same one.</summary>
+	private static readonly (string Kernel, string Zig)[] ArmFeatures =
+	{
+		("atomics", "lse"),
+		("crc32", "crc"),
+		("asimdrdm", "rdm"),
+		("asimddp", "dotprod"),
+		("aes", "aes"),
+		("sha2", "sha2"),
+	};
+
 	private static List<string> CompileFlags(IReadOnlyList<string> includeDirectories) =>
 		CompileFlags(Refii.Core.Engine_Title.Active, includeDirectories);
 
@@ -3188,6 +3264,10 @@ public static class GameCodeBuild
 			// -mfma instead would not start on a CPU without FMA3.
 			flags.Add("-march=native");
 			flags.Add("-msse4.1");
+		}
+		else if (HostArmCpu.Value is { Length: > 0 } armCpu)
+		{
+			flags.Add(armCpu);
 		}
 
 		if (UsesLargeCodeModel)

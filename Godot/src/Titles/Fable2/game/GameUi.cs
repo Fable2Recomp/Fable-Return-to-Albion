@@ -1841,7 +1841,7 @@ public partial class GameUi : Node, IGameTitleUi
 				abilityBook.HostTextures =
 					Engine_UiDetailPages.Textures(state.ScreenId, _screenMenu?.Script.Highlighted);
 				abilityBook.HostPositions =
-					Engine_UiDetailPages.Positions(state.ScreenId, sliders, _screenMenu?.Script.Highlighted);
+					Engine_UiDetailPages.Positions(state.ScreenId, sliders, _screenMenu?.Script.Highlighted, hero);
 				abilityBook.HostActive =
 					Engine_UiDetailPages.Active(state.ScreenId, _screenMenu?.Script.Highlighted);
 				// The opacity claims ride here too: this path marks the frame filled, so the owned
@@ -7503,6 +7503,10 @@ public partial class GameUi : Node, IGameTitleUi
 		}
 		_surfaces.Message.StatedDisplayBox = _boxes.GuestMessageBox;
 		Fable2Input.DisplayMessageBoxUp = _boxes.GuestMessageBox != 0u;
+		if (_fade is not null)
+		{
+			_fade.UnderUi = _boxes.GuestMessageBox != 0u || Engine_UiDisplayBoxes.Open.Count != 0;
+		}
 
 		// A stated display box freed with no Close seen would stand its surface, masking the pad,
 		// over nothing: each stated address is re-checked against its class and open byte.

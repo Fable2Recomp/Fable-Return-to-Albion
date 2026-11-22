@@ -18,6 +18,19 @@ public sealed partial class Engine_UiScreenFade : Node
 	/// <summary>Over the UI, under the loading screen. See the class note.</summary>
 	public const int LayerIndex = 7;
 
+	/// <summary>Under <c>GameUi</c>'s layer 5; where the fade sits while <see cref="UnderUi"/>.</summary>
+	public const int UnderUiLayerIndex = 4;
+
+	/// <summary>
+	/// Set while the guest has a display box up. The guest submits its fade quad BEFORE its GUI
+	/// (`sub_82278DD0`: `sub_822C7A80` at 0x82278e58, the GUI's virtuals at 0x82278e90 and
+	/// 0x82278ea8), so a box it opens on a black screen is read over the black. The sleep
+	/// bonus notice is one: `BonusContainer.ApplyBonusesToHero` queues a message box
+	/// (0x82917f1c, 0x82917f3c) between the sleep's fade out and its fade in, and over the UI
+	/// the fade left a black screen waiting for A.
+	/// </summary>
+	public bool UnderUi { get; set; }
+
 	private CanvasLayer? _layer;
 	private ColorRect? _rect;
 
@@ -82,6 +95,12 @@ public sealed partial class Engine_UiScreenFade : Node
 		}
 
 		DriveModFades();
+
+		int layer = UnderUi ? UnderUiLayerIndex : LayerIndex;
+		if (_layer is not null && _layer.Layer != layer)
+		{
+			_layer.Layer = layer;
+		}
 
 		Engine_UiModel.ScreenFade fade = Engine_UiSource.Current.GetScreenFade();
 

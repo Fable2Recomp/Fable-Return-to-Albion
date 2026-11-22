@@ -247,6 +247,19 @@ void WriteRecord(const char* line, uintptr_t pc) {
         DescribeAddress(fd, pc);
     }
     DescribeGuestThread(fd);
+    Append(fd, "  engine state: ");
+    Append(fd, RefiiEngineState());
+    Append(fd, "\n");
+    // The engine's last reported errors, newest last (RefiiNoteEngineError).
+    Append(fd, "  engine errors:\n");
+    RefiiVisitEngineErrors(
+        [](void* context, const char* text) {
+            const int out = static_cast<int>(reinterpret_cast<intptr_t>(context));
+            Append(out, "    ");
+            Append(out, text);
+            Append(out, "\n");
+        },
+        reinterpret_cast<void*>(static_cast<intptr_t>(fd)));
 #if REFII_HOST_BACKTRACE
     void* frames[64];
     const int count = refii_host_backtrace::Capture(frames, 64);

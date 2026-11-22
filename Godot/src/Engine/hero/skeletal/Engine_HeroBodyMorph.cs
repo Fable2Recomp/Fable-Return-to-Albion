@@ -208,10 +208,7 @@ public static class Engine_HeroBodyMorph
             return null;
         }
 
-        foreach (StringName meta in source.GetMetaList())
-        {
-            result.SetMeta(meta, source.GetMeta(meta));
-        }
+        Refii.Models.Engine_MdlSurfaceArrays.CopyMeta(source, result);
 
         return result;
     }

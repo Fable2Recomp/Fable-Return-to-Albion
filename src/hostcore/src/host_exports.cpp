@@ -712,7 +712,10 @@ extern "C" {
 ///     quick menu's open byte and the wheel controller's owner.
 /// 247 adds RefiiNetNetwork — the node's own view of RexNet for the dev menu's Network tab: this
 ///     peer and its shard, the shard's live members, and every peer holding a virtual address.
-REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 247; }
+/// 248 adds RefiiHostNoteEngineError and RefiiHostNoteEngineState — Godot's reported errors and
+///     its own state line, kept for the crash record, which also gains the machine's free memory
+///     and commit on Windows.
+REFII_HOST_ABI_EXPORT int RefiiHostBridgeAbiVersion(void) { return 248; }
 
 REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetSaveRoot(char* output, uint32_t capacity) {
     auto* state = rex::system::kernel_state();
@@ -1332,6 +1335,18 @@ REFII_HOST_ABI_EXPORT void RefiiHostSetConfigPath(const char* path) {
 REFII_HOST_ABI_EXPORT void RefiiHostSetLogDirectory(const char* path) {
     RefiiSetLogDirectory(path != nullptr && path[0] != '\0' ? std::filesystem::path{path}
                                                             : std::filesystem::path{});
+}
+
+/// One error the host engine reported, kept for the crash record (the last 32 distinct lines,
+/// repeats counted). Any thread, before or after RefiiHostInitialize.
+REFII_HOST_ABI_EXPORT void RefiiHostNoteEngineError(const char* text) {
+    RefiiNoteEngineError(text);
+}
+
+/// What the host engine last said of itself (adapter, graphics memory in use, window), one line,
+/// the newest replacing the last; the crash record carries it.
+REFII_HOST_ABI_EXPORT void RefiiHostNoteEngineState(const char* text) {
+    RefiiNoteEngineState(text);
 }
 
 // ---------------------------------------------------------------------------------

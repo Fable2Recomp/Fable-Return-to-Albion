@@ -65,6 +65,30 @@ public sealed class HeadlessStandTests
 		AssertThat(Engine_UiScreenMenu.JoinStatedLabels(new[] { root, child }, stated)).IsFalse();
 	}
 
+	/// <summary>
+	/// One item name under a Buy group and a Sell group: each row takes the label stated for its
+	/// own id, and a row whose id no stated row carries takes none of them.
+	/// </summary>
+	[TestCase]
+	public void StatedLabelsJoinSameNamedRowsById()
+	{
+		var buy = new Engine_UiExpandableMenu.Item("BuyItems", "TEXT_BUY");
+		var sell = new Engine_UiExpandableMenu.Item("SellItems", "TEXT_SELL");
+		var bought = new Engine_UiExpandableMenu.Item("Tuna", "TEXT_TUNA") { Parent = buy, IdLow = 676, IdHigh = 0 };
+		var sold = new Engine_UiExpandableMenu.Item("Tuna", "TEXT_TUNA") { Parent = sell, IdLow = 603, IdHigh = 0 };
+		var stranger = new Engine_UiExpandableMenu.Item("Tuna", "TEXT_TUNA") { Parent = sell, IdLow = 9, IdHigh = 0 };
+		var stated = new List<Engine_UiMenuModel.Row>
+		{
+			new() { Name = "Tuna", Parent = "BuyItems", Id = 676u, Label = "Tuna" },
+			new() { Name = "Tuna", Parent = "SellItems", Id = 603u, Label = "Tuna<exclamation.img>" },
+		};
+
+		AssertThat(Engine_UiScreenMenu.JoinStatedLabels(new[] { bought, sold, stranger }, stated)).IsTrue();
+		AssertThat(bought.StatedLabel).IsEqual("Tuna");
+		AssertThat(sold.StatedLabel).IsEqual("Tuna<exclamation.img>");
+		AssertThat(stranger.StatedLabel).IsNull();
+	}
+
 	/// <summary>The menu cycler's banner is the latest non-empty text told to its presentation.</summary>
 	[TestCase]
 	public void LatestToldTextWins()

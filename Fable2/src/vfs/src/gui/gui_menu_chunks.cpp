@@ -2,12 +2,20 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
 namespace refii::vfs {
+
+/// The spawn capture's in-place restate (core/guest_tick_pump_state.cpp).
+bool RestateCapturedMenuRow(const std::string& name, const std::string* parent, const uint32_t* id,
+                            const std::string* new_name, const std::string* new_label);
+
 namespace {
 
 /// One mutex covers both the staged bag and the completed-call queue: a stage and a run are
@@ -144,6 +152,15 @@ void NotePopulate(const MenuChunkCall& call) {
     // and `RefreshChildsButtonText` on the row `String1` names, `RefreshSelectedButtonText` only
     // when the highlighted row is that row, and `RenameSelectedButton` renames the highlighted row
     // to `String1`.
+    // The selected row's id, where the runner stated one beside its name.
+    const MenuChunkAttribute* highlighted_id = StagedNamed(call.staged, kHighlightedIdAttribute);
+    uint32_t selected_id = 0;
+    const bool has_selected_id =
+        highlighted_id != nullptr && !highlighted_id->text.empty() &&
+        std::from_chars(highlighted_id->text.data(),
+                        highlighted_id->text.data() + highlighted_id->text.size(), selected_id)
+                .ec == std::errc();
+
     if (is("g_Menu:RefreshButton(") || is("g_Menu:RefreshButtonText(") ||
         is("g_Menu:RefreshChildsButtonText(") || is("g_Menu:RefreshSelectedButtonText(")) {
         const MenuChunkAttribute* highlighted = StagedNamed(call.staged, kHighlightedAttribute);
@@ -153,12 +170,29 @@ void NotePopulate(const MenuChunkCall& call) {
             if (SpawnedRow* row = row_named(name->text)) {
                 row->text_tag = text_tag->text;
             }
+
+            // The capture Godot's list is sourced from takes the same caption, on the same row.
+            // Never an empty one: the Buy rows' restate after a sale reaches the stager with no
+            // `String2` text, and writing that through blanked every Buy row's caption.
+            const MenuChunkAttribute* parent = StagedNamed(call.staged, "String4");
+            if (text_tag->text.empty()) {
+                return;
+            }
+            if (selected_only && has_selected_id) {
+                RestateCapturedMenuRow(name->text, nullptr, &selected_id, nullptr, &text_tag->text);
+            } else if (is("g_Menu:RefreshChildsButtonText(") && parent != nullptr &&
+                       !parent->text.empty()) {
+                RestateCapturedMenuRow(name->text, &parent->text, nullptr, nullptr, &text_tag->text);
+            }
         }
         return;
     }
 
     if (is("g_Menu:RenameSelectedButton(")) {
         const MenuChunkAttribute* highlighted = StagedNamed(call.staged, kHighlightedAttribute);
+        if (name != nullptr && highlighted != nullptr && has_selected_id) {
+            RestateCapturedMenuRow(highlighted->text, nullptr, &selected_id, &name->text, nullptr);
+        }
         if (name != nullptr && highlighted != nullptr) {
             if (SpawnedRow* row = row_named(highlighted->text)) {
                 row->name = name->text;
