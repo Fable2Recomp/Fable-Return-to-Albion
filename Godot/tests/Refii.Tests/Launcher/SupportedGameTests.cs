@@ -82,6 +82,39 @@ public class SupportedGameTests
     }
 
     [TestCase]
+    public void TestItalianDiscIsVersion30WithTitleUpdate08U()
+    {
+        SupportedGame.Pressing italy = SupportedGame.Italy;
+        AssertThat(italy.ShortMediaIdText).IsEqual("51F48E54");
+        AssertThat(XexIdentity.FormatVersion(italy.BaseVersion)).IsEqual("0.0.0.30");
+        AssertThat(XexIdentity.FormatVersion(italy.UpdatedVersion)).IsEqual("0.0.1.30");
+        AssertThat(italy.TitleUpdateName).IsEqual("TU_16L61VH_000003O000000.000000000008U");
+
+        var patch = new XexIdentity
+        {
+            IsPatch = true,
+            TitleId = SupportedGame.TitleId,
+            MediaId = (byte[])italy.MediaId.Clone(),
+            SourceVersion = italy.BaseVersion,
+            Version = italy.UpdatedVersion,
+        };
+        bool accepted = SupportedGame.IsTitleUpdate(patch, italy, out string error);
+        AssertThat(error).IsEmpty();
+        AssertThat(accepted).IsTrue();
+
+        // The Spanish update names another media id: a wrong pick for Italy.
+        var spain = new XexIdentity
+        {
+            IsPatch = true,
+            TitleId = SupportedGame.TitleId,
+            MediaId = (byte[])SupportedGame.Spain.MediaId.Clone(),
+            SourceVersion = SupportedGame.Spain.BaseVersion,
+            Version = SupportedGame.Spain.UpdatedVersion,
+        };
+        AssertThat(SupportedGame.IsTitleUpdate(spain, italy, out _)).IsFalse();
+    }
+
+    [TestCase]
     public void TestFable3DiscTakesTitleUpdate3()
     {
         Refii.Core.Engine_Title previous = Refii.Core.Engine_Title.Active;

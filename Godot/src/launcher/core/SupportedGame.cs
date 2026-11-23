@@ -19,6 +19,11 @@ namespace Refii.Launcher.Core;
 /// The Spanish GOTY disc is the same re-signing (319 header bytes differ, the payload is
 /// identical); its title update (0.0.0.29 to 0.0.1.29) carries the same 48 image-delta blocks
 /// and the same tu1_data.bnk as the USA/Europe one, so it runs on the TU1 config when patched.
+/// The Italian GOTY disc is the same re-signing (318 header bytes differ, the payload is
+/// identical); its title update (0.0.0.30 to 0.0.1.30) names the disc's own signature as its
+/// source, carries the same first image-delta block hash as the USA/Europe one (each block holds
+/// the next one's hash, so the whole chain is the same) and the same tu1_data.bnk, so it runs
+/// on the TU1 config when patched.
 ///
 /// All of it is read from the XEX headers: title id and version from the execution info,
 /// the 16-byte media id from the security block, the versions a patch joins from its delta
@@ -122,6 +127,19 @@ public static class SupportedGame
 		UpdatedVersion = 0x0000011D,
 	};
 
+	public static readonly Pressing Italy = new()
+	{
+		Name = "Italy",
+		MediaId = new byte[]
+		{
+			0x5A, 0x71, 0xA9, 0x6F, 0x4B, 0x39, 0x42, 0x44,
+			0x65, 0xC0, 0x57, 0x28, 0x51, 0xF4, 0x8E, 0x54,
+		},
+		BaseVersion = 0x0000001E,
+		TitleUpdateName = "TU_16L61VH_000003O000000.000000000008U",
+		UpdatedVersion = 0x0000011E,
+	};
+
 	/// <summary>
 	/// Fable 3's USA / Europe disc (En, Zh, Ko, Pl, Ru, Cs, Hu, Sk), read from its own security
 	/// block and execution info. Its title update 3 (0.0.0.3 to 0.0.3.3) is cumulative; the
@@ -140,7 +158,7 @@ public static class SupportedGame
 		UpdatedVersion = 0x00000303,
 	};
 
-	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France, Spain };
+	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France, Spain, Italy };
 
 	private static readonly Pressing[] Fable3Pressings = { Fable3UsaEurope };
 
