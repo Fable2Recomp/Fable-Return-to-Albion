@@ -279,6 +279,10 @@ public static class Program
             return stageExit;
         }
 
+        // The package's hash list (Refii.Launcher.Updates.PackageIntegrity): one sha256sum line per
+        // packaged file, written last so it covers everything staged and is zipped with it.
+        WritePackageHashes(appDir, hashIndex);
+
         // Phase 4: Multi-Core SIMD / Raw-Deflate-Reuse ZIP Packaging.
         ZipPackStats zipStats = IncrementalZipPacker.PackDirectory(
             appDir: appDir,
@@ -294,6 +298,32 @@ public static class Program
         Console.WriteLine($"--   folder:   {appDir}");
         Console.WriteLine($"--   contents: {outBinary}, bin/ (natives + recompile), sdk/ (modding editor)");
         return 0;
+    }
+
+    private const string PackageHashesName = "package-hashes.txt";
+
+    private static void WritePackageHashes(string appDir, FileHashIndex hashIndex)
+    {
+        List<ScannedEntry> scanned = FileHashIndex.ScanDirectory(appDir, ignoreAbsoluteSymlinks: true);
+        scanned.RemoveAll(entry => entry.SymlinkTarget is not null
+            || entry.RelativePath.Replace('\\', '/') == PackageHashesName);
+
+        var lines = new string[scanned.Count];
+        System.Threading.Tasks.Parallel.For(0, scanned.Count, index =>
+        {
+            ScannedEntry entry = scanned[index];
+            byte[] hash = hashIndex.GetOrComputeFileSha256(entry.FullPath, entry.Length, entry.LastWriteUtcTicks);
+            lines[index] = Convert.ToHexString(hash).ToLowerInvariant() + "  "
+                + entry.RelativePath.Replace('\\', '/');
+        });
+
+        Array.Sort(lines, (left, right) => string.CompareOrdinal(left[66..], right[66..]));
+        string path = Path.Combine(appDir, PackageHashesName);
+        string text = string.Join("\n", lines) + "\n";
+        if (!File.Exists(path) || File.ReadAllText(path) != text)
+        {
+            File.WriteAllText(path, text);
+        }
     }
 
     private static Dictionary<string, string> ParseFlags(string[] args, int startIndex)

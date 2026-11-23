@@ -259,6 +259,104 @@ public class ReleaseUpdatesTests
         AssertThat(pr).IsEqual(string.Empty);
     }
 
+    private static string Sha(string text) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))
+            .ToLowerInvariant();
+
+    [TestCase]
+    public void APackageThatDoesNotMatchItsHashListIsNotApplied()
+    {
+        string scratch = Path.Combine(Path.GetTempPath(), "refii-update-" + Path.GetRandomFileName());
+        string install = Path.Combine(scratch, "install");
+        try
+        {
+            Directory.CreateDirectory(install);
+            File.WriteAllText(Path.Combine(install, "app.bin"), "old app");
+
+            string damaged = Package(scratch, "damaged.zip",
+                ("App/app.bin", "app one"),
+                ("App/" + PackageIntegrity.HashesName, Sha("another app") + "  app.bin\n"));
+            AssertThat(ReleaseInstaller.Extract(damaged, install)).Contains("damaged");
+            AssertThat(File.ReadAllText(Path.Combine(install, "app.bin"))).IsEqual("old app");
+
+            string whole = Package(scratch, "whole.zip",
+                ("App/app.bin", "app one"),
+                ("App/sdk/project.godot", "the project"),
+                ("App/" + PackageIntegrity.HashesName,
+                    Sha("app one") + "  app.bin\n" + Sha("the project") + "  sdk/project.godot\n"));
+            AssertThat(ReleaseInstaller.Extract(whole, install)).IsEqual(string.Empty);
+            AssertThat(File.ReadAllText(Path.Combine(install, "app.bin"))).IsEqual("app one");
+
+            // First start on the build: due, passes, and is not due again.
+            AssertThat(PackageIntegrity.IsDue(install)).IsTrue();
+            PackageIntegrity.Report report = PackageIntegrity.VerifyInstall(install)!;
+            AssertThat(report.Passed).IsTrue();
+            AssertThat(report.Checked).IsEqual(2);
+            PackageIntegrity.MarkVerified(install);
+            AssertThat(PackageIntegrity.IsDue(install)).IsFalse();
+
+            // The modding project is the player's to edit; an app file is not, and a listed file has to exist.
+            File.WriteAllText(Path.Combine(install, "sdk", "project.godot"), "edited");
+            AssertThat(PackageIntegrity.VerifyInstall(install)!.Passed).IsTrue();
+            File.WriteAllText(Path.Combine(install, "app.bin"), "truncat");
+            File.Delete(Path.Combine(install, "sdk", "project.godot"));
+            report = PackageIntegrity.VerifyInstall(install)!;
+            AssertThat(report.Changed.Count).IsEqual(1);
+            AssertThat(report.Changed[0]).IsEqual("app.bin");
+            AssertThat(report.Missing[0]).IsEqual("sdk/project.godot");
+            AssertThat(report.Summary).Contains("1 missing").Contains("1 changed");
+
+            // A build with no list has nothing to check.
+            File.Delete(Path.Combine(install, PackageIntegrity.HashesName));
+            AssertThat(PackageIntegrity.IsDue(install)).IsFalse();
+            AssertThat(PackageIntegrity.VerifyInstall(install)).IsNull();
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+            {
+                Directory.Delete(scratch, recursive: true);
+            }
+        }
+    }
+
+    [TestCase]
+    public void AnUpdateRemovesAnotherBuildConfigurationOfALibraryItInstalls()
+    {
+        AssertThat(PackageIntegrity.OtherConfigurations("bin/librexruntime.so"))
+            .ContainsExactly("bin/librexruntimerd.so", "bin/librexruntimed.so");
+        AssertThat(PackageIntegrity.OtherConfigurations("bin/Fable2/refii_vfsrd.dll"))
+            .ContainsExactly("bin/Fable2/refii_vfsrdrd.dll", "bin/Fable2/refii_vfsrdd.dll",
+                "bin/Fable2/refii_vfs.dll", "bin/Fable2/refii_vfsd.dll");
+        AssertThat(PackageIntegrity.OtherConfigurations("bin/recompile/zig/lib/libc.so").Count).IsEqual(0);
+        AssertThat(PackageIntegrity.OtherConfigurations("bin/4xLSDIRCompactC3.bin").Count).IsEqual(0);
+        AssertThat(PackageIntegrity.OtherConfigurations("sdk/addons/tool.so").Count).IsEqual(0);
+
+        string scratch = Path.Combine(Path.GetTempPath(), "refii-update-" + Path.GetRandomFileName());
+        string install = Path.Combine(scratch, "install");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(install, "bin"));
+            File.WriteAllText(Path.Combine(install, "bin", "librexruntimerd.so"), "an older build's runtime");
+            File.WriteAllText(Path.Combine(install, "bin", "libmine.so"), "the player's");
+
+            string package = Package(scratch, "update.zip",
+                ("App/bin/librexruntime.so", "runtime"), ("App/bin/libTracyClient.so", "tracy"));
+            AssertThat(ReleaseInstaller.Extract(package, install)).IsEqual(string.Empty);
+
+            AssertThat(File.Exists(Path.Combine(install, "bin", "librexruntime.so"))).IsTrue();
+            AssertThat(File.Exists(Path.Combine(install, "bin", "librexruntimerd.so"))).IsFalse();
+            AssertThat(File.ReadAllText(Path.Combine(install, "bin", "libmine.so"))).IsEqual("the player's");
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+            {
+                Directory.Delete(scratch, recursive: true);
+            }
+        }
+    }
+
     private static string Package(string directory, string name, params (string Path, string Text)[] files)
     {
         string path = Path.Combine(directory, name);
