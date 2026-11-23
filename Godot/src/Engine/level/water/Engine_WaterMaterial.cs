@@ -31,6 +31,18 @@ public static class Engine_WaterMaterial
     private static readonly StringName WSpeedName = "w_speed";
     private static readonly StringName WSurfaceName = "w_surface";
     private static readonly StringName WaterMaskName = "water_mask";
+    private static readonly StringName FoamTexName = "foam_tex";
+    private static readonly StringName WRipplesAName = "w_ripples_a";
+    private static readonly StringName WRipplesBName = "w_ripples_b";
+    private static readonly StringName WWader0Name = "w_wader0";
+    private static readonly StringName WWader1Name = "w_wader1";
+    private static readonly StringName WWader0VelName = "w_wader0_vel";
+    private static readonly StringName WWader1VelName = "w_wader1_vel";
+    private static readonly StringName WRippleClockName = "w_ripple_clock";
+    private static readonly StringName WHasWakesName = "w_has_wakes";
+    private static readonly StringName WCelestialName = "w_celestial";
+    private static readonly StringName WCelestialDirName = "w_celestial_dir";
+    private static readonly StringName VistaOceanName = Engine_LevelScene.VistaOceanNodeName;
 
     public const string ShaderPath = "res://src/Engine/level/water/water.gdshader";
 
@@ -194,6 +206,10 @@ public static class Engine_WaterMaterial
         phase.QualityTier = tierValue;
         material.SetShaderParameter(WaterQualityTierName, tierValue);
         material.SetShaderParameter(CoastalSurfName, coastalSurf);
+        if (!GuestMode && Engine_WaterFoamTexture.Get() is { } foamTexture)
+        {
+            material.SetShaderParameter(FoamTexName, foamTexture);
+        }
 
         Apply(material, WaterTheme.Default);
 
@@ -249,6 +265,10 @@ public static class Engine_WaterMaterial
         public float HorizonDistance = float.NaN;
         public bool HasDome;
         public int QualityTier = -1;
+        public readonly WaterWakeRingBuffer Wakes = new();
+        public bool HadActiveWakes;
+        public Vector4 Celestial = new(float.NaN, 0f, 0f, 0f);
+        public Vector3 CelestialDir = new(float.NaN, 0f, 0f);
     }
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<ShaderMaterial, Phase> Phases = new();
@@ -267,6 +287,18 @@ public static class Engine_WaterMaterial
 
         int tierValue = (int)CurrentQuality;
         bool advance = delta > 0f;
+        bool sampleWakes = tierValue >= (int)WaterQualityTier.Balanced && !GuestMode;
+        Span<WaderSample> waderCandidates = stackalloc WaderSample[8];
+        int waderCandidateCount = 0;
+        if (sampleWakes)
+        {
+            Vector3 eye = water.GetViewport()?.GetCamera3D()?.GlobalPosition
+                ?? Refii.Game.GameEntities.HeroPosition
+                ?? Vector3.Zero;
+            waderCandidateCount = Refii.Game.GameEntities.CopyNearbyWaders(eye, 36f, waderCandidates);
+        }
+
+        Span<WaderSample> bodyWaders = stackalloc WaderSample[8];
 
         // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
         for (int i = 0, count = water.GetChildCount(); i < count; i++)
@@ -293,7 +325,105 @@ public static class Engine_WaterMaterial
                         v.W - Mathf.Floor(v.W));
                     material.SetShaderParameter(WPhaseName, phase.Value);
                 }
+
+                if (sampleWakes && mesh.Name != VistaOceanName)
+                {
+                    int bodyWaderCount = 0;
+                    float waterY = 0f;
+                    if (waderCandidateCount > 0)
+                    {
+                        Aabb bounds = mesh.GetAabb();
+                        Transform3D xform = mesh.GlobalTransform;
+                        Vector3 p0 = xform * bounds.Position;
+                        Vector3 p1 = xform * bounds.End;
+                        waterY = 0.5f * (p0.Y + p1.Y);
+                        float minX = MathF.Min(p0.X, p1.X) - 1f;
+                        float maxX = MathF.Max(p0.X, p1.X) + 1f;
+                        float minZ = MathF.Min(p0.Z, p1.Z) - 1f;
+                        float maxZ = MathF.Max(p0.Z, p1.Z) + 1f;
+                        for (int w = 0; w < waderCandidateCount; w++)
+                        {
+                            WaderSample sample = waderCandidates[w];
+                            Vector3 pos = sample.Position;
+                            if (pos.X >= minX && pos.X <= maxX &&
+                                pos.Z >= minZ && pos.Z <= maxZ &&
+                                pos.Y >= (waterY - 2.1f) && pos.Y <= (waterY + 0.12f))
+                            {
+                                bodyWaders[bodyWaderCount++] = sample;
+                            }
+                        }
+                    }
+
+                    bool active = phase.Wakes.Step(
+                        delta, bodyWaders[..bodyWaderCount], waterY,
+                        out Projection ripplesA, out Projection ripplesB,
+                        out Vector4 wader0, out Vector4 wader1,
+                        out Vector4 wader0Vel, out Vector4 wader1Vel);
+                    if (active || phase.HadActiveWakes)
+                    {
+                        if (phase.HadActiveWakes != active)
+                        {
+                            phase.HadActiveWakes = active;
+                            material.SetShaderParameter(WHasWakesName, active);
+                        }
+                        material.SetShaderParameter(WRipplesAName, ripplesA);
+                        material.SetShaderParameter(WRipplesBName, ripplesB);
+                        material.SetShaderParameter(WWader0Name, wader0);
+                        material.SetShaderParameter(WWader1Name, wader1);
+                        material.SetShaderParameter(WWader0VelName, wader0Vel);
+                        material.SetShaderParameter(WWader1VelName, wader1Vel);
+                        material.SetShaderParameter(WRippleClockName, phase.Wakes.Clock);
+                    }
+                }
+                else if (phase.HadActiveWakes)
+                {
+                    phase.HadActiveWakes = false;
+                    material.SetShaderParameter(WHasWakesName, false);
+                    material.SetShaderParameter(WRipplesAName, default(Projection));
+                    material.SetShaderParameter(WRipplesBName, default(Projection));
+                    material.SetShaderParameter(WWader0Name, Vector4.Zero);
+                    material.SetShaderParameter(WWader1Name, Vector4.Zero);
+                    material.SetShaderParameter(WWader0VelName, Vector4.Zero);
+                    material.SetShaderParameter(WWader1VelName, Vector4.Zero);
+                }
             }
+        }
+    }
+
+    /// <summary>
+    /// Updates active celestial disc angular sizing and world direction on every surface under <paramref name="water"/>,
+    /// writing shader parameters only when values change beyond a small epsilon.
+    /// </summary>
+    public static void ApplyCelestialToWater(Node3D? water, Vector4 celestial, Vector3 celestialDir)
+    {
+        if (water is null)
+        {
+            return;
+        }
+
+        for (int i = 0, count = water.GetChildCount(); i < count; i++)
+        {
+            if (water.GetChild(i) is MeshInstance3D mesh && mesh.MaterialOverride is ShaderMaterial material)
+            {
+                ApplyCelestial(material, celestial, celestialDir);
+            }
+        }
+    }
+
+    /// <summary>Updates active celestial disc parameters on <paramref name="material"/> only when changed.</summary>
+    public static void ApplyCelestial(ShaderMaterial material, Vector4 celestial, Vector3 celestialDir)
+    {
+        Phase phase = Phases.GetOrCreateValue(material);
+        if (float.IsNaN(phase.Celestial.X) || (phase.Celestial - celestial).LengthSquared() > 1e-8f)
+        {
+            phase.Celestial = celestial;
+            material.SetShaderParameter(WCelestialName, celestial);
+        }
+
+        if (float.IsNaN(phase.CelestialDir.X) || (phase.CelestialDir - celestialDir).LengthSquared() > 1e-8f)
+        {
+            phase.CelestialDir = celestialDir;
+            material.SetShaderParameter(WCelestialDirName, celestialDir);
         }
     }
 

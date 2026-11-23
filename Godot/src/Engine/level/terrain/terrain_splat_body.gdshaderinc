@@ -45,6 +45,7 @@
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 #ifndef FABLE_LITE
 #include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
+#include "res://src/Engine/level/water/fable_mirror_clip.gdshaderinc"
 varying vec3 v_weather_normal;
 varying float v_weather_specular;
 varying float v_weather_power;
@@ -181,6 +182,7 @@ void vertex() {
 #endif
 #ifndef FABLE_LITE
 	v_weather_normal = normalize(MODEL_NORMAL_MATRIX * NORMAL);
+	POSITION = fable_mirror_clip_position(fable_world, MODELVIEW_MATRIX * vec4(VERTEX, 1.0), PROJECTION_MATRIX, CAMERA_POSITION_WORLD);
 #endif
 }
 

@@ -35,6 +35,7 @@ layout(push_constant, std430) uniform Params {
 	int count;
 	float pad0;
 	vec4 depth;
+	vec4 water_plane;
 } push;
 
 // A halo sits AT its light, which is usually inside the fixture's own flame. The bias keeps the
@@ -56,13 +57,22 @@ void main() {
 
 	vec2 uv = (vec2(coord) + 0.5) / vec2(push.size);
 	float scene_dist = linear_depth(texture(depth_tex, uv).r);
+	float water_dist = 1e9;
+	if (push.water_plane.x > 0.0) {
+		vec2 ndc = vec2((uv.x * 2.0) - 1.0, 1.0 - (uv.y * 2.0));
+		float ray_y = push.water_plane.y + (ndc.x * push.water_plane.z) + (ndc.y * push.water_plane.w);
+		if (ray_y < -1e-5) {
+			water_dist = push.water_plane.x / (-ray_y);
+			scene_dist = min(scene_dist, water_dist);
+		}
+	}
 
 	vec3 sum = vec3(0.0);
 	for (int i = 0; i < push.count; i++) {
 		vec4 rect = halos.entries[3 * i];
 		vec4 cd = halos.entries[(3 * i) + 1];
 		float layer = halos.entries[(3 * i) + 2].x;
-		if (scene_dist < cd.w - DEPTH_BIAS) {
+		if (scene_dist < cd.w - DEPTH_BIAS || (cd.w >= 1500.0 && water_dist < 8000.0)) {
 			continue;
 		}
 

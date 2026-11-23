@@ -10,7 +10,10 @@ vec3 fable_sky_inscatter(
 		float horizon_distance) {
 	vec3 ray_n = normalize(ray_engine);
 
-	float sun_dot = clamp(dot(normalize(sun_engine), ray_n), 0.0, 1.0);
+	// Clamped to edge texel centres (LutWidth = 64): global samplers (atmos_inscatter) ignore
+	// sampler hints in Godot and default to REPEAT, which would blend texel 63 (sun core) at u = 0.
+	const float half_texel = 0.5 / 64.0;
+	float sun_dot = clamp(dot(normalize(sun_engine), ray_n), half_texel, 1.0 - half_texel);
 	vec3 scatter = textureLod(in_scatter_lut, vec2(sun_dot, 0.5), 0.0).rgb;
 
 	float up = max(abs(ray_n.z), 0.0001);
@@ -40,8 +43,12 @@ vec3 fable_sky_overlaid(vec3 godot_dir, vec3 scattering) {
 		return scattering;
 	}
 	// Godot (x, y, z) is the guest's (-x, z, y). Level 0: the azimuth's seam has no derivative.
+	// Clamp v to edge texel centres so global samplers never wrap horizon (v = 0) into zenith (v = 1).
 	vec3 d = normalize(vec3(-godot_dir.x, godot_dir.z, godot_dir.y));
-	vec2 uv = vec2(0.5 + atan(d.y, d.x) / FABLE_SKY_TAU, asin(clamp(d.z, -1.0, 1.0)) * (4.0 / FABLE_SKY_TAU));
+	float half_v = 0.5 / float(max(textureSize(fable_sky_overlay0, 0).y, 1));
+	vec2 uv = vec2(
+		0.5 + atan(d.y, d.x) / FABLE_SKY_TAU,
+		clamp(asin(clamp(d.z, -1.0, 1.0)) * (4.0 / FABLE_SKY_TAU), half_v, 1.0 - half_v));
 	vec4 first = textureLod(fable_sky_overlay0, uv, 0.0);
 	vec4 second = textureLod(fable_sky_overlay1, uv, 0.0);
 	vec3 painted = mix(first.rgb * first.rgb, second.rgb * second.rgb, fable_sky_overlay.x);

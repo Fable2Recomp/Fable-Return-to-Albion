@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
 using GdUnit4;
+using Godot;
 using Refii.Level;
 using static GdUnit4.Assertions;
 
@@ -72,11 +73,11 @@ public sealed class WaterMeshAndQualityTests
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Low))
 			.IsEqual(new WaterMirrorSpec(false, 256, 4, 50f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Balanced))
-			.IsEqual(new WaterMirrorSpec(true, 256, 4, 800f, 4f));
+			.IsEqual(new WaterMirrorSpec(true, 272, 2, 800f, 4f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.High))
-			.IsEqual(new WaterMirrorSpec(true, 320, 3, 1200f, 3.5f));
+			.IsEqual(new WaterMirrorSpec(true, 352, 2, 1200f, 3.5f));
 		AssertThat(Engine_WaterQuality.MirrorFor(WaterQualityTier.Ultra))
-			.IsEqual(new WaterMirrorSpec(true, 384, 2, float.PositiveInfinity, 3f));
+			.IsEqual(new WaterMirrorSpec(true, 576, 1, float.PositiveInfinity, 2f));
 
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Low, hasPlanarMirror: false)).IsEqual(0);
 		AssertThat(Engine_WaterQuality.SsrStepsFor(WaterQualityTier.Low, hasPlanarMirror: true)).IsEqual(0);
@@ -230,12 +231,16 @@ public sealed class WaterMeshAndQualityTests
 		string raw = File.ReadAllText(shaderPath);
 		string clean = StripShaderComments(raw);
 
-		// Forward+ transparent shader: zero `discard;` anywhere and lit (not `unshaded`).
+		// Forward+ transparent shader: zero `discard;` anywhere, lit (not `unshaded`), and `fog_disabled`
+		// so localized 3D FogVolume mist boxes never project hard edges onto distant VistaOcean.
 		AssertThat(Regex.IsMatch(clean, @"\bdiscard\s*;")).IsFalse();
 		AssertThat(Regex.IsMatch(clean, @"\bunshaded\b")).IsFalse();
+		AssertThat(Regex.IsMatch(clean, @"\bfog_disabled\b")).IsTrue();
 
-		// Scene-referred HDR compliance and configurable quality/surf uniforms.
+		// Scene-referred HDR compliance, emission headroom boost, uncompensated atmosphere, and quality uniforms.
 		AssertThat(clean.Contains("uniform bool is_pbr = false;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("global uniform float fable_emission_boost", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("fable_atmosphere_terms_uncompensated(", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("uniform int water_quality_tier", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("uniform bool coastal_surf", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("ALBEDO = max(lit_albedo, vec3(0.0));", StringComparison.Ordinal)).IsTrue();
@@ -257,21 +262,40 @@ public sealed class WaterMeshAndQualityTests
 
 		int dfdxIdx = fragBody.IndexOf("dFdx(", StringComparison.Ordinal);
 		int dfdyIdx = fragBody.IndexOf("dFdy(", StringComparison.Ordinal);
+		int worldDxIdx = fragBody.IndexOf("dFdx(v_world.xz)", StringComparison.Ordinal);
+		int worldDyIdx = fragBody.IndexOf("dFdy(v_world.xz)", StringComparison.Ordinal);
 		int firstIfIdx = fragBody.IndexOf("if (", StringComparison.Ordinal);
 		AssertThat(dfdxIdx).IsGreater(-1);
 		AssertThat(dfdyIdx).IsGreater(-1);
+		AssertThat(worldDxIdx).IsGreater(-1);
+		AssertThat(worldDyIdx).IsGreater(-1);
 		AssertThat(firstIfIdx).IsGreater(-1);
 		AssertThat(dfdxIdx).IsLess(firstIfIdx);
 		AssertThat(dfdyIdx).IsLess(firstIfIdx);
+		AssertThat(worldDxIdx).IsLess(firstIfIdx);
+		AssertThat(worldDyIdx).IsLess(firstIfIdx);
 
 		AssertThat(Regex.IsMatch(fragBody, @"\btexture\s*\(")).IsFalse();
 		AssertThat(Regex.IsMatch(lightBody, @"\breturn\b")).IsFalse();
 
-		// Full-frame planar mirror (no planar_edge border box fade), front-to-back SSR crossing, and VistaOcean coastal edge feather.
+		// Full-frame planar mirror (no planar_edge border box fade), front-to-back SSR crossing,
+		// channel-packed mipmapped foam + directional V-wake, and zero Voronoi spiderwebs or open-water swell bands.
 		AssertThat(clean.Contains("planar_edge", StringComparison.Ordinal)).IsFalse();
 		AssertThat(clean.Contains("prev_in_front", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("foreground_occluder", StringComparison.Ordinal)).IsTrue();
 		AssertThat(clean.Contains("body_edge_sea(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("uniform sampler2D foam_tex", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("eval_packed_foam(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("eval_swimmer_vwake(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("above_water_gate", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("eval_caustic_voronoi(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("voronoi_edge_2x2", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("voronoi_cell_2x2", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("eval_voronoi_foam_web", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("crest_pinch", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("shore_lap", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("eval_caustic_analytic", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("uv_r", StringComparison.Ordinal)).IsFalse();
 		AssertThat(clean.Contains("meniscus", StringComparison.Ordinal)).IsFalse();
 
 		// Celestial billboards & stars sort behind RenderPriority = 0 water and place stars on the +Y upper sky hemisphere.
@@ -283,5 +307,552 @@ public sealed class WaterMeshAndQualityTests
 		string celestialCs = File.ReadAllText(celestialCsPath);
 		AssertThat(celestialCs.Contains("StarsRenderPriority = -21;", StringComparison.Ordinal)).IsTrue();
 		AssertThat(celestialCs.Contains("BaseRenderPriority = -20;", StringComparison.Ordinal)).IsTrue();
+
+		// Oblique mirror clipper exists with zero `discard;` and is wired into desktop terrain, models, and clouds.
+		string root = FindGodotRoot();
+		string clipPath = Path.Combine(root, "src", "Engine", "level", "water", "fable_mirror_clip.gdshaderinc");
+		AssertThat(File.Exists(clipPath)).IsTrue();
+		string clipClean = StripShaderComments(File.ReadAllText(clipPath));
+		AssertThat(Regex.IsMatch(clipClean, @"\bdiscard\s*;")).IsFalse();
+
+		AssertThat(File.ReadAllText(Path.Combine(root, "src", "Engine", "level", "terrain", "terrain_splat_body.gdshaderinc"))
+			.Contains("fable_mirror_clip_position(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(File.ReadAllText(Path.Combine(root, "src", "Engine", "material", "standard_material_body.gdshaderinc"))
+			.Contains("fable_mirror_clip_position(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(File.ReadAllText(Path.Combine(root, "src", "Engine", "level", "environment", "clouds.gdshader"))
+			.Contains("fable_mirror_clip_position(", StringComparison.Ordinal)).IsTrue();
+
+		// Global sky dome samplers (atmos_inscatter, fable_sky_overlay0) clamp edge texels to prevent Rookridge 2-color repeat wrap.
+		string skyDomePath = Path.Combine(root, "src", "Engine", "level", "environment", "sky_dome.gdshaderinc");
+		string skyDomeClean = StripShaderComments(File.ReadAllText(skyDomePath));
+		AssertThat(skyDomeClean.Contains("const float half_texel = 0.5 / 64.0;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(skyDomeClean.Contains("half_texel, 1.0 - half_texel", StringComparison.Ordinal)).IsTrue();
+		AssertThat(skyDomeClean.Contains("half_v, 1.0 - half_v", StringComparison.Ordinal)).IsTrue();
+
+		// GPU fast-paths: isotropic trilinear foam_tex, distance-gated horizon_sky, deduplicated depth helper, and Balanced wakes.
+		AssertThat(clean.Contains("uniform sampler2D foam_tex : hint_default_black, filter_linear_mipmap, repeat_enable;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("linear_depth_from_raw(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("if (has_dome && (dist > 55.0 || ocean_mode))", StringComparison.Ordinal)).IsTrue();
+
+		string waterMatCs = File.ReadAllText(Path.Combine(root, "src", "Engine", "level", "water", "Engine_WaterMaterial.cs"));
+		AssertThat(waterMatCs.Contains("tierValue >= (int)WaterQualityTier.Balanced && !GuestMode", StringComparison.Ordinal)).IsTrue();
+
+		// Wader GPU gate, stationary swimmer collar removal, unified single-cone glitter, and Moon phase UV sync invariants.
+		AssertThat(clean.Contains("uniform bool w_has_wakes = false;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("uniform vec4 w_celestial =", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("uniform vec3 w_celestial_dir =", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("pre_horizon_glint_hdr", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("smoothstep(1800.0, 140.0, dist)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("clamp(ndl, 0.0, 1.0)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("in_glitter_corridor", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("cox_munk_glitter_hdr", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("far_var_t", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("celestial_mirror_hdr", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("inner_aureole", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("moon_ripple_gate", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("idle_collar", StringComparison.Ordinal)).IsFalse();
+		AssertThat(celestialCs.Contains("ModernMoonScale = 0.75f;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(celestialCs.Contains("moonNode.SetMeta(MoonPhaseMeta, phase);", StringComparison.Ordinal)).IsTrue();
+		AssertThat(celestialCs.Contains(": Math.Clamp(moonPhase, 0, 7);", StringComparison.Ordinal)).IsTrue();
+	}
+
+	[TestCase]
+	public void ObliqueMirrorClip_ClipsUnderwaterAndOrdersAboveWaterMonotonically()
+	{
+		const float waterHeight = 20.0f;
+		const float fov = 60f;
+		const float aspect = 16f / 9f;
+		var eyeOrigin = new Vector3(0f, 23.5f, 0f);
+		var eyeTarget = new Vector3(0f, 18.0f, -25.0f);
+		var eye = new Transform3D(Basis.LookingAt((eyeTarget - eyeOrigin).Normalized(), Vector3.Up), eyeOrigin);
+
+		Vector3 mirrOrigin = new(eyeOrigin.X, (2f * waterHeight) - eyeOrigin.Y, eyeOrigin.Z);
+		Vector3 fwd = (-eye.Basis.Column2);
+		Vector3 up = eye.Basis.Column1;
+		fwd.Y = -fwd.Y;
+		up.Y = -up.Y;
+		var mirrorBasis = Basis.LookingAt(fwd, up);
+		Vector3 mFwd = -mirrorBasis.Column2;
+		Vector3 mUp = mirrorBasis.Column1;
+		Vector3 mRight = mirrorBasis.Column0;
+
+		Engine_WaterQuality.ComputeObliqueMirrorParams(
+			eyeOrigin, mFwd, mUp, mRight, waterHeight, fov, aspect, keepWidth: false,
+			out float waterClipY, out float alpha);
+
+		AssertThat(waterClipY).IsEqual(waterHeight + 0.08f);
+		AssertThat(alpha).IsGreater(0f);
+
+		// Underwater beach/lakebed and shallow coarse-LOD shoal points below waterClipY yield clipZ > clipW (ndcZ > 1.0 -> hardware near clipped).
+		float wBeach = 12f;
+		AssertThat(Engine_WaterQuality.EvaluateObliqueClipZ(new Vector3(0f, 18.0f, -12f), wBeach, waterClipY, alpha))
+			.IsGreater(wBeach);
+		AssertThat(Engine_WaterQuality.EvaluateObliqueClipZ(new Vector3(2f, 20.04f, -12f), wBeach, waterClipY, alpha))
+			.IsGreater(wBeach);
+
+		// Exact waterline point lands on clipZ == clipW (ndcZ == 1.0).
+		AssertThat(Math.Abs(Engine_WaterQuality.EvaluateObliqueClipZ(new Vector3(0f, waterClipY, -12f), wBeach, waterClipY, alpha) - wBeach))
+			.IsLess(1e-5f);
+
+		// Above-water vertices inside the mirrored frustum (sky sits along -mUp because Mirror flips up.Y)
+		// stay strictly inside [0.05..1.0] Reversed-Z NDC depth and decrease monotonically with distance.
+		float halfTan = MathF.Tan(fov * (MathF.PI / 360f));
+		Vector3 upperRay = (mFwd - (0.4f * halfTan * mUp)).Normalized();
+		float prevNdcZ = float.PositiveInfinity;
+		foreach (float t in new[] { 15f, 40f, 250f, 1500f })
+		{
+			Vector3 world = mirrOrigin + (upperRay * t);
+			float clipW = t * mFwd.Dot(upperRay);
+			float clipZ = Engine_WaterQuality.EvaluateObliqueClipZ(world, clipW, waterClipY, alpha);
+			float ndcZ = clipZ / clipW;
+			AssertThat(ndcZ).IsGreaterEqual(0.05f);
+			AssertThat(ndcZ).IsLessEqual(1.0f);
+			AssertThat(ndcZ).IsLess(prevNdcZ);
+			prevNdcZ = ndcZ;
+		}
+	}
+
+	[TestCase]
+	public void MainScreenReprojection_MapsCenterEdgesAndCounterRotatesOnPan()
+	{
+		const float fov = 60f;
+		const float aspect = 16f / 9f;
+		Vector3 origin = new(-10f, 23.5f, 15f);
+		var eye = new Transform3D(Basis.LookingAt(new Vector3(0f, -0.3f, -1f).Normalized(), Vector3.Up), origin);
+		Projection reproj = Engine_WaterQuality.BuildMainScreenReprojection(eye, fov, aspect, keepWidth: false);
+
+		static Vector2 ProjectUv(Projection m, Vector3 world)
+		{
+			Vector4 q = m * new Vector4(world.X, world.Y, world.Z, 1f);
+			return new Vector2(q.X / q.W, q.Y / q.W);
+		}
+
+		Vector3 fwd = -eye.Basis.Column2;
+		Vector3 right = eye.Basis.Column0;
+		Vector3 up = eye.Basis.Column1;
+		float tanY = MathF.Tan(fov * (MathF.PI / 360f));
+		float tanX = tanY * aspect;
+
+		Vector2 center = ProjectUv(reproj, origin + (fwd * 30f));
+		AssertThat(Math.Abs(center.X - 0.5f)).IsLess(1e-5f);
+		AssertThat(Math.Abs(center.Y - 0.5f)).IsLess(1e-5f);
+
+		Vector2 bottomRight = ProjectUv(reproj, origin + ((fwd + (0.5f * tanX * right) - (0.5f * tanY * up)) * 30f));
+		AssertThat(Math.Abs(bottomRight.X - 0.75f)).IsLess(1e-4f);
+		AssertThat(Math.Abs(bottomRight.Y - 0.75f)).IsLess(1e-4f);
+
+		// A target along a right-panned view ray lies on the right half of RenderedEye's frame (u > 0.5).
+		var pannedBasis = eye.Basis.Rotated(Vector3.Up, -5f * (MathF.PI / 180f));
+		Vector3 pannedCenterTarget = origin + ((-pannedBasis.Column2) * 30f);
+		Vector2 pannedInRendered = ProjectUv(reproj, pannedCenterTarget);
+		AssertThat(pannedInRendered.X).IsGreater(0.5f);
+	}
+
+	[TestCase]
+	public void WaterWakeRingBuffer_EmitsDecaysAndWrapsCleanly()
+	{
+		var ring = new WaterWakeRingBuffer();
+		const float waterY = 20.0f;
+
+		// Dry land wader (above waterY + 0.12) emits nothing.
+		bool activeDry = ring.Step(0.016f, new[] { new Vector3(10f, waterY + 0.5f, 10f) }, waterY,
+			out _, out _, out Vector4 w0, out _);
+		AssertThat(activeDry).IsFalse();
+		AssertThat(w0).IsEqual(Vector4.Zero);
+		AssertThat(ring.CountActiveImpulses()).IsEqual(0);
+
+		// Entering shallow water emits a gentle ripple-only wake (< 0.30 churn threshold) and tracks wader0.
+		bool activeWet = ring.Step(0.016f, new[] { new Vector3(10f, waterY - 0.25f, 10f) }, waterY,
+			out Projection rA, out _, out w0, out _);
+		AssertThat(activeWet).IsTrue();
+		AssertThat(w0.W).IsEqual(1f);
+		AssertThat(ring.CountActiveImpulses()).IsEqual(1);
+		AssertThat(rA.X.X).IsEqual(10f);
+		AssertThat(rA.X.W).IsLess(0.30f);
+
+		// Active swimming / walking >=0.20 m emits velocity-gated churn pulses (>= 0.54) across all 8 ring slots.
+		Projection moveImp = default;
+		for (int i = 1; i <= 10; i++)
+		{
+			ring.Step(0.1f, new[] { new Vector3(10f + (i * 0.4f), waterY - 0.25f, 10f) }, waterY,
+				out moveImp, out _, out _, out _);
+		}
+		AssertThat(ring.CountActiveImpulses()).IsEqual(8);
+		AssertThat(moveImp.Y.W).IsGreaterEqual(0.54f);
+
+		// Treading water in place emits gentle liquid ripples (< 0.30, zero wake churn) after IdleEmitIntervalSeconds (1.10 s).
+		var idleRing = new WaterWakeRingBuffer();
+		Vector3 treadPos = new(12f, waterY - 0.55f, 14f);
+		idleRing.Step(0.016f, new[] { treadPos }, waterY, out _, out _, out _, out _);
+		float initialClock = idleRing.Clock;
+		idleRing.Step(1.15f, new[] { treadPos }, waterY, out Projection idleImp, out _, out _, out _);
+		AssertThat(idleImp.Y.Z).IsGreater(initialClock);
+		AssertThat(idleImp.Y.W).IsGreater(0.08f);
+		AssertThat(idleImp.Y.W).IsLess(0.30f);
+
+		// Leaving water and letting 4.0 s elapse expires every impulse cleanly back to inactive.
+		bool stillActive = ring.Step(4.0f, ReadOnlySpan<Vector3>.Empty, waterY,
+			out Projection clearedA, out Projection clearedB, out w0, out Vector4 w1);
+		AssertThat(stillActive).IsFalse();
+		AssertThat(ring.CountActiveImpulses()).IsEqual(0);
+		AssertThat(clearedA).IsEqual(default(Projection));
+		AssertThat(clearedB).IsEqual(default(Projection));
+		AssertThat(w0).IsEqual(Vector4.Zero);
+		AssertThat(w1).IsEqual(Vector4.Zero);
+	}
+
+	[TestCase]
+	public void OverscanMirrorReprojection_KeepsFullMainScreenInsideSafeMargin()
+	{
+		const float mainFov = 60f;
+		const float aspect = 16f / 9f;
+		float mirrorFov = Engine_WaterQuality.ComputeOverscanFov(mainFov, Engine_WaterQuality.MirrorOverscanFactor);
+		AssertThat(mirrorFov).IsGreater(60f);
+		AssertThat(mirrorFov).IsLess(66f);
+
+		Vector3 origin = new(5f, 36f, -12f);
+		var eye = new Transform3D(Basis.LookingAt(new Vector3(0f, -0.25f, -1f).Normalized(), Vector3.Up), origin);
+		Projection reproj = Engine_WaterQuality.BuildMainScreenReprojection(eye, mirrorFov, aspect, keepWidth: false);
+
+		static Vector2 ProjectUv(Projection m, Vector3 world)
+		{
+			Vector4 q = m * new Vector4(world.X, world.Y, world.Z, 1f);
+			return new Vector2(q.X / q.W, q.Y / q.W);
+		}
+
+		Vector3 fwd = -eye.Basis.Column2;
+		Vector3 right = eye.Basis.Column0;
+		Vector3 up = eye.Basis.Column1;
+		float mainTanY = MathF.Tan(mainFov * (MathF.PI / 360f));
+		float mainTanX = mainTanY * aspect;
+
+		Vector2 center = ProjectUv(reproj, origin + (fwd * 40f));
+		AssertThat(Math.Abs(center.X - 0.5f)).IsLess(1e-5f);
+		AssertThat(Math.Abs(center.Y - 0.5f)).IsLess(1e-5f);
+
+		float[] signs = { -1f, 1f };
+		foreach (float sx in signs)
+		{
+			foreach (float sy in signs)
+			{
+				Vector3 cornerRay = fwd + (sx * mainTanX * right) + (sy * mainTanY * up);
+				Vector2 uv = ProjectUv(reproj, origin + (cornerRay * 40f));
+				AssertThat(uv.X).IsGreaterEqual(0.04f);
+				AssertThat(uv.X).IsLessEqual(0.96f);
+				AssertThat(uv.Y).IsGreaterEqual(0.04f);
+				AssertThat(uv.Y).IsLessEqual(0.96f);
+			}
+		}
+	}
+
+	[TestCase]
+	public void VistaOceanWaterlinePush_OccludesBelowHorizonAndPreservesAboveHorizon()
+	{
+		const float oceanY = 33f;
+		const float aspect = 16f / 9f;
+		float py = 1f / MathF.Tan(60f * (MathF.PI / 360f));
+		float px = py / aspect;
+		Basis levelBasis = Basis.LookingAt(new Vector3(0f, 0f, -1f), Vector3.Up);
+		Vector3 eye = new(0f, 35f, 0f);
+
+		Vector4 inactive = Refii.Lighting.Engine_PostFxParams.BuildWaterPlanePush(false, oceanY, eye, levelBasis, px, py);
+		AssertThat(inactive).IsEqual(Vector4.Zero);
+		AssertThat(float.IsPositiveInfinity(Refii.Lighting.Engine_PostFxParams.EvaluateWaterPlaneFacing(inactive, new Vector2(0.5f, 0.75f)))).IsTrue();
+
+		Vector4 underwaterEye = Refii.Lighting.Engine_PostFxParams.BuildWaterPlanePush(true, oceanY, new Vector3(0f, 32f, 0f), levelBasis, px, py);
+		AssertThat(underwaterEye).IsEqual(Vector4.Zero);
+
+		Vector4 active = Refii.Lighting.Engine_PostFxParams.BuildWaterPlanePush(true, oceanY, eye, levelBasis, px, py);
+		AssertThat(active.X).IsGreater(1.9f);
+
+		// Above-horizon sky pixel stays unclipped by ocean plane.
+		AssertThat(float.IsPositiveInfinity(Refii.Lighting.Engine_PostFxParams.EvaluateWaterPlaneFacing(active, new Vector2(0.5f, 0.25f)))).IsTrue();
+
+		// Just below horizon hits ocean closer than celestial distances (SunDisc 1900 m / Moon 4000 m),
+		// while a close harbor lamp halo at 20 m sits well in front of the ocean intersection.
+		float justBelow = Refii.Lighting.Engine_PostFxParams.EvaluateWaterPlaneFacing(active, new Vector2(0.5f, 0.51f));
+		AssertThat(justBelow).IsGreater(50f);
+		AssertThat(justBelow).IsLess(1900f);
+
+		float waterMid = Refii.Lighting.Engine_PostFxParams.EvaluateWaterPlaneFacing(active, new Vector2(0.5f, 0.55f));
+		AssertThat(waterMid).IsGreater(25f);
+		AssertThat(waterMid).IsLess(45f);
+	}
+
+	[TestCase]
+	public void SunClockInterpolator_AdvancesUniformlyWithout15HzSawtooth()
+	{
+		foreach (float ratePerSec in new[] { 1.0f / 2880.0f, 0.012f })
+		{
+			var clock = new SunClockInterpolator();
+			const float displayDt = 1.0f / 60.0f; // 4 display frames per 15 Hz guest tick
+			float raw = 0.25f;
+			float prev = clock.Step(raw, frozen: false, displayDt);
+			float minDelta = float.PositiveInfinity;
+			float maxDelta = 0.0f;
+
+			// Run 12 guest ticks (48 display frames); after warmup, verify smooth monotonic advance with <6% variation.
+			for (int tick = 0; tick < 12; tick++)
+			{
+				raw += ratePerSec * (1.0f / 15.0f);
+				for (int sub = 0; sub < 4; sub++)
+				{
+					float cur = clock.Step(raw, frozen: false, displayDt);
+					float delta = cur - prev;
+					if (tick >= 5)
+					{
+						AssertThat(delta).IsGreater(0.0f);
+						if (delta < minDelta)
+						{
+							minDelta = delta;
+						}
+						if (delta > maxDelta)
+						{
+							maxDelta = delta;
+						}
+					}
+					prev = cur;
+				}
+			}
+
+			AssertThat(maxDelta / MathF.Max(minDelta, 1e-9f)).IsLess(1.06f);
+
+			// Freeze holds exact value and >SnapThreshold jumps snap immediately.
+			float paused = clock.Step(raw, frozen: true, displayDt);
+			AssertThat(clock.Step(raw, frozen: true, displayDt)).IsEqual(paused);
+			AssertThat(clock.Step(raw + 0.05f, frozen: false, displayDt)).IsEqual(raw + 0.05f);
+		}
+	}
+
+	[TestCase]
+	public void WaterFoamTexture_IsToroidallySeamlessMultiScaleAndMipComplete()
+	{
+		const int size = 128;
+		int expectedBytes = Engine_WaterFoamTexture.ComputeTotalMipBytes(size);
+		AssertThat(expectedBytes).IsEqual(87380);
+
+		byte[] mips = Engine_WaterFoamTexture.BuildMipmappedRgba8(size);
+		AssertThat(mips.Length).IsEqual(expectedBytes);
+
+		int pixelCount = size * size;
+		var minCh = new int[] { 255, 255, 255, 255 };
+		var maxCh = new int[] { 0, 0, 0, 0 };
+		long sumA = 0;
+
+		for (int i = 0; i < pixelCount; i++)
+		{
+			int baseIdx = i * 4;
+			for (int c = 0; c < 4; c++)
+			{
+				int v = mips[baseIdx + c];
+				if (v < minCh[c]) minCh[c] = v;
+				if (v > maxCh[c]) maxCh[c] = v;
+			}
+			sumA += mips[baseIdx + 3];
+		}
+
+		// Every channel (R froth, G round bubbles, B micro-fizz, A histogram-equalized erosion) spans wide dynamic range.
+		for (int c = 0; c < 4; c++)
+		{
+			AssertThat(minCh[c]).IsLess(20);
+			AssertThat(maxCh[c]).IsGreater(200);
+		}
+
+		float meanA = (float)sumA / pixelCount;
+		AssertThat(meanA).IsGreater(115f);
+		AssertThat(meanA).IsLess(140f);
+
+		// Toroidal wrap continuity: average border step across (0 <-> size-1) must match adjacent interior steps without seam jumps.
+		double borderDiffSum = 0.0;
+		double interiorDiffSum = 0.0;
+		for (int i = 0; i < size; i++)
+		{
+			int left = ((i * size) + 0) * 4;
+			int right = ((i * size) + (size - 1)) * 4;
+			int midA = ((i * size) + 63) * 4;
+			int midB = ((i * size) + 64) * 4;
+
+			int top = ((0 * size) + i) * 4;
+			int bottom = (((size - 1) * size) + i) * 4;
+			int midY0 = ((63 * size) + i) * 4;
+			int midY1 = ((64 * size) + i) * 4;
+
+			for (int c = 0; c < 4; c++)
+			{
+				borderDiffSum += Math.Abs(mips[left + c] - mips[right + c]) + Math.Abs(mips[top + c] - mips[bottom + c]);
+				interiorDiffSum += Math.Abs(mips[midA + c] - mips[midB + c]) + Math.Abs(mips[midY0 + c] - mips[midY1 + c]);
+			}
+		}
+
+		AssertThat(borderDiffSum / Math.Max(interiorDiffSum, 1.0)).IsLess(1.45);
+
+		// Verify coverage-preserving mip levels retain non-zero bubble peaks down at mip 3 (16x16).
+		int mip3Offset = (128 * 128 * 4) + (64 * 64 * 4) + (32 * 32 * 4);
+		int maxMip3G = 0;
+		int maxMip3B = 0;
+		for (int i = 0; i < 16 * 16; i++)
+		{
+			maxMip3G = Math.Max(maxMip3G, mips[mip3Offset + (i * 4) + 1]);
+			maxMip3B = Math.Max(maxMip3B, mips[mip3Offset + (i * 4) + 2]);
+		}
+		AssertThat(maxMip3G).IsGreater(80);
+		AssertThat(maxMip3B).IsGreater(60);
+	}
+
+	[TestCase]
+	public void WaterWakeRingBuffer_TracksDirectionalVelocityAndDecaysChurnWhenIdle()
+	{
+		var ring = new WaterWakeRingBuffer();
+		const float waterY = 20.0f;
+		var wader = new Vector3(5f, waterY - 0.65f, 8f);
+
+		// Initial stationary frame: zero speed and zero churn energy.
+		ring.Step(0.016f, new[] { wader }, waterY, out _, out _, out _, out _, out Vector4 vel0, out _);
+		AssertThat(vel0.Z).IsEqual(0f);
+		AssertThat(vel0.W).IsEqual(0f);
+
+		// Swim steadily along +X at 2.5 m/s for 0.6 s -> heading aligns with +X and churn energy ramps above 0.35.
+		for (int f = 0; f < 10; f++)
+		{
+			wader.X += 0.15f;
+			ring.Step(0.06f, new[] { wader }, waterY, out _, out _, out _, out _, out vel0, out _);
+		}
+		AssertThat(vel0.X).IsGreater(0.95f);
+		AssertThat(MathF.Abs(vel0.Y)).IsLess(0.10f);
+		AssertThat(vel0.Z).IsGreater(1.8f);
+		AssertThat(vel0.W).IsGreater(0.35f);
+
+		// Stop moving and tread water in place for 1.5 s -> churn energy decays below eval_swimmer_vwake's 0.04 gate.
+		for (int f = 0; f < 25; f++)
+		{
+			ring.Step(0.06f, new[] { wader }, waterY, out _, out _, out _, out _, out vel0, out _);
+		}
+		AssertThat(vel0.Z).IsLess(0.05f);
+		AssertThat(vel0.W).IsLess(0.04f);
+	}
+
+	[TestCase]
+	public void WaterWakeRingBuffer_CoSwimmingHeroAndDogDoNotStealSlotsAndFollowCharacterFacing()
+	{
+		var ring = new WaterWakeRingBuffer();
+		const float waterY = 20.0f;
+		var heroPos = new Vector3(10f, waterY - 0.65f, 12f);
+		var dogPos = new Vector3(11.05f, waterY - 0.55f, 12.60f); // ~1.21 m away (< 1.8 m match radius)
+
+		// 1. Stationary hero + dog treading water within 1.21 m of each other must NEVER steal slots or hallucinate velocity.
+		Vector4 vel0 = Vector4.Zero;
+		Vector4 vel1 = Vector4.Zero;
+		ReadOnlySpan<WaderSample> idlePair = stackalloc WaderSample[]
+		{
+			new(100u, heroPos, new Vector2(1f, 0f)),
+			new(200u, dogPos, new Vector2(0f, 1f)),
+		};
+		for (int f = 0; f < 30; f++)
+		{
+			ring.Step(0.033f, idlePair, waterY, out _, out _, out _, out _, out vel0, out vel1);
+		}
+		AssertThat(vel0.Z).IsEqual(0f);
+		AssertThat(vel0.W).IsEqual(0f);
+		AssertThat(vel1.Z).IsEqual(0f);
+		AssertThat(vel1.W).IsEqual(0f);
+
+		// 2. Anonymous Vector3 overload (Id == 0) also claims slots per step so close stationary waders stay at zero churn.
+		var anonRing = new WaterWakeRingBuffer();
+		var anonPair = new[] { heroPos, dogPos };
+		for (int f = 0; f < 20; f++)
+		{
+			anonRing.Step(0.033f, anonPair, waterY, out _, out _, out _, out _, out Vector4 aVel0, out Vector4 aVel1);
+			AssertThat(aVel0.W).IsEqual(0f);
+			AssertThat(aVel1.W).IsEqual(0f);
+		}
+
+		// 3. Hero swims forward along diagonal facing (0.7071, 0.7071) while dog stays stationary nearby:
+		//    hero's V-wake tracks drawn character facing cleanly while stationary dog keeps zero churn.
+		var diagFwd = new Vector2(0.70710677f, 0.70710677f);
+		Span<WaderSample> movingHero = stackalloc WaderSample[2];
+		for (int f = 0; f < 14; f++)
+		{
+			heroPos.X += 0.08f;
+			heroPos.Z += 0.04f;
+			movingHero[0] = new WaderSample(100u, heroPos, diagFwd);
+			movingHero[1] = new WaderSample(200u, dogPos, new Vector2(0f, 1f));
+			ring.Step(0.033f, movingHero, waterY, out _, out _, out _, out _, out vel0, out vel1);
+		}
+		AssertThat(vel0.W).IsGreater(0.35f);
+		AssertThat(vel0.X).IsGreater(0.65f);
+		AssertThat(vel0.Y).IsGreater(0.50f);
+		AssertThat(vel1.W).IsEqual(0f);
+	}
+
+	[TestCase]
+	public void ComputeWaterCelestial_PublishesPinchedGlitterApexAndPreHorizonRiseRamp()
+	{
+		AssertThat(Engine_CelestialElements.ModernMoonScale).IsEqual(0.75f);
+
+		var theme = new SkyTheme
+		{
+			SunDiscSize = 1.2f,
+			SunDiscIntensity = 1.0f,
+			MoonSize = 1.7f,
+			MoonIntensity = 1.4f,
+		};
+
+		// 1. Daytime Sun active above horizon -> full strength and tight pinched-cone apex (~0.014).
+		var dayFrame = new SkyFrame();
+		dayFrame.SkyParams[0] = 1.0f;
+		dayFrame.SunDirection[0] = 0.0f;
+		dayFrame.SunDirection[1] = 0.45f;
+		dayFrame.SunDirection[2] = 0.893f;
+		dayFrame.MoonDirection[0] = 0.0f;
+		dayFrame.MoonDirection[1] = -0.45f;
+		dayFrame.MoonDirection[2] = -0.893f;
+
+		(Vector4 dayParams, Vector3 dayDir) = Engine_SkyEnvironment.ComputeWaterCelestial(
+			dayFrame, theme, dynamicSkyEnabled: false, modernLighting: true);
+		AssertThat(dayParams.X).IsEqual(1.0f);
+		AssertThat(dayParams.Z).IsEqual(0.0f);
+		AssertThat(dayParams.Y).IsEqual(0.014f);
+		AssertThat(dayParams.W).IsEqual(0.014f);
+		AssertThat(dayDir.Y).IsGreater(0.40f);
+
+		// 2. Limb-breach Moonrise: before the visible top edge breaches y = 0 (y = -0.085 < -moonLimbSin ~ -0.0744),
+		//    glitter stays strictly 0.0; once the upper limb breaches y = 0 (y = -0.045), it eases smoothly > 0.
+		var risingMoonFrame = new SkyFrame();
+		risingMoonFrame.SkyParams[0] = 0.0f;
+		risingMoonFrame.SunDirection[0] = 0.0f;
+		risingMoonFrame.SunDirection[1] = -0.40f;
+		risingMoonFrame.SunDirection[2] = -0.9165f;
+		risingMoonFrame.MoonDirection[0] = 0.25f;
+		risingMoonFrame.MoonDirection[1] = -0.085f;
+		risingMoonFrame.MoonDirection[2] = 0.9645f;
+
+		(Vector4 belowLimbParams, _) = Engine_SkyEnvironment.ComputeWaterCelestial(
+			risingMoonFrame, theme, dynamicSkyEnabled: false, modernLighting: true);
+		AssertThat(belowLimbParams.X).IsEqual(0.0f);
+
+		risingMoonFrame.MoonDirection[1] = -0.045f;
+		risingMoonFrame.MoonDirection[2] = 0.967f;
+		(Vector4 risingParams, _) = Engine_SkyEnvironment.ComputeWaterCelestial(
+			risingMoonFrame, theme, dynamicSkyEnabled: false, modernLighting: true);
+		AssertThat(risingParams.X).IsGreater(0.02f);
+		AssertThat(risingParams.X).IsLess(0.55f);
+		AssertThat(risingParams.Z).IsEqual(1.0f);
+
+		// 3. Nighttime Moon well above horizon -> strong HDR glitter weight (>= 0.55) + tight pinched apex (0.013).
+		risingMoonFrame.MoonDirection[1] = 0.35f;
+		risingMoonFrame.MoonDirection[2] = 0.903f;
+		(Vector4 nightParams, Vector3 nightDir) = Engine_SkyEnvironment.ComputeWaterCelestial(
+			risingMoonFrame, theme, dynamicSkyEnabled: false, modernLighting: true);
+		AssertThat(nightParams.X).IsGreater(0.85f);
+		AssertThat(nightParams.Z).IsEqual(1.0f);
+		AssertThat(nightParams.Y).IsEqual(0.013f);
+		AssertThat(nightParams.W).IsEqual(0.013f);
+		AssertThat(nightDir.Y).IsGreater(0.30f);
+
+		// 4. Deep below horizon -> glitter strength gated strictly to 0.
+		risingMoonFrame.MoonDirection[1] = -0.30f;
+		(Vector4 darkParams, _) = Engine_SkyEnvironment.ComputeWaterCelestial(
+			risingMoonFrame, theme, dynamicSkyEnabled: false, modernLighting: true);
+		AssertThat(darkParams.X).IsEqual(0.0f);
 	}
 }

@@ -124,10 +124,11 @@ vec3 fable_atmosphere_near_knot(int index) {
 ///
 /// `close_fog` false is the TREE line: the tree vertex shader (blob 0536 1379-1411) takes the
 /// in-scatter table times the additive factor and never reads the close-fog colour.
-bool fable_atmosphere_terms_for(
+bool fable_atmosphere_terms_ex(
 		vec3 view_vertex,
 		mat4 inv_view,
 		bool close_fog_blend,
+		bool cancel_volumetric_froxels,
 		out vec3 transmittance,
 		out vec3 fog_colour) {
 	transmittance = vec3(1.0);
@@ -211,9 +212,10 @@ bool fable_atmosphere_terms_for(
 	// When Godot's built-in 3D Volumetric Fog uniform medium is active (`fable_volumetric_fog_end > 0.0`),
 	// `fable_volumetric_fog_end` stores the uniform 3D scattering medium's base density `sigma_vol`
 	// integrated across the `0 .. 128m` froxel frustum from the camera (`radial_dist`).
-	// Subtract the full froxel optical depth (`sigma_vol * min(radial_dist, 128.0)`) so near-field 3D
-	// volumetric fog never compounds onto the distance analytic fog curve.
-	if (fable_volumetric_fog_end > 0.0) {
+	// Subtract the full froxel optical depth (`sigma_vol * min(radial_dist, 128.0)`) on surfaces that
+	// receive Godot froxel fog (`cancel_volumetric_froxels == true`); `fog_disabled` surfaces such as
+	// `water.gdshader` pass `false` so their `0 .. 8000m` analytical fog stays continuous.
+	if (cancel_volumetric_froxels && fable_volumetric_fog_end > 0.0) {
 		float vol_dist = clamp(radial_dist, 0.0, 128.0);
 		vec3 cancel_depth = vec3(fable_volumetric_fog_end * vol_dist);
 		raw = min(raw * exp(cancel_depth), vec3(1.0));
@@ -232,6 +234,15 @@ bool fable_atmosphere_terms_for(
 	fog_colour = (close_fog_blend ? mix(close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) : sky) * atmos_factors.y;
 	return true;
 }
+
+bool fable_atmosphere_terms_for(
+		vec3 view_vertex,
+		mat4 inv_view,
+		bool close_fog_blend,
+		out vec3 transmittance,
+		out vec3 fog_colour) {
+	return fable_atmosphere_terms_ex(view_vertex, inv_view, close_fog_blend, true, transmittance, fog_colour);
+}
 #endif
 
 bool fable_atmosphere_terms(
@@ -240,6 +251,14 @@ bool fable_atmosphere_terms(
 		out vec3 transmittance,
 		out vec3 fog_colour) {
 	return fable_atmosphere_terms_for(view_vertex, inv_view, true, transmittance, fog_colour);
+}
+
+bool fable_atmosphere_terms_uncompensated(
+		vec3 view_vertex,
+		mat4 inv_view,
+		out vec3 transmittance,
+		out vec3 fog_colour) {
+	return fable_atmosphere_terms_ex(view_vertex, inv_view, true, false, transmittance, fog_colour);
 }
 
 /// Applies those terms as the guest's `colour*T + (1-T)*C*alpha`.

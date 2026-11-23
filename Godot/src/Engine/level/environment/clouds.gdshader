@@ -1,6 +1,8 @@
 shader_type spatial;
 render_mode blend_mix, cull_disabled, depth_draw_never, unshaded;
 
+#include "res://src/Engine/level/water/fable_mirror_clip.gdshaderinc"
+
 // MIPMAPPED, because these are flat horizontal planes seen almost edge-on. A layer is a rectangle
 // at a fixed height, so toward its vanishing line the UVs compress without bound and a tiled
 // density texture sampled with no mip selection aliases into hard horizontal stripes. The decoder
@@ -16,6 +18,7 @@ varying vec3 v_world;
 
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	POSITION = fable_mirror_clip_position(v_world, MODELVIEW_MATRIX * vec4(VERTEX, 1.0), PROJECTION_MATRIX, CAMERA_POSITION_WORLD);
 }
 
 void fragment() {

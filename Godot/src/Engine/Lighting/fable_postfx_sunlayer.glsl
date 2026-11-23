@@ -28,6 +28,7 @@ layout(push_constant, std430) uniform Params {
 	vec2 sun_uv;
 	vec2 half_uv;
 	vec4 colour;
+	vec4 water_plane;
 } push;
 
 void main() {
@@ -41,6 +42,17 @@ void main() {
 	if (abs(local.x) > 1.0 || abs(local.y) > 1.0) {
 		imageStore(dst_image, coord, vec4(0.0));
 		return;
+	}
+
+	// Ocean water writes depth_draw_never so depth_tex stays at far_value past coastal seafloors;
+	// analytically occlude any below-horizon pixel where the view ray hits the ocean plane closer than the sun.
+	if (push.water_plane.x > 0.0) {
+		vec2 ndc = vec2((uv.x * 2.0) - 1.0, 1.0 - (uv.y * 2.0));
+		float ray_y = push.water_plane.y + (ndc.x * push.water_plane.z) + (ndc.y * push.water_plane.w);
+		if (ray_y < -1e-5 && (push.water_plane.x / (-ray_y)) < 8000.0) {
+			imageStore(dst_image, coord, vec4(0.0));
+			return;
+		}
 	}
 
 	// THE DEPTH TEST IS THE POINT. The disc sits at the far plane, so it survives only where

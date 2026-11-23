@@ -573,6 +573,13 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
             Engine_CelestialElements.Update(celestial, Theme, frame, null, MoonPhaseNow);
         }
 
+        if (ResolveWaterNode() is { } liveWater)
+        {
+            (Vector4 celParams, Vector3 celDir) = Engine_SkyEnvironment.ComputeWaterCelestial(
+                frame, Theme, Engine_DynamicSky.Enabled, Refii.Lighting.Engine_LightingFrame.ModernModel);
+            Engine_WaterMaterial.ApplyCelestialToWater(liveWater, celParams, celDir);
+        }
+
         if (LightingNow(w) is { } lightingNow && ResolveSun() is { } sun)
         {
             LightingFrame lighting = Engine_LightingFrame.EvaluateInto(
@@ -735,7 +742,7 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
                     waterMesh.MaterialOverride is ShaderMaterial waterMaterial)
                 {
                     Engine_SkyEnvironment.ApplyWaterFrame(
-                        waterMaterial, frame, domeState, domeLut);
+                        waterMaterial, frame, Theme, domeState, domeLut);
                     Engine_WaterMaterial.Apply(waterMaterial, waterTheme);
                 }
             }
@@ -1947,13 +1954,15 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
 /// </summary>
 public struct SunClockInterpolator
 {
-    /// <summary>Jump threshold (~5.76 game minutes) above which time-of-day snaps immediately instead of interpolating.</summary>
-    public const float SnapThreshold = 0.004f;
+    /// <summary>Jump threshold (~28.8 game minutes) above which time-of-day snaps immediately instead of interpolating.</summary>
+    public const float SnapThreshold = 0.02f;
 
     private bool _initialized;
+    private bool _hasFirstTick;
     private float _lastRawFraction;
     private float _smoothedFraction;
     private float _ratePerSecond;
+    private float _smoothedVelocity;
     private float _elapsedSinceRaw;
 
     /// <summary>Advances and returns the smoothed day fraction in <c>[0, 1)</c> for one display frame.</summary>
@@ -1968,9 +1977,11 @@ public struct SunClockInterpolator
         if (!_initialized)
         {
             _initialized = true;
+            _hasFirstTick = false;
             _lastRawFraction = raw;
             _smoothedFraction = raw;
             _ratePerSecond = 0.0f;
+            _smoothedVelocity = 0.0f;
             _elapsedSinceRaw = 0.0f;
             return raw;
         }
@@ -1978,9 +1989,11 @@ public struct SunClockInterpolator
         float rawDelta = ShortestSignedDelta(_lastRawFraction, raw);
         if (MathF.Abs(rawDelta) > SnapThreshold || rawDelta < -1e-6f)
         {
+            _hasFirstTick = false;
             _lastRawFraction = raw;
             _smoothedFraction = raw;
             _ratePerSecond = 0.0f;
+            _smoothedVelocity = 0.0f;
             _elapsedSinceRaw = 0.0f;
             return raw;
         }
@@ -1989,34 +2002,47 @@ public struct SunClockInterpolator
         {
             if (MathF.Abs(rawDelta) > 1e-7f)
             {
+                _hasFirstTick = false;
                 _lastRawFraction = raw;
                 _smoothedFraction = raw;
                 _ratePerSecond = 0.0f;
                 _elapsedSinceRaw = 0.0f;
             }
 
+            _smoothedVelocity = 0.0f;
             return _smoothedFraction;
         }
 
         _elapsedSinceRaw += worldDelta;
         if (rawDelta > 1e-7f)
         {
-            float instRate = Math.Clamp(rawDelta / MathF.Max(_elapsedSinceRaw, 0.01f), 0.0f, 0.02f);
+            float dtRaw = _hasFirstTick
+                ? MathF.Max(_elapsedSinceRaw, 0.01f)
+                : MathF.Max(_elapsedSinceRaw, 1.0f / 15.0f);
+            _hasFirstTick = true;
+            float instRate = Math.Clamp(rawDelta / dtRaw, 0.0f, 0.25f);
             _ratePerSecond = _ratePerSecond <= 1e-8f
                 ? instRate
-                : (_ratePerSecond * 0.65f) + (instRate * 0.35f);
+                : (_ratePerSecond * 0.75f) + (instRate * 0.25f);
             _lastRawFraction = raw;
             _elapsedSinceRaw = 0.0f;
         }
-        else if (_elapsedSinceRaw > 0.25f)
+        else if (_elapsedSinceRaw > 0.30f)
         {
-            _ratePerSecond *= MathF.Exp(-10.0f * worldDelta);
+            _ratePerSecond *= MathF.Exp(-8.0f * worldDelta);
         }
 
-        float error = MathF.Max(0.0f, ShortestSignedDelta(_smoothedFraction, _lastRawFraction));
-        float desiredLag = _ratePerSecond * 0.08f;
-        float velocity = MathF.Max(0.0f, _ratePerSecond + ((error - desiredLag) * 6.0f));
-        float advance = MathF.Min(velocity * worldDelta, error + (_ratePerSecond * 0.08f));
+        float bufferLag = (1.0f / 15.0f) - MathF.Min(worldDelta, 1.0f / 30.0f);
+        float predictedOffset = (MathF.Min(_elapsedSinceRaw, 0.12f) - bufferLag) * _ratePerSecond;
+        float target = Wrap01(_lastRawFraction + predictedOffset);
+        float signedErr = ShortestSignedDelta(_smoothedFraction, target);
+        float desiredVelocity = MathF.Max(0.0f, _ratePerSecond + (signedErr * 2.5f));
+        float velBlend = 1.0f - MathF.Exp(-16.0f * worldDelta);
+        _smoothedVelocity = _smoothedVelocity <= 1e-8f
+            ? desiredVelocity
+            : _smoothedVelocity + ((desiredVelocity - _smoothedVelocity) * velBlend);
+        float maxHeadroom = MathF.Max(0.0f, ShortestSignedDelta(_smoothedFraction, _lastRawFraction) + (_ratePerSecond * 0.05f));
+        float advance = MathF.Min(_smoothedVelocity * worldDelta, maxHeadroom);
         _smoothedFraction = Wrap01(_smoothedFraction + advance);
         return _smoothedFraction;
     }

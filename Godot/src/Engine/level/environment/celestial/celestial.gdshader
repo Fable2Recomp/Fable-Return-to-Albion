@@ -10,7 +10,11 @@ uniform float element_facing_power = 0.0;
 uniform float element_depth_bias = 0.000001;
 uniform int element_mode = 0;
 
+global uniform vec2 fable_vista_ocean;
+
 varying vec4 v_colour;
+varying vec3 v_world_offset;
+varying flat float v_upright_cam;
 
 void vertex() {
 	vec3 dir_view = (VIEW_MATRIX * vec4(normalize(element_dir), 0.0)).xyz;
@@ -19,6 +23,8 @@ void vertex() {
 	if (facing <= 0.0) {
 		POSITION = vec4(0.0, 0.0, -10.0, 1.0);
 		v_colour = vec4(0.0);
+		v_world_offset = vec3(0.0);
+		v_upright_cam = 0.0;
 	} else {
 		vec3 view_pos = (dir_view * element_distance) +
 		                vec3(VERTEX.x * element_half.x, VERTEX.y * element_half.y, 0.0);
@@ -32,6 +38,8 @@ void vertex() {
 		v_colour = vec4(
 			element_colour.rgb * pow(facing, element_facing_power),
 			element_colour.a);
+		v_world_offset = (INV_VIEW_MATRIX * vec4(view_pos, 0.0)).xyz;
+		v_upright_cam = INV_VIEW_MATRIX[1].y;
 	}
 }
 
@@ -68,13 +76,21 @@ void vertex() {
 global uniform float fable_emission_boost = 1.0;
 
 void fragment() {
+	float ocean_vis = 1.0;
+	if (v_upright_cam > 0.0 && fable_vista_ocean.x > 0.5 && CAMERA_POSITION_WORLD.y > (fable_vista_ocean.y + 0.02)) {
+		float world_y = CAMERA_POSITION_WORLD.y + v_world_offset.y;
+		ocean_vis = smoothstep(-1.5, 1.5, world_y - fable_vista_ocean.y);
+	}
 	vec4 texel = texture(element_tex, UV);
-	float boost = (element_mode == 0 || element_mode == 1) ? max(fable_emission_boost, 1.0) : 1.0;
+	float hdr_boost = max(fable_emission_boost, 1.0);
+	float boost = (element_mode == 0 || element_mode == 1)
+		? hdr_boost
+		: (element_mode == 2 ? mix(1.0, hdr_boost, 0.45) : 1.0);
 	if (element_mode == 0) {
 		ALBEDO = max(texel.rgb * v_colour.rgb * boost, vec3(0.0));
-		ALPHA = texel.a * v_colour.a;
+		ALPHA = texel.a * v_colour.a * ocean_vis;
 	} else {
-		ALBEDO = max(texel.rgb * v_colour.rgb * texel.a * boost, vec3(0.0));
-		ALPHA = element_mode == 2 ? texel.a * v_colour.a : texel.a;
+		ALBEDO = max(texel.rgb * v_colour.rgb * texel.a * boost * ocean_vis, vec3(0.0));
+		ALPHA = (element_mode == 2 ? texel.a * v_colour.a : texel.a) * ocean_vis;
 	}
 }

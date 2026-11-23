@@ -404,11 +404,105 @@ public static class Engine_SkyEnvironment
     }
 
     public static void ApplyWaterFrame(
-        ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut)
+        ShaderMaterial material, SkyFrame frame, AtmosphereState state, ImageTexture lut) =>
+        ApplyWaterFrame(material, frame, null, state, lut);
+
+    public static void ApplyWaterFrame(
+        ShaderMaterial material, SkyFrame frame, SkyTheme? theme, AtmosphereState state, ImageTexture lut)
     {
-        _ = frame;
         _ = lut;
         Engine_WaterMaterial.ApplyAtmosphere(material, state);
+        (Vector4 celParams, Vector3 celDir) = ComputeWaterCelestial(
+            frame, theme, Engine_DynamicSky.Enabled, Refii.Lighting.Engine_LightingFrame.ModernModel);
+        Engine_WaterMaterial.ApplyCelestial(material, celParams, celDir);
+    }
+
+    /// <summary>
+    /// Computes the active celestial glitter-cone parameters (<c>x = glitterStrength</c>, <c>y = apexDiscSin</c>,
+    /// <c>z = isMoon</c>, <c>w = directionalLightDiscSin</c>) and Godot world-space direction. Ramps smoothly
+    /// from slightly below the horizon before the upper limb peeks over so sunrise/moonrise shimmer never pops in.
+    /// </summary>
+    public static (Vector4 Params, Vector3 Direction) ComputeWaterCelestial(
+        SkyFrame frame, SkyTheme? theme, bool dynamicSkyEnabled, bool modernLighting)
+    {
+        static float SmoothStep01(float edge0, float edge1, float x)
+        {
+            float t = Math.Clamp((x - edge0) / MathF.Max(edge1 - edge0, 1e-5f), 0f, 1f);
+            return t * t * (3f - (2f * t));
+        }
+
+        Vector3 sunDir = Engine_SkyFrame.ToGodot(frame.SunDirection);
+        if (sunDir.LengthSquared() > 1e-8f)
+        {
+            sunDir = sunDir.Normalized();
+        }
+        else
+        {
+            sunDir = Vector3.Up;
+        }
+
+        Vector3 moonDir = Engine_SkyFrame.ToGodot(frame.MoonDirection);
+        bool hasMoonDir = moonDir.LengthSquared() > 1e-8f;
+        if (hasMoonDir)
+        {
+            moonDir = moonDir.Normalized();
+        }
+
+        float sunDiscIntensity = theme?.SunDiscIntensity ?? 1.0f;
+        bool sunActive = frame.SkyParams[0] >= Engine_CelestialElements.IntensityGate &&
+            sunDiscIntensity >= Engine_CelestialElements.IntensityGate;
+
+        float moonIntensity = theme?.MoonIntensity ?? 1.0f;
+        bool moonActive = hasMoonDir && moonIntensity >= Engine_CelestialElements.IntensityGate;
+
+        float sunLimbSin;
+        float moonLimbSin;
+        if (dynamicSkyEnabled)
+        {
+            sunLimbSin = 0.032f;
+            moonLimbSin = 0.036f;
+        }
+        else
+        {
+            // Match the visible bright disc edge inside each billboard quad (~48% of SunDisc quad,
+            // ~78% of Moon phase cell) with zero pre-margin so water glitter stays strictly 0 until
+            // the visible top edge of the Sun or Moon actually breaches the horizon.
+            float sunSize = MathF.Max(theme?.SunDiscSize ?? 1.0f, 0.1f);
+            float sunVisHalf = sunSize * Engine_CelestialElements.SunDiscSizeScale * 0.48f;
+            sunLimbSin = Math.Clamp(
+                sunVisHalf / MathF.Sqrt((Engine_CelestialElements.SunDiscDistance * Engine_CelestialElements.SunDiscDistance) + (sunVisHalf * sunVisHalf)),
+                0.028f, 0.14f);
+
+            float moonSize = MathF.Max(theme?.MoonSize ?? 1.0f, 0.1f);
+            float moonVisHalf = moonSize * Engine_CelestialElements.MoonSizeScale * Engine_CelestialElements.EffectiveMoonScale * 0.78f;
+            moonLimbSin = Math.Clamp(
+                moonVisHalf / MathF.Sqrt((Engine_CelestialElements.MoonBillboardDistance * Engine_CelestialElements.MoonBillboardDistance) + (moonVisHalf * moonVisHalf)),
+                0.025f, 0.14f);
+        }
+
+        const float sunApexSin = 0.014f;
+        const float moonApexSin = 0.013f;
+
+        float sunThemeFade = Math.Clamp(frame.SkyParams[0] / 0.12f, 0f, 1f);
+        float sunRise = SmoothStep01(-sunLimbSin, 0.050f, sunDir.Y);
+        float sunWeight = sunActive ? (sunRise * sunThemeFade) : 0f;
+
+        float moonPeakStrength = Math.Clamp(0.55f + (0.30f * moonIntensity), 0.55f, 1.0f);
+        float moonRise = SmoothStep01(-moonLimbSin, 0.050f, moonDir.Y);
+        float moonWeight = moonActive ? (moonPeakStrength * moonRise) : 0f;
+
+        if (sunWeight >= moonWeight && sunWeight > 1e-4f)
+        {
+            return (new Vector4(sunWeight, sunApexSin, 0.0f, sunApexSin), sunDir);
+        }
+
+        if (moonWeight > 1e-4f)
+        {
+            float lightDiscSin = modernLighting ? moonApexSin : 0.065f;
+            return (new Vector4(moonWeight, moonApexSin, 1.0f, lightDiscSin), moonDir);
+        }
+
+        return (new Vector4(0.0f, sunApexSin, 0.0f, modernLighting ? moonApexSin : 0.065f), sunDir);
     }
 
     public static List<byte[]> BuildGdbChain(LevelEntry level, Func<string, byte[]?> read) =>

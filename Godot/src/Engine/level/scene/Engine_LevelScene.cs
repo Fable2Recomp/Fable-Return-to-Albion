@@ -2258,8 +2258,8 @@ public static class Engine_LevelScene
     public const string VistaOceanNodeName = "VistaOcean";
     public const string VistaWaterBodyMeta = "water_vista_body";
 
-    /// <summary>Half the ocean's side: the `sky_oceanwater` VS (blob 0129) spans ±2850 units.</summary>
-    private const float VistaOceanHalfExtent = 2850f;
+    /// <summary>Half the ocean's side: extends past Camera.Far so elevated horizon views never uncover sky.</summary>
+    private const float VistaOceanHalfExtent = 8000f;
 
     /// <summary>
     /// The vista ocean — the unmasked sheet that carries a level's water to the horizon.
@@ -2434,6 +2434,7 @@ public static class Engine_LevelScene
 
                 var material = new FogMaterial();
                 material.Density = vol.Density;
+                material.EdgeFade = 0.22f;
                 material.Albedo = Refii.Lighting.Engine_LightColour.ForGodot(
                     new Color(vol.Colour[0], vol.Colour[1], vol.Colour[2]));
                 material.Emission = Refii.Lighting.Engine_LightColour.ForGodot(

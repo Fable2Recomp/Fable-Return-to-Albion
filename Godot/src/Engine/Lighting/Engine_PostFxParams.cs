@@ -482,6 +482,66 @@ public static class Engine_PostFxParams
 
     public static float SunFacing { get; private set; }
 
+    private static bool _vistaOceanActive;
+    private static float _vistaOceanHeight;
+
+    /// <summary>Records whether a coastal region currently shows an active <c>VistaOcean</c> at <paramref name="height"/>.</summary>
+    public static void SetVistaOcean(bool active, float height)
+    {
+        lock (Gate)
+        {
+            _vistaOceanActive = active;
+            _vistaOceanHeight = height;
+        }
+    }
+
+    /// <summary>Snapshots the standing region's <c>VistaOcean</c> state for the render thread.</summary>
+    public static void GetVistaOcean(out bool active, out float height)
+    {
+        lock (Gate)
+        {
+            active = _vistaOceanActive;
+            height = _vistaOceanHeight;
+        }
+    }
+
+    /// <summary>
+    /// Builds the per-view analytical ocean-plane ray intersection parameter
+    /// <c>(camOrigin.Y - oceanY, forward.Y, right.Y / px, up.Y / py)</c> when <paramref name="oceanActive"/>
+    /// is true and the camera sits above <paramref name="oceanY"/>; otherwise <see cref="Vector4.Zero"/>.
+    /// </summary>
+    public static Vector4 BuildWaterPlanePush(
+        bool oceanActive, float oceanY, Vector3 camOrigin, Basis camBasis, float px, float py)
+    {
+        if (!oceanActive || !(camOrigin.Y > oceanY + 0.02f) || !(px > 1e-8f) || !(py > 1e-8f))
+        {
+            return Vector4.Zero;
+        }
+
+        Vector3 forward = (-camBasis.Z).Normalized();
+        Vector3 right = camBasis.X.Normalized();
+        Vector3 up = camBasis.Y.Normalized();
+        return new Vector4(camOrigin.Y - oceanY, forward.Y, right.Y / px, up.Y / py);
+    }
+
+    /// <summary>
+    /// Evaluates the view-Z (<c>facing</c>) distance along screen <paramref name="uv"/> where the camera ray
+    /// strikes the infinite ocean plane, or <see cref="float.PositiveInfinity"/> if the ray points at/above the horizon
+    /// or no ocean plane is active. Pure helper mirroring <c>fable_postfx_sunlayer.glsl</c> / <c>fable_postfx_halolayer.glsl</c>.
+    /// </summary>
+    public static float EvaluateWaterPlaneFacing(Vector4 waterPlane, Vector2 uv)
+    {
+        if (waterPlane.X <= 0f)
+        {
+            return float.PositiveInfinity;
+        }
+
+        float ndcX = (uv.X * 2f) - 1f;
+        float ndcY = 1f - (uv.Y * 2f);
+        float rayY = waterPlane.Y + (ndcX * waterPlane.Z) + (ndcY * waterPlane.W);
+        return rayY < -1e-5f ? (waterPlane.X / (-rayY)) : float.PositiveInfinity;
+    }
+
     public static void Publish(ToneMapTheme? theme, SkyTheme? sky, SkyFrame? frame, Camera3D? camera)
     {
         lock (Gate)

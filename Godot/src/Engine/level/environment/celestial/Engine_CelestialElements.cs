@@ -46,6 +46,12 @@ public static partial class Engine_CelestialElements
 
     public const float MoonSizeScale = 300.0f;
 
+    /// <summary>Modern-pipeline Moon size multiplier (25% smaller than original console scale).</summary>
+    public const float ModernMoonScale = 0.75f;
+
+    public static float EffectiveMoonScale =>
+        Refii.Models.Engine_ClassicMaterial.Active ? 1.0f : ModernMoonScale;
+
     public const float MoonPhaseUStep = 0.125f;
 
     /// <summary>The glow-layer moon (`0x82279410`): the moon texture at <c>moonDir × 4000</c>,
@@ -320,6 +326,7 @@ public static partial class Engine_CelestialElements
         int phase = Math.Clamp(moonPhase, 0, 7);
         float u0 = phase * MoonPhaseUStep;
         float u1 = (phase + 1) * MoonPhaseUStep;
+        float moonScale = EffectiveMoonScale;
 
         if (theme.HasMoonTexture &&
             container.GetNodeOrNull<MeshInstance3D>(Path_Moon) is null)
@@ -327,10 +334,12 @@ public static partial class Engine_CelestialElements
             Texture2D? moonDisc = Load(theme.MoonTextureHash, read, "moon");
             if (moonDisc is not null)
             {
+                float moonHalf = element[1] * MoonSizeScale * moonScale;
                 MeshInstance3D moonNode = Billboard(
                     "Moon", mixShader, moonDisc, Vector3.Up, MoonBillboardDistance,
-                    element[1] * MoonSizeScale, element[1] * MoonSizeScale,
+                    moonHalf, moonHalf,
                     Vector3.Zero, element[4], 0f, u0, u1, priority++, 2);
+                moonNode.SetMeta(MoonPhaseMeta, phase);
                 // The title's moon (`0x821D3B80`): PS MOONDISC, SRCALPHA / INVSRCALPHA, alpha
                 // ref 1, no depth write.
                 Classic(moonNode, "PSHADER_MOONDISC", "g_MoonTexture", moonDisc,
@@ -353,9 +362,10 @@ public static partial class Engine_CelestialElements
             Texture2D? moonGlare = Load(theme.MoonGlareTextureHash, read, "moon glare");
             if (moonGlare is not null)
             {
+                float moonGlareHalf = element[3] * MoonGlareSizeScale * moonScale;
                 container.AddChild(Billboard(
                     "MoonGlare", overlayShader, moonGlare, Vector3.Up, MoonGlareDistance,
-                    element[3] * MoonGlareSizeScale, element[3] * MoonGlareSizeScale,
+                    moonGlareHalf, moonGlareHalf,
                     Vector3.Zero, 1f, 0f, 0f, 1f, priority++));
             }
         }
@@ -407,6 +417,10 @@ public static partial class Engine_CelestialElements
         }
 
         OverlayView view = OverlayView.For(container);
+        float moonScale = EffectiveMoonScale;
+        uint billboardLayers = Refii.Models.Engine_ClassicMaterial.Active
+            ? Refii.Level.Engine_ReflectionLayer.ReflectedLayers
+            : 1u;
 
         // By index: GetChildren() is a Godot Array, a finalizable handle per frame.
         for (int i = 0, count = container.GetChildCount(); i < count; i++)
@@ -419,6 +433,10 @@ public static partial class Engine_CelestialElements
             }
 
             string elementName = Refii.Core.Engine_NodeNames.Of(child);
+            if (elementName != "Stars" && mesh.Layers != billboardLayers)
+            {
+                mesh.Layers = billboardLayers;
+            }
             switch (elementName)
             {
                 case "SunBeams":
@@ -472,20 +490,18 @@ public static partial class Engine_CelestialElements
                             new Vector2(element[15] * SunGlareSizeScale, element[15] * SunGlareSizeScale));
                     break;
                 case "Moon":
-                    // The guest's own phase (sky M+20) under the classic renderer.
-                    if (Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live)
+                    // Keep the Moon billboard's 8-phase UV window synchronized with MoonBloom in both Modern and Classic modes.
+                    int livePhase = (Refii.Models.Engine_ClassicMaterial.Active && Refii.Models.Engine_ClassicTheme.Live)
+                        ? Math.Clamp(Refii.Models.Engine_ClassicTheme.MoonPhase, 0, 7)
+                        : Math.Clamp(moonPhase, 0, 7);
+                    if (!mesh.HasMeta(MoonPhaseMeta) || mesh.GetMeta(MoonPhaseMeta).AsInt32() != livePhase)
                     {
-                        int livePhase = Math.Clamp(Refii.Models.Engine_ClassicTheme.MoonPhase, 0, 7);
-                        if (!mesh.HasMeta(MoonPhaseMeta) || mesh.GetMeta(MoonPhaseMeta).AsInt32() != livePhase)
-                        {
-                            mesh.Mesh = QuadMesh("Moon", livePhase * MoonPhaseUStep, (livePhase + 1) * MoonPhaseUStep);
-                            mesh.SetMeta(MoonPhaseMeta, livePhase);
-                        }
+                        mesh.Mesh = QuadMesh("Moon", livePhase * MoonPhaseUStep, (livePhase + 1) * MoonPhaseUStep);
+                        mesh.SetMeta(MoonPhaseMeta, livePhase);
                     }
                     material.SetShaderParameter(Param_element_dir, moon);
-                    material.SetShaderParameter(Param_element_half, new Vector2(
-                        element[1] * MoonSizeScale,
-                        element[1] * MoonSizeScale));
+                    float moonDiscHalf = element[1] * MoonSizeScale * moonScale;
+                    material.SetShaderParameter(Param_element_half, new Vector2(moonDiscHalf, moonDiscHalf));
                     var moonColour = new Vector4(
                         0.5f * element[0],
                         0.5f * element[0],
@@ -498,9 +514,8 @@ public static partial class Engine_CelestialElements
                     break;
                 case "MoonGlare":
                     material.SetShaderParameter(Param_element_dir, moon);
-                    material.SetShaderParameter(Param_element_half, new Vector2(
-                        element[3] * MoonGlareSizeScale,
-                        element[3] * MoonGlareSizeScale));
+                    float moonGlareHalf = element[3] * MoonGlareSizeScale * moonScale;
+                    material.SetShaderParameter(Param_element_half, new Vector2(moonGlareHalf, moonGlareHalf));
                     // THE SCALE WAS 8x TOO BIG, WHICH IS WHAT BLEW THE MOON OUT — and the
                     // intensity term is real, so do not drop it.
                     //
@@ -522,7 +537,7 @@ public static partial class Engine_CelestialElements
                     mesh.Visible =
                         element[0] >= IntensityGate && element[2] >= IntensityGate &&
                         view.MayReach(moon, MoonGlareDistance,
-                            new Vector2(element[3] * MoonGlareSizeScale, element[3] * MoonGlareSizeScale));
+                            new Vector2(moonGlareHalf, moonGlareHalf));
                     break;
                 case "Stars":
                     material.SetShaderParameter(Param_star_brightness, element[5]);
@@ -593,7 +608,7 @@ public static partial class Engine_CelestialElements
         bool moonOn = moonTex is not null && element[0] >= IntensityGate && moon.LengthSquared() > 1e-12f;
         int phase = Math.Clamp(moonPhase, 0, 7);
         Refii.Fx.Engine_PostFxHalos.PublishSky("MoonBloom", new Refii.Fx.Engine_PostFxHalos.SkyHalo(
-            moon, MoonBillboardDistance, element[1] * MoonBloomSizeScale,
+            moon, MoonBillboardDistance, element[1] * MoonBloomSizeScale * EffectiveMoonScale,
             new Vector3(MoonBloomShaderScale, MoonBloomShaderScale, MoonBloomShaderScale),
             moonTex, moonOn, phase * MoonPhaseUStep, (phase + 1) * MoonPhaseUStep));
         any |= moonOn;
@@ -787,7 +802,9 @@ public static partial class Engine_CelestialElements
 
         return new MeshInstance3D
         {
-            Layers = Refii.Level.Engine_ReflectionLayer.ReflectedLayers,
+            Layers = Refii.Models.Engine_ClassicMaterial.Active
+                ? Refii.Level.Engine_ReflectionLayer.ReflectedLayers
+                : 1u,
             Name = name,
             Mesh = QuadMesh(name, u0, u1),
             MaterialOverride = material,
