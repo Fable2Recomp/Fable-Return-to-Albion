@@ -18,14 +18,35 @@ public sealed class XexIdentity
 	private const int OptionalHeaderTableOffset = 0x18;
 	private const uint KeyExecutionInfo = 0x00040006;
 	private const uint KeyDeltaPatchDescriptor = 0x000005FF;
+	private const uint KeyFileFormatInfo = 0x000003FF;
+	private const int SecurityImageDigestOffset = 0x114;
 	private const int SecurityMediaIdOffset = 0x140;
+	private const int SecurityFileKeyOffset = 0x150;
 	private const int MediaIdLength = 16;
+	private const int DigestLength = 20;
+	private const int FileKeyLength = 16;
 
 	/// <summary>True for a delta patch, false for a base executable.</summary>
 	public bool IsPatch;
 
 	/// <summary>The 16-byte XGD2 media id from the security block.</summary>
 	public byte[] MediaId = new byte[MediaIdLength];
+
+	/// <summary>
+	/// The security block's image digest, the SHA-1 the page chain starts from: two base images
+	/// with the same digest and the same <see cref="FileKey"/> hold the same program.
+	/// </summary>
+	public byte[] ImageDigest = Array.Empty<byte>();
+
+	/// <summary>The security block's encrypted file key.</summary>
+	public byte[] FileKey = Array.Empty<byte>();
+
+	/// <summary>
+	/// A patch's first delta block hash from its file format info. Each block holds the next
+	/// one's hash, so two patches with the same value carry the same image delta. Empty on a
+	/// base image.
+	/// </summary>
+	public byte[] DeltaDigest = Array.Empty<byte>();
 
 	/// <summary>Title id from the execution info; zero on a patch.</summary>
 	public uint TitleId;
@@ -88,6 +109,13 @@ public sealed class XexIdentity
 		}
 
 		image.Slice((int)securityOffset + SecurityMediaIdOffset, MediaIdLength).CopyTo(identity.MediaId);
+		identity.ImageDigest = image.Slice((int)securityOffset + SecurityImageDigestOffset, DigestLength).ToArray();
+		if (securityOffset + SecurityFileKeyOffset + FileKeyLength <= image.Length)
+		{
+			identity.FileKey = image.Slice((int)securityOffset + SecurityFileKeyOffset, FileKeyLength).ToArray();
+		}
+
+		uint fileFormatInfo = 0;
 
 		bool sawExecutionInfo = false;
 		bool sawDelta = false;
@@ -116,6 +144,10 @@ public sealed class XexIdentity
 				identity.TitleId = ReadUInt32BE(image, (int)value + 12);
 				sawExecutionInfo = true;
 			}
+			else if (key == KeyFileFormatInfo)
+			{
+				fileFormatInfo = value;
+			}
 			else if (key == KeyDeltaPatchDescriptor)
 			{
 				if (value + 12 > image.Length)
@@ -131,6 +163,14 @@ public sealed class XexIdentity
 		}
 
 		identity.IsPatch = sawDelta;
+
+		// File format info: size, encryption:16, compression:16, window size, then the first
+		// block's size and hash.
+		if (sawDelta && fileFormatInfo != 0 && fileFormatInfo + 0x10 + DigestLength <= image.Length)
+		{
+			identity.DeltaDigest = image.Slice((int)fileFormatInfo + 0x10, DigestLength).ToArray();
+		}
+
 		if (!sawDelta && !sawExecutionInfo)
 		{
 			error = "The XEX carries neither execution info nor a delta descriptor.";

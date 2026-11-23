@@ -299,8 +299,13 @@ public sealed class AndroidGameInstallerTests
     {
         byte[] data = new byte[1024];
         Encoding.ASCII.GetBytes("XEX2").CopyTo(data, 0);
-        Be(data, 0x10, 0x200); Be(data, 0x14, 1);
+        Be(data, 0x10, 0x200); Be(data, 0x14, 2);
         Be(data, 0x18, patch ? 0x000005ffU : 0x00040006U); Be(data, 0x1c, 0x40);
+        // The program's own marks: image digest and file key on a disc, first delta block hash on a patch.
+        Be(data, 0x20, 0x000003ffU); Be(data, 0x24, 0x80);
+        Convert.FromHexString("E619AEAD089E7FD77B87CEC64DE051BB93C06CB5").CopyTo(data, 0x90);
+        Convert.FromHexString("B77FAF838ED5A19936758B8AC1C0C428D5A18194").CopyTo(data, 0x314);
+        Convert.FromHexString("E2DFE99A95BDE0771D4275148BE8FBC8").CopyTo(data, 0x350);
         Be(data, 0x44, patch ? 0x11aU : 0x1aU); Be(data, 0x48, 0x1a);
         Be(data, 0x4c, 0x4d5307f1);
         Convert.FromHexString("A509A2D6D9E998327C398033716F0A0D").CopyTo(data, 0x340);

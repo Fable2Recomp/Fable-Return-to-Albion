@@ -112,7 +112,7 @@ flowchart LR
 
 | Title | Supported Version / Media ID | Title Update Requirement | Status |
 | :--- | :--- | :--- | :--- |
-| **Fable II (GOTY / Standard)** | `716F0A0D` (USA / Europe)<br>`05FBECEA` (Russia)<br>`1358B1A4` (France) | `TU_16L61VH_0000038000000.000000000008Q`<br>`TU_16L61VH_0000044000000.0000000000091`<br>*(or standalone `default.xexp`)* | **Fully Playable** |
+| **Fable II (GOTY / Standard)** | `716F0A0D` (USA / Europe)<br>`05FBECEA` (Russia)<br>`1358B1A4` (France)<br>`772E8EE8` (Spain)<br>`51F48E54` (Italy)<br>`1D1F480C` (Germany, untested) | `TU_16L61VH_0000038000000.000000000008Q`<br>`TU_16L61VH_0000044000000.0000000000091`<br>`TU_16L61VH_000003C000000.000000000008R` (untested)<br>`TU_16L61VH_000003K000000.000000000008T`<br>`TU_16L61VH_000003O000000.000000000008U`<br>`TU_16L61VH_000003G000000.000000000008S` (untested)<br>*(or standalone `default.xexp`)* | **Fully Playable** |
 | **Fable III** | `4D5308D6` / `0299632C` | Title Update 1 / 2 | **In Active Development** |
 
 *Support for additional regional pressings and language versions is actively expanding.*

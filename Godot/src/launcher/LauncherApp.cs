@@ -85,6 +85,7 @@ public partial class LauncherApp : Control
 	/// <summary>Why the last update did not finish; empty after a clean one or before any.</summary>
 	private string _updateError = string.Empty;
 	private string _recoveredUpdate = string.Empty;
+	private string _fileCheckFault = string.Empty;
 	private Font? _font;
 
 	private SmartStyle _menuStyle = null!;
@@ -279,7 +280,52 @@ public partial class LauncherApp : Control
 			}
 
 			StartUpdateCheck("Update check: ");
+			StartFileCheck();
 		}
+	}
+
+	/// <summary>
+	/// Checks the install against its package's hash list the first time the launcher starts on a
+	/// build, off the main thread.
+	/// </summary>
+	private void StartFileCheck()
+	{
+		string root = Platform.GetExecutableDirectory();
+		if (!PackageIntegrity.IsDue(root))
+		{
+			return;
+		}
+
+		System.Threading.Tasks.Task.Run(() =>
+		{
+			PackageIntegrity.Report? report;
+			try
+			{
+				report = PackageIntegrity.VerifyInstall(root);
+			}
+			catch (Exception exception)
+			{
+				GD.PushWarning("File check: could not be run: " + exception.Message);
+				return;
+			}
+
+			if (report is null)
+			{
+				return;
+			}
+
+			if (report.Passed)
+			{
+				PackageIntegrity.MarkVerified(root);
+			}
+
+			Callable.From(() =>
+			{
+				_fileCheckFault = report.Passed ? string.Empty : report.Summary;
+				Log(report.Summary);
+				RefreshState();
+			}).CallDeferred();
+		});
 	}
 	private void BindNodes()
 	{
@@ -2443,6 +2489,11 @@ public partial class LauncherApp : Control
 		if (_recoveredUpdate.Length != 0 && !_updates.UpdateAvailable)
 		{
 			return _recoveredUpdate;
+		}
+
+		if (_fileCheckFault.Length != 0)
+		{
+			return _fileCheckFault;
 		}
 
 		string channel = ReleaseUpdates.ChannelName(ReleaseUpdates.Channel);

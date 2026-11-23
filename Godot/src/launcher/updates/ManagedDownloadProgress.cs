@@ -85,9 +85,13 @@ public sealed class ManagedDownloadProgress
 /// then.</para>
 /// <para>ONLY WHAT A PACKAGE PUT THERE IS EVER REMOVED. The files a package installs are recorded
 /// (<see cref="ManifestName"/>); the next update drops the recorded files its own package no
-/// longer has, and nothing else. An install with no record yet (unpacked by hand) loses only
-/// <c>bin/recompile</c>, whose include folders are numbered by order and must not be mixed
-/// across builds.</para>
+/// longer has. An install with no record yet (unpacked by hand) loses <c>bin/recompile</c>, whose
+/// include folders are numbered by order and must not be mixed across builds. The one thing
+/// removed that no package recorded is another build configuration of a native library the
+/// package installs (<see cref="PackageIntegrity.OtherConfigurations"/>).</para>
+/// <para>A PACKAGE IS CHECKED BEFORE IT IS APPLIED. One that ships its hash list
+/// (<see cref="PackageIntegrity.HashesName"/>) has every staged file compared with it, and a
+/// mismatch stops the update with the install untouched.</para>
 /// </remarks>
 public static class ReleaseInstaller
 {
@@ -381,6 +385,16 @@ public static class ReleaseInstaller
 			return Explain(exception) + " The app was not changed.";
 		}
 
+		// A package that ships its hash list is checked while it is still only staged.
+		PackageIntegrity.Report? report =
+			PackageIntegrity.Verify(staged, Path.Combine(staged, PackageIntegrity.HashesName));
+		if (report is { Passed: false })
+		{
+			TryDeleteDirectory(staged);
+			return "The update package is damaged: " + (report.Missing.Count + report.Changed.Count)
+				+ " of its files do not match its own hash list. Try again. The app was not changed.";
+		}
+
 		return Apply(root, installed);
 	}
 
@@ -421,6 +435,20 @@ public static class ReleaseInstaller
 			foreach (string relative in dropped)
 			{
 				MoveAside(root, backup, relative);
+			}
+
+			// Another build configuration of a library this package installs (librexruntimerd.so
+			// beside librexruntime.so) is a second copy of it for the game to load.
+			var kept = new HashSet<string>(installed, StringComparer.OrdinalIgnoreCase);
+			foreach (string relative in installed)
+			{
+				foreach (string other in PackageIntegrity.OtherConfigurations(relative))
+				{
+					if (!kept.Contains(other))
+					{
+						MoveAside(root, backup, other);
+					}
+				}
 			}
 
 			foreach (string relative in installed)
