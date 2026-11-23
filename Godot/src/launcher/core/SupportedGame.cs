@@ -25,9 +25,21 @@ namespace Refii.Launcher.Core;
 /// the next one's hash, so the whole chain is the same) and the same tu1_data.bnk, so it runs
 /// on the TU1 config when patched.
 ///
+/// THE PROGRAM IS CHECKED, NOT ONLY THE LABEL. Every one of those discs carries the same image
+/// digest and file key in its security block (<see cref="Fable2ImageDigest"/>,
+/// <see cref="Fable2FileKey"/>), and every one of their title updates the same first delta
+/// block hash (<see cref="Fable2DeltaDigest"/>). A Fable 2 disc or update is accepted only
+/// with those values, whatever its media id says. That is what lets a pressing be listed
+/// before its files have been seen: the German disc (short media id 1D1F480C, version 0.0.0.28)
+/// and the French title update are listed from the published title update index, whose file
+/// names encode the base version (two base-32 digits, four times the version), and are proven
+/// to be this program or refused when the player installs them. The German disc's full 16-byte
+/// media id is not known, so it is matched by its short id.
+///
 /// All of it is read from the XEX headers: title id and version from the execution info,
-/// the 16-byte media id from the security block, the versions a patch joins from its delta
-/// descriptor. Nothing is hashed and no file name is trusted.
+/// the 16-byte media id, the image digest and the file key from the security block, the
+/// versions a patch joins from its delta descriptor, the delta's first block hash from its
+/// file format info. Nothing is hashed here and no file name is trusted.
 /// </remarks>
 public static class SupportedGame
 {
@@ -61,10 +73,17 @@ public static class SupportedGame
 		public bool HasTitleUpdate => TitleUpdateName.Length > 0;
 
 		public string ShortMediaIdText =>
-			(((uint)MediaId[12] << 24) | ((uint)MediaId[13] << 16) | ((uint)MediaId[14] << 8) | MediaId[15])
+			(((uint)MediaId[^4] << 24) | ((uint)MediaId[^3] << 16) | ((uint)MediaId[^2] << 8) | MediaId[^1])
 			.ToString("X8");
 
-		public bool Matches(ReadOnlySpan<byte> mediaId) => mediaId.SequenceEqual(MediaId);
+		/// <summary>
+		/// A pressing whose full media id is known matches all 16 bytes; one known only by its
+		/// short id (four bytes here) matches the last dword.
+		/// </summary>
+		public bool Matches(ReadOnlySpan<byte> mediaId) =>
+			MediaId.Length == 16
+				? mediaId.SequenceEqual(MediaId)
+				: mediaId.Length == 16 && mediaId[12..].SequenceEqual(MediaId);
 
 		/// <summary>The dropdown entry: "USA / Europe (716F0A0D)".</summary>
 		public string DisplayName => Name + " (" + ShortMediaIdText + ")";
@@ -112,6 +131,23 @@ public static class SupportedGame
 			0x9F, 0x4E, 0xD3, 0x92, 0x13, 0x58, 0xB1, 0xA4,
 		},
 		BaseVersion = 0x0000001B,
+		TitleUpdateName = "TU_16L61VH_000003C000000.000000000008R",
+		UpdatedVersion = 0x0000011B,
+	};
+
+	/// <summary>
+	/// GUESSED, NOT SEEN. No German disc or update has been read: the short media id and the
+	/// update's name are from the published index, the versions from the name rule the other
+	/// five pressings follow. It may not work; the digest checks refuse it if it is another
+	/// program. The French title update above is listed the same way.
+	/// </summary>
+	public static readonly Pressing Germany = new()
+	{
+		Name = "Germany",
+		MediaId = new byte[] { 0x1D, 0x1F, 0x48, 0x0C },
+		BaseVersion = 0x0000001C,
+		TitleUpdateName = "TU_16L61VH_000003G000000.000000000008S",
+		UpdatedVersion = 0x0000011C,
 	};
 
 	public static readonly Pressing Spain = new()
@@ -158,7 +194,17 @@ public static class SupportedGame
 		UpdatedVersion = 0x00000303,
 	};
 
-	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France, Spain, Italy };
+	private static readonly Pressing[] Fable2Pressings = { UsaEurope, Russia, France, Spain, Italy, Germany };
+
+	/// <summary>The image digest every supported Fable 2 disc executable carries.</summary>
+	public static readonly byte[] Fable2ImageDigest = Convert.FromHexString("B77FAF838ED5A19936758B8AC1C0C428D5A18194");
+
+	/// <summary>The encrypted file key every supported Fable 2 disc executable carries.</summary>
+	public static readonly byte[] Fable2FileKey = Convert.FromHexString("E2DFE99A95BDE0771D4275148BE8FBC8");
+
+	/// <summary>The first delta block hash every supported Fable 2 title update carries.</summary>
+	public static readonly byte[] Fable2DeltaDigest = Convert.FromHexString("E619AEAD089E7FD77B87CEC64DE051BB93C06CB5");
+
 
 	private static readonly Pressing[] Fable3Pressings = { Fable3UsaEurope };
 
@@ -264,6 +310,16 @@ public static class SupportedGame
 			return false;
 		}
 
+		if (title != Refii.Core.Engine_Title.Fable3 &&
+			(!executable.ImageDigest.AsSpan().SequenceEqual(Fable2ImageDigest) ||
+			 !executable.FileKey.AsSpan().SequenceEqual(Fable2FileKey)))
+		{
+			error = "This disc image's executable is not the program this build was made from: its " +
+					"image digest is " + Convert.ToHexString(executable.ImageDigest) + ", and every supported " +
+					title.Name + " disc carries " + Convert.ToHexString(Fable2ImageDigest) + ".";
+			return false;
+		}
+
 		return true;
 	}
 
@@ -351,6 +407,14 @@ public static class SupportedGame
 					", and this build needs " + XexIdentity.FormatVersion(pressing.BaseVersion) + " to " +
 					XexIdentity.FormatVersion(pressing.UpdatedVersion) + ". The one to fetch is " +
 					pressing.TitleUpdateName + ".";
+			return false;
+		}
+
+		if (title != Refii.Core.Engine_Title.Fable3 && !patch.DeltaDigest.AsSpan().SequenceEqual(Fable2DeltaDigest))
+		{
+			error = "This title update does not carry the changes this build was made from: its first " +
+					"block hash is " + Convert.ToHexString(patch.DeltaDigest) + ", and every supported " +
+					title.Name + " title update carries " + Convert.ToHexString(Fable2DeltaDigest) + ".";
 			return false;
 		}
 
