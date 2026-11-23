@@ -494,6 +494,14 @@ public static class GameCodeBuild
 			}
 		}
 
+		if (LinkedAgainstAnotherConfiguration(title, modulePath, out string strayLibrary))
+		{
+			reason = "The module was linked against " + strayLibrary + ", which is not the build "
+				+ "of that library this install runs on. Two copies of the runtime in one game "
+				+ "stop it at start-up.";
+			return true;
+		}
+
 		// HARD MODS ARE COMPILED IN, so the module is only current for the native code it was
 		// built with. Enabling, disabling, reordering or updating one changes this hash.
 		string currentMods = HashNativeMods(title);
@@ -3716,20 +3724,26 @@ public static class GameCodeBuild
 
 	/// <summary>Finds a shipped library by base name for <paramref name="title"/>, or "".</summary>
 	private static string FindShippedLibrary(Refii.Core.Engine_Title title, string name) =>
-		FindLibrary(ShippedLibraryDirectory(title, name), name);
+		FindLibrary(ShippedLibraryDirectory(title, name), name, Path.Combine(GetTitleBinDirectory(title),
+			Refii.Core.Engine_NativeLibraries.FileNameFor("refii_hostbridge")));
 
 	/// <summary>A title's instance library is in its folder; every other native is shared, in bin/.</summary>
 	private static string ShippedLibraryDirectory(Refii.Core.Engine_Title title, string name) =>
 		Refii.Core.Engine_Title.InstanceLibraries.Contains(name) ? GetTitleBinDirectory(title) : BinDirectory;
 
 	/// <summary>
-	/// Finds a library by base name in one directory, in either build configuration.
+	/// Finds a library by base name in one directory, in any build configuration. When more than one
+	/// configuration is present, the one <paramref name="bridge"/> imports wins: the bridge is loaded
+	/// by its fixed name, and a module linked against another configuration brings a second runtime
+	/// into the process.
 	/// </summary>
-	private static string FindLibrary(string directory, string name)
+	private static string FindLibrary(string directory, string name, string bridge = "")
 	{
 		var found = new List<string>();
+		var imported = new List<string>();
+		byte[]? bridgeBytes = null;
 
-		foreach (string suffix in new[] { string.Empty, "rd", "d" })
+		foreach (string suffix in LibrarySuffixes)
 		{
 			foreach (string candidate in new[]
 			{
@@ -3754,6 +3768,38 @@ public static class GameCodeBuild
 			return string.Empty;
 		}
 
+		if (found.Count > 1 && bridge.Length != 0)
+		{
+			try
+			{
+				bridgeBytes = File.ReadAllBytes(bridge);
+			}
+			catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+			{
+				bridgeBytes = null;
+			}
+
+			if (bridgeBytes != null)
+			{
+				foreach (string path in found)
+				{
+					if (ImportsConfiguration(bridgeBytes, name, Path.GetFileName(path)))
+					{
+						imported.Add(path);
+					}
+				}
+
+				if (imported.Count > 0 && imported.Count < found.Count)
+				{
+					LogWrite("more than one " + name + " in " + directory + " ("
+						+ string.Join(", ", found.ConvertAll(Path.GetFileName))
+						+ "); taking the one " + Path.GetFileName(bridge) + " imports: "
+						+ Path.GetFileName(imported[0]));
+					return imported[0];
+				}
+			}
+		}
+
 		if (found.Count > 1)
 		{
 			found.Sort((left, right) =>
@@ -3764,6 +3810,131 @@ public static class GameCodeBuild
 		}
 
 		return found[0];
+	}
+
+	private static readonly string[] LibrarySuffixes = { string.Empty, "rd", "d" };
+
+	/// <summary>
+	/// True when a binary's import names include the build configuration <paramref name="fileName"/>
+	/// belongs to — its shared library, or the one its static or import library stands for.
+	/// </summary>
+	internal static bool ImportsConfiguration(ReadOnlySpan<byte> binary, string name, string fileName)
+	{
+		foreach (string import in ImportNames(name, fileName))
+		{
+			if (binary.IndexOf(Encoding.ASCII.GetBytes(import)) >= 0)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/// <summary>The names a binary imports the build configuration of <paramref name="fileName"/> by.</summary>
+	private static string[] ImportNames(string name, string fileName)
+	{
+		foreach (string suffix in LibrarySuffixes)
+		{
+			string stem = name + suffix;
+			if (fileName.StartsWith(stem + ".", StringComparison.Ordinal)
+				|| fileName.StartsWith("lib" + stem + ".", StringComparison.Ordinal))
+			{
+				return new[] { "lib" + stem + ".so", stem + ".dll", "lib" + stem + ".dll" };
+			}
+		}
+
+		return Array.Empty<string>();
+	}
+
+	/// <summary>
+	/// True when an install holds more than one build configuration of a library the module links
+	/// and the module imports one the bridge does not. Reads the module only in that case.
+	/// </summary>
+	private static bool LinkedAgainstAnotherConfiguration(
+		Refii.Core.Engine_Title title, string modulePath, out string strayLibrary)
+	{
+		strayLibrary = string.Empty;
+
+		try
+		{
+			foreach (string name in LinkedLibraryNames(title))
+			{
+				string directory = ShippedLibraryDirectory(title, name);
+				string chosen = Path.GetFileName(FindShippedLibrary(title, name));
+				if (chosen.Length == 0)
+				{
+					continue;
+				}
+
+				foreach (string suffix in LibrarySuffixes)
+				{
+					string other = Refii.Core.Engine_NativeLibraries.FileNameFor(name + suffix);
+					if (other == chosen
+						|| ImportNames(name, other).SequenceEqual(ImportNames(name, chosen))
+						|| !File.Exists(Path.Combine(directory, other)))
+					{
+						continue;
+					}
+
+					if (FileContainsAny(modulePath, ImportNames(name, other)))
+					{
+						strayLibrary = other;
+						return true;
+					}
+				}
+			}
+		}
+		catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+		{
+			LogWrite("could not read the module's imports: " + e.Message);
+		}
+
+		return false;
+	}
+
+	/// <summary>True when a file holds any of the ASCII <paramref name="needles"/>.</summary>
+	internal static bool FileContainsAny(string path, IReadOnlyList<string> needles)
+	{
+		var patterns = new List<byte[]>();
+		int longest = 0;
+		foreach (string needle in needles)
+		{
+			byte[] pattern = Encoding.ASCII.GetBytes(needle);
+			patterns.Add(pattern);
+			longest = Math.Max(longest, pattern.Length);
+		}
+
+		if (longest == 0)
+		{
+			return false;
+		}
+
+		using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16,
+			FileOptions.SequentialScan);
+		var buffer = new byte[(1 << 20) + longest];
+		int kept = 0;
+
+		while (true)
+		{
+			int read = stream.Read(buffer, kept, buffer.Length - kept);
+			if (read <= 0)
+			{
+				return false;
+			}
+
+			var window = new ReadOnlySpan<byte>(buffer, 0, kept + read);
+			foreach (byte[] pattern in patterns)
+			{
+				if (window.IndexOf(pattern) >= 0)
+				{
+					return true;
+				}
+			}
+
+			kept = Math.Min(longest - 1, window.Length);
+			window[^kept..].CopyTo(buffer);
+		}
 	}
 
 	private static List<string> Prefixed(string first, IReadOnlyList<string> rest)
