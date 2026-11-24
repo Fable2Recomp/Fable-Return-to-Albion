@@ -75,7 +75,7 @@ public static class Engine_Clouds
 
             ShaderMaterial? classic = Engine_ClassicClouds.Material(density, layer);
             classic?.SetMeta(Engine_ClassicClouds.LayerMeta, index);
-            var material = classic ?? new ShaderMaterial { Shader = shader };
+            var material = classic ?? new ShaderMaterial { Shader = shader, RenderPriority = -10 };
             material.SetShaderParameter(CloudDensityName, density);
 
             material.SetShaderParameter(LayerParamsName, new Vector4(

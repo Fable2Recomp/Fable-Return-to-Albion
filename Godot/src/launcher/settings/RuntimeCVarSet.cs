@@ -540,6 +540,12 @@ public static class RuntimeCVarsGodot
                 "Enable real-time bounced sky and surface global illumination (SDFGI) in Modern mode. "
                 + "Off keeps Modern direct lighting, sky-tethered ambient fill, and ambient occlusion while "
                 + "saving significant GPU frame time on integrated GPUs."),
+            new("water_quality", LightingCategory, RuntimeCVarType.String, "balanced",
+                "Water rendering fidelity in Modern mode: Low uses fast sky-dome reflections and 2-octave ripples; "
+                + "Balanced adds low-cadence planar reflections, contact SSR, 3-octave anti-tiled normals, and Beer-Lambert refraction; "
+                + "High and Ultra increase planar reflection resolution and cadence, add rain ripples, macro swell, and shoreline detail. "
+                + "Applies immediately.",
+                "low|Low,balanced|Balanced,high|High,ultra|Ultra"),
             new("cull_back_faces", VideoCategory, RuntimeCVarType.Bool, "true",
                 "Draw ordinary models from their front side only, as the original game does. "
                 + "Halves the pixel work on solid shapes. Off draws every surface from both "

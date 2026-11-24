@@ -44,6 +44,7 @@ render_mode depth_prepass_alpha;
 #include "res://src/Engine/level/environment/fable_atmosphere.gdshaderinc"
 #ifndef FABLE_LITE
 #include "res://src/Engine/level/environment/dynamic/dynamic_surface_weather.gdshaderinc"
+#include "res://src/Engine/level/water/fable_mirror_clip.gdshaderinc"
 #endif
 #ifdef FABLE_TREE_WIND
 #include "res://src/Engine/material/fable_tree_sway.gdshaderinc"
@@ -402,6 +403,7 @@ void vertex() {
 #include "res://src/android/standard_lite_vertex_out.gdshaderinc"
 #else
     fable_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+    POSITION = fable_mirror_clip_position(fable_world, MODELVIEW_MATRIX * vec4(VERTEX, 1.0), PROJECTION_MATRIX, CAMERA_POSITION_WORLD);
 #endif
 }
 

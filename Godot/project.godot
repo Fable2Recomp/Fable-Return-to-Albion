@@ -430,3 +430,19 @@ fable_ao_light_affect={
 "type": "float",
 "value": 0.25
 }
+fable_mirror_clip0={
+"type": "vec4",
+"value": Vector4(0, 0, 0, -1000000000.0)
+}
+fable_mirror_clip1={
+"type": "vec4",
+"value": Vector4(0, 0, 0, -1000000000.0)
+}
+fable_mirror_alpha={
+"type": "vec2",
+"value": Vector2(0, 0)
+}
+fable_vista_ocean={
+"type": "vec2",
+"value": Vector2(0, 0)
+}

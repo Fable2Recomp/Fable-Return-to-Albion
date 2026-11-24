@@ -427,12 +427,16 @@ public static class Engine_ThemeTimeline
         return true;
     }
 
-    public static WaterTheme BlendWater(WaterTheme a, WaterTheme b, float w)
+    public static WaterTheme BlendWater(WaterTheme a, WaterTheme b, float w) =>
+        BlendWaterInto(a, b, w, new WaterTheme());
+
+    /// <summary>
+    /// <see cref="BlendWater"/> written into <paramref name="o"/> in place to avoid per-frame managed
+    /// allocations during continuous atmosphere ticks.
+    /// </summary>
+    public static WaterTheme BlendWaterInto(WaterTheme a, WaterTheme b, float w, WaterTheme o)
     {
-        var o = new WaterTheme
-        {
-            HasAny = a.HasAny || b.HasAny,
-        };
+        o.HasAny = a.HasAny || b.HasAny;
 
         for (int i = 0; i < WaterThemeParam.Count; i++)
         {
@@ -442,6 +446,29 @@ public static class Engine_ThemeTimeline
                 : WaterTheme.Defaults[i];
         }
 
+        WaterTheme near = w < 0.5f ? a : b;
+        if (near.HasNormalMap)
+        {
+            o.HasNormalMap = true;
+            o.NormalMapHash = near.NormalMapHash;
+        }
+        else if (a.HasNormalMap)
+        {
+            o.HasNormalMap = true;
+            o.NormalMapHash = a.NormalMapHash;
+        }
+        else if (b.HasNormalMap)
+        {
+            o.HasNormalMap = true;
+            o.NormalMapHash = b.NormalMapHash;
+        }
+        else
+        {
+            o.HasNormalMap = false;
+            o.NormalMapHash = 0u;
+        }
+
+        o.SourceTimeOfDay = -1.0f;
         return o;
     }
 

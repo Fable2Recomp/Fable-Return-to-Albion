@@ -272,7 +272,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     private readonly byte[] _pushSmall = new byte[SmallPushBytes];
     private readonly byte[] _pushWide = new byte[WidePushBytes];
     private readonly byte[] _pushGauss = new byte[GaussPushBytes];
-    private readonly byte[] _pushSun = new byte[48];
+    private readonly byte[] _pushSun = new byte[64];
+    private readonly byte[] _pushHalo = new byte[48];
     private readonly byte[] _pushShafts = new byte[40];
     private readonly byte[] _pushShaftUpsample = new byte[48];
     private readonly float[] _shaftScratch = new float[ShaftBufferFloats];
@@ -1249,7 +1250,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
             {
                 _raysZeroCleared = false;
                 BeginBatch();
-                SunLayer(depth, sunUv, sun.Disc, discRd, projection);
+                SunLayer(depth, sunUv, sun.Disc, discRd, camBasis, camOrigin, projection);
                 Radial(0, sunUv);
                 Radial(1, sunUv);
             }
@@ -2100,7 +2101,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
     /// chain reads NOTHING else — not the scene, not a beams billboard.
     /// </summary>
     private void SunLayer(
-        Rid depth, Vector2 sunUv, in Engine_PostFxSunSources.Source disc, Rid discTexture, Projection projection)
+        Rid depth, Vector2 sunUv, in Engine_PostFxSunSources.Source disc, Rid discTexture,
+        Basis camBasis, Vector3 camOrigin, Projection projection)
     {
         RenderingDevice rd = _rd!;
         if (!_sunlayerSet.Matches(rd, depth, discTexture))
@@ -2125,6 +2127,8 @@ public partial class Engine_PostFxEffect : CompositorEffect
         // celestial overlay derives in-shader from PROJECTION[2][2].
         float farValue = -projection.Z.Z >= 0.5f ? 1.0f : 0.0f;
         float boost = Math.Max(Engine_PostFxParams.EmissionBoost, 1.0f);
+        Engine_PostFxParams.GetVistaOcean(out bool oceanActive, out float oceanY);
+        Vector4 waterPlane = Engine_PostFxParams.BuildWaterPlanePush(oceanActive, oceanY, camOrigin, camBasis, px, py);
 
         System.Span<byte> push = _pushSun;
         BitConverter.TryWriteBytes(push.Slice(0, 4), _quarterSize.X);
@@ -2139,6 +2143,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
         BitConverter.TryWriteBytes(push.Slice(36, 4), disc.Colour.Y * boost);
         BitConverter.TryWriteBytes(push.Slice(40, 4), disc.Colour.Z * boost);
         BitConverter.TryWriteBytes(push.Slice(44, 4), 1.0f);
+        BitConverter.TryWriteBytes(push.Slice(48, 4), waterPlane.X);
+        BitConverter.TryWriteBytes(push.Slice(52, 4), waterPlane.Y);
+        BitConverter.TryWriteBytes(push.Slice(56, 4), waterPlane.Z);
+        BitConverter.TryWriteBytes(push.Slice(60, 4), waterPlane.W);
 
         Dispatch(
             _sunlayerPipeline,
@@ -2262,7 +2270,9 @@ public partial class Engine_PostFxEffect : CompositorEffect
         }
 
         Projection inverse = projection.Inverse();
-        byte[] push = _pushWide;
+        Engine_PostFxParams.GetVistaOcean(out bool oceanActive, out float oceanY);
+        Vector4 waterPlane = Engine_PostFxParams.BuildWaterPlanePush(oceanActive, oceanY, camOrigin, camBasis, px, py);
+        byte[] push = _pushHalo;
         BitConverter.TryWriteBytes(push.AsSpan(0), _quarterSize.X);
         BitConverter.TryWriteBytes(push.AsSpan(4), _quarterSize.Y);
         BitConverter.TryWriteBytes(push.AsSpan(8), count);
@@ -2271,6 +2281,10 @@ public partial class Engine_PostFxEffect : CompositorEffect
         BitConverter.TryWriteBytes(push.AsSpan(20), inverse.W.Z);
         BitConverter.TryWriteBytes(push.AsSpan(24), inverse.Z.W);
         BitConverter.TryWriteBytes(push.AsSpan(28), inverse.W.W);
+        BitConverter.TryWriteBytes(push.AsSpan(32), waterPlane.X);
+        BitConverter.TryWriteBytes(push.AsSpan(36), waterPlane.Y);
+        BitConverter.TryWriteBytes(push.AsSpan(40), waterPlane.Z);
+        BitConverter.TryWriteBytes(push.AsSpan(44), waterPlane.W);
 
         Dispatch(
             _halolayerPipeline,

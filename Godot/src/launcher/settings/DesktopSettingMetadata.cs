@@ -508,6 +508,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Continuous Weapon Augment Glow",
                 "Keeps elemental weapon augment particles active while walking and running.",
                 Order: 230),
+            ["water_quality"] = new(
+                SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Water Quality",
+                "Controls lake and ocean reflections, underwater clarity, wave detail, and shoreline foam (applies immediately).",
+                Order: 235),
             ["dynamic_sky_and_weather"] = new(
                 SettingsTab.Graphics, "World Detail & Atmosphere", SettingTier.Essential, "Dynamic Procedural Sky & Weather",
                 "Optional procedural sky dome with moving clouds, storms, and surface wetness.",

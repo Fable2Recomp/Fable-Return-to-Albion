@@ -69,7 +69,7 @@ public partial class Engine_PostFxHalos : Node
 	/// </summary>
 	public readonly record struct SkyHalo(
 		Vector3 Direction, float Distance, float WorldHalf, Vector3 Colour, Texture2D? Sprite, bool Active,
-		float SpriteU0 = 0f, float SpriteU1 = 1f);
+		float SpriteU0 = 0f, float SpriteU1 = 1f, int LunarPhase = -1);
 
 	private static readonly Refii.Core.Engine_TracedLock Gate = new("post-FX halos");
 	private static readonly List<Halo> Entries = new();
@@ -169,7 +169,7 @@ public partial class Engine_PostFxHalos : Node
 	private readonly List<Halo> _live = new();
 	private readonly List<WorldHalo> _build = new();
 	private readonly List<(SkyHalo Halo, float Visibility)> _sky = new();
-	private readonly Dictionary<(ulong Id, float U0, float U1), float> _spriteLayers = new();
+	private readonly Dictionary<(ulong Id, float U0, float U1, int LunarPhase), float> _spriteLayers = new();
 
 	/// <summary>Every view's eye this frame (Engine_Views.Cameras), the window's first.</summary>
 	private readonly Vector3[] _eyes = new Vector3[2];
@@ -345,7 +345,7 @@ public partial class Engine_PostFxHalos : Node
 
 			_build.Add(new WorldHalo(
 				eye + (direction.Normalized() * halo.Distance), colour, halo.WorldHalf,
-				LayerForSprite(halo.Sprite, halo.SpriteU0, halo.SpriteU1)));
+				LayerForSprite(halo.Sprite, halo.SpriteU0, halo.SpriteU1, halo.LunarPhase)));
 		}
 
 		if (_arrayDirty)
@@ -362,17 +362,110 @@ public partial class Engine_PostFxHalos : Node
 		}
 	}
 
+	/// <summary>
+	/// Masks out the outer 360-degree rim fringe (<c>r &gt; 0.92</c>), gamma-decodes legacy 2008
+	/// texels, and zeroes out the unlit lunar hemisphere in-place on an RGBA8 moon bloom sprite
+	/// so the post-FX glow layer never halos the covered dark side of the Moon.
+	/// </summary>
+	public static void ApplyLunarPhaseMaskToRgba8(Span<byte> rgba, int width, int height, int lunarPhase)
+	{
+		if (width <= 0 || height <= 0 || rgba.Length < width * height * 4)
+		{
+			return;
+		}
+
+		static float SmoothStep01(float edge0, float edge1, float x)
+		{
+			float t = Math.Clamp((x - edge0) / MathF.Max(edge1 - edge0, 1e-5f), 0.0f, 1.0f);
+			return t * t * (3.0f - (2.0f * t));
+		}
+
+		Vector4 phaseParams = Refii.Level.Engine_CelestialElements.ComputeLunarPhaseParams(lunarPhase, 1.0f, 1.0f);
+		float illum = Refii.Level.Engine_CelestialElements.ComputeLunarIllumination(phaseParams.Z);
+		if (illum <= 1e-4f)
+		{
+			rgba[..(width * height * 4)].Clear();
+			return;
+		}
+
+		float dirXY = MathF.Sqrt((phaseParams.X * phaseParams.X) + (phaseParams.Y * phaseParams.Y));
+		float axisUX = dirXY > 1e-4f ? (phaseParams.X / dirXY) : 1.0f;
+		float axisUY = dirXY > 1e-4f ? (phaseParams.Y / dirXY) : 0.0f;
+		float axisVX = -axisUY;
+		float axisVY = axisUX;
+
+		float invW = 2.0f / width;
+		float invH = 2.0f / height;
+		for (int y = 0; y < height; y++)
+		{
+			// Image row 0 is at the top of the screen (+Y up in VERTEX.xy space).
+			float qy = (1.0f - ((y + 0.5f) * invH)) / 0.92f;
+			float qy2 = qy * qy;
+			int rowBase = y * width * 4;
+			for (int x = 0; x < width; x++)
+			{
+				int p = rowBase + (x * 4);
+				float qx = (((x + 0.5f) * invW) - 1.0f) / 0.92f;
+				float rDisc = MathF.Sqrt((qx * qx) + qy2);
+				float discMask = 1.0f - SmoothStep01(0.95f, 1.0f, rDisc);
+				if (discMask <= 1e-5f)
+				{
+					rgba[p] = 0;
+					rgba[p + 1] = 0;
+					rgba[p + 2] = 0;
+					rgba[p + 3] = 0;
+					continue;
+				}
+
+				float termMask = 1.0f;
+				if (dirXY > 1e-4f)
+				{
+					float u = (qx * axisUX) + (qy * axisUY);
+					float v = (qx * axisVX) + (qy * axisVY);
+					float oneMinusV2 = MathF.Max(1.0f - (v * v), 0.0f);
+					float xSemi = MathF.Sqrt(oneMinusV2);
+					float dTerm = u + (phaseParams.Z * xSemi);
+					float invGrad = 1.0f / MathF.Sqrt(1.0f + ((phaseParams.Z * phaseParams.Z * v * v) / MathF.Max(oneMinusV2, 0.025f)));
+					termMask = SmoothStep01(-0.022f, 0.028f, dTerm * invGrad);
+				}
+
+				float mask = discMask * termMask;
+				if (mask <= 1e-5f)
+				{
+					rgba[p] = 0;
+					rgba[p + 1] = 0;
+					rgba[p + 2] = 0;
+					rgba[p + 3] = 0;
+					continue;
+				}
+
+				float rLin = rgba[p] * (1.0f / 255.0f);
+				float gLin = rgba[p + 1] * (1.0f / 255.0f);
+				float bLin = rgba[p + 2] * (1.0f / 255.0f);
+				float aVal = rgba[p + 3] * (1.0f / 255.0f);
+				rLin *= rLin;
+				gLin *= gLin;
+				bLin *= bLin;
+
+				rgba[p] = (byte)Math.Clamp((int)MathF.Round(rLin * 255.0f), 0, 255);
+				rgba[p + 1] = (byte)Math.Clamp((int)MathF.Round(gLin * 255.0f), 0, 255);
+				rgba[p + 2] = (byte)Math.Clamp((int)MathF.Round(bLin * 255.0f), 0, 255);
+				rgba[p + 3] = (byte)Math.Clamp((int)MathF.Round(aVal * mask * 255.0f), 0, 255);
+			}
+		}
+	}
+
 	/// <summary>The array layer for an already-loaded sprite (the celestial textures), cropped
 	/// to its horizontal window <paramref name="u0"/>..<paramref name="u1"/> first; −1 for none
 	/// or one that will not decode.</summary>
-	private float LayerForSprite(Texture2D? sprite, float u0, float u1)
+	private float LayerForSprite(Texture2D? sprite, float u0, float u1, int lunarPhase = -1)
 	{
 		if (sprite is null || !GodotObject.IsInstanceValid(sprite))
 		{
 			return -1f;
 		}
 
-		(ulong, float, float) id = (sprite.GetInstanceId(), u0, u1);
+		(ulong, float, float, int) id = (sprite.GetInstanceId(), u0, u1, lunarPhase);
 		if (_spriteLayers.TryGetValue(id, out float known))
 		{
 			return known;
@@ -399,6 +492,13 @@ public partial class Engine_PostFxHalos : Node
 			if (image.HasMipmaps())
 			{
 				image.ClearMipmaps();
+			}
+
+			if (lunarPhase >= 0)
+			{
+				byte[] rgba = image.GetData();
+				ApplyLunarPhaseMaskToRgba8(rgba, image.GetWidth(), image.GetHeight(), lunarPhase);
+				image.SetData(image.GetWidth(), image.GetHeight(), false, Image.Format.Rgba8, rgba);
 			}
 
 			_sprites.Add(image);

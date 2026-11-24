@@ -6086,6 +6086,205 @@ public partial class GameEntities : Node3D
         return false;
     }
 
+    /// <summary>
+    /// Copies up to <paramref name="dst"/>.Length world-space character samples (stable guest entity ID,
+    /// world position, and drawn horizontal forward vector) within <paramref name="maxDistance"/> of
+    /// <paramref name="eye"/> for interactive water wakes with zero heap allocations or C++ interop.
+    /// </summary>
+    public static int CopyNearbyWaders(Vector3 eye, float maxDistance, System.Span<Refii.Level.WaderSample> dst)
+    {
+        if (dst.IsEmpty || maxDistance <= 0f)
+        {
+            return 0;
+        }
+
+        float maxSq = maxDistance * maxDistance;
+        int count = 0;
+
+        static void TryAdd(
+            Refii.Level.WaderSample candidate,
+            Vector3 eyePos,
+            float maxDistSq,
+            System.Span<Refii.Level.WaderSample> outSpan,
+            ref int outCount,
+            float minXzSepSq)
+        {
+            Vector3 pos = candidate.Position;
+            if (outCount >= outSpan.Length || !pos.IsFinite() || pos.DistanceSquaredTo(eyePos) > maxDistSq)
+            {
+                return;
+            }
+
+            for (int k = 0; k < outCount; k++)
+            {
+                if (candidate.Id != 0u && outSpan[k].Id == candidate.Id)
+                {
+                    return;
+                }
+
+                float dx = outSpan[k].Position.X - pos.X;
+                float dz = outSpan[k].Position.Z - pos.Z;
+                if (((dx * dx) + (dz * dz)) < minXzSepSq)
+                {
+                    return;
+                }
+            }
+
+            outSpan[outCount++] = candidate;
+        }
+
+        GameEntities? self = Current;
+        if (self is not null && GodotObject.IsInstanceValid(self) && self.Visible && self._written.Count > 0)
+        {
+            Transform3D toWorld = self.IsInsideTree() ? self.GlobalTransform : self.Transform;
+
+            static void TryAddWritten(
+                uint addr,
+                GameEntities entities,
+                in Transform3D worldXform,
+                Vector3 eyePos,
+                float maxDistSq,
+                System.Span<Refii.Level.WaderSample> outSpan,
+                ref int outCount)
+            {
+                if (addr != 0u && entities._written.TryGetValue(addr, out (MeshInstance3D Node, Transform3D Drawn) written))
+                {
+                    Transform3D world = worldXform * written.Drawn;
+                    Vector3 fwd3 = -world.Basis.Column2;
+                    var fwdXz = new Vector2(fwd3.X, fwd3.Z);
+                    if (!fwdXz.IsFinite() || fwdXz.LengthSquared() < 1e-6f)
+                    {
+                        fwdXz = Vector2.Zero;
+                    }
+                    else
+                    {
+                        fwdXz = fwdXz.Normalized();
+                    }
+
+                    TryAdd(new Refii.Level.WaderSample(addr, world.Origin, fwdXz), eyePos, maxDistSq, outSpan, ref outCount, 0.09f);
+                }
+            }
+
+            TryAddWritten(self._principals.Hero, self, toWorld, eye, maxSq, dst, ref count);
+            TryAddWritten(self._principals.One, self, toWorld, eye, maxSq, dst, ref count);
+            TryAddWritten(self._principals.Two, self, toWorld, eye, maxSq, dst, ref count);
+            TryAddWritten(self._principals.Dog, self, toWorld, eye, maxSq, dst, ref count);
+
+            for (int i = 0; i < _dynamicCasterAddresses.Count && count < dst.Length; i++)
+            {
+                TryAddWritten(_dynamicCasterAddresses[i], self, toWorld, eye, maxSq, dst, ref count);
+            }
+        }
+
+        if (HeroPosition is { } hero)
+        {
+            Vector2 heroFwd = Vector2.Zero;
+            if (HeroGuestRotation is { } q)
+            {
+                Vector3 fwd3 = -ToGodot(Vector3.Zero, q).Basis.Column2;
+                var rawXz = new Vector2(fwd3.X, fwd3.Z);
+                if (rawXz.IsFinite() && rawXz.LengthSquared() > 1e-6f)
+                {
+                    heroFwd = rawXz.Normalized();
+                }
+            }
+
+            uint heroId = self?._principals.Hero ?? 1u;
+            TryAdd(new Refii.Level.WaderSample(heroId, hero, heroFwd), eye, maxSq, dst, ref count, 0.36f);
+        }
+
+        if (PlayerTwoPosition is { } p2)
+        {
+            uint p2Id = self?._principals.Two ?? 2u;
+            TryAdd(new Refii.Level.WaderSample(p2Id, p2, Vector2.Zero), eye, maxSq, dst, ref count, 0.36f);
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Copies up to <paramref name="dst"/>.Length world-space character origins within
+    /// <paramref name="maxDistance"/> of <paramref name="eye"/> (hero, player two, dog, and active NPCs)
+    /// for interactive water wake ripples with zero heap allocations or C++ interop.
+    /// </summary>
+    public static int CopyNearbyWaderPositions(Vector3 eye, float maxDistance, System.Span<Vector3> dst)
+    {
+        if (dst.IsEmpty || maxDistance <= 0f)
+        {
+            return 0;
+        }
+
+        float maxSq = maxDistance * maxDistance;
+        int count = 0;
+
+        static void TryAdd(Vector3 candidate, Vector3 eyePos, float maxDistSq, System.Span<Vector3> outSpan, ref int outCount, float minSepSq)
+        {
+            if (outCount >= outSpan.Length || !candidate.IsFinite() || candidate.DistanceSquaredTo(eyePos) > maxDistSq)
+            {
+                return;
+            }
+
+            for (int k = 0; k < outCount; k++)
+            {
+                if (outSpan[k].DistanceSquaredTo(candidate) < minSepSq)
+                {
+                    return;
+                }
+            }
+
+            outSpan[outCount++] = candidate;
+        }
+
+        GameEntities? self = Current;
+        if (self is not null && GodotObject.IsInstanceValid(self) && self.Visible && self._written.Count > 0)
+        {
+            Transform3D toWorld = self.IsInsideTree() ? self.GlobalTransform : self.Transform;
+
+            static void TryAddWritten(
+                uint addr,
+                GameEntities entities,
+                in Transform3D worldXform,
+                Vector3 eyePos,
+                float maxDistSq,
+                System.Span<Vector3> outSpan,
+                ref int outCount)
+            {
+                if (addr != 0u && entities._written.TryGetValue(addr, out (MeshInstance3D Node, Transform3D Drawn) written))
+                {
+                    Vector3 worldPos = (worldXform * written.Drawn).Origin;
+                    TryAdd(worldPos, eyePos, maxDistSq, outSpan, ref outCount, 0.09f);
+                }
+            }
+
+            TryAddWritten(self._principals.Hero, self, toWorld, eye, maxSq, dst, ref count);
+            TryAddWritten(self._principals.One, self, toWorld, eye, maxSq, dst, ref count);
+            TryAddWritten(self._principals.Two, self, toWorld, eye, maxSq, dst, ref count);
+            TryAddWritten(self._principals.Dog, self, toWorld, eye, maxSq, dst, ref count);
+
+            for (int i = 0; i < _dynamicCasterAddresses.Count && count < dst.Length; i++)
+            {
+                TryAddWritten(_dynamicCasterAddresses[i], self, toWorld, eye, maxSq, dst, ref count);
+            }
+        }
+
+        if (HeroPosition is { } hero)
+        {
+            TryAdd(hero, eye, maxSq, dst, ref count, 0.25f);
+        }
+
+        if (PlayerTwoPosition is { } p2)
+        {
+            TryAdd(p2, eye, maxSq, dst, ref count, 0.25f);
+        }
+
+        for (int i = 0; i < _dynamicCasterPositions.Count && count < dst.Length; i++)
+        {
+            TryAdd(_dynamicCasterPositions[i], eye, maxSq, dst, ref count, 0.25f);
+        }
+
+        return count;
+    }
+
     /// <summary>Every walked entity's stated position in the guest's space, by address, from the
     /// last walk — for the readers that plot an entity the guest names (the minimap's dog and
     /// quest markers).</summary>

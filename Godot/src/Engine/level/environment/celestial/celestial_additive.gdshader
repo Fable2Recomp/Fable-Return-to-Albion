@@ -9,7 +9,11 @@ uniform vec4 element_colour = vec4(1.0, 1.0, 1.0, 1.0);
 uniform float element_facing_power = 0.0;
 uniform float element_depth_bias = 0.000001;
 
+global uniform vec2 fable_vista_ocean;
+
 varying vec3 v_colour;
+varying vec3 v_world_offset;
+varying flat float v_upright_cam;
 
 void vertex() {
 	vec3 dir_view = (VIEW_MATRIX * vec4(normalize(element_dir), 0.0)).xyz;
@@ -18,6 +22,8 @@ void vertex() {
 	if (facing <= 0.0) {
 		POSITION = vec4(0.0, 0.0, -10.0, 1.0);
 		v_colour = vec3(0.0);
+		v_world_offset = vec3(0.0);
+		v_upright_cam = 0.0;
 	} else {
 		vec3 view_pos = (dir_view * element_distance) +
 		                vec3(VERTEX.x * element_half.x, VERTEX.y * element_half.y, 0.0);
@@ -29,6 +35,8 @@ void vertex() {
 		                mix(far_depth, 1.0 - far_depth, element_depth_bias), 1.0);
 
 		v_colour = element_colour.rgb * pow(facing, element_facing_power);
+		v_world_offset = (INV_VIEW_MATRIX * vec4(view_pos, 0.0)).xyz;
+		v_upright_cam = INV_VIEW_MATRIX[1].y;
 	}
 }
 
@@ -44,8 +52,13 @@ void vertex() {
 global uniform float fable_emission_boost = 1.0;
 
 void fragment() {
+	float ocean_vis = 1.0;
+	if (v_upright_cam > 0.0 && fable_vista_ocean.x > 0.5 && CAMERA_POSITION_WORLD.y > (fable_vista_ocean.y + 0.02)) {
+		float world_y = CAMERA_POSITION_WORLD.y + v_world_offset.y;
+		ocean_vis = smoothstep(-1.5, 1.5, world_y - fable_vista_ocean.y);
+	}
 	// 0117/0121 are two multiplies and out — the celestial family squares nothing.
 	float boost = max(fable_emission_boost, 1.0);
-	ALBEDO = max(texture(element_tex, UV).rgb * v_colour * boost, vec3(0.0));
+	ALBEDO = max(texture(element_tex, UV).rgb * v_colour * boost * ocean_vis, vec3(0.0));
 	ALPHA = 1.0;
 }

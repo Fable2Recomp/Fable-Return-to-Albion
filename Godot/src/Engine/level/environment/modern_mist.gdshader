@@ -43,7 +43,12 @@ void fog() {
 	vec2 p = uv * motion.xy + vec2(TIME * motion.z);
 	float texel = 0.5 + noise(p) / 3.0 + noise(p * 2.0 + 17.0) / 6.0;
 	texel = flatten + (1.0 - flatten) * clamp(texel, 0.0, 1.0);
-	DENSITY = extinction * texel;
+	// Smooth 3D UVW boundary feathering so FogVolume boxes never stamp hard brick walls onto cliffs, trees, or coastlines.
+	vec3 wall_d = min(UVW, vec3(1.0) - UVW);
+	float box_feather = smoothstep(0.0, 0.14, min(wall_d.x, wall_d.z))
+		* smoothstep(0.0, 0.22, 1.0 - UVW.y)
+		* smoothstep(0.0, 0.06, UVW.y);
+	DENSITY = extinction * texel * box_feather;
 	ALBEDO = albedo;
-	EMISSION = albedo * emission_energy;
+	EMISSION = albedo * (emission_energy * box_feather);
 }

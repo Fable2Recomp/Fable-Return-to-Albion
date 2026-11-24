@@ -27,10 +27,11 @@ const float FABLE_FOG_TABLE_TEXELS = 1025.0;
 /// three exps, the near knots and the volumetric cancel's exp): the guest's own arrangement
 /// (g_Extinction), in 32-bit float at a quarter knot. Within 0.2/255 of the evaluated curve for
 /// the shipped outdoor themes, 1.3/255 for a dense cave at four times its fog.
-bool fable_atmosphere_terms_for(
+bool fable_atmosphere_terms_ex(
 		vec3 view_vertex,
 		mat4 inv_view,
 		bool close_fog_blend,
+		bool cancel_volumetric_froxels,
 		out vec3 transmittance,
 		out vec3 fog_colour) {
 	transmittance = vec3(1.0);
@@ -97,17 +98,29 @@ bool fable_atmosphere_terms_for(
 	}
 #ifndef FABLE_LITE_FOG_NO_VOLUMETRIC_CANCEL
 	// `lite_fog_trims` compiles this out where fable_volumetric_fog_end is always 0 (AndroidFogTrims).
-	if (fable_volumetric_fog_end > 0.0) {
+	if (cancel_volumetric_froxels && fable_volumetric_fog_end > 0.0) {
 		// One exp, not three: the cancel is the same in every channel.
 		float vol_dist = clamp(radial_dist, 0.0, 128.0);
 		raw = min(raw * exp(fable_volumetric_fog_end * vol_dist), vec3(1.0));
 	}
+#else
+	bool unused_cancel = cancel_volumetric_froxels;
+	if (unused_cancel) {}
 #endif
 #endif
 
 	transmittance = raw;
 	fog_colour = close_fog_blend ? mix(atmos_close_fog, sky, clamp(d * atmos_range.z, 0.0, 1.0)) : sky;
 	return true;
+}
+
+bool fable_atmosphere_terms_for(
+		vec3 view_vertex,
+		mat4 inv_view,
+		bool close_fog_blend,
+		out vec3 transmittance,
+		out vec3 fog_colour) {
+	return fable_atmosphere_terms_ex(view_vertex, inv_view, close_fog_blend, true, transmittance, fog_colour);
 }
 #endif
 
