@@ -219,11 +219,13 @@ public partial class AndroidTreeCardAtlas : CompositorEffect
     private void Write(Rid source, Job job)
     {
         int cell = AndroidTreeCardMaths.CellPixels;
+        Span<Rid> rids = stackalloc Rid[2];
         for (int mip = 0; mip < AndroidTreeCardMaths.Mips; mip++)
         {
             Rid read = mip == 0 ? source : _views[mip - 1];
             Engine_UniformSetKey key = _sets[mip] ??= new Engine_UniformSetKey(2);
-            Span<Rid> rids = stackalloc Rid[2] { read, _views[mip] };
+            rids[0] = read;
+            rids[1] = _views[mip];
             Rid set = key.For(_rd!, rids);
             if (!set.IsValid)
             {

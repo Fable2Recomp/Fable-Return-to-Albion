@@ -2,15 +2,12 @@
 # The steps are shared (reusable-build-windows.yml, reusable-publish.yml); releases.yml says when
 # a build publishes.
 #
-#   pull request        build, keep the zip as a run artifact
 #   tag beta-N or vN    build, then add the package to the tag's draft release
 #   manual run          build, and replace this platform's nightly package unless "publish" is
 #                       unticked. The nightly itself starts every platform this way.
 name: Windows x86_64
 
 on:
-  pull_request:
-    branches: [main]
   push:
     tags: ['beta-*', 'v*']
   workflow_dispatch:

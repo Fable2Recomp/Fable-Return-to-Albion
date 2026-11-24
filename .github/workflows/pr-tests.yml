@@ -1,0 +1,82 @@
+# Pull request checks: runs the C# unit & feature test suite (Refii.Tests) on Linux
+# without running full CMake/C++ builds or packaging. Full platform builds run on
+# tags (beta-*, v*) and on the nightly schedule in releases.yml.
+name: PR Tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pr-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: 4.7.1-stable
+  GODOT_ARCHIVE: Godot_v4.7.1-stable_mono_linux_x86_64.zip
+  GODOT_SHA256: 6ca7ff0459f1b806900be683c1b0837c607a9c16834c530dc68c81b9fc3ae1f6
+  REFII_NO_SHARED_COMPILATION: '1'
+
+jobs:
+  test:
+    name: Refii.Tests (Linux x86_64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 10
+
+      - name: Install Godot runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb unzip \
+            libxcursor1 libxinerama1 libxrandr2 libxi6 libxkbcommon0 libfontconfig1 libgl1 libvulkan1
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-linux-${{ hashFiles('Godot/**/*.csproj', 'tools/build_cache/*.csproj') }}
+          restore-keys: nuget-linux-
+
+      - name: Cache pinned Godot Mono editor
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: tools/godot
+          key: godot-mono-linux-x86_64-${{ env.GODOT_VERSION }}-${{ env.GODOT_SHA256 }}
+
+      - name: Stage pinned Godot Mono editor
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p tools/godot _godot_tmp
+          curl -fsSL -o "_godot_tmp/$GODOT_ARCHIVE" \
+            "https://github.com/godotengine/godot/releases/download/$GODOT_VERSION/$GODOT_ARCHIVE"
+          echo "$GODOT_SHA256  _godot_tmp/$GODOT_ARCHIVE" | sha256sum -c -
+          unzip -q "_godot_tmp/$GODOT_ARCHIVE" -d _godot_tmp/extract
+          cp -a _godot_tmp/extract/Godot_v*/* tools/godot/
+          rm -rf _godot_tmp
+
+      - name: Resolve GODOT_BIN
+        run: |
+          godot_bin="$(find "$PWD/tools/godot" -maxdepth 1 -type f -name 'Godot_v*_linux.x86_64' | head -n 1)"
+          if [ -z "$godot_bin" ]; then
+            echo "Pinned Godot binary not found under tools/godot" >&2
+            exit 1
+          fi
+          chmod +x "$godot_bin"
+          echo "GODOT_BIN=$godot_bin" >> "$GITHUB_ENV"
+
+      - name: Run Refii.Tests
+        run: xvfb-run -a dotnet test Godot/tests/Refii.Tests/Refii.Tests.csproj -p:TreatWarningsAsErrors=true --logger "console;verbosity=normal"

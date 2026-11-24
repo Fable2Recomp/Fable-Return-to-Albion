@@ -218,11 +218,11 @@ public sealed class AndroidCharacterLodTests
             int[] alone = Pick(a.Indices, a.Levels.Select(l => (l.Key, l.Value)), limit)
                 .Concat(Pick(b.Indices, b.Levels.Select(l => (l.Key, l.Value)), limit).Select(i => i + 5))
                 .Concat(Pick(c.Indices, c.Levels.Select(l => (l.Key, l.Value)), limit).Select(i => i + 9)).ToArray();
-            AssertThat(Pick(full, joined, limit)).IsEqual(alone);
+            AssertThat(Pick(full, joined!, limit)).IsEqual(alone);
         }
 
         // Every union level is smaller than the joined surface, as Godot requires.
-        AssertThat(joined.All(l => l.Indices.Length < full.Length)).IsTrue();
+        AssertThat(joined!.All(l => l.Indices.Length < full.Length)).IsTrue();
         AssertThat(AndroidBodyMerge.Join(new[] { c, c })).IsNull();
     }
 
