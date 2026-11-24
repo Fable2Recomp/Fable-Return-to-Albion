@@ -352,7 +352,7 @@ public sealed class WaterMeshAndQualityTests
 		AssertThat(clean.Contains("moon_ripple_gate", StringComparison.Ordinal)).IsFalse();
 		AssertThat(clean.Contains("idle_collar", StringComparison.Ordinal)).IsFalse();
 		AssertThat(celestialCs.Contains("ModernMoonScale = 0.75f;", StringComparison.Ordinal)).IsTrue();
-		AssertThat(celestialCs.Contains("moonNode.SetMeta(MoonPhaseMeta, phase);", StringComparison.Ordinal)).IsTrue();
+		AssertThat(celestialCs.Contains("moonNode.SetMeta(MoonPhaseMeta, meshPhaseKey);", StringComparison.Ordinal)).IsTrue();
 		AssertThat(celestialCs.Contains(": Math.Clamp(moonPhase, 0, 7);", StringComparison.Ordinal)).IsTrue();
 	}
 
@@ -854,5 +854,167 @@ public sealed class WaterMeshAndQualityTests
 		(Vector4 darkParams, _) = Engine_SkyEnvironment.ComputeWaterCelestial(
 			risingMoonFrame, theme, dynamicSkyEnabled: false, modernLighting: true);
 		AssertThat(darkParams.X).IsEqual(0.0f);
+	}
+
+	[TestCase]
+	public void LunarPhaseParamsAndMoonBloomMask_SuppressCoveredHemisphereAndPreserveFullMoonSymmetry()
+	{
+		const float moonHalf = 225.0f;
+		const float glareHalf = 525.0f;
+
+		// 1. Verify all 8 lunar phase 3D light vectors (xyz = litDir with 12-deg celestial tilt, w = discRadiusInGlare):
+		//    Phases 1, 2, 6, 7 are curved crescents (litDir.Z < -0.40, never a flat 0.0 half-cut),
+		//    Phases 3, 5 are curved gibbous (litDir.Z > 0.60), Phase 4 is Full Moon (litDir.Z == 1.0), Phase 0 is New Moon (-1.0).
+		Vector4 newMoon = Engine_CelestialElements.ComputeLunarPhaseParams(0, moonHalf, glareHalf);
+		AssertThat(MathF.Abs(newMoon.X)).IsLess(1e-5f);
+		AssertThat(MathF.Abs(newMoon.Y)).IsLess(1e-5f);
+		AssertThat(newMoon.Z).IsEqual(-1.0f);
+		AssertThat(Engine_CelestialElements.ComputeLunarIllumination(newMoon.Z)).IsEqual(0.0f);
+		AssertThat(newMoon.W).IsGreater(0.38f);
+		AssertThat(newMoon.W).IsLess(0.41f);
+
+		foreach (int p in new[] { 1, 2 })
+		{
+			Vector4 waxingCrescent = Engine_CelestialElements.ComputeLunarPhaseParams(p, moonHalf, glareHalf);
+			AssertThat(waxingCrescent.X).IsGreater(0.65f);
+			AssertThat(waxingCrescent.Y).IsLess(-0.10f);
+			AssertThat(waxingCrescent.Z).IsLess(-0.40f);
+			AssertThat(Engine_CelestialElements.ComputeLunarIllumination(waxingCrescent.Z)).IsGreater(0.13f);
+		}
+
+		Vector4 waxingGibbous = Engine_CelestialElements.ComputeLunarPhaseParams(3, moonHalf, glareHalf);
+		AssertThat(waxingGibbous.X).IsGreater(0.75f);
+		AssertThat(waxingGibbous.Y).IsLess(-0.12f);
+		AssertThat(waxingGibbous.Z).IsGreater(0.60f);
+
+		Vector4 fullMoon = Engine_CelestialElements.ComputeLunarPhaseParams(4, moonHalf, glareHalf);
+		AssertThat(MathF.Abs(fullMoon.X)).IsLess(1e-5f);
+		AssertThat(MathF.Abs(fullMoon.Y)).IsLess(1e-5f);
+		AssertThat(fullMoon.Z).IsEqual(1.0f);
+		AssertThat(Engine_CelestialElements.ComputeLunarIllumination(fullMoon.Z)).IsEqual(1.0f);
+
+		Vector4 waningGibbous = Engine_CelestialElements.ComputeLunarPhaseParams(5, moonHalf, glareHalf);
+		AssertThat(waningGibbous.X).IsLess(-0.75f);
+		AssertThat(waningGibbous.Y).IsLess(-0.12f);
+		AssertThat(waningGibbous.Z).IsGreater(0.60f);
+
+		foreach (int p in new[] { 6, 7 })
+		{
+			Vector4 waningCrescent = Engine_CelestialElements.ComputeLunarPhaseParams(p, moonHalf, glareHalf);
+			AssertThat(waningCrescent.X).IsLess(-0.65f);
+			AssertThat(waningCrescent.Y).IsLess(-0.10f);
+			AssertThat(waningCrescent.Z).IsLess(-0.40f);
+			AssertThat(Engine_CelestialElements.ComputeLunarIllumination(waningCrescent.Z)).IsGreater(0.13f);
+		}
+
+		// 2. Verify Moon star occluder sentinel when inactive vs cosine angular radius when active.
+		Vector4 inactiveOcc = Engine_CelestialElements.ComputeMoonStarOccluder(new Vector3(0f, 0.5f, 0.866f), moonHalf, 4000f, moonActive: false);
+		AssertThat(inactiveOcc.W).IsEqual(2.0f);
+
+		Vector4 activeOcc = Engine_CelestialElements.ComputeMoonStarOccluder(new Vector3(0f, 0.6f, 0.8f), moonHalf, 4000f, moonActive: true);
+		AssertThat(activeOcc.W).IsGreater(0.998f);
+		AssertThat(activeOcc.W).IsLess(1.0f);
+
+		// 3. Verify ApplyLunarPhaseMaskToRgba8 carves curved crescents out of a Full-Moon cell (Column 4)
+		//    while stripping outer rim fringe (r > 0.92).
+		static byte[] BuildFullMoonCell(int size, byte litLuma)
+		{
+			var buf = new byte[size * size * 4];
+			for (int y = 0; y < size; y++)
+			{
+				float dy = ((y + 0.5f) / (size * 0.5f)) - 1.0f;
+				for (int x = 0; x < size; x++)
+				{
+					float dx = ((x + 0.5f) / (size * 0.5f)) - 1.0f;
+					float r = MathF.Sqrt((dx * dx) + (dy * dy));
+					int p = ((y * size) + x) * 4;
+					if (r > 0.96f)
+					{
+						buf[p] = 255; buf[p + 1] = 255; buf[p + 2] = 255; buf[p + 3] = 0;
+					}
+					else if (r > 0.92f)
+					{
+						buf[p] = 190; buf[p + 1] = 190; buf[p + 2] = 190; buf[p + 3] = 89;
+					}
+					else
+					{
+						buf[p] = litLuma; buf[p + 1] = litLuma; buf[p + 2] = litLuma; buf[p + 3] = 128;
+					}
+				}
+			}
+			return buf;
+		}
+
+		const int sz = 128;
+		int midRow = 64 * sz * 4;
+
+		// Phase 0 (New Moon): entire sprite including rim fringe must be zeroed.
+		byte[] phase0 = BuildFullMoonCell(sz, 205);
+		Refii.Fx.Engine_PostFxHalos.ApplyLunarPhaseMaskToRgba8(phase0, sz, sz, lunarPhase: 0);
+		for (int i = 0; i < phase0.Length; i++)
+		{
+			AssertThat(phase0[i]).IsEqual((byte)0);
+		}
+
+		// Phase 2 (Waxing Crescent): center (x=64, y=64) must be carved out into a concave crescent (alpha == 0),
+		// while outer right crescent belly (x=106, y=64) is brightly lit!
+		byte[] phase2 = BuildFullMoonCell(sz, 210);
+		Refii.Fx.Engine_PostFxHalos.ApplyLunarPhaseMaskToRgba8(phase2, sz, sz, lunarPhase: 2);
+		AssertThat(phase2[midRow + (4 * 4) + 3]).IsEqual((byte)0);
+		AssertThat(phase2[midRow + (64 * 4) + 3]).IsEqual((byte)0);
+		AssertThat(phase2[midRow + (106 * 4) + 0]).IsGreater((byte)160);
+		AssertThat(phase2[midRow + (106 * 4) + 3]).IsGreater((byte)120);
+
+		// Phase 3 (Waxing Gibbous): covered far-left side (x=10) is zeroed, center (x=64) and right (x=100) are lit.
+		byte[] phase3 = BuildFullMoonCell(sz, 210);
+		Refii.Fx.Engine_PostFxHalos.ApplyLunarPhaseMaskToRgba8(phase3, sz, sz, lunarPhase: 3);
+		AssertThat(phase3[midRow + (10 * 4) + 3]).IsEqual((byte)0);
+		AssertThat(phase3[midRow + (64 * 4) + 3]).IsGreater((byte)120);
+		AssertThat(phase3[midRow + (100 * 4) + 3]).IsGreater((byte)120);
+
+		// Phase 4 (Full Moon): outer rim (x=4, x=124) cleared, both left (x=24) and right (x=104) symmetrically lit.
+		byte[] phase4 = BuildFullMoonCell(sz, 205);
+		Refii.Fx.Engine_PostFxHalos.ApplyLunarPhaseMaskToRgba8(phase4, sz, sz, lunarPhase: 4);
+		AssertThat(phase4[midRow + (4 * 4) + 3]).IsEqual((byte)0);
+		AssertThat(phase4[midRow + (124 * 4) + 3]).IsEqual((byte)0);
+		AssertThat(phase4[midRow + (24 * 4) + 3]).IsEqual(phase4[midRow + (104 * 4) + 3]);
+		AssertThat(phase4[midRow + (24 * 4) + 3]).IsGreater((byte)120);
+	}
+
+	[TestCase]
+	public void CelestialShaders_RespectDxilZeroDiscardPrecomputedDerivativesAndPbrIsolation()
+	{
+		string? dir = AppContext.BaseDirectory;
+		string? celDir = null;
+		while (!string.IsNullOrEmpty(dir))
+		{
+			string candidate = System.IO.Path.Combine(dir, "src", "Engine", "level", "environment", "celestial");
+			if (System.IO.Directory.Exists(candidate)) { celDir = candidate; break; }
+			string nested = System.IO.Path.Combine(dir, "Godot", "src", "Engine", "level", "environment", "celestial");
+			if (System.IO.Directory.Exists(nested)) { celDir = nested; break; }
+			dir = System.IO.Path.GetDirectoryName(dir);
+		}
+		AssertThat(celDir).IsNotNull();
+
+		foreach (string file in new[] { "celestial.gdshader", "celestial_overlay.gdshader", "stars.gdshader" })
+		{
+			string src = System.IO.File.ReadAllText(System.IO.Path.Combine(celDir!, file));
+			AssertThat(System.Text.RegularExpressions.Regex.IsMatch(src, @"\bdiscard\s*;")).IsFalse();
+			AssertThat(src.Contains("safe_w", StringComparison.Ordinal)).IsTrue();
+		}
+
+		string mixSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(celDir!, "celestial.gdshader"));
+		AssertThat(mixSrc.Contains("uniform bool is_pbr = false;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(mixSrc.Contains("textureGrad(element_tex, UV, uv_dx, uv_dy)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(mixSrc.Contains("inversesqrt(", StringComparison.Ordinal)).IsTrue();
+
+		string ovlSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(celDir!, "celestial_overlay.gdshader"));
+		AssertThat(ovlSrc.Contains("uniform bool is_pbr = false;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(ovlSrc.Contains("textureGrad(element_tex, UV, uv_dx, uv_dy)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(ovlSrc.Contains("moon_arc_lobe(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(ovlSrc.Contains("(0.5 - UV.y) * 2.0", StringComparison.Ordinal)).IsTrue();
+
+		string starSrc = System.IO.File.ReadAllText(System.IO.Path.Combine(celDir!, "stars.gdshader"));
+		AssertThat(starSrc.Contains("moon_occluder", StringComparison.Ordinal)).IsTrue();
 	}
 }

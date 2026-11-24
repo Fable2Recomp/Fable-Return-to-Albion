@@ -6,6 +6,7 @@ uniform float star_radius = 2500.0;
 uniform float star_point_size = 1.5;
 uniform float star_phase_rate = 2.5;
 uniform float star_depth_bias = 0.000001;
+uniform vec4 moon_occluder = vec4(0.0, 1.0, 0.0, 2.0);
 
 varying float v_value;
 
@@ -35,7 +36,11 @@ void vertex() {
 		float far_depth = step(0.5, -PROJECTION_MATRIX[2][2]);
 		POSITION = vec4(ndc, mix(far_depth, 1.0 - far_depth, star_depth_bias), 1.0);
 
-		v_value = (hash.w * hash.w) * twinkle * star_brightness;
+		float moon_clear = 1.0 - smoothstep(
+			moon_occluder.w - 0.002,
+			moon_occluder.w + 0.001,
+			dot(direction, moon_occluder.xyz));
+		v_value = (hash.w * hash.w) * twinkle * star_brightness * moon_clear;
 	}
 }
 
