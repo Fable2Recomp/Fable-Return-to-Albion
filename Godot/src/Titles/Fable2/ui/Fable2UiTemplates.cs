@@ -1050,6 +1050,74 @@ public static class Fable2UiTemplates
 			},
 		};
 
+		// 28 REAL ESTATE — THE COMMAND LIST THE GUEST NEVER HANDS US. `sub_82998300` spawns these
+		// rows off the resolved building record when the screen opens, and the host draws screen
+		// 28's list itself (the guest's population lands in its own presentation, which this
+		// build does not draw), so with no rows authored the left column came up empty and the
+		// property could not be bought at all. The rows are therefore AUTHORED, and the identity
+		// each one commits — `(name, eventType, 0)` — is the pair the guest's own handler
+		// switches on: 111 opens its "buy for N gold?" box (which the host draws and answers
+		// through the modal router), 110 its sell box. Both were measured on a live screen.
+		//
+		// THE CONDITIONS ARE THE GUEST'S OWN BRANCHES, run host-side (Engine_UiRowConditions,
+		// registered in GameUiCommands): the guest emits only the action that applies, so a row
+		// shown out of state would offer a verb the game has disabled.
+		//
+		// THE LABELS ARE LITERALS. The text bank holds the guest's tags for this screen but they
+		// are keyed by the guest's own row names, which the spawn script chooses — and this
+		// screen's own captions are the page's (GUI_SCREEN_REAL_ESTATE_*), not the rows'.
+		menus["RealEstateMenu"] = new Engine_UiMenuTemplate
+		{
+			Name = "RealEstateMenu",
+			Entries =
+			{
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_BUY", Tag = "GUI_SCREEN_REAL_ESTATE_BUY",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateBuy,
+					When = "!estate.owned",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_SELL", Tag = "GUI_SCREEN_REAL_ESTATE_SELL",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateSell,
+					When = "estate.owned",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_RENT_OUT", Tag = "GUI_SCREEN_REAL_ESTATE_RENT_OUT",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateRentOut,
+					When = "estate.owned,estate.vacant",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_EVICT_TENNANT",
+					Tag = "GUI_SCREEN_REAL_ESTATE_EVICT_TENNANT",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateEvictTennant,
+					When = "estate.tenanted",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_ADJUST_RENT", Tag = "GUI_SCREEN_REAL_ESTATE_ADJUST_RENT",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateAdjustRent,
+					When = "estate.tenanted",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_ADJUST_PROFITS",
+					Tag = "GUI_SCREEN_REAL_ESTATE_ADJUST_PROFITS",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateAdjustProfits,
+					When = "estate.owned,estate.business",
+				},
+				new Engine_UiMenuEntry
+				{
+					Name = "GUI_SCREEN_REAL_ESTATE_SET_BUDGET", Tag = "GUI_SCREEN_REAL_ESTATE_SET_BUDGET",
+					EventType = (int)Engine_UiMenuConstants.EventType.RealEstateAdjustBudget,
+					When = "estate.owned,estate.home",
+				},
+			},
+		};
+
 		AddScreen(screens, new Engine_UiScreenTemplate
 		{
 			ScreenId = 0, Name = "pause", Presentation = "pausemainmenu",

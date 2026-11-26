@@ -4903,6 +4903,21 @@ public partial class GameUi : Node, IGameTitleUi
 
 	private Engine_UiScreenMenu? _screenMenu;
 
+	/// <summary>
+	/// The last estate state the real-estate list was built from — known / owned / tenant, as
+	/// bits. Screen 28's rows are conditioned on it (`estate.*` in <see cref="Engine_UiRowConditions"/>)
+	/// and the guest answers it a sample or two AFTER the screen opens, so the list is rebuilt
+	/// when the answer changes instead of standing on the previous building's.
+	/// </summary>
+	private int _estateStateKey = -1;
+
+	/// <summary>`Fable2Bridge.RealEstate` reduced to the bits the row conditions ask.</summary>
+	private static int EstateStateKey()
+	{
+		Fable2Bridge.RealEstate estate = Fable2Bridge.GetRealEstate();
+		return (estate.Known ? 1 : 0) | (estate.Owned ? 2 : 0) | (estate.HasTenant ? 4 : 0);
+	}
+
 	/// <summary>The detail page's last inputs (screen, row, page, data generation, fold) and the book they filled — a refill runs on a change or a guest frame.</summary>
 	private (uint, string, int, uint, bool) _detailKey;
 
@@ -9913,6 +9928,25 @@ public partial class GameUi : Node, IGameTitleUi
 					: !string.Equals(name, PausePresentation, System.StringComparison.OrdinalIgnoreCase)
 						? UpScreenId()
 						: 0u;
+
+			// SCREEN 28'S ROWS CARRY THE ESTATE'S OWN STATE, and the guest answers that state a
+			// sample or two AFTER the screen opens: the first build sees the building the screen
+			// before it resolved — or none — which put `Buy` on a property the hero already
+			// owned and kept `Sell` off it. Re-evaluate the authored rows whenever that answer
+			// changes; the rebuild carries the fold and the cursor across by name.
+			if (list.ScreenId == 28u)
+			{
+				int estate = EstateStateKey();
+				if (estate != _estateStateKey)
+				{
+					_estateStateKey = estate;
+					list.InvalidateAuthored();
+				}
+			}
+			else
+			{
+				_estateStateKey = -1;
+			}
 
 			bool rebuilt;
 			using (Refii.Core.Engine_FramePhases.Measure("ui.list.rebuild"))

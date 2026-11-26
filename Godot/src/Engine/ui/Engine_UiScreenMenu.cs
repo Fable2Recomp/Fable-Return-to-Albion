@@ -792,6 +792,14 @@ public sealed class Engine_UiScreenMenu
 		return true;
 	}
 
+	/// <summary>
+	/// Forces the next build to re-evaluate the template's row conditions, keeping the fold and
+	/// the cursor by name (the rebuild path carries both across). For a list whose rows depend
+	/// on state the guest resolves AFTER the first build: screen 28's estate state is answered a
+	/// sample or two after the screen opens, so a list built at open is one building behind.
+	/// </summary>
+	public void InvalidateAuthored() => _authoredFrom = null;
+
 	public bool Rebuild(uint presentation, Engine_UiScreen? screen)
 	{
 		bool changed = RebuildList(presentation, screen);
