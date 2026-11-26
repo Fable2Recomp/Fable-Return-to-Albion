@@ -154,7 +154,7 @@ public partial class AndroidDiagnosticButtons : CanvasLayer
         {
             Name = "AndroidTouchEditor", Controls = () => Touch?.LaidOut ?? Array.Empty<TouchControl>(),
             Screen = () => Touch?.CurrentContext ?? TouchContext.World,
-            ConfigPath = () => ConfigPath?.Invoke() ?? "", OpacityWritten = () => Touch?.RereadSettingsSoon(),
+            ConfigPath = () => ConfigPath?.Invoke() ?? "", SettingsWritten = () => Touch?.RereadSettingsSoon(),
         };
         GetParent().CallDeferred(Node.MethodName.AddChild, _remap);
         GetParent().CallDeferred(Node.MethodName.AddChild, _editor);

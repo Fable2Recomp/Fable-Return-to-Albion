@@ -193,6 +193,21 @@ public static class AndroidQuickSettings
         }
     }
 
+    /// <summary>Hides gameplay controls while keeping the Options button reachable.</summary>
+    public const string HideTouchControlsKey = "hide_touch_controls";
+
+    /// <summary>Reads whether the player chose to hide gameplay controls.</summary>
+    public static bool HideTouchControls(string config) =>
+        Engine_RefiiConfig.Bool(RuntimeConfig.ReadValues(config), HideTouchControlsKey, false);
+
+    /// <summary>Persists the overlay preference alongside the player's touch layout settings.</summary>
+    public static void SetHideTouchControls(string config, bool hidden)
+    {
+        var values = RuntimeConfig.ReadValues(config);
+        values[HideTouchControlsKey] = hidden ? "true" : "false";
+        Write(config, values);
+    }
+
     /// <summary>The touch controls' opacity key, which they reread every couple of seconds.</summary>
     public const string TouchOpacityKey = "touch_opacity";
 

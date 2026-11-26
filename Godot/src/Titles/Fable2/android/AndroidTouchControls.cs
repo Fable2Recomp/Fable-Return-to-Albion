@@ -91,6 +91,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     /// <summary>The last picture went without art that has not loaded yet: it is drawn again until it has.</summary>
     private bool _artMissing;
 
+    /// <summary>The editor preference to show only Options, including after the next touch.</summary>
+    private bool _hideControls;
+
     /// <summary>Whether the controls are switched on (`touch_controls`).</summary>
     public bool ControlsEnabled => _enabled;
 
@@ -476,6 +479,11 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         return offered.Count == 0 ? null : offered;
     }
 
+    /// <summary>Childhood gives the toy pistol through Inventory and Carrying. Check those when
+    /// the equipped record is empty. An unavailable guest sample leaves the control accessible.</summary>
+    internal static bool CanUseRanged(uint? equipped, System.Func<ulong> carried, System.Func<int> toyPistolCount) =>
+        equipped != 0u || carried() != 0u || toyPistolCount() != 0;
+
     /// <summary>
     /// What the hero can do, re-read twice a second: a ranged weapon equipped (Y), a spell (B), two
     /// spells (the spell menu). Unknown counts as able — nothing is hidden on a guess.
@@ -504,7 +512,9 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
         }
 
         _heroClock = 0.5;
-        bool ranged = Fable2Bridge.HeroWeapons() is not { } weapons || weapons.Ranged != 0u;
+        bool ranged = CanUseRanged(Fable2Bridge.HeroWeapons()?.Ranged,
+            static () => Fable2Bridge.CoopHeldUids(1)?.Ranged ?? 0,
+            static () => Fable2Bridge.GetItemCount(1, "ObjectInventoryPistol_Child"));
         int? spells = Engine_UiSpellAssignSet.HeroSpellTypes;
         _hero = new TouchHero(ranged, spells is not { } known || known >= 1, Engine_UiSpellAssignSet.SpellsMenuCanOpen, villager);
         return _hero;
@@ -553,7 +563,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
     {
         // A controller in hand hides the controls until the next touch; the dev menu is a
         // desktop window and wants the plain pointer; before the guest is up nothing is played.
-        if (!Engine_UiInputMode.Touch || GameDevMenu.WindowOpen || HostBridge.TryGetAbiVersion() is null)
+        if (_hideControls || !Engine_UiInputMode.Touch || GameDevMenu.WindowOpen || HostBridge.TryGetAbiVersion() is null)
         {
             return TouchContext.Hidden;
         }
@@ -632,6 +642,7 @@ public partial class AndroidTouchControls : Control, IAndroidTouchControls
 
         _lastValues = values;
         bool enabled = Refii.Core.Engine_RefiiConfig.Bool(values, "touch_controls", true);
+        _hideControls = Refii.Core.Engine_RefiiConfig.Bool(values, AndroidQuickSettings.HideTouchControlsKey, false);
         _scale = Mathf.Clamp(Refii.Core.Engine_RefiiConfig.Float(values, "touch_scale", 1f),
             AndroidTouchLayout.MinScale, AndroidTouchLayout.MaxScale);
         _opacity = Mathf.Clamp(Refii.Core.Engine_RefiiConfig.Float(values, "touch_opacity", 0.5f), 0.1f, 1f);

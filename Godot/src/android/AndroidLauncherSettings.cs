@@ -125,8 +125,10 @@ public static class AndroidLauncherSettings
         foreach (Refii.Core.Engine_Title title in Refii.Core.Engine_Title.All)
         {
             if (string.Equals(title.ConfigFileName, fileName, StringComparison.OrdinalIgnoreCase)) continue;
-            bool Shared(string key) => !PerTitleKeys.Contains(key) && definitions.TryGetValue(key, out var definition) &&
-                definition.OwnerTitle == null && definition.AppliesTo(title);
+            // The touch editor owns this preference outside the launcher's CVar list.
+            bool Shared(string key) => key == AndroidQuickSettings.HideTouchControlsKey ||
+                (!PerTitleKeys.Contains(key) && definitions.TryGetValue(key, out var definition) &&
+                 definition.OwnerTitle == null && definition.AppliesTo(title));
             string other = Path.Combine(directory, title.ConfigFileName);
             try
             {
