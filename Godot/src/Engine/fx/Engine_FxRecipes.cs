@@ -672,13 +672,17 @@ public static class Engine_FxRecipes
 					if (attachment.Stagger > 0f && ordinal > 0)
 					{
 						FableFx late = child;
-						node.GetTree()?.CreateTimer(attachment.Stagger * ordinal).Timeout += () =>
+						SceneTreeTimer? stagger = node.GetTree()?.CreateTimer(attachment.Stagger * ordinal);
+						if (stagger is not null)
+						{
+							stagger.Timeout += () =>
 						{
 							if (GodotObject.IsInstanceValid(late))
 							{
 								late.Playing = true;
 							}
 						};
+						}
 					}
 					if (ReferenceEquals(parent, node))
 					{
