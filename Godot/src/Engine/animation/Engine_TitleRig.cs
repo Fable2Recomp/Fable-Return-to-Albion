@@ -242,21 +242,44 @@ public class Engine_TitleRig
 	}
 
 	/// <summary>
-	/// Returns true when an entity transitions from a composite character (<paramref name="prevModelHash"/>
-	/// == 0) to a single crumbled-bones model (<paramref name="newModelHash"/> != 0) whose skeleton
-	/// consists of multiple independent disarticulated roots or matches a crumble path convention.
+	/// Returns true when an entity transitions to a disarticulated bone-pile/death model
+	/// (<paramref name="newModelHash"/> != 0 and != <paramref name="prevModelHash"/>) whose skeleton
+	/// consists of rigid-piece single-bone geometry (such as Fable 2's <c>Skeleton_Base.mdl</c>),
+	/// multiple independent root-attached pieces (Fable 3), or matches a crumble path convention.
 	/// </summary>
 	public virtual bool IsDisarticulatedCrumble(
-		uint prevModelHash, uint newModelHash, string? modelPath, ReadOnlySpan<int> parents)
+		uint prevModelHash, uint newModelHash, string? modelPath, ReadOnlySpan<int> parents) =>
+		IsDisarticulatedCrumble(prevModelHash, newModelHash, modelPath, parents, isRigidPieceMesh: false);
+
+	/// <inheritdoc cref="IsDisarticulatedCrumble(uint, uint, string?, ReadOnlySpan{int})"/>
+	public virtual bool IsDisarticulatedCrumble(
+		uint prevModelHash,
+		uint newModelHash,
+		string? modelPath,
+		ReadOnlySpan<int> parents,
+		bool isRigidPieceMesh)
 	{
-		if (prevModelHash != 0u || newModelHash == 0u || parents.Length < 4)
+		if (newModelHash == 0u || prevModelHash == newModelHash || parents.Length < 4)
+		{
+			return false;
+		}
+
+		if (isRigidPieceMesh)
+		{
+			return true;
+		}
+
+		// Legacy path/topology heuristic for meshes whose surface arrays weren't inspected:
+		// restricted to composite -> single-model transitions unless rigid-piece geometry proved it.
+		if (prevModelHash != 0u)
 		{
 			return false;
 		}
 
 		if (!string.IsNullOrEmpty(modelPath) &&
 			(modelPath.Contains("crumble", StringComparison.OrdinalIgnoreCase) ||
-			 modelPath.Contains("skeleton_pieces", StringComparison.OrdinalIgnoreCase)))
+			 modelPath.Contains("skeleton_pieces", StringComparison.OrdinalIgnoreCase) ||
+			 modelPath.Contains("skeleton_base", StringComparison.OrdinalIgnoreCase)))
 		{
 			return true;
 		}

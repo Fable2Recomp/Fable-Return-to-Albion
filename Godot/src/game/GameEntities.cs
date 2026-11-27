@@ -273,6 +273,8 @@ public partial class GameEntities : Node3D
     private sealed class PendingCrumble
     {
         public ulong UniqueId;
+        public uint SourceModelHash;
+        public uint TargetModelHash;
         public Transform3D EntityWorld;
         public Vector3 InheritedVelocity;
         public readonly Dictionary<string, (Vector3 Pos, Quaternion Rot)> Bones =
@@ -942,6 +944,7 @@ public partial class GameEntities : Node3D
             if (skipIndex && !entity.Changed && entity.Address != _morphPreviewHero &&
                 !IsPrincipal(entity.Address) && !entity.Appearance.IsDeadCreature &&
                 !_disarticulated.ContainsKey(entity.Address) &&
+                !_pendingCrumble.ContainsKey(entity.Address) &&
                 _skipIndex.TryFind(entity.Address, entity.UniqueId, row,
                     out Refii.Entities.Engine_EntitySkipIndex.Kind verdict, out int verdictTag) &&
                 HeldThisWalk(entity.Address, verdict, verdictTag))
@@ -1065,8 +1068,11 @@ public partial class GameEntities : Node3D
             // would); the full prologue resolved a multi-mesh appearance.
             bool fastRow = false;
             bool multiRoute = false;
+            bool holdingForPendingCrumbleBuild = false;
             if (entity.Address != _morphPreviewHero && !entity.Changed && !Due(entity.Address, ReconcileTicks) &&
                 entity.Appearance.IsConstructed && !entity.Highlighted &&
+                !_disarticulated.ContainsKey(entity.Address) &&
+                !_pendingCrumble.ContainsKey(entity.Address) &&
                 (_reports >= 10 || entity.ModelHash != 0u) &&
                 _nodes.TryGetValue(entity.Address, out MeshInstance3D? fastNode) &&
                 _nodeMesh.TryGetValue(entity.Address, out Mesh? fastMesh) && fastMesh is not null &&
@@ -1132,6 +1138,7 @@ public partial class GameEntities : Node3D
             }
 
             uint prevModelHashForMesh = entity.ModelHash;
+            bool holdingForReassembly = false;
             if (_lastModelHash.TryGetValue(entity.Address, out uint knownModelHash))
             {
                 prevModelHashForMesh = knownModelHash;
@@ -1141,26 +1148,74 @@ public partial class GameEntities : Node3D
                     _eyes.Remove(entity.Address);
                     _bodyAndEyes.Remove(entity.Address);
                     _skipIndex.Invalidate(entity.Address);
-                    if (knownModelHash == 0u && entity.ModelHash != 0u &&
+                    if (entity.ModelHash != 0u &&
+                        !_disarticulated.ContainsKey(entity.Address) &&
                         _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? liveRig) &&
                         _nodes.TryGetValue(entity.Address, out MeshInstance3D? liveNode))
                     {
                         Transform3D entityWorld = toWorld * ToGodot(entity.Position, entity.Rotation);
                         Transform3D captureWorld = liveNode.IsInsideTree() ? liveNode.GlobalTransform : entityWorld;
-                        TryCapturePendingCrumble(entity.Address, entity.UniqueId, captureWorld, liveRig, ComputeInheritedVelocity(in entity));
+                        TryCapturePendingCrumble(
+                            entity.Address,
+                            entity.UniqueId,
+                            knownModelHash,
+                            entity.ModelHash,
+                            captureWorld,
+                            liveRig,
+                            ComputeInheritedVelocity(in entity));
+                    }
+                    else if (_disarticulated.TryGetValue(entity.Address, out Refii.Physics.Engine_DisarticulatedRig? activeShatter))
+                    {
+                        // Living creature recovering from crumble (e.g. Hollowman SetCrumbled(0) flipping
+                        // ModelHash back from Skeleton_Base.mdl to 0): fly all scattered bones back to the
+                        // entity's spawn/rise pose before swapping back to the living composite mesh.
+                        _pendingCrumble.Remove(entity.Address);
+                        if (!entity.Appearance.IsDeadCreature && !activeShatter.ReassemblyFinished)
+                        {
+                            activeShatter.BeginReassembly();
+                        }
+                        else
+                        {
+                            _disarticulated.Remove(entity.Address);
+                            if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? activeRig))
+                            {
+                                activeRig.IsDisarticulated = false;
+                            }
+                        }
                     }
                     else if (entity.ModelHash == 0u)
                     {
                         _pendingCrumble.Remove(entity.Address);
-                        _disarticulated.Remove(entity.Address);
-                        if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? activeRig))
-                        {
-                            activeRig.IsDisarticulated = false;
-                        }
                     }
                 }
             }
             _lastModelHash[entity.Address] = entity.ModelHash;
+
+            if (_disarticulated.TryGetValue(entity.Address, out Refii.Physics.Engine_DisarticulatedRig? existingShatter))
+            {
+                if (entity.Appearance.IsDeadCreature && existingShatter.IsReassembling)
+                {
+                    _disarticulated.Remove(entity.Address);
+                    if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? deadRig))
+                    {
+                        deadRig.IsDisarticulated = false;
+                    }
+                }
+                else if (existingShatter.IsReassembling && !existingShatter.ReassemblyFinished)
+                {
+                    holdingForReassembly = true;
+                }
+                else if (existingShatter.ReassemblyFinished)
+                {
+                    // Reassembly flight finished: release disarticulated override so the walk swaps
+                    // straight onto the already-warmed living mesh in this tick.
+                    _disarticulated.Remove(entity.Address);
+                    if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? doneRig))
+                    {
+                        doneRig.IsDisarticulated = false;
+                    }
+                }
+            }
 
             if (entity.ModelHash == 0)
             {
@@ -1192,6 +1247,14 @@ public partial class GameEntities : Node3D
                     multiRoute = true;
                     ++_withModel;
                     ++_multiMesh;
+                    _nothingToDraw.Remove(entity.Address);
+                }
+                else if (holdingForReassembly && _nodeMesh.TryGetValue(entity.Address, out Mesh? reassemblyHeldMesh) && reassemblyHeldMesh is not null)
+                {
+                    // Composite is warming up on a worker while bones are still flying back together:
+                    // keep the bone-pile mesh alive so Retire() never frees the entity mid-reassembly.
+                    resolvedMesh = reassemblyHeldMesh;
+                    ++_withModel;
                     _nothingToDraw.Remove(entity.Address);
                 }
                 else
@@ -1231,8 +1294,15 @@ public partial class GameEntities : Node3D
                 resolvedMesh = ComposeParts(BodyAndEyes(entity.Address, entity.ModelHash, eyes));
                 if (resolvedMesh is null)
                 {
-                    prologueTicks += SectionClock() - prologueFrom;
-                    continue;
+                    if (holdingForReassembly && _nodeMesh.TryGetValue(entity.Address, out Mesh? heldEyeMesh) && heldEyeMesh is not null)
+                    {
+                        resolvedMesh = heldEyeMesh;
+                    }
+                    else
+                    {
+                        prologueTicks += SectionClock() - prologueFrom;
+                        continue;
+                    }
                 }
 
                 ++_composites;
@@ -1264,12 +1334,38 @@ public partial class GameEntities : Node3D
 
                     ++_awaitingBuild;
                     Resolve(entity.ModelHash);
-                    prologueTicks += SectionClock() - prologueFrom;
-                    continue;
+                    if (_pendingCrumble.TryGetValue(entity.Address, out PendingCrumble? waitingCrumble) &&
+                        waitingCrumble.TargetModelHash == entity.ModelHash &&
+                        _nodeMesh.TryGetValue(entity.Address, out Mesh? heldPreCrumbleMesh) &&
+                        heldPreCrumbleMesh is not null)
+                    {
+                        // Hold the pre-crumble node & frozen pose while Skeleton_Base.mdl decodes on the
+                        // worker so Retire() does not destroy the entity or wipe _pendingCrumble.
+                        resolvedMesh = heldPreCrumbleMesh;
+                        holdingForPendingCrumbleBuild = true;
+                    }
+                    else if (holdingForReassembly && _nodeMesh.TryGetValue(entity.Address, out Mesh? heldSingleMesh) && heldSingleMesh is not null)
+                    {
+                        resolvedMesh = heldSingleMesh;
+                    }
+                    else
+                    {
+                        prologueTicks += SectionClock() - prologueFrom;
+                        continue;
+                    }
                 }
+                else
+                {
+                    // What Resolve answers for a hash it holds, without its second lookup.
+                    resolvedMesh = builtMesh;
+                }
+            }
 
-                // What Resolve answers for a hash it holds, without its second lookup.
-                resolvedMesh = builtMesh;
+            // While bones are flying back together during reassembly, keep drawing the bone-pile
+            // mesh until ReassemblyFinished while the living target mesh warms up in the background.
+            if (holdingForReassembly && _nodeMesh.TryGetValue(entity.Address, out Mesh? activeBoneMesh) && activeBoneMesh is not null)
+            {
+                resolvedMesh = activeBoneMesh;
             }
 
             if (resolvedMesh is null)
@@ -1442,9 +1538,13 @@ public partial class GameEntities : Node3D
                     Refii.AndroidRuntime.AndroidEntityProps.ApplyVisibilityRange(node, mesh);
                     Refii.Lighting.Engine_ShadowReach.Adopt(node);
                 }
-                else if (ranged)
+                else
                 {
-                    Refii.Level.Engine_PropDrawRange.Apply(node);
+                    if (ranged)
+                    {
+                        Refii.Level.Engine_PropDrawRange.Apply(node);
+                    }
+                    TryStartPendingCrumble(entity.Address, node, mesh, toWorld, entity.ModelHash, entity.UniqueId);
                 }
 
                 // The cloth body goes on BEFORE the cluster pass: it hides the surfaces it
@@ -1499,20 +1599,32 @@ public partial class GameEntities : Node3D
                         nextMdlRig is { } nextRig && previousRig.HasSameBinding(nextRig);
                     if (!sameBinding && _skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? stale))
                     {
-                        bool enteringCrumble = prevModelHashForMesh == 0u &&
-                            entity.ModelHash != 0u &&
+                        Refii.Models.Engine_MdlDisarticulation.DisarticulatedMeshProfile nextProfile =
+                            Refii.Models.Engine_MdlDisarticulation.GetProfile(mesh);
+                        uint sourceHash = _pendingCrumble.TryGetValue(entity.Address, out PendingCrumble? captured)
+                            ? captured.SourceModelHash
+                            : prevModelHashForMesh;
+                        bool enteringCrumble = entity.ModelHash != 0u &&
                             nextMdlRig is { } crumbleRig &&
                             Refii.Core.Engine_TitleGame.Active.Rig.IsDisarticulatedCrumble(
-                                0u,
+                                sourceHash,
                                 entity.ModelHash,
                                 Refii.Level.Engine_PropModelIndex.Resolve(entity.ModelHash, System.Array.Empty<string>()),
-                                crumbleRig.Parents);
+                                crumbleRig.Parents,
+                                nextProfile.IsRigidPieceMesh);
 
                         Transform3D entityWorld = toWorld * ToGodot(entity.Position, entity.Rotation);
                         if (enteringCrumble && !_pendingCrumble.ContainsKey(entity.Address))
                         {
                             Transform3D captureWorld = node.IsInsideTree() ? node.GlobalTransform : entityWorld;
-                            TryCapturePendingCrumble(entity.Address, entity.UniqueId, captureWorld, stale, ComputeInheritedVelocity(in entity));
+                            TryCapturePendingCrumble(
+                                entity.Address,
+                                entity.UniqueId,
+                                prevModelHashForMesh,
+                                entity.ModelHash,
+                                captureWorld,
+                                stale,
+                                ComputeInheritedVelocity(in entity));
                         }
 
                         node.Skeleton = new NodePath();
@@ -1549,6 +1661,14 @@ public partial class GameEntities : Node3D
 
                         GD.Print($"[rig] entity 0x{entity.Address:X8} changed mesh — re-rigged " +
                             $"({(_skeletons.ContainsKey(entity.Address) ? "new skeleton" : "no rig yet, retrying")})");
+                    }
+                    else if (_skeletons.TryGetValue(entity.Address, out Refii.Entities.Engine_EntitySkeleton? keptRig))
+                    {
+                        keptRig.IsRigidPieceMesh = Refii.Models.Engine_MdlDisarticulation.GetProfile(mesh).IsRigidPieceMesh;
+                        if (_pendingCrumble.ContainsKey(entity.Address))
+                        {
+                            TryStartPendingCrumble(entity.Address, node, mesh, toWorld, entity.ModelHash, entity.UniqueId);
+                        }
                     }
 
                     Refii.Physics.Engine_ClothBody.Attach(node, mesh, PartPathsOf(mesh));
@@ -1959,7 +2079,7 @@ public partial class GameEntities : Node3D
                         !_reblending.Contains(entity.Address) &&
                         _clipAnimators.TryGetValue(entity.Address, out Refii.Animations.Engine_ClipAnimator? existingAnim) &&
                         !existingAnim.IsCharacterRig && existingAnim.IsSettled;
-                    writeBones = disarticulated || (!settledStaticProp && ((inView && (fullRate || FarRigPosesThisStep(entity.Address, nowMs - askedMs))) || neverPosed));
+                    writeBones = !holdingForPendingCrumbleBuild && (disarticulated || (!settledStaticProp && ((inView && (fullRate || FarRigPosesThisStep(entity.Address, nowMs - askedMs))) || neverPosed)));
                     if (inView && !writeBones)
                     {
                         ++farHeld;
@@ -2001,11 +2121,6 @@ public partial class GameEntities : Node3D
                             }
 
                             rig.ApplyModelSpacePoses(shatter.ModelPoses);
-                            if (shatter.ReassemblyFinished)
-                            {
-                                _disarticulated.Remove(entity.Address);
-                                rig.IsDisarticulated = false;
-                            }
                         }
                         else
                         {
@@ -2013,16 +2128,34 @@ public partial class GameEntities : Node3D
                             Refii.Animations.Engine_ClipAnimator animator = ClipAnimatorFor(entity.Address, rig);
                             if (!animator.Begin(entity.Address, writeBones: true, out bool fold))
                             {
-                                // The feed is about to write this skeleton, so the animator's
-                                // written-pose cache no longer describes it.
-                                animator.ForgetWrittenPose();
-                                rig.Follow(entity.Address, true);
-                                if (!rig.IsSettled)
+                                // Self-start fallback: if a rigid-piece bone-pile mesh (e.g. Skeleton_Base.mdl)
+                                // spawned already crumbled or entered Havok ragdoll / death without a prior
+                                // PendingCrumble capture, hand it directly to Engine_DisarticulatedRig.
+                                if (rig.IsRigidPieceMesh &&
+                                    (entity.Appearance.IsDeadCreature || animator.LastFallback == "ragdoll") &&
+                                    TryAutoStartRigidPieceCrumble(entity, node, mesh, rig, toWorld, out Refii.Physics.Engine_DisarticulatedRig? autoShatter))
                                 {
-                                    _reblending.Add(entity.Address);
-                                    if (fullRate)
+                                    animator.ForgetWrittenPose();
+                                    Transform3D entityWorld = node.IsInsideTree()
+                                        ? node.GlobalTransform
+                                        : toWorld * ToGodot(entity.Position, entity.Rotation);
+                                    autoShatter.Step(_lastFrameDelta, entityWorld, SampleActiveGround, default, 0);
+                                    autoShatter.LastSteppedFrame = Refii.Core.Engine_ProcessFrame.Current;
+                                    rig.ApplyModelSpacePoses(autoShatter.ModelPoses);
+                                }
+                                else
+                                {
+                                    // The feed is about to write this skeleton, so the animator's
+                                    // written-pose cache no longer describes it.
+                                    animator.ForgetWrittenPose();
+                                    rig.Follow(entity.Address, true);
+                                    if (!rig.IsSettled)
                                     {
-                                        Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(rig.Node, true);
+                                        _reblending.Add(entity.Address);
+                                        if (fullRate)
+                                        {
+                                            Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(rig.Node, true);
+                                        }
                                     }
                                 }
                             }
@@ -3475,6 +3608,7 @@ public partial class GameEntities : Node3D
             return false;
         }
 
+        skeleton.IsRigidPieceMesh = Refii.Models.Engine_MdlDisarticulation.GetProfile(mesh).IsRigidPieceMesh;
         node.AddChild(skeleton.Node);
 
         // The mesh has to be a CHILD of the skeleton and name it. The skin is the rig's own:
@@ -4565,6 +4699,8 @@ public partial class GameEntities : Node3D
     private void TryCapturePendingCrumble(
         uint address,
         ulong uniqueId,
+        uint sourceModelHash,
+        uint targetModelHash,
         Transform3D captureWorld,
         Refii.Entities.Engine_EntitySkeleton liveRig,
         Vector3 inheritedVelocity)
@@ -4573,6 +4709,8 @@ public partial class GameEntities : Node3D
         var pending = new PendingCrumble
         {
             UniqueId = uniqueId,
+            SourceModelHash = sourceModelHash,
+            TargetModelHash = targetModelHash,
             EntityWorld = captureWorld,
             InheritedVelocity = inheritedVelocity,
         };
@@ -4603,13 +4741,16 @@ public partial class GameEntities : Node3D
             return;
         }
 
+        Refii.Models.Engine_MdlDisarticulation.DisarticulatedMeshProfile profile =
+            Refii.Models.Engine_MdlDisarticulation.GetProfile(mesh);
         if (modelHash == 0u ||
             Refii.Models.Engine_MdlRig.TryFrom(mesh) is not { } crumbleRig ||
             !Refii.Core.Engine_TitleGame.Active.Rig.IsDisarticulatedCrumble(
-                0u,
+                pending.SourceModelHash,
                 modelHash,
                 Refii.Level.Engine_PropModelIndex.Resolve(modelHash, System.Array.Empty<string>()),
-                crumbleRig.Parents) ||
+                crumbleRig.Parents,
+                profile.IsRigidPieceMesh) ||
             !_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? crumbledRig))
         {
             return;
@@ -4632,9 +4773,53 @@ public partial class GameEntities : Node3D
             crumbledRig.Parents,
             pending.Bones,
             pending.InheritedVelocity,
-            address ^ (uint)uniqueId);
+            address ^ (uint)uniqueId,
+            profile.Pieces);
         crumbledRig.ApplyModelSpacePoses(shatter.ModelPoses);
         _disarticulated[address] = shatter;
+    }
+
+    private bool TryAutoStartRigidPieceCrumble(
+        in HostBridge.GuestEntity entity,
+        MeshInstance3D node,
+        Mesh mesh,
+        Refii.Entities.Engine_EntitySkeleton crumbledRig,
+        Transform3D toWorld,
+        out Refii.Physics.Engine_DisarticulatedRig shatter)
+    {
+        Refii.Models.Engine_MdlDisarticulation.DisarticulatedMeshProfile profile =
+            Refii.Models.Engine_MdlDisarticulation.GetProfile(mesh);
+        if (!profile.IsRigidPieceMesh)
+        {
+            shatter = null!;
+            return false;
+        }
+
+        crumbledRig.IsDisarticulated = true;
+        Refii.Entities.Engine_ShadowSkeletons.SetEveryFrame(crumbledRig.Node, true);
+        if (_restGlobalsScratch.Length < crumbledRig.BoneCount)
+        {
+            _restGlobalsScratch = new Transform3D[crumbledRig.BoneCount];
+        }
+
+        crumbledRig.CopyRestGlobals(_restGlobalsScratch);
+        Transform3D entityWorld = node.IsInsideTree()
+            ? node.GlobalTransform
+            : toWorld * ToGodot(entity.Position, entity.Rotation);
+        crumbledRig.CaptureWorldBones(entityWorld, _capturedBonesScratch);
+
+        shatter = new Refii.Physics.Engine_DisarticulatedRig();
+        shatter.Initialize(
+            entityWorld,
+            crumbledRig.BoneNames,
+            new System.ReadOnlySpan<Transform3D>(_restGlobalsScratch, 0, crumbledRig.BoneCount),
+            crumbledRig.Parents,
+            _capturedBonesScratch,
+            ComputeInheritedVelocity(in entity),
+            entity.Address ^ (uint)entity.UniqueId,
+            profile.Pieces);
+        _disarticulated[entity.Address] = shatter;
+        return true;
     }
 
     private bool TryAdoptRetiredCorpse(uint address)
@@ -6656,7 +6841,9 @@ public partial class GameEntities : Node3D
         foreach (uint address in _reblending)
         {
             if (!_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) ||
-                rig.IsSettled)
+                rig.IsSettled ||
+                _disarticulated.ContainsKey(address) ||
+                _pendingCrumble.ContainsKey(address))
             {
                 _arrived.Add(address);
                 continue;
@@ -6721,10 +6908,16 @@ public partial class GameEntities : Node3D
             {
                 if (!_nodes.TryGetValue(address, out MeshInstance3D? node) ||
                     !_skeletons.TryGetValue(address, out Refii.Entities.Engine_EntitySkeleton? rig) ||
-                    !GodotObject.IsInstanceValid(node) ||
-                    shatter.ReassemblyFinished)
+                    !GodotObject.IsInstanceValid(node))
                 {
                     _arrived.Add(address);
+                    continue;
+                }
+
+                // Leave ReassemblyFinished entries for the entity walk to consume so the mesh swap
+                // back to the living composite happens atomically without hitting fastRow.
+                if (shatter.ReassemblyFinished)
+                {
                     continue;
                 }
 
