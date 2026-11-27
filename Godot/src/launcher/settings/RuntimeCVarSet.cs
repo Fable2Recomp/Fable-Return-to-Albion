@@ -72,6 +72,10 @@ public static class RuntimeCVarsGodot
                 "The remaster switch: modernized textures and materials, or the game exactly as " +
                 "it shipped. Off restores the original look — no upscaling, no occlusion, no " +
                 "metallic, no parallax. Everything below follows this unless set explicitly."),
+            new("fx_remaster_magic_circle", Category, RuntimeCVarType.Bool, "true",
+                "Enhance Will spell targeting and charge circles with counter-rotating arcane " +
+                "rings, rising Will motes, and cyan ground light. Off keeps the original " +
+                "single-band circle. Follows materials_modernized unless set."),
             new("texture_upscaling_enabled", Category, RuntimeCVarType.Bool, "true",
                 "Enhance textures at runtime. Off keeps the original assets exactly as shipped. " +
                 "Follows materials_modernized unless set."),

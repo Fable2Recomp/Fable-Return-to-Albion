@@ -1181,6 +1181,32 @@ public partial class Engine_SkyEnvironmentNode : WorldEnvironment
     private ToneMapTheme? _toneMapTheme;
     private Engine_DynamicSkyDriver? _dynamicSky;
     public Engine_LandscapeGround? InteractionGround { get; set; }
+
+    /// <summary>
+    /// Samples the active level's bilinear landscape heightfield at <paramref name="worldPos"/>
+    /// (in Godot world coordinates). Returns false when no heightfield covers the point.
+    /// </summary>
+    public bool TrySampleGroundHeight(Vector3 worldPos, out float groundY)
+    {
+        groundY = 0f;
+        if (InteractionGround is not { GridCount: > 0 } ground || !worldPos.IsFinite())
+        {
+            return false;
+        }
+
+        Node? parentNode = _frameParent ?? GetParent();
+        Transform3D worldFromGround = parentNode is Node3D root && GodotObject.IsInstanceValid(root)
+            ? root.GlobalTransform
+            : Transform3D.Identity;
+        Vector3 local = worldFromGround.AffineInverse() * worldPos;
+        if (!ground.TryHeight(local.X, local.Z, out float h) || !float.IsFinite(h))
+        {
+            return false;
+        }
+
+        groundY = (worldFromGround * new Vector3(local.X, h, local.Z)).Y;
+        return float.IsFinite(groundY);
+    }
     private Engine_DynamicSurfaceInteractions? _surfaceInteractions;
     private Engine_DynamicThunder? _dynamicThunder;
     private Engine_DynamicCloudShadows? _dynamicCloudShadowCaster;

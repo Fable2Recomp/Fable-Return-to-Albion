@@ -93,6 +93,11 @@ public sealed partial class Engine_FxSystem
         /// <summary>The trail's past positions, newest first; made the first time a trail emitter spawns this particle.</summary>
         public float[][]? Hist;
         public int HistCount;
+
+        /// <summary>Second edge point for <c>Mode == 3</c> double-trail ribbons (e.g. weapon tip opposite <see cref="Pos"/>).</summary>
+        public readonly float[] EdgeB = new float[3];
+        public readonly float[] PrevEdgeB = new float[3];
+        public bool HasDoubleEdge;
     }
 
     private sealed class VisualRuntime
@@ -189,6 +194,8 @@ public sealed partial class Engine_FxSystem
         public FxEmitter? Def;
         public List<ChainNode> Chain = new();
         public float[] WorldPos = new float[3];
+        public float[] PlacePos = new float[3];
+        public float[] PlaceRot = { 1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f };
         public float Age;
         public bool Global;
         public int ChainId = -1;
@@ -199,6 +206,9 @@ public sealed partial class Engine_FxSystem
         public FxEmitter? Def;
         public List<ChainNode> Chain = new();
         public float[] WorldPos = new float[3];
+        public float[] PlacePos = new float[3];
+        public float[] PlaceRot = { 1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f };
+        public int ChainId = -1;
         public float Age;
         public float Scale = 1f;
 
@@ -268,13 +278,18 @@ public sealed partial class Engine_FxSystem
         public int ZOrder;
 
         public bool Beam;
+        public bool HasWorldTrailOverride;
+        public int BeamIndex = -1;
+        public float[][]? BeamSplineOverride;
+        public int BeamSplineSerial;
+        public bool BeamSplineFresh;
         public List<float[]> BeamBase = new();
         public List<float[]> BeamPts = new();
         public List<float[]> BeamWander = new();
         public float BeamSegLen;
 
-        /// <summary>The <see cref="_splineSerial"/> this beam's base was built from.</summary>
-        public int BeamSerial;
+        /// <summary>The spline serial this beam's base was built from.</summary>
+        public int BeamSerial = -1;
         public float BeamJerkTimer;
 
         public List<ParticleState> Particles { get; } = new();
@@ -477,6 +492,419 @@ public sealed partial class Engine_FxSystem
 
     private float _sizeScale = 1f;
     private float[][]? _splineOverride;
+    private bool _hasDoubleTrailSpan;
+    private bool _doubleSpanHostDriven;
+    private readonly float[] _doubleSpanA = new float[3];
+    private readonly float[] _doubleSpanB = new float[3];
+    private bool _hasGuestDoubleCursor;
+    private uint _lastGuestDoubleTail;
+    private uint _lastGuestDoubleCount;
+    private int _doubleSpanSeq;
+    private int _lastSpawnedDoubleSpanSeq = -1;
+    private bool _liveWeaponTipDirty;
+    private bool _doubleSpanFresh;
+
+    /// <summary>True when an active <c>Mode == 3</c> double-trail span is driven by a host-animated weapon entity.</summary>
+    public bool IsDoubleTrailHostDriven => _hasDoubleTrailSpan && _doubleSpanHostDriven;
+
+    private bool _hasSingleTrailHead;
+    private readonly float[] _singleTrailHead = new float[3];
+    private bool _hasGuestSingleCursor;
+    private uint _lastGuestSingleTail;
+    private uint _lastGuestSingleCount;
+    private int _singleHeadSeq;
+    private int _lastSpawnedSingleHeadSeq = -1;
+    private bool _singleHeadFresh;
+
+    /// <summary>
+    /// One entry from a live guest <c>Mode == 3</c> double-trail ring in node-local Godot space,
+    /// carrying the exact edge pair and the guest's per-slot keyframe cursor (<c>entry + 28</c>).
+    /// </summary>
+    public readonly record struct DoubleTrailRingPoint(Vector3 EdgeA, Vector3 EdgeB, float KeyTime);
+
+    private const int MaxDoubleTrailRingPoints = 64;
+    private readonly Vector3[] _ringPtsA = new Vector3[MaxDoubleTrailRingPoints];
+    private readonly Vector3[] _ringPtsB = new Vector3[MaxDoubleTrailRingPoints];
+    private readonly float[] _ringKeys = new float[MaxDoubleTrailRingPoints];
+    private int _ringCount;
+    private bool _ringFresh;
+    private bool _ringDirty;
+    private float _ringBoundRadius;
+
+    /// <summary>True when a direct guest <c>Mode == 3</c> double-trail ring snapshot is active.</summary>
+    public bool HasDoubleTrailRing => _ringCount >= 2;
+
+    /// <summary>Number of control points currently held in the direct guest double-trail ring.</summary>
+    public int DoubleTrailRingCount => _ringCount;
+
+    /// <summary>
+    /// When true, <c>Mode == 3</c> double-trail emitters wait until <see cref="SetDoubleTrailSpan"/>
+    /// supplies valid endpoints rather than spawning an emitter-basis fallback quad.
+    /// </summary>
+    public bool RequireDoubleTrailSpan { get; set; }
+
+    /// <summary>
+    /// When true, guest-driven <c>Mode == 2</c> single-trail emitters wait until
+    /// <see cref="SetSingleTrailHead"/> supplies a valid head point rather than spawning at the root.
+    /// </summary>
+    public bool RequireSingleTrailHead { get; set; }
+
+    /// <summary>
+    /// When true, live <c>Type 9</c> spline/beam emitters (<c>CParticleSplineEmitterNode</c>) wait
+    /// until <see cref="SetBeamSpline"/>, <see cref="SetBeamSplineForType"/>, or
+    /// <see cref="SetSplineOverride"/> provides a valid baseline instead of drawing a 3m fallback bar.
+    /// </summary>
+    public bool RequireBeamSpline { get; set; }
+
+    /// <summary>Number of <c>Type 9</c> beam/spline emitters built in this system.</summary>
+    public int BeamEmitterCount { get; private set; }
+
+    /// <summary>True when at least one <c>Type 9</c> beam/spline emitter exists in this system.</summary>
+    public bool HasBeam => BeamEmitterCount > 0;
+
+    private bool _beamDirty;
+    private float _chainBoundRadius;
+
+    /// <summary>
+    /// Dynamic bounding sphere radius (in node-local metres) covering any distant stated splines,
+    /// double-trail spans, single-trail heads, or multi-root chain offsets so off-root effects
+    /// (such as a 12..18 m magic circle whose root stays at the Hero's feet) are not frustum-frozen.
+    /// </summary>
+    public float ActiveBoundRadius
+    {
+        get
+        {
+            float maxSq = _chainBoundRadius * _chainBoundRadius;
+            if (_ringCount >= 2)
+            {
+                float rSq = _ringBoundRadius * _ringBoundRadius;
+                if (rSq > maxSq) maxSq = rSq;
+            }
+            if (_hasDoubleTrailSpan)
+            {
+                float aSq = (_doubleSpanA[0] * _doubleSpanA[0]) + (_doubleSpanA[1] * _doubleSpanA[1]) + (_doubleSpanA[2] * _doubleSpanA[2]);
+                float bSq = (_doubleSpanB[0] * _doubleSpanB[0]) + (_doubleSpanB[1] * _doubleSpanB[1]) + (_doubleSpanB[2] * _doubleSpanB[2]);
+                if (aSq > maxSq) maxSq = aSq;
+                if (bSq > maxSq) maxSq = bSq;
+            }
+            if (_hasSingleTrailHead)
+            {
+                float hSq = (_singleTrailHead[0] * _singleTrailHead[0]) + (_singleTrailHead[1] * _singleTrailHead[1]) + (_singleTrailHead[2] * _singleTrailHead[2]);
+                if (hSq > maxSq) maxSq = hSq;
+            }
+            if (_splineOverride is { Length: > 0 })
+            {
+                float firstSq = (_splineOverride[0][0] * _splineOverride[0][0]) + (_splineOverride[0][1] * _splineOverride[0][1]) + (_splineOverride[0][2] * _splineOverride[0][2]);
+                int mid = _splineOverride.Length >> 1;
+                float midSq = (_splineOverride[mid][0] * _splineOverride[mid][0]) + (_splineOverride[mid][1] * _splineOverride[mid][1]) + (_splineOverride[mid][2] * _splineOverride[mid][2]);
+                int last = _splineOverride.Length - 1;
+                float lastSq = (_splineOverride[last][0] * _splineOverride[last][0]) + (_splineOverride[last][1] * _splineOverride[last][1]) + (_splineOverride[last][2] * _splineOverride[last][2]);
+                if (firstSq > maxSq) maxSq = firstSq;
+                if (midSq > maxSq) maxSq = midSq;
+                if (lastSq > maxSq) maxSq = lastSq;
+            }
+            foreach (InstanceState inst in _instances)
+            {
+                foreach (EmitterRuntime rt in inst.Emitters)
+                {
+                    if (rt.HasWorldTrailOverride && rt.Particles.Count > 0)
+                    {
+                        ParticleState firstPt = rt.Particles[0];
+                        float fSq = (firstPt.Pos[0] * firstPt.Pos[0]) + (firstPt.Pos[1] * firstPt.Pos[1]) + (firstPt.Pos[2] * firstPt.Pos[2]);
+                        if (fSq > maxSq) maxSq = fSq;
+                        ParticleState lastPt = rt.Particles[rt.Particles.Count - 1];
+                        float lpSq = (lastPt.Pos[0] * lastPt.Pos[0]) + (lastPt.Pos[1] * lastPt.Pos[1]) + (lastPt.Pos[2] * lastPt.Pos[2]);
+                        if (lpSq > maxSq) maxSq = lpSq;
+                    }
+                    if (rt.BeamSplineOverride is not { Length: > 0 } bp) continue;
+                    int step = Math.Max(1, bp.Length / 4);
+                    for (int i = 0; i < bp.Length; i += step)
+                    {
+                        float pSq = (bp[i][0] * bp[i][0]) + (bp[i][1] * bp[i][1]) + (bp[i][2] * bp[i][2]);
+                        if (pSq > maxSq) maxSq = pSq;
+                    }
+                    int last = bp.Length - 1;
+                    float lSq = (bp[last][0] * bp[last][0]) + (bp[last][1] * bp[last][1]) + (bp[last][2] * bp[last][2]);
+                    if (lSq > maxSq) maxSq = lSq;
+                }
+            }
+            return maxSq > 0f ? MathF.Sqrt(maxSq) + 4f : 0f;
+        }
+    }
+
+    /// <summary>Returns and clears whether any beam spline or multi-root chain moved since the last emit.</summary>
+    public bool ConsumeBeamDirty()
+    {
+        bool dirty = _beamDirty;
+        _beamDirty = false;
+        return dirty;
+    }
+
+    /// <summary>True when at least one emitter in this system renders as a ribbon (<c>Mode == 2</c> or <c>3</c>).</summary>
+    public bool HasRibbon { get; private set; }
+
+    /// <summary>True when at least one <c>Mode == 3</c> double trail is a melee weapon trail.</summary>
+    public bool IsWeaponDoubleTrail { get; private set; }
+
+    /// <summary>True when at least one emitter in this system runs in <c>Mode == 3</c> (double trail).</summary>
+    public bool HasDoubleTrail
+    {
+        get
+        {
+            foreach (InstanceState inst in _instances)
+            {
+                foreach (EmitterRuntime rt in inst.Emitters)
+                {
+                    if (rt.Mode == 3)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Sets the two blade/span endpoints in node-local Godot space for host-driven <c>Mode == 3</c>
+    /// double-trail spawning (converting to simulation layout <c>(x, z, y)</c>), with optional guest
+    /// ring cursor metadata to deduplicate 15 Hz samples and detect ring resets.
+    /// </summary>
+    public void SetDoubleTrailSpan(
+        Vector3 nodeLocalEdgeA,
+        Vector3 nodeLocalEdgeB,
+        bool hasGuestCursor = false,
+        uint guestTail = 0u,
+        uint guestCount = 0u)
+    {
+        float ax = nodeLocalEdgeA.X, ay = nodeLocalEdgeA.Z, az = nodeLocalEdgeA.Y;
+        float bx = nodeLocalEdgeB.X, by = nodeLocalEdgeB.Z, bz = nodeLocalEdgeB.Y;
+
+        if (hasGuestCursor)
+        {
+            if (_doubleSpanHostDriven)
+            {
+                _hasGuestDoubleCursor = false;
+            }
+            _doubleSpanHostDriven = false;
+            if (_hasGuestDoubleCursor && (guestCount < _lastGuestDoubleCount || guestCount <= 1u))
+            {
+                ResetTrails(modeFilter: 3);
+            }
+
+            float dax = ax - _doubleSpanA[0], day = ay - _doubleSpanA[1], daz = az - _doubleSpanA[2];
+            float dbx = bx - _doubleSpanB[0], dby = by - _doubleSpanB[1], dbz = bz - _doubleSpanB[2];
+            bool advanced = !_hasGuestDoubleCursor ||
+                            guestTail != _lastGuestDoubleTail ||
+                            guestCount != _lastGuestDoubleCount ||
+                            (dax * dax) + (day * day) + (daz * daz) + (dbx * dbx) + (dby * dby) + (dbz * dbz) > 1e-6f;
+            if (advanced)
+            {
+                ++_doubleSpanSeq;
+            }
+
+            _hasGuestDoubleCursor = true;
+            _lastGuestDoubleTail = guestTail;
+            _lastGuestDoubleCount = guestCount;
+        }
+        else
+        {
+            _doubleSpanHostDriven = true;
+            float dax = ax - _doubleSpanA[0], day = ay - _doubleSpanA[1], daz = az - _doubleSpanA[2];
+            float dbx = bx - _doubleSpanB[0], dby = by - _doubleSpanB[1], dbz = bz - _doubleSpanB[2];
+            if (_hasDoubleTrailSpan && IsWeaponDoubleTrail &&
+                ((dax * dax) + (day * day) + (daz * daz) + (dbx * dbx) + (dby * dby) + (dbz * dbz)) > 1e-8f)
+            {
+                _liveWeaponTipDirty = true;
+            }
+
+            _hasGuestDoubleCursor = false;
+            ++_doubleSpanSeq;
+        }
+
+        _doubleSpanA[0] = ax; _doubleSpanA[1] = ay; _doubleSpanA[2] = az;
+        _doubleSpanB[0] = bx; _doubleSpanB[1] = by; _doubleSpanB[2] = bz;
+        _hasDoubleTrailSpan = true;
+        _doubleSpanFresh = true;
+    }
+
+    /// <summary>Returns and clears whether a weapon-locked double trail tip or guest double-trail ring moved since the last emit.</summary>
+    public bool ConsumeLiveWeaponTipDirty()
+    {
+        bool dirty = _liveWeaponTipDirty || _ringDirty;
+        _liveWeaponTipDirty = false;
+        _ringDirty = false;
+        return dirty;
+    }
+
+    /// <summary>
+    /// Replaces the direct guest <c>Mode == 3</c> double-trail ring (oldest to newest, in
+    /// node-local Godot coordinates) with exact per-slot <c>KeyTime</c> values from the guest
+    /// simulation ring. Used for unlatched guest-driven double trails such as flying Blades swords.
+    /// </summary>
+    public void SetDoubleTrailRing(ReadOnlySpan<DoubleTrailRingPoint> nodeLocalPoints)
+    {
+        if (nodeLocalPoints.Length < 2)
+        {
+            ClearDoubleTrailRing();
+            return;
+        }
+
+        int count = Math.Min(nodeLocalPoints.Length, MaxDoubleTrailRingPoints);
+        bool changed = count != _ringCount;
+        float maxSq = 0f;
+        for (int i = 0; i < count; i++)
+        {
+            DoubleTrailRingPoint pt = nodeLocalPoints[i];
+            if (!changed &&
+                (_ringPtsA[i].DistanceSquaredTo(pt.EdgeA) > 1e-6f ||
+                 _ringPtsB[i].DistanceSquaredTo(pt.EdgeB) > 1e-6f ||
+                 MathF.Abs(_ringKeys[i] - pt.KeyTime) > 1e-4f))
+            {
+                changed = true;
+            }
+
+            _ringPtsA[i] = pt.EdgeA;
+            _ringPtsB[i] = pt.EdgeB;
+            _ringKeys[i] = pt.KeyTime;
+
+            float aSq = pt.EdgeA.LengthSquared();
+            float bSq = pt.EdgeB.LengthSquared();
+            if (aSq > maxSq) maxSq = aSq;
+            if (bSq > maxSq) maxSq = bSq;
+        }
+
+        _ringCount = count;
+        _ringBoundRadius = MathF.Sqrt(maxSq);
+        _ringFresh = true;
+        _doubleSpanHostDriven = false;
+        _detachedParticles = true;
+        if (changed)
+        {
+            _ringDirty = true;
+        }
+    }
+
+    /// <summary>Clears any direct guest <c>Mode == 3</c> double-trail ring override.</summary>
+    public void ClearDoubleTrailRing()
+    {
+        if (_ringCount > 0)
+        {
+            _ringCount = 0;
+            _ringBoundRadius = 0f;
+            _ringFresh = false;
+            _ringDirty = true;
+        }
+    }
+
+    /// <summary>Clears any host-supplied double-trail blade span.</summary>
+    public void ClearDoubleTrailSpan()
+    {
+        _hasDoubleTrailSpan = false;
+        _doubleSpanHostDriven = false;
+        _hasGuestDoubleCursor = false;
+        _doubleSpanFresh = false;
+    }
+
+    /// <summary>
+    /// Sets the guest-driven <c>Mode == 2</c> single-trail head point in node-local Godot space
+    /// (converting to simulation layout <c>(x, z, y)</c>), with optional guest ring cursor metadata.
+    /// </summary>
+    public void SetSingleTrailHead(
+        Vector3 nodeLocalHead,
+        bool hasGuestCursor = false,
+        uint guestTail = 0u,
+        uint guestCount = 0u)
+    {
+        float hx = nodeLocalHead.X, hy = nodeLocalHead.Z, hz = nodeLocalHead.Y;
+        if (hasGuestCursor)
+        {
+            if (_hasGuestSingleCursor && (guestCount < _lastGuestSingleCount || guestCount <= 1u))
+            {
+                ResetTrails(modeFilter: 2);
+            }
+
+            float dx = hx - _singleTrailHead[0], dy = hy - _singleTrailHead[1], dz = hz - _singleTrailHead[2];
+            bool advanced = !_hasGuestSingleCursor ||
+                            guestTail != _lastGuestSingleTail ||
+                            guestCount != _lastGuestSingleCount ||
+                            (dx * dx) + (dy * dy) + (dz * dz) > 1e-6f;
+            if (advanced)
+            {
+                ++_singleHeadSeq;
+            }
+
+            _hasGuestSingleCursor = true;
+            _lastGuestSingleTail = guestTail;
+            _lastGuestSingleCount = guestCount;
+        }
+        else
+        {
+            _hasGuestSingleCursor = false;
+            ++_singleHeadSeq;
+        }
+
+        _singleTrailHead[0] = hx; _singleTrailHead[1] = hy; _singleTrailHead[2] = hz;
+        _hasSingleTrailHead = true;
+        _singleHeadFresh = true;
+    }
+
+    /// <summary>Clears any guest-driven single-trail head state.</summary>
+    public void ClearSingleTrailHead()
+    {
+        _hasSingleTrailHead = false;
+        _hasGuestSingleCursor = false;
+        _singleHeadFresh = false;
+    }
+
+    /// <summary>Flushes active ribbon particles (<c>Mode == 2</c> and/or <c>Mode == 3</c>) on guest trail reset.</summary>
+    public void ResetTrails(int modeFilter = 0)
+    {
+        bool clearedAny = false;
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                bool match = modeFilter == 0 ? rt.Mode is 2 or 3 : rt.Mode == modeFilter;
+                if (!match || rt.Particles.Count == 0)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < rt.Particles.Count; i++)
+                {
+                    ReturnParticle(rt.Particles[i]);
+                }
+
+                rt.Particles.Clear();
+                rt.SummaryValid = false;
+                clearedAny = true;
+            }
+        }
+
+        if (modeFilter is 0 or 3)
+        {
+            _lastSpawnedDoubleSpanSeq = -1;
+            if (_ringCount > 0)
+            {
+                _ringCount = 0;
+                _ringBoundRadius = 0f;
+                _ringFresh = false;
+                clearedAny = true;
+            }
+        }
+
+        if (modeFilter is 0 or 2)
+        {
+            _lastSpawnedSingleHeadSeq = -1;
+        }
+
+        if (clearedAny)
+        {
+            LastRebased = true;
+        }
+    }
 
     /// <summary>Moves whenever <see cref="_splineOverride"/>'s points change; a beam built from an
     /// older set restates itself (<see cref="BeamTick"/>).</summary>
@@ -529,6 +957,7 @@ public sealed partial class Engine_FxSystem
         if (changed)
         {
             ++_splineSerial;
+            _beamDirty = true;
         }
 
         if (wasNull)
@@ -546,6 +975,246 @@ public sealed partial class Engine_FxSystem
                     Array.Copy(rt.PosW, rt.PrevPos, 3);
                 }
             }
+        }
+    }
+
+    private void ApplyBeamOverrideToEmitter(EmitterRuntime rt, ReadOnlySpan<Vector3> nodeLocalPoints)
+    {
+        if (nodeLocalPoints.Length < 2)
+        {
+            if (rt.BeamSplineOverride is not null)
+            {
+                rt.BeamSplineOverride = null;
+                rt.BeamSplineFresh = false;
+                ++rt.BeamSplineSerial;
+                _beamDirty = true;
+            }
+            return;
+        }
+
+        bool changed = rt.BeamSplineOverride is null || rt.BeamSplineOverride.Length != nodeLocalPoints.Length;
+        if (rt.BeamSplineOverride is null || rt.BeamSplineOverride.Length != nodeLocalPoints.Length)
+        {
+            rt.BeamSplineOverride = new float[nodeLocalPoints.Length][];
+            for (int i = 0; i < rt.BeamSplineOverride.Length; i++)
+            {
+                rt.BeamSplineOverride[i] = new float[3];
+            }
+        }
+
+        for (int i = 0; i < nodeLocalPoints.Length; i++)
+        {
+            Vector3 p = nodeLocalPoints[i];
+            float[] at = rt.BeamSplineOverride[i];
+            changed |= at[0] != p.X || at[1] != p.Z || at[2] != p.Y;
+            at[0] = p.X;
+            at[1] = p.Z;
+            at[2] = p.Y;
+        }
+
+        rt.BeamSplineFresh = true;
+        if (changed)
+        {
+            ++rt.BeamSplineSerial;
+            _beamDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Sets or clears the runtime spline points (in node-local Godot space) for the <paramref name="beamIndex"/>-th
+    /// <c>Type 9</c> beam emitter in this system.
+    /// </summary>
+    public void SetBeamSpline(int beamIndex, ReadOnlySpan<Vector3> nodeLocalPoints)
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                if (rt.Beam && rt.BeamIndex == beamIndex)
+                {
+                    ApplyBeamOverrideToEmitter(rt, nodeLocalPoints);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Sets or clears the runtime spline points (in node-local Godot space) for the <paramref name="occurrence"/>-th
+    /// <c>Type 9</c> beam emitter matching <paramref name="emitterEntityId"/> (<c>FxEmitter.EntityId</c>),
+    /// falling back to <paramref name="occurrence"/> by beam index if no entity ID matches. Returns the
+    /// matched <c>BeamIndex</c> (<c>-1</c> if none).
+    /// </summary>
+    public int SetBeamSplineForType(uint emitterEntityId, int occurrence, ReadOnlySpan<Vector3> nodeLocalPoints)
+    {
+        if (emitterEntityId != 0u)
+        {
+            int seen = 0;
+            foreach (InstanceState inst in _instances)
+            {
+                foreach (EmitterRuntime rt in inst.Emitters)
+                {
+                    if (!rt.Beam || rt.Def?.EntityId != emitterEntityId) continue;
+                    if (seen == occurrence)
+                    {
+                        ApplyBeamOverrideToEmitter(rt, nodeLocalPoints);
+                        return rt.BeamIndex;
+                    }
+                    seen++;
+                }
+            }
+        }
+
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                if (rt.Beam && rt.BeamIndex == occurrence)
+                {
+                    ApplyBeamOverrideToEmitter(rt, nodeLocalPoints);
+                    return rt.BeamIndex;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>Clears all per-beam spline overrides across this system.</summary>
+    public void ClearBeamSplines()
+    {
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                if (rt.Beam && rt.BeamSplineOverride is not null)
+                {
+                    rt.BeamSplineOverride = null;
+                    rt.BeamSplineFresh = false;
+                    ++rt.BeamSplineSerial;
+                    _beamDirty = true;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Updates per-chain (<c>part.Vector</c>) placement roots in node-local Godot space so multi-root
+    /// directional spell effects (such as <c>FX_AE98BF4D</c>) place each type-vector at its own guest
+    /// synthetic root instead of collapsing all sub-emitters onto root 0. Pass an empty span to reset
+    /// all chains back to the instance placement.
+    /// </summary>
+    public void SetChainRoots(ReadOnlySpan<Transform3D> nodeLocalRoots)
+    {
+        if (nodeLocalRoots.Length == 0)
+        {
+            if (_chainBoundRadius == 0f)
+            {
+                return;
+            }
+
+            _chainBoundRadius = 0f;
+            foreach (InstanceState inst in _instances)
+            {
+                foreach (EmitterRuntime rt in inst.Emitters)
+                {
+                    Array.Copy(inst.PlacePos, rt.PlacePos, 3);
+                    Array.Copy(inst.PlaceRot, rt.PlaceRot, 9);
+                }
+                foreach (AttractorRuntime at in inst.Attractors)
+                {
+                    Array.Copy(inst.PlacePos, at.PlacePos, 3);
+                    Array.Copy(inst.PlaceRot, at.PlaceRot, 9);
+                }
+                foreach (LightRuntime lt in inst.Lights)
+                {
+                    Array.Copy(inst.PlacePos, lt.PlacePos, 3);
+                    Array.Copy(inst.PlaceRot, lt.PlaceRot, 9);
+                }
+            }
+            _beamDirty = true;
+            return;
+        }
+
+        float maxChainDistSq = 0f;
+        bool anyChanged = false;
+        Span<float> simPos = stackalloc float[3];
+        Span<float> simRot = stackalloc float[9];
+
+        static void GodotLocalToSimPlacement(in Transform3D root, Span<float> outPos, Span<float> outRot)
+        {
+            outPos[0] = root.Origin.X;
+            outPos[1] = root.Origin.Z;
+            outPos[2] = root.Origin.Y;
+
+            // Simulation ToGodot swaps indices (1, 2): S * PlaceRot * S = root.Basis.
+            Vector3 c0 = root.Basis.Column0;
+            Vector3 c1 = root.Basis.Column1;
+            Vector3 c2 = root.Basis.Column2;
+            outRot[0] = c0.X; outRot[1] = c2.X; outRot[2] = c1.X;
+            outRot[3] = c0.Z; outRot[4] = c2.Z; outRot[5] = c1.Z;
+            outRot[6] = c0.Y; outRot[7] = c2.Y; outRot[8] = c1.Y;
+        }
+
+        for (int r = 0; r < nodeLocalRoots.Length; r++)
+        {
+            float dSq = nodeLocalRoots[r].Origin.LengthSquared();
+            if (dSq > maxChainDistSq) maxChainDistSq = dSq;
+        }
+        _chainBoundRadius = MathF.Sqrt(maxChainDistSq);
+
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                int idx = Math.Clamp(rt.ChainId, 0, nodeLocalRoots.Length - 1);
+                GodotLocalToSimPlacement(in nodeLocalRoots[idx], simPos, simRot);
+                for (int k = 0; k < 3; k++)
+                {
+                    if (MathF.Abs(rt.PlacePos[k] - simPos[k]) > 1e-4f)
+                    {
+                        anyChanged = true;
+                        rt.PlacePos[k] = simPos[k];
+                    }
+                }
+                for (int k = 0; k < 9; k++)
+                {
+                    if (MathF.Abs(rt.PlaceRot[k] - simRot[k]) > 1e-4f)
+                    {
+                        anyChanged = true;
+                        rt.PlaceRot[k] = simRot[k];
+                    }
+                }
+                if (inst.Frame == 0)
+                {
+                    UpdateChain(rt.Chain, inst, rt.PlacePos, rt.PlaceRot, rt.Scale, rt.PosW, rt.RotW);
+                    Array.Copy(rt.PosW, rt.PrevPos, 3);
+                }
+            }
+            foreach (AttractorRuntime at in inst.Attractors)
+            {
+                int idx = Math.Clamp(at.ChainId, 0, nodeLocalRoots.Length - 1);
+                GodotLocalToSimPlacement(in nodeLocalRoots[idx], simPos, simRot);
+                for (int k = 0; k < 3; k++) at.PlacePos[k] = simPos[k];
+                for (int k = 0; k < 9; k++) at.PlaceRot[k] = simRot[k];
+            }
+            foreach (LightRuntime lt in inst.Lights)
+            {
+                int idx = Math.Clamp(lt.ChainId, 0, nodeLocalRoots.Length - 1);
+                GodotLocalToSimPlacement(in nodeLocalRoots[idx], simPos, simRot);
+                for (int k = 0; k < 3; k++) lt.PlacePos[k] = simPos[k];
+                for (int k = 0; k < 9; k++) lt.PlaceRot[k] = simRot[k];
+                if (inst.Frame == 0)
+                {
+                    var rot0 = new float[9];
+                    UpdateChain(lt.Chain, inst, lt.PlacePos, lt.PlaceRot, lt.Scale, lt.WorldPos, rot0);
+                }
+            }
+        }
+
+        if (anyChanged)
+        {
+            _beamDirty = true;
         }
     }
     public int TotalSpawned { get; private set; }
@@ -1029,6 +1698,28 @@ public sealed partial class Engine_FxSystem
         _detachedParticles = false;
         _previousGlobal = null;
         NeedsSceneLight = false;
+        HasRibbon = false;
+        IsWeaponDoubleTrail = false;
+        _hasDoubleTrailSpan = false;
+        _doubleSpanHostDriven = false;
+        _hasGuestDoubleCursor = false;
+        _lastGuestDoubleTail = 0u;
+        _lastGuestDoubleCount = 0u;
+        _doubleSpanSeq = 0;
+        _lastSpawnedDoubleSpanSeq = -1;
+        _liveWeaponTipDirty = false;
+        _doubleSpanFresh = false;
+        _ringCount = 0;
+        _ringFresh = false;
+        _ringDirty = false;
+        _ringBoundRadius = 0f;
+        _hasSingleTrailHead = false;
+        _hasGuestSingleCursor = false;
+        _lastGuestSingleTail = 0u;
+        _lastGuestSingleCount = 0u;
+        _singleHeadSeq = 0;
+        _lastSpawnedSingleHeadSeq = -1;
+        _singleHeadFresh = false;
 
         foreach (FxPlacement p in placements)
         {
@@ -1096,6 +1787,8 @@ public sealed partial class Engine_FxSystem
                 if (em.TypeId == 4)
                 {
                     var at = new AttractorRuntime { Def = em, Global = em.GlobalAttractor, ChainId = part.Vector };
+                    Array.Copy(placePos, at.PlacePos, 3);
+                    Array.Copy(placeRot, at.PlaceRot, 9);
                     foreach (ChainNode c in chain) at.Chain.Add(c.Clone());
                     at.Chain.Add(node.Clone());
                     inst.Attractors.Add(at);
@@ -1105,11 +1798,13 @@ public sealed partial class Engine_FxSystem
 
                 if (em.TypeId == 7 || em.TypeId == 8)
                 {
-                    var lt = new LightRuntime { Def = em, Scale = sc };
+                    var lt = new LightRuntime { Def = em, Scale = sc, ChainId = part.Vector };
+                    Array.Copy(placePos, lt.PlacePos, 3);
+                    Array.Copy(placeRot, lt.PlaceRot, 9);
                     foreach (ChainNode c in chain) lt.Chain.Add(c.Clone());
                     lt.Chain.Add(node.Clone());
                     var rot0 = new float[9];
-                    UpdateChain(lt.Chain, inst, placePos, placeRot, sc, lt.WorldPos, rot0);
+                    UpdateChain(lt.Chain, inst, lt.PlacePos, lt.PlaceRot, sc, lt.WorldPos, rot0);
                     foreach (ChainNode c in lt.Chain) { c.Angle = 0f; c.T = -1f; }
                     inst.Lights.Add(lt);
                     chain.Add(node);
@@ -1207,7 +1902,7 @@ public sealed partial class Engine_FxSystem
                 }
 
                 rt.ZOrder = eff.ZSortEmitters ? part.Vector + 1 : 0;
-                if (!em.AttachToRoot) _detachedParticles = true;
+                if (!em.AttachToRoot || rt.Ribbon || rt.Beam) _detachedParticles = true;
                 if (rt.Beam) BeamInit(rt);
                 inst.Emitters.Add(rt);
                 chain.Add(node);
@@ -1252,6 +1947,37 @@ public sealed partial class Engine_FxSystem
                 _instances.Add(inst);
             }
         }
+
+        bool hasRibbon = false;
+        bool isWeaponDoubleTrail = false;
+        int beamCount = 0;
+        foreach (InstanceState builtInst in _instances)
+        {
+            foreach (EmitterRuntime rt in builtInst.Emitters)
+            {
+                if (rt.Beam)
+                {
+                    rt.BeamIndex = beamCount++;
+                }
+                if (!rt.Ribbon) continue;
+                hasRibbon = true;
+                if (rt.Mode == 3)
+                {
+                    foreach (VisualRuntime vis in rt.Visuals)
+                    {
+                        if (vis.Texture.Contains("weapon", StringComparison.OrdinalIgnoreCase))
+                        {
+                            isWeaponDoubleTrail = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        HasRibbon = hasRibbon;
+        IsWeaponDoubleTrail = isWeaponDoubleTrail;
+        BeamEmitterCount = beamCount;
     }
 
     private readonly float[] _dirScratch = new float[3];
@@ -1354,6 +2080,10 @@ public sealed partial class Engine_FxSystem
         }
 
         pos[0] += vpx; pos[1] += vpy; pos[2] += vpz;
+        if (pt.HasDoubleEdge)
+        {
+            pt.EdgeB[0] += vpx; pt.EdgeB[1] += vpy; pt.EdgeB[2] += vpz;
+        }
         if (rt.Def!.Spin != 0f) Spin(rt, pt, rt.Def.Spin / Fps * step);
     }
 
@@ -1373,6 +2103,12 @@ public sealed partial class Engine_FxSystem
         d[0] = pt.Pos[0] - rt.PosW[0]; d[1] = pt.Pos[1] - rt.PosW[1]; d[2] = pt.Pos[2] - rt.PosW[2];
         MatVec(m, d, o);
         pt.Pos[0] = rt.PosW[0] + o[0]; pt.Pos[1] = rt.PosW[1] + o[1]; pt.Pos[2] = rt.PosW[2] + o[2];
+        if (pt.HasDoubleEdge)
+        {
+            d[0] = pt.EdgeB[0] - rt.PosW[0]; d[1] = pt.EdgeB[1] - rt.PosW[1]; d[2] = pt.EdgeB[2] - rt.PosW[2];
+            MatVec(m, d, o);
+            pt.EdgeB[0] = rt.PosW[0] + o[0]; pt.EdgeB[1] = rt.PosW[1] + o[1]; pt.EdgeB[2] = rt.PosW[2] + o[2];
+        }
         MatVec(m, pt.Vel, o);
         pt.Vel[0] = o[0]; pt.Vel[1] = o[1]; pt.Vel[2] = o[2];
     }
@@ -1513,6 +2249,134 @@ public sealed partial class Engine_FxSystem
         pt.Life = ComputeParticleLife(d.UseLife, d.LifetimeFrames, rt.LoopCount, rt.LifeFrames);
 
         InitParticleVisual(rt, pt, inst.Step, inst.AuthoredStep);
+        if (rt.Mode == 3)
+        {
+            if (!_doubleSpanHostDriven && _ringCount >= 2)
+            {
+                ReturnParticle(pt);
+                return;
+            }
+            if (_hasDoubleTrailSpan)
+            {
+                if (_hasGuestDoubleCursor && _doubleSpanSeq == _lastSpawnedDoubleSpanSeq)
+                {
+                    ReturnParticle(pt);
+                    return;
+                }
+
+                ParticleState? prev = rt.Particles.Count > 0 ? rt.Particles[rt.Particles.Count - 1] : null;
+                if (prev is not null)
+                {
+                    float newMidX = 0.5f * (_doubleSpanA[0] + _doubleSpanB[0]);
+                    float newMidY = 0.5f * (_doubleSpanA[1] + _doubleSpanB[1]);
+                    float newMidZ = 0.5f * (_doubleSpanA[2] + _doubleSpanB[2]);
+                    float prevMidX = 0.5f * (prev.Pos[0] + (prev.HasDoubleEdge ? prev.EdgeB[0] : prev.Pos[0]));
+                    float prevMidY = 0.5f * (prev.Pos[1] + (prev.HasDoubleEdge ? prev.EdgeB[1] : prev.Pos[1]));
+                    float prevMidZ = 0.5f * (prev.Pos[2] + (prev.HasDoubleEdge ? prev.EdgeB[2] : prev.Pos[2]));
+                    float spanW = MathF.Sqrt(
+                        ((_doubleSpanA[0] - _doubleSpanB[0]) * (_doubleSpanA[0] - _doubleSpanB[0])) +
+                        ((_doubleSpanA[1] - _doubleSpanB[1]) * (_doubleSpanA[1] - _doubleSpanB[1])) +
+                        ((_doubleSpanA[2] - _doubleSpanB[2]) * (_doubleSpanA[2] - _doubleSpanB[2])));
+                    float maxJump = _hasGuestDoubleCursor
+                        ? MathF.Max(7.5f, spanW * 6.0f)
+                        : MathF.Max(3.5f, spanW * 4.5f);
+                    float jdx = newMidX - prevMidX, jdy = newMidY - prevMidY, jdz = newMidZ - prevMidZ;
+                    if ((jdx * jdx) + (jdy * jdy) + (jdz * jdz) > maxJump * maxJump)
+                    {
+                        for (int i = 0; i < rt.Particles.Count; i++)
+                        {
+                            ReturnParticle(rt.Particles[i]);
+                        }
+                        rt.Particles.Clear();
+                        prev = null;
+                    }
+                }
+
+                bool staticBreadcrumb = _doubleSpanHostDriven && IsWeaponDoubleTrail;
+                for (int k = 0; k < 3; k++)
+                {
+                    pt.Pos[k] = _doubleSpanA[k];
+                    pt.EdgeB[k] = _doubleSpanB[k];
+                    pt.PrevPos[k] = (!staticBreadcrumb && prev is not null) ? prev.Pos[k] : _doubleSpanA[k];
+                    pt.PrevEdgeB[k] = (!staticBreadcrumb && prev is not null) ? (prev.HasDoubleEdge ? prev.EdgeB[k] : prev.Pos[k]) : _doubleSpanB[k];
+                    pt.Vel[k] = 0f;
+                }
+                pt.HasPrev = true;
+                rt.HasWorldTrailOverride = true;
+                _detachedParticles = true;
+                _lastSpawnedDoubleSpanSeq = _doubleSpanSeq;
+            }
+            else if (RequireDoubleTrailSpan)
+            {
+                ReturnParticle(pt);
+                return;
+            }
+            else
+            {
+                float hw = (rt.Visuals.Count > 0 ? rt.Visuals[0].TrailWidth : 1f) * 0.5f * _sizeScale;
+                float sx = rt.RotW[2] * hw;
+                float sy = rt.RotW[5] * hw;
+                float sz = rt.RotW[8] * hw;
+                if ((sx * sx) + (sy * sy) + (sz * sz) < 1e-8f)
+                {
+                    sz = hw;
+                }
+
+                pt.EdgeB[0] = pt.Pos[0] - sx;
+                pt.EdgeB[1] = pt.Pos[1] - sy;
+                pt.EdgeB[2] = pt.Pos[2] - sz;
+                pt.Pos[0] += sx; pt.Pos[1] += sy; pt.Pos[2] += sz;
+                pt.PrevPos[0] = pt.Pos[0]; pt.PrevPos[1] = pt.Pos[1]; pt.PrevPos[2] = pt.Pos[2];
+                pt.PrevEdgeB[0] = pt.EdgeB[0]; pt.PrevEdgeB[1] = pt.EdgeB[1]; pt.PrevEdgeB[2] = pt.EdgeB[2];
+            }
+
+            pt.HasDoubleEdge = true;
+        }
+        else if (rt.Mode == 2 && !rt.Beam)
+        {
+            if (_hasSingleTrailHead)
+            {
+                if (_hasGuestSingleCursor && _singleHeadSeq == _lastSpawnedSingleHeadSeq)
+                {
+                    ReturnParticle(pt);
+                    return;
+                }
+
+                ParticleState? prev = rt.Particles.Count > 0 ? rt.Particles[rt.Particles.Count - 1] : null;
+                if (prev is not null)
+                {
+                    float jdx = _singleTrailHead[0] - prev.Pos[0];
+                    float jdy = _singleTrailHead[1] - prev.Pos[1];
+                    float jdz = _singleTrailHead[2] - prev.Pos[2];
+                    float maxSingleJump = _hasGuestSingleCursor ? 7.5f : 3.5f;
+                    if ((jdx * jdx) + (jdy * jdy) + (jdz * jdz) > maxSingleJump * maxSingleJump)
+                    {
+                        for (int i = 0; i < rt.Particles.Count; i++)
+                        {
+                            ReturnParticle(rt.Particles[i]);
+                        }
+                        rt.Particles.Clear();
+                        prev = null;
+                    }
+                }
+
+                for (int k = 0; k < 3; k++)
+                {
+                    pt.Pos[k] = _singleTrailHead[k];
+                    pt.PrevPos[k] = prev is not null ? prev.Pos[k] : _singleTrailHead[k];
+                    pt.Vel[k] = 0f;
+                }
+                pt.HasPrev = true;
+                rt.HasWorldTrailOverride = true;
+                _detachedParticles = true;
+                _lastSpawnedSingleHeadSeq = _singleHeadSeq;
+            }
+            else if (RequireSingleTrailHead)
+            {
+                ReturnParticle(pt);
+                return;
+            }
+        }
         pt.HistCount = 0;
         if (rt.Trail)
         {
@@ -1568,7 +2432,10 @@ public sealed partial class Engine_FxSystem
         pt.FlickX = 1f;
         pt.FlickY = 1f;
         pt.HistCount = 0;
+        pt.HasDoubleEdge = false;
         Array.Clear(pt.Pos);
+        Array.Clear(pt.EdgeB);
+        Array.Clear(pt.PrevEdgeB);
         Array.Clear(pt.Vel);
         Array.Clear(pt.TexFrame);
         Array.Clear(pt.Axis);
@@ -1593,16 +2460,45 @@ public sealed partial class Engine_FxSystem
         o[0] = dir[0] * sc; o[1] = dir[1] * sc; o[2] = dir[2] * sc;
     }
 
+    private static float ComputeBeamSegLen(List<float[]> basePts)
+    {
+        int segs = basePts.Count - 1;
+        if (segs <= 0)
+        {
+            return 0f;
+        }
+
+        float total = 0f;
+        for (int i = 0; i < segs; i++)
+        {
+            float dx = basePts[i + 1][0] - basePts[i][0];
+            float dy = basePts[i + 1][1] - basePts[i][1];
+            float dz = basePts[i + 1][2] - basePts[i][2];
+            total += MathF.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+        }
+
+        return total / segs;
+    }
+
+    private int ActiveBeamSerial(EmitterRuntime rt) =>
+        rt.BeamSplineOverride is not null ? rt.BeamSplineSerial : (_splineOverride is not null ? _splineSerial : -1);
+
     /// <summary>
     /// A beam's undisplaced points into <paramref name="into"/>: a stated point list as given, two
     /// stated ends spread evenly over the authored segment count (sub_831B20E8), or the authored
-    /// line from the emitter. Returns the segment count.
+    /// line from the emitter (unless <see cref="RequireBeamSpline"/> suppresses the unstated fallback).
+    /// Returns the segment count.
     /// </summary>
     private int BeamBaseline(EmitterRuntime rt, List<float[]> into)
     {
         FxEmitter d = rt.Def!;
         into.Clear();
-        float[][]? stated = _splineOverride;
+        float[][]? stated = rt.BeamSplineOverride ?? _splineOverride;
+        if (stated is null && RequireBeamSpline)
+        {
+            return 0;
+        }
+
         if (stated is { Length: > 2 })
         {
             foreach (float[] p in stated) into.Add(new[] { p[0], p[1], p[2] });
@@ -1638,7 +2534,7 @@ public sealed partial class Engine_FxSystem
     private void BeamRestate(EmitterRuntime rt)
     {
         int nseg = BeamBaseline(rt, _beamRestated);
-        if (_beamRestated.Count != rt.BeamBase.Count || rt.BeamPts.Count != rt.BeamBase.Count)
+        if (nseg <= 0 || _beamRestated.Count != rt.BeamBase.Count || rt.BeamPts.Count != rt.BeamBase.Count)
         {
             BeamInit(rt);
             return;
@@ -1653,19 +2549,25 @@ public sealed partial class Engine_FxSystem
             }
         }
 
-        float[] a = rt.BeamBase[0], b = rt.BeamBase[nseg];
-        rt.BeamSegLen = VLen(new[] { (b[0] - a[0]) / nseg, (b[1] - a[1]) / nseg, (b[2] - a[2]) / nseg });
-        rt.BeamSerial = _splineSerial;
+        rt.BeamSegLen = ComputeBeamSegLen(rt.BeamBase);
+        rt.BeamSerial = ActiveBeamSerial(rt);
     }
 
     private void BeamInit(EmitterRuntime rt)
     {
         FxEmitter d = rt.Def!;
-        rt.BeamSerial = _splineSerial;
+        rt.BeamSerial = ActiveBeamSerial(rt);
         int nseg = BeamBaseline(rt, rt.BeamBase);
-        float[] first = rt.BeamBase[0], last = rt.BeamBase[nseg];
-        rt.BeamSegLen = VLen(new[] { (last[0] - first[0]) / nseg, (last[1] - first[1]) / nseg, (last[2] - first[2]) / nseg });
-        rt.BeamPts.Clear(); rt.BeamWander.Clear();
+        rt.BeamPts.Clear();
+        rt.BeamWander.Clear();
+        if (nseg <= 0 || rt.BeamBase.Count < 2)
+        {
+            rt.BeamSegLen = 0f;
+            rt.BeamJerkTimer = 0f;
+            return;
+        }
+
+        rt.BeamSegLen = ComputeBeamSegLen(rt.BeamBase);
         foreach (float[] b in rt.BeamBase) rt.BeamPts.Add(new[] { b[0], b[1], b[2] });
         for (int i = 1; i < nseg; i++)
         {
@@ -1690,7 +2592,22 @@ public sealed partial class Engine_FxSystem
     private void BeamTick(InstanceState inst, EmitterRuntime rt)
     {
         FxEmitter d = rt.Def!;
-        if (_splineOverride is not null && rt.BeamSerial != _splineSerial) BeamRestate(rt);
+        int activeSerial = ActiveBeamSerial(rt);
+        if (rt.BeamSerial != activeSerial || (rt.BeamPts.Count < 2 && (!RequireBeamSpline || activeSerial >= 0)))
+        {
+            BeamRestate(rt);
+        }
+
+        if (RequireBeamSpline && activeSerial < 0)
+        {
+            for (int i = 0; i < rt.Particles.Count; i++)
+            {
+                ReturnParticle(rt.Particles[i]);
+            }
+            rt.Particles.Clear();
+            return;
+        }
+
         int n = rt.BeamPts.Count;
         if (n < 2) return;
         if (rt.BeamJerkTimer > 0f) rt.BeamJerkTimer -= inst.DtSec;
@@ -1756,9 +2673,17 @@ public sealed partial class Engine_FxSystem
         {
             for (int i = 0; i < n; i++)
             {
-                rt.Particles[i].Pos[0] = rt.BeamPts[i][0];
-                rt.Particles[i].Pos[1] = rt.BeamPts[i][1];
-                rt.Particles[i].Pos[2] = rt.BeamPts[i][2];
+                ParticleState pt = rt.Particles[i];
+                pt.Pos[0] = rt.BeamPts[i][0];
+                pt.Pos[1] = rt.BeamPts[i][1];
+                pt.Pos[2] = rt.BeamPts[i][2];
+                if (!pt.HasPrev)
+                {
+                    pt.PrevPos[0] = pt.Pos[0];
+                    pt.PrevPos[1] = pt.Pos[1];
+                    pt.PrevPos[2] = pt.Pos[2];
+                    pt.HasPrev = true;
+                }
             }
         }
     }
@@ -1797,7 +2722,7 @@ public sealed partial class Engine_FxSystem
             foreach (AttractorRuntime at in inst.Attractors)
             {
                 at.Age += step;
-                UpdateChain(at.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, at.WorldPos, rotTmp);
+                UpdateChain(at.Chain, inst, at.PlacePos, at.PlaceRot, inst.Scale, at.WorldPos, rotTmp);
             }
         }
 
@@ -1808,7 +2733,7 @@ public sealed partial class Engine_FxSystem
             lt.PrevPhase = lt.Phase;
             lt.HasPrev = true;
             lt.Age += step;
-            UpdateChain(lt.Chain, inst, inst.PlacePos, inst.PlaceRot, inst.Scale, lt.WorldPos, rotTmp);
+            UpdateChain(lt.Chain, inst, lt.PlacePos, lt.PlaceRot, lt.Scale, lt.WorldPos, rotTmp);
 
             // The same flicker walk as a placed fixture: one light class, one update
             // (`sub_821F0A50`, vtable slot 25): draw uniformly from [0, 2), step the phase by
@@ -1876,8 +2801,9 @@ public sealed partial class Engine_FxSystem
             rt.Age += step;
             int f = (int)rt.Age;
 
-            bool windowOpen = _emitting && (!d.UseLife || rt.Age <= d.LifetimeFrames || (rt.FirstFrame && d.InitialNum > 0f));
-            bool useLife = d.UseLife;
+            bool sustainedBeam = rt.Beam && rt.BeamSplineOverride is not null;
+            bool windowOpen = _emitting && (!d.UseLife || rt.Age <= d.LifetimeFrames || sustainedBeam || (rt.FirstFrame && d.InitialNum > 0f));
+            bool useLife = d.UseLife && !sustainedBeam;
             float lifeFrames = d.LifetimeFrames;
             int nvis = rt.Visuals.Count;
             int kept = 0;
@@ -1885,7 +2811,7 @@ public sealed partial class Engine_FxSystem
             for (int i = 0; i < particles.Length; i++)
             {
                 ParticleState p = particles[i];
-                bool dead = ShouldParticleExpire(
+                bool dead = !(sustainedBeam && _emitting) && ShouldParticleExpire(
                     _emitting, rt.LoopCount, useLife, lifeFrames, p.Age, p.Life, rt.LoopEnd, p.LoopIter);
                 if (dead)
                 {
@@ -1898,6 +2824,10 @@ public sealed partial class Engine_FxSystem
                 // particles is a cache miss per particle.
                 float[] from = p.Pos, prev = p.PrevPos;
                 prev[0] = from[0]; prev[1] = from[1]; prev[2] = from[2];
+                if (p.HasDoubleEdge)
+                {
+                    p.PrevEdgeB[0] = p.EdgeB[0]; p.PrevEdgeB[1] = p.EdgeB[1]; p.PrevEdgeB[2] = p.EdgeB[2];
+                }
                 p.HasPrev = true;
                 particles[kept++] = p;
             }
@@ -1911,6 +2841,25 @@ public sealed partial class Engine_FxSystem
                     rt.FirstFrame = false;
                     foreach (ParticleState pt in rt.Particles)
                     {
+                        if (rt.LoopCount != 0 && rt.LoopEnd > 0f && rt.LoopEnd <= pt.Age)
+                        {
+                            if ((rt.LoopCount < 0 && _emitting) || (rt.LoopCount > 0 && pt.LoopIter < rt.LoopCount))
+                            {
+                                pt.Age = rt.LoopStart;
+                                pt.Seg = 1;
+                                pt.LoopIter++;
+                            }
+                            else
+                            {
+                                pt.LoopIter = 0;
+                            }
+                        }
+                        else if (sustainedBeam && rt.LoopCount == 0 && pt.Life > 0f && pt.Age >= pt.Life)
+                        {
+                            pt.Age = 0f;
+                            pt.Seg = 1;
+                        }
+
                         while (pt.Seg < nvis && pt.Age >= rt.Visuals[pt.Seg].DelayFrames) pt.Seg++;
                         pt.KeyAge = pt.Age;
                         pt.Age += step;
@@ -2118,6 +3067,16 @@ public sealed partial class Engine_FxSystem
                 }
             }
         }
+        _doubleSpanFresh = false;
+        _ringFresh = false;
+        _singleHeadFresh = false;
+        foreach (InstanceState inst in _instances)
+        {
+            foreach (EmitterRuntime rt in inst.Emitters)
+            {
+                rt.BeamSplineFresh = false;
+            }
+        }
 
         if (dt <= 0f) dt = 1f / 60f;
         dt = MathF.Min(dt, 0.25f);
@@ -2171,11 +3130,62 @@ public sealed partial class Engine_FxSystem
     private void Rebase(Transform3D delta)
     {
         bool rebasedAny = false;
+        if (_ringCount >= 2 && !_ringFresh)
+        {
+            float maxSq = 0f;
+            for (int i = 0; i < _ringCount; i++)
+            {
+                Vector3 a = delta * _ringPtsA[i];
+                Vector3 b = delta * _ringPtsB[i];
+                _ringPtsA[i] = a;
+                _ringPtsB[i] = b;
+                float aSq = a.LengthSquared();
+                float bSq = b.LengthSquared();
+                if (aSq > maxSq) maxSq = aSq;
+                if (bSq > maxSq) maxSq = bSq;
+            }
+            _ringBoundRadius = MathF.Sqrt(maxSq);
+            rebasedAny = true;
+        }
+        if (_hasDoubleTrailSpan && !_doubleSpanFresh)
+        {
+            Vector3 spanA = delta * new Vector3(_doubleSpanA[0], _doubleSpanA[2], _doubleSpanA[1]);
+            _doubleSpanA[0] = spanA.X; _doubleSpanA[1] = spanA.Z; _doubleSpanA[2] = spanA.Y;
+            Vector3 spanB = delta * new Vector3(_doubleSpanB[0], _doubleSpanB[2], _doubleSpanB[1]);
+            _doubleSpanB[0] = spanB.X; _doubleSpanB[1] = spanB.Z; _doubleSpanB[2] = spanB.Y;
+        }
+        if (_hasSingleTrailHead && !_singleHeadFresh)
+        {
+            Vector3 head = delta * new Vector3(_singleTrailHead[0], _singleTrailHead[2], _singleTrailHead[1]);
+            _singleTrailHead[0] = head.X; _singleTrailHead[1] = head.Z; _singleTrailHead[2] = head.Y;
+        }
         foreach (InstanceState inst in _instances)
         {
             foreach (EmitterRuntime rt in inst.Emitters)
             {
-                if (rt.Def is null || rt.Def.AttachToRoot) continue;
+                bool worldOverride = rt.HasWorldTrailOverride || (rt.Beam && rt.BeamSplineOverride is not null);
+                if (rt.Def is null || (rt.Def.AttachToRoot && !worldOverride)) continue;
+                if (rt.Beam && rt.BeamSplineOverride is not null && !rt.BeamSplineFresh)
+                {
+                    for (int i = 0; i < rt.BeamSplineOverride.Length; i++)
+                    {
+                        float[] bp = rt.BeamSplineOverride[i];
+                        Vector3 movedBp = delta * new Vector3(bp[0], bp[2], bp[1]);
+                        bp[0] = movedBp.X; bp[1] = movedBp.Z; bp[2] = movedBp.Y;
+                    }
+                    for (int i = 0; i < rt.BeamBase.Count; i++)
+                    {
+                        float[] bb = rt.BeamBase[i];
+                        Vector3 movedBb = delta * new Vector3(bb[0], bb[2], bb[1]);
+                        bb[0] = movedBb.X; bb[1] = movedBb.Z; bb[2] = movedBb.Y;
+                    }
+                    for (int i = 0; i < rt.BeamPts.Count; i++)
+                    {
+                        float[] bpt = rt.BeamPts[i];
+                        Vector3 movedBpt = delta * new Vector3(bpt[0], bpt[2], bpt[1]);
+                        bpt[0] = movedBpt.X; bpt[1] = movedBpt.Z; bpt[2] = movedBpt.Y;
+                    }
+                }
                 // Transform the emitter's stored world position into the new node-local space so
                 // `Array.Copy(rt.PosW, rt.PrevPos, 3)` on the next `Tick` preserves the true
                 // previous emitter world position and `SpawnOne` interpolates `frac` smoothly
@@ -2192,6 +3202,13 @@ public sealed partial class Engine_FxSystem
                     pt.Pos[0] = pos.X; pt.Pos[1] = pos.Z; pt.Pos[2] = pos.Y;
                     Vector3 prev = delta * new Vector3(pt.PrevPos[0], pt.PrevPos[2], pt.PrevPos[1]);
                     pt.PrevPos[0] = prev.X; pt.PrevPos[1] = prev.Z; pt.PrevPos[2] = prev.Y;
+                    if (pt.HasDoubleEdge)
+                    {
+                        Vector3 edgeB = delta * new Vector3(pt.EdgeB[0], pt.EdgeB[2], pt.EdgeB[1]);
+                        pt.EdgeB[0] = edgeB.X; pt.EdgeB[1] = edgeB.Z; pt.EdgeB[2] = edgeB.Y;
+                        Vector3 prevEdgeB = delta * new Vector3(pt.PrevEdgeB[0], pt.PrevEdgeB[2], pt.PrevEdgeB[1]);
+                        pt.PrevEdgeB[0] = prevEdgeB.X; pt.PrevEdgeB[1] = prevEdgeB.Z; pt.PrevEdgeB[2] = prevEdgeB.Y;
+                    }
                     Vector3 vel = delta.Basis * new Vector3(pt.Vel[0], pt.Vel[2], pt.Vel[1]);
                     pt.Vel[0] = vel.X; pt.Vel[1] = vel.Z; pt.Vel[2] = vel.Y;
                     for (int k = 0; k < pt.HistCount; k++)
@@ -2333,6 +3350,28 @@ public sealed partial class Engine_FxSystem
         _previousGlobal = null;
         _detachedParticles = false;
         NeedsSceneLight = false;
+        HasRibbon = false;
+        IsWeaponDoubleTrail = false;
+        _hasDoubleTrailSpan = false;
+        _doubleSpanHostDriven = false;
+        _hasGuestDoubleCursor = false;
+        _lastGuestDoubleTail = 0u;
+        _lastGuestDoubleCount = 0u;
+        _doubleSpanSeq = 0;
+        _lastSpawnedDoubleSpanSeq = -1;
+        _liveWeaponTipDirty = false;
+        _doubleSpanFresh = false;
+        _ringCount = 0;
+        _ringFresh = false;
+        _ringDirty = false;
+        _ringBoundRadius = 0f;
+        _hasSingleTrailHead = false;
+        _hasGuestSingleCursor = false;
+        _lastGuestSingleTail = 0u;
+        _lastGuestSingleCount = 0u;
+        _singleHeadSeq = 0;
+        _lastSpawnedSingleHeadSeq = -1;
+        _singleHeadFresh = false;
     }
 
     /// <summary>
@@ -2491,6 +3530,12 @@ public sealed partial class Engine_FxSystem
         }
     }
 
+    /// <summary>
+    /// When true, particles and horizontal axis-aligned ground quads conform to the loaded landscape
+    /// heightfield (and stay flat on elevated bridges) via <see cref="Engine_FxGroundConform"/>.
+    /// </summary>
+    public bool GroundConform { get; set; }
+
     /// <summary>Assembles and submits effect geometry; narrow timings accumulate across the driver frame.</summary>
     public void EmitGeometry(
         ArrayMesh mesh,
@@ -2501,7 +3546,8 @@ public sealed partial class Engine_FxSystem
         Dictionary<string, MeshInstanceData> meshOut,
         ArrayMesh? dispMesh = null,
         ArrayMesh? addMesh = null,
-        bool sceneQuads = true)
+        bool sceneQuads = true,
+        Engine_FxGroundConform.GroundContext? groundConform = null)
     {
         long workAt = System.Diagnostics.Stopwatch.GetTimestamp();
         // One reading for the whole emit: the debug channel can flip it between frames.
@@ -2510,7 +3556,7 @@ public sealed partial class Engine_FxSystem
         BeginSurfaces(mesh);
         if (dispMesh is not null) BeginSurfaces(dispMesh);
         if (addMesh is not null) BeginSurfaces(addMesh);
-        Assemble(cameraPosition, cameraRight, cameraUp, meshOut, sceneQuads, fast);
+        Assemble(cameraPosition, cameraRight, cameraUp, meshOut, sceneQuads, fast, groundConform);
         Dictionary<DrawKey, List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)>> batches = _batches;
 
         FableFx.FrameWork.Lap(6, ref workAt);
@@ -2593,7 +3639,8 @@ public sealed partial class Engine_FxSystem
         Vector3 cameraUp,
         Dictionary<string, MeshInstanceData> meshOut,
         bool sceneQuads,
-        bool fast)
+        bool fast,
+        Engine_FxGroundConform.GroundContext? groundConform = null)
     {
         foreach (MeshInstanceData data in meshOut.Values) data.Instances.Clear();
 
@@ -2618,12 +3665,21 @@ public sealed partial class Engine_FxSystem
                     {
                         pts.Clear(); ages.Clear(); motions.Clear();
                         float rateClass = inst.Step > 1 ? 1f : 0f;
+                        int maxK = -1;
                         for (int k = 0; k < pt.HistCount; k++)
                         {
                             float hage = k * inst.Step;
                             if (rt.TrailLife > 0f && hage >= rt.TrailLife) break;
-                            float[]? h = pt.Hist![k];
-                            if (h is null) break;
+                            if (pt.Hist![k] is null) break;
+                            maxK = k;
+                        }
+
+                        // Emit oldest-to-newest so V=0 sits at the fading tail and V=1 sits at
+                        // the leading particle head, matching Mode 2/3 ribbons and trail textures.
+                        for (int k = maxK; k >= 0; k--)
+                        {
+                            float hage = k * inst.Step;
+                            float[] h = pt.Hist![k]!;
                             pts.Add(ToGodot(h)); ages.Add(hage);
 
                             // The history shifts one slot a step, so between steps every point
@@ -2639,22 +3695,89 @@ public sealed partial class Engine_FxSystem
 
                 // The fast emit's early rejections (Engine_FxSystem.FastPaths.cs): a whole emitter
                 // here, a particle on its fade term and then on its alpha below.
+                bool guestRingActive = rt.Mode == 3 && !_doubleSpanHostDriven && _ringCount >= 2;
                 float alphaCeiling = fast ? FastAlphaCeiling(rt) * _liveAlpha : float.PositiveInfinity;
-                if (fast && FastSkipsEmitter(rt, cameraPosition, alphaCeiling)) continue;
+                if (fast && !guestRingActive && FastSkipsEmitter(rt, cameraPosition, alphaCeiling)) continue;
 
                 if (rt.Ribbon)
                 {
                     pts.Clear(); ages.Clear(); motions.Clear();
-                    float ribbonIntensity = 1f;
+                    float ribbonIntensity = _intensity * _liveAlpha;
                     float chainClass = inst.Step > 1 ? 1f : 0f;
+                    if (rt.Mode == 3)
+                    {
+                        List<Vector3> ptsB = _ptsB;
+                        List<Vector4> motionsB = _motionsB;
+                        ptsB.Clear(); motionsB.Clear();
+                        if (guestRingActive)
+                        {
+                            // Leading-edge interpolation is driven directly on `Engine_DrawnFrame.DrawTick`
+                            // in `GameFx` in lockstep with the 3D projectile mesh; keep `CUSTOM0.xyz == 0`
+                            // so `fx_billboard.gdshaderinc` never applies an unsynchronized 30 Hz
+                            // `fx_step_alpha` sawtooth pullback.
+                            for (int i = 0; i < _ringCount; i++)
+                            {
+                                pts.Add(_ringPtsA[i]);
+                                ptsB.Add(_ringPtsB[i]);
+                                ages.Add(GuestKeyTimeToAge(rt.Visuals, _ringKeys[i]));
+                                motions.Add(Vector4.Zero);
+                                motionsB.Add(Vector4.Zero);
+                            }
+
+                            EmitDoubleRibbon(Sink, rt, rt.Visuals, pts, ptsB, ages, motions, motionsB, cameraPosition, inst.Lit, inst.Tint, ribbonIntensity);
+                            continue;
+                        }
+                        foreach (ParticleState pt in rt.Particles)
+                        {
+                            Vector3 edgeA = ToGodot(pt.Pos);
+                            Vector3 edgeB = ToGodot(pt.HasDoubleEdge ? pt.EdgeB : pt.Pos);
+                            pts.Add(edgeA);
+                            ptsB.Add(edgeB);
+                            ages.Add(pt.KeyAge);
+                            Vector3 movedA = pt.HasPrev ? edgeA - ToGodot(pt.PrevPos) : Vector3.Zero;
+                            Vector3 movedB = pt.HasPrev && pt.HasDoubleEdge ? edgeB - ToGodot(pt.PrevEdgeB) : movedA;
+                            motions.Add(new Vector4(movedA.X, movedA.Y, movedA.Z, chainClass));
+                            motionsB.Add(new Vector4(movedB.X, movedB.Y, movedB.Z, chainClass));
+                        }
+
+                        if (_doubleSpanHostDriven && IsWeaponDoubleTrail && _hasDoubleTrailSpan && rt.Particles.Count >= 1)
+                        {
+                            Vector3 liveA = ToGodot(_doubleSpanA);
+                            Vector3 liveB = ToGodot(_doubleSpanB);
+                            int last = pts.Count - 1;
+                            Vector3 lastA = pts[last];
+                            Vector3 lastB = ptsB[last];
+                            float tipMoveSq = lastA.DistanceSquaredTo(liveA) + lastB.DistanceSquaredTo(liveB);
+                            if (tipMoveSq <= 1e-6f)
+                            {
+                                pts[last] = liveA;
+                                ptsB[last] = liveB;
+                                ages[last] = 0f;
+                                motions[last] = new Vector4(0f, 0f, 0f, chainClass);
+                                motionsB[last] = new Vector4(0f, 0f, 0f, chainClass);
+                            }
+                            else if (tipMoveSq < 16.0f)
+                            {
+                                pts.Add(liveA);
+                                ptsB.Add(liveB);
+                                ages.Add(0f);
+                                motions.Add(new Vector4(0f, 0f, 0f, chainClass));
+                                motionsB.Add(new Vector4(0f, 0f, 0f, chainClass));
+                            }
+                        }
+
+                        EmitDoubleRibbon(Sink, rt, rt.Visuals, pts, ptsB, ages, motions, motionsB, cameraPosition, inst.Lit, inst.Tint, ribbonIntensity);
+                        continue;
+                    }
+
                     foreach (ParticleState pt in rt.Particles)
                     {
-                        pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge); ribbonIntensity = pt.Intensity;
+                        pts.Add(ToGodot(pt.Pos)); ages.Add(pt.KeyAge);
                         Vector3 moved = pt.HasPrev ? ToGodot(pt.Pos) - ToGodot(pt.PrevPos) : Vector3.Zero;
                         motions.Add(new Vector4(moved.X, moved.Y, moved.Z, chainClass));
                     }
 
-                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, true, inst.Lit, inst.Tint, ribbonIntensity * _liveAlpha);
+                    EmitRibbon(Sink, rt, rt.Visuals, pts, ages, motions, cameraPosition, false, inst.Lit, inst.Tint, ribbonIntensity);
                     continue;
                 }
 
@@ -2682,12 +3805,16 @@ public sealed partial class Engine_FxSystem
                     float hy = (vb is not null ? Lerp(va.HalfY, vb.HalfY) : va.HalfY) * pt.FlickY * (vb is not null ? Lerp(va.GlobalScaleY, vb.GlobalScaleY) : va.GlobalScaleY) * _sizeScale;
                     if (hx <= 0f || hy <= 0f) { ++SkipZeroSize; continue; }
                     float si = va.BlendMode == "disp" ? 1f : (vb is not null ? Lerp(va.SelfIllum, vb.SelfIllum) : va.SelfIllum);
+                    float invBoost = si < 0.999f ? LitBoostCompensation(va.BlendMode) : 1f;
+                    float litR = inst.Lit[0] * invBoost;
+                    float litG = inst.Lit[1] * invBoost;
+                    float litB = inst.Lit[2] * invBoost;
                     // One scratch, not one per particle: both emitters copy it into a Color
                     // before returning, so reuse is safe.
                     float[] col = _emitCol;
-                    col[0] = inst.Lit[0] + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - inst.Lit[0]) * si);
-                    col[1] = inst.Lit[1] + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - inst.Lit[1]) * si);
-                    col[2] = inst.Lit[2] + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - inst.Lit[2]) * si);
+                    col[0] = litR + (((vb is not null ? Lerp(va.Colour[0], vb.Colour[0]) : va.Colour[0]) - litR) * si);
+                    col[1] = litG + (((vb is not null ? Lerp(va.Colour[1], vb.Colour[1]) : va.Colour[1]) - litG) * si);
+                    col[2] = litB + (((vb is not null ? Lerp(va.Colour[2], vb.Colour[2]) : va.Colour[2]) - litB) * si);
                     col[0] *= _tint[0] * inst.Tint[0];
                     col[1] *= _tint[1] * inst.Tint[1];
                     col[2] *= _tint[2] * inst.Tint[2];
@@ -2718,15 +3845,27 @@ public sealed partial class Engine_FxSystem
                         continue;
                     }
 
+                    if (groundConform is { } gc && !va.Aligned)
+                    {
+                        float deltaY = gc.ComputeTerrainDeltaY(ppos);
+                        if (pt.HasPrev)
+                        {
+                            Vector3 prevPos = ToGodot(pt.PrevPos);
+                            float prevDeltaY = gc.ComputeTerrainDeltaY(prevPos);
+                            motion.Y += deltaY - prevDeltaY;
+                        }
+                        ppos = new Vector3(ppos.X, ppos.Y + deltaY, ppos.Z);
+                    }
+
                     if (vb is not null && vb.Texture != va.Texture)
                     {
-                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a * (1f - w), tLife, cameraRight, cameraUp, motion);
-                        EmitBillboard(Sink(vb, rt.ZOrder), vb, ppos, pt, hx, hy, col, a * w, tLife, cameraRight, cameraUp, motion);
+                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a * (1f - w), tLife, cameraRight, cameraUp, motion, groundConform);
+                        EmitBillboard(Sink(vb, rt.ZOrder), vb, ppos, pt, hx, hy, col, a * w, tLife, cameraRight, cameraUp, motion, groundConform);
                     }
                     else
                     {
                         ++EmittedBillboards;
-                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a, tLife, cameraRight, cameraUp, motion);
+                        EmitBillboard(Sink(va, rt.ZOrder), va, ppos, pt, hx, hy, col, a, tLife, cameraRight, cameraUp, motion, groundConform);
                     }
                 }
             }
@@ -3360,9 +4499,63 @@ public sealed partial class Engine_FxSystem
         data.Instances.Add((new Transform3D(basis, ToGodot(pt.Pos)), new Color(col[0], col[1], col[2], alpha), motion));
     }
 
+    private static void EmitGroundConformingAlignedQuad(
+        List<(Vector3, Vector2, Color, Vector2, Vector4)> sink,
+        Vector3 centre, Vector3 right, Vector3 up, float hx, float hy,
+        float u0, float v0, float u1, float v1, Color colr, Vector4 motion,
+        in Engine_FxGroundConform.GroundContext gc)
+    {
+        int grid = Math.Clamp((int)MathF.Ceiling(MathF.Max(hx, hy) * 2f), 4, 16);
+        int stride = grid + 1;
+        int vertCount = stride * stride;
+        Span<Vector3> verts = stackalloc Vector3[vertCount];
+        Span<Vector2> uvs = stackalloc Vector2[vertCount];
+
+        float invGrid = 1f / grid;
+        for (int iz = 0; iz <= grid; iz++)
+        {
+            float tz = iz * invGrid;
+            float fz = -1f + (2f * tz);
+            float v = v1 + ((v0 - v1) * tz);
+            Vector3 rowOff = up * (fz * hy);
+            int rowBase = iz * stride;
+            for (int ix = 0; ix <= grid; ix++)
+            {
+                float tx = ix * invGrid;
+                float fx = -1f + (2f * tx);
+                float u = u0 + ((u1 - u0) * tx);
+                Vector3 p = centre + (right * (fx * hx)) + rowOff;
+                float deltaY = gc.ComputeTerrainDeltaY(p);
+                float conformedY = MathF.Max(p.Y + deltaY, deltaY + Engine_FxGroundConform.LiftMeters);
+                verts[rowBase + ix] = new Vector3(p.X, conformedY, p.Z);
+                uvs[rowBase + ix] = new Vector2(u, v);
+            }
+        }
+
+        for (int iz = 0; iz < grid; iz++)
+        {
+            int row0 = iz * stride;
+            int row1 = row0 + stride;
+            for (int ix = 0; ix < grid; ix++)
+            {
+                int i00 = row0 + ix;
+                int i10 = i00 + 1;
+                int i01 = row1 + ix;
+                int i11 = i01 + 1;
+                sink.Add((verts[i00], uvs[i00], colr, Vector2.Zero, motion));
+                sink.Add((verts[i11], uvs[i11], colr, Vector2.Zero, motion));
+                sink.Add((verts[i10], uvs[i10], colr, Vector2.Zero, motion));
+                sink.Add((verts[i00], uvs[i00], colr, Vector2.Zero, motion));
+                sink.Add((verts[i01], uvs[i01], colr, Vector2.Zero, motion));
+                sink.Add((verts[i11], uvs[i11], colr, Vector2.Zero, motion));
+            }
+        }
+    }
+
     private static void EmitBillboard(
         List<(Vector3, Vector2, Color, Vector2, Vector4)> sink, VisualRuntime vis, Vector3 centre, ParticleState pt, float hx, float hy,
-        float[] col, float alpha, float tLife, Vector3 cameraRight, Vector3 cameraUp, Vector4 motion)
+        float[] col, float alpha, float tLife, Vector3 cameraRight, Vector3 cameraUp, Vector4 motion,
+        Engine_FxGroundConform.GroundContext? groundConform = null)
     {
         if (vis.Texture.Length == 0 || alpha <= 0.003f) return;
         float c = MathF.Cos(pt.Rot), s = MathF.Sin(pt.Rot);
@@ -3401,6 +4594,12 @@ public sealed partial class Engine_FxSystem
         // zero offset.
         if (vis.Aligned)
         {
+            if (groundConform is { } gc && MathF.Abs(right.Y) < 0.25f && MathF.Abs(up.Y) < 0.25f)
+            {
+                EmitGroundConformingAlignedQuad(sink, centre, right, up, hx, hy, u0, v0, u1, v1, colr, motion, gc);
+                return;
+            }
+
             Vector3 arx = right * hx, auy = up * hy;
             Vector3 aa = centre - arx - auy, ab = centre + arx - auy;
             Vector3 ac = centre - arx + auy, ad = centre + arx + auy;
@@ -3460,12 +4659,16 @@ public sealed partial class Engine_FxSystem
     private float[] _ribAttrA = System.Array.Empty<float>();
     private Vector3[] _ribAttrC = System.Array.Empty<Vector3>();
     private int[] _ribAttrTex = System.Array.Empty<int>();
-    private Vector3[] _ribP = System.Array.Empty<Vector3>();
-    private Vector3[] _ribSide = System.Array.Empty<Vector3>();
     private Vector3[] _ribC = System.Array.Empty<Vector3>();
     private float[] _ribA = System.Array.Empty<float>();
     private int[] _ribTex = System.Array.Empty<int>();
     private Vector4[] _ribM = System.Array.Empty<Vector4>();
+    private readonly List<Vector3> _ptsB = new();
+    private readonly List<Vector4> _motionsB = new();
+    private Vector3[] _ribEdgeA = System.Array.Empty<Vector3>();
+    private Vector3[] _ribEdgeB = System.Array.Empty<Vector3>();
+    private Vector4[] _ribMA = System.Array.Empty<Vector4>();
+    private Vector4[] _ribMB = System.Array.Empty<Vector4>();
 
     private static float[] RentF(ref float[] slot, int n)
     {
@@ -3485,20 +4688,385 @@ public sealed partial class Engine_FxSystem
         return slot;
     }
 
+    private static float GuestKeyTimeToAge(List<VisualRuntime> vis, float keyTime)
+    {
+        int nvis = vis.Count;
+        if (nvis <= 1 || !float.IsFinite(keyTime))
+        {
+            return 0f;
+        }
+
+        float k = Math.Clamp(keyTime, 0f, nvis - 1);
+        int k0 = Math.Min((int)k, nvis - 1);
+        int k1 = Math.Min(k0 + 1, nvis - 1);
+        float f = k - k0;
+        return vis[k0].DelayFrames + ((vis[k1].DelayFrames - vis[k0].DelayFrames) * f);
+    }
+
+    /// <summary>
+    /// Interpolates a rotating <c>Mode == 3</c> double-trail span <c>(prevA, prevB) → (currA, currB)</c>
+    /// by lerping the span midpoint and half-width while spherically rotating (slerping) the half-span
+    /// direction. Prevents rapid helical corkscrew spins (such as flying Blades' <c>120°–150°</c> per-step
+    /// twist) from collapsing the leading tip width through the centerline at intermediate frames.
+    /// </summary>
+    public static void InterpolateDoubleTrailSpan(
+        Vector3 prevA,
+        Vector3 prevB,
+        Vector3 currA,
+        Vector3 currB,
+        float t,
+        out Vector3 outA,
+        out Vector3 outB)
+    {
+        float alpha = Math.Clamp(t, 0f, 1f);
+        if (alpha <= 1e-5f)
+        {
+            outA = prevA;
+            outB = prevB;
+            return;
+        }
+        if (alpha >= 1f - 1e-5f)
+        {
+            outA = currA;
+            outB = currB;
+            return;
+        }
+
+        Vector3 prevMid = 0.5f * (prevA + prevB);
+        Vector3 currMid = 0.5f * (currA + currB);
+        Vector3 mid = prevMid.Lerp(currMid, alpha);
+
+        Vector3 prevHalf = 0.5f * (prevB - prevA);
+        Vector3 currHalf = 0.5f * (currB - currA);
+        float len0 = prevHalf.Length();
+        float len1 = currHalf.Length();
+        if (len0 <= 1e-5f || len1 <= 1e-5f)
+        {
+            outA = prevA.Lerp(currA, alpha);
+            outB = prevB.Lerp(currB, alpha);
+            return;
+        }
+
+        Vector3 half = SlerpHalfSpan(prevHalf, len0, currHalf, len1, alpha);
+        outA = mid - half;
+        outB = mid + half;
+    }
+
+    private static Vector3 SlerpHalfSpan(Vector3 half0, float len0, Vector3 half1, float len1, float alpha)
+    {
+        Vector3 dir0 = half0 / len0;
+        Vector3 dir1 = half1 / len1;
+        float dot = Math.Clamp(dir0.Dot(dir1), -1f, 1f);
+        float angle = MathF.Acos(dot);
+        Vector3 dir;
+        if (angle <= 1e-4f)
+        {
+            dir = dir0;
+        }
+        else
+        {
+            Vector3 axis = dir0.Cross(dir1);
+            float axisLenSq = axis.LengthSquared();
+            if (axisLenSq > 1e-8f)
+            {
+                Vector3 axisUnit = axis / MathF.Sqrt(axisLenSq);
+                float rot = angle * alpha;
+                dir = (dir0 * MathF.Cos(rot)) + (axisUnit.Cross(dir0) * MathF.Sin(rot));
+            }
+            else
+            {
+                // Exact 180-degree opposite spin: rotate smoothly around an arbitrary axis orthogonal to dir0.
+                Vector3 ortho = MathF.Abs(dir0.Y) < 0.9f ? Vector3.Up : Vector3.Right;
+                Vector3 axisUnit = dir0.Cross(ortho).Normalized();
+                float rot = MathF.PI * alpha;
+                dir = (dir0 * MathF.Cos(rot)) + (axisUnit.Cross(dir0) * MathF.Sin(rot));
+            }
+        }
+
+        float halfLen = len0 + ((len1 - len0) * alpha);
+        return dir * halfLen;
+    }
+
+    private static int ResolveAdaptiveRibbonSegments(int authoredTrailLen, List<Vector3> ptsA, List<Vector3>? ptsB)
+    {
+        int baseSeg = Math.Max(1, authoredTrailLen);
+        int n = ptsA.Count;
+        if (n < 2 || baseSeg >= 24)
+        {
+            return baseSeg;
+        }
+
+        float maxChordSq = 0f;
+        float maxTwistRad = 0f;
+        for (int i = 0; i + 1 < n; i++)
+        {
+            float dSq = ptsA[i].DistanceSquaredTo(ptsA[i + 1]);
+            if (ptsB is not null)
+            {
+                float bSq = ptsB[i].DistanceSquaredTo(ptsB[i + 1]);
+                if (bSq > dSq) dSq = bSq;
+            }
+            if (dSq <= 36.0f && dSq > maxChordSq)
+            {
+                maxChordSq = dSq;
+            }
+
+            if (ptsB is not null && dSq <= 36.0f)
+            {
+                Vector3 s0 = ptsB[i] - ptsA[i];
+                Vector3 s1 = ptsB[i + 1] - ptsA[i + 1];
+                float l0Sq = s0.LengthSquared();
+                float l1Sq = s1.LengthSquared();
+                if (l0Sq > 1e-6f && l1Sq > 1e-6f)
+                {
+                    float dot = Math.Clamp(s0.Dot(s1) / MathF.Sqrt(l0Sq * l1Sq), -1f, 1f);
+                    float ang = MathF.Acos(dot);
+                    if (ang > maxTwistRad)
+                    {
+                        maxTwistRad = ang;
+                    }
+                }
+            }
+        }
+
+        int adaptive = baseSeg;
+        if (maxChordSq > 0.18f * 0.18f)
+        {
+            int chordSegs = Math.Clamp((int)MathF.Ceiling(MathF.Sqrt(maxChordSq) / 0.18f), 1, 12);
+            if (chordSegs > adaptive)
+            {
+                adaptive = chordSegs;
+            }
+        }
+
+        // Helical corkscrew double ribbons (e.g. flying Blades `FX_B2848F7C`, authored at `sub = 30`,
+        // twisting 120°-150° per guest step) need angular-aware subdivision to stay smooth.
+        if (maxTwistRad > 0.52f)
+        {
+            int twistSegs = Math.Clamp((int)MathF.Ceiling(maxTwistRad / (MathF.PI / 16f)), 1, 24);
+            if (twistSegs > adaptive)
+            {
+                adaptive = twistSegs;
+            }
+        }
+
+        return adaptive;
+    }
+
     private void EmitRibbon(
         Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> sink, EmitterRuntime rt, List<VisualRuntime> vis,
         List<Vector3> pts, List<float> ages, List<Vector4> motions, Vector3 eye, bool constWidth, float[] lit, float[] instTint, float intensity)
     {
         int n = pts.Count;
         if (n < 2 || vis.Count == 0) return;
-        int nvis = vis.Count;
 
-        // Pooled, not per call: grown to the high-water mark and reused; only the first
-        // `n`/`ribs` entries are ever read.
-        float[] attrW = RentF(ref _ribAttrW, n);
-        float[] attrA = RentF(ref _ribAttrA, n);
-        Vector3[] attrC = RentV(ref _ribAttrC, n);
-        int[] attrTex = RentI(ref _ribAttrTex, n);
+        EvaluateRibbonAttributes(rt, vis, pts, null, ages, eye, lit, instTint, intensity, halfWidthScale: true, constWidth,
+            out float[] attrW, out float[] attrA, out Vector3[] attrC, out int[] attrTex);
+
+        int nseg = ResolveAdaptiveRibbonSegments(vis[0].TrailLen, pts, null);
+        Vector3 pre = pts[0] - (pts[1] - pts[0]);
+        Vector3 post = pts[n - 1] + (pts[n - 1] - pts[n - 2]);
+        int ribs = ((n - 1) * nseg) + 1;
+        Vector3[] rA = RentV(ref _ribEdgeA, ribs);
+        Vector3[] rB = RentV(ref _ribEdgeB, ribs);
+        Vector3[] rc = RentV(ref _ribC, ribs);
+        float[] ra = RentF(ref _ribA, ribs);
+        int[] rtex = RentI(ref _ribTex, ribs);
+        Vector4[] rm = _ribM.Length >= ribs ? _ribM : (_ribM = new Vector4[ribs]);
+        for (int j = 0; j < ribs; j++)
+        {
+            RibbonSpan(j, ribs, nseg, n, out int span, out float sfrac, out int a1);
+            EvalCatmullRom(pts, pre, post, span, sfrac, out Vector3 pos, out Vector3 tan);
+            if (tan.LengthSquared() < 1e-12f) tan = pts[span + 1] - pts[span];
+            for (int d = 1; tan.LengthSquared() < 1e-12f && (span - d >= 0 || span + 1 + d < n); d++)
+            {
+                int i0 = Math.Max(0, span - d);
+                int i1 = Math.Min(n - 1, span + 1 + d);
+                tan = pts[i1] - pts[i0];
+            }
+            tan = tan.LengthSquared() > 1e-12f ? tan.Normalized() : Vector3.Up;
+            Vector3 side = tan.Cross(eye - pos);
+            side = side.LengthSquared() > 1e-12f ? side.Normalized() : Vector3.Up;
+            float wj = attrW[span] + ((attrW[a1] - attrW[span]) * sfrac);
+            Vector3 offset = side * wj;
+            rA[j] = pos + offset;
+            rB[j] = pos - offset;
+            rc[j] = attrC[span] + ((attrC[a1] - attrC[span]) * sfrac);
+            ra[j] = attrA[span] + ((attrA[a1] - attrA[span]) * sfrac);
+            rtex[j] = attrTex[span];
+            rm[j] = motions[span].Lerp(motions[a1], sfrac);
+        }
+
+        EmitRibbonQuads(sink, rt, vis, ribs, rA, rB, rc, ra, rtex, rm, rm);
+    }
+
+    private void EmitDoubleRibbon(
+        Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> sink, EmitterRuntime rt, List<VisualRuntime> vis,
+        List<Vector3> ptsA, List<Vector3> ptsB, List<float> ages, List<Vector4> motionsA, List<Vector4> motionsB,
+        Vector3 eye, float[] lit, float[] instTint, float intensity)
+    {
+        int n = ptsA.Count;
+        if (n < 2 || ptsB.Count != n || vis.Count == 0) return;
+
+        EvaluateRibbonAttributes(rt, vis, ptsA, ptsB, ages, eye, lit, instTint, intensity, halfWidthScale: false, constWidth: false,
+            out float[] attrS, out float[] attrA, out Vector3[] attrC, out int[] attrTex);
+
+        int nseg = ResolveAdaptiveRibbonSegments(vis[0].TrailLen, ptsA, ptsB);
+        Vector3 preA = ptsA[0] - (ptsA[1] - ptsA[0]);
+        Vector3 postA = ptsA[n - 1] + (ptsA[n - 1] - ptsA[n - 2]);
+        Vector3 preB = ptsB[0] - (ptsB[1] - ptsB[0]);
+        Vector3 postB = ptsB[n - 1] + (ptsB[n - 1] - ptsB[n - 2]);
+
+        int ribs = ((n - 1) * nseg) + 1;
+        Vector3[] rA = RentV(ref _ribEdgeA, ribs);
+        Vector3[] rB = RentV(ref _ribEdgeB, ribs);
+        Vector3[] rc = RentV(ref _ribC, ribs);
+        float[] ra = RentF(ref _ribA, ribs);
+        int[] rtex = RentI(ref _ribTex, ribs);
+        Vector4[] rmA = _ribMA.Length >= ribs ? _ribMA : (_ribMA = new Vector4[ribs]);
+        Vector4[] rmB = _ribMB.Length >= ribs ? _ribMB : (_ribMB = new Vector4[ribs]);
+
+        for (int j = 0; j < ribs; j++)
+        {
+            RibbonSpan(j, ribs, nseg, n, out int span, out float sfrac, out int idx1);
+            EvalCatmullRom(ptsA, preA, postA, span, sfrac, out Vector3 ea, out _);
+            EvalCatmullRom(ptsB, preB, postB, span, sfrac, out Vector3 eb, out _);
+            float sj = attrS[span] + ((attrS[idx1] - attrS[span]) * sfrac);
+            Vector3 mid = 0.5f * (ea + eb);
+            Vector3 half0 = 0.5f * (ptsB[span] - ptsA[span]);
+            Vector3 half1 = 0.5f * (ptsB[idx1] - ptsA[idx1]);
+            float len0 = half0.Length();
+            float len1 = half1.Length();
+            if (len0 > 1e-5f && len1 > 1e-5f && (half0.Dot(half1) / (len0 * len1)) < 0.995f)
+            {
+                Vector3 half = SlerpHalfSpan(half0, len0, half1, len1, sfrac) * sj;
+                rA[j] = mid - half;
+                rB[j] = mid + half;
+            }
+            else
+            {
+                rA[j] = mid + ((ea - mid) * sj);
+                rB[j] = mid + ((eb - mid) * sj);
+            }
+            rc[j] = attrC[span] + ((attrC[idx1] - attrC[span]) * sfrac);
+            ra[j] = attrA[span] + ((attrA[idx1] - attrA[span]) * sfrac);
+            rtex[j] = attrTex[span];
+            rmA[j] = motionsA[span].Lerp(motionsA[idx1], sfrac);
+            rmB[j] = motionsB[span].Lerp(motionsB[idx1], sfrac);
+        }
+
+        EmitRibbonQuads(sink, rt, vis, ribs, rA, rB, rc, ra, rtex, rmA, rmB);
+    }
+
+    private static float LitBoostCompensation(string blendMode)
+    {
+        float boost = MathF.Max(Refii.Lighting.Engine_PostFxParams.EmissionBoost, 1f);
+        if (boost <= 1.0001f)
+        {
+            return 1f;
+        }
+
+        if (blendMode == "add")
+        {
+            return 1f / boost;
+        }
+
+        if (blendMode == "addone")
+        {
+            return Engine_FxAdditiveLayer.Present ? 1f / (boost * boost) : 1f / boost;
+        }
+
+        return 1f;
+    }
+
+    public static float ComputeDoubleRibbonLitAttenuation(
+        List<Vector3> ptsA, List<Vector3> ptsB, int k, Vector3 eye, string blendMode)
+    {
+        int n = ptsA.Count;
+        if (n < 2 || ptsB.Count != n)
+        {
+            return 1f;
+        }
+
+        Vector3 spanVec = ptsA[k] - ptsB[k];
+        float spanLenSq = spanVec.LengthSquared();
+        int iPrev = Math.Max(0, k - 1);
+        int iNext = Math.Min(n - 1, k + 1);
+        Vector3 midK = 0.5f * (ptsA[k] + ptsB[k]);
+        Vector3 midPrev = 0.5f * (ptsA[iPrev] + ptsB[iPrev]);
+        Vector3 midNext = 0.5f * (ptsA[iNext] + ptsB[iNext]);
+        Vector3 tanVec = midNext - midPrev;
+        float tanLenSq = tanVec.LengthSquared();
+        if (spanLenSq <= 1e-10f || tanLenSq <= 1e-10f)
+        {
+            return 1f;
+        }
+
+        Vector3 spanUnit = spanVec / MathF.Sqrt(spanLenSq);
+        Vector3 tanUnit = tanVec / MathF.Sqrt(tanLenSq);
+        // Xbox 360 DOUBLE_TRAILS_VERTEX_SHADER leaves cross(unit(edgeA - edgeB), unit(tangent))
+        // un-normalised: 1.0 on broadside melee swings (span ⊥ motion), small on point-first flight.
+        float normalMag = Math.Clamp(spanUnit.Cross(tanUnit).Length(), 0f, 1f);
+
+        // Detect fast helical corkscrew twist between adjacent spans (e.g. flying Blades FX_B2848F7C
+        // twisting ~120°-150° per step vs < 25° on melee sword arcs).
+        float maxTwistRad = 0f;
+        if (k > 0)
+        {
+            Vector3 prevSpan = ptsA[k - 1] - ptsB[k - 1];
+            float pLenSq = prevSpan.LengthSquared();
+            if (pLenSq > 1e-10f)
+            {
+                float d = Math.Clamp(spanUnit.Dot(prevSpan / MathF.Sqrt(pLenSq)), -1f, 1f);
+                maxTwistRad = MathF.Acos(d);
+            }
+        }
+        if (k + 1 < n)
+        {
+            Vector3 nextSpan = ptsA[k + 1] - ptsB[k + 1];
+            float nLenSq = nextSpan.LengthSquared();
+            if (nLenSq > 1e-10f)
+            {
+                float d = Math.Clamp(spanUnit.Dot(nextSpan / MathF.Sqrt(nLenSq)), -1f, 1f);
+                float ang = MathF.Acos(d);
+                if (ang > maxTwistRad) maxTwistRad = ang;
+            }
+        }
+
+        float cylFactor = 1f;
+        if (maxTwistRad > 0.55f)
+        {
+            float twistT = Math.Clamp((maxTwistRad - 0.55f) / 1.85f, 0f, 1f);
+            cylFactor = 1f - (0.66f * twistT);
+            if (blendMode == "addone")
+            {
+                // Guest ONE:ONE draws into an A8R8G8B8 UNORM target that saturates end-on corkscrew
+                // self-overlap along the view ray, whereas our FP16 layer accumulates linearly.
+                Vector3 toEye = eye - midK;
+                float toEyeLenSq = toEye.LengthSquared();
+                if (toEyeLenSq > 1e-6f)
+                {
+                    float endOn = MathF.Abs((toEye / MathF.Sqrt(toEyeLenSq)).Dot(tanUnit));
+                    cylFactor *= 1f - (0.52f * endOn * endOn * twistT);
+                }
+            }
+        }
+
+        float effectiveMag = normalMag * cylFactor;
+        return 0.20f + (0.80f * Math.Clamp(effectiveMag, 0f, 1f));
+    }
+
+    private void EvaluateRibbonAttributes(
+        EmitterRuntime rt, List<VisualRuntime> vis, List<Vector3> ptsA, List<Vector3>? ptsB, List<float> ages,
+        Vector3 eye, float[] lit, float[] instTint, float intensity, bool halfWidthScale, bool constWidth,
+        out float[] attrW, out float[] attrA, out Vector3[] attrC, out int[] attrTex)
+    {
+        int n = ptsA.Count;
+        int nvis = vis.Count;
+        attrW = RentF(ref _ribAttrW, n);
+        attrA = RentF(ref _ribAttrA, n);
+        attrC = RentV(ref _ribAttrC, n);
+        attrTex = RentI(ref _ribAttrTex, n);
         float tr = _tint[0] * instTint[0], tg = _tint[1] * instTint[1], tb = _tint[2] * instTint[2];
         for (int k = 0; k < n; k++)
         {
@@ -3509,66 +5077,84 @@ public sealed partial class Engine_FxSystem
             int sa = Math.Max(sb - 1, 0);
             VisualRuntime va = vis[sa], vb = vis[sb];
             float w = sb > sa ? Math.Clamp((age - va.DelayFrames) * vb.InvSpan, 0f, 1f) : 0f;
-            attrW[k] = (constWidth ? vis[0].TrailWidth * 0.5f : (va.TrailWidth + ((vb.TrailWidth - va.TrailWidth) * w)) * 0.5f) * _sizeScale;
+            float width = constWidth ? vis[0].TrailWidth : (va.TrailWidth + ((vb.TrailWidth - va.TrailWidth) * w));
+            attrW[k] = halfWidthScale ? width * 0.5f * _sizeScale : width;
             float si = va.SelfIllum + ((vb.SelfIllum - va.SelfIllum) * w);
+            float litScale = si < 0.999f ? LitBoostCompensation(va.BlendMode) : 1f;
+            if (ptsB is not null && si < 0.999f)
+            {
+                litScale *= ComputeDoubleRibbonLitAttenuation(ptsA, ptsB, k, eye, va.BlendMode);
+            }
+
+            float litR = lit[0] * litScale;
+            float litG = lit[1] * litScale;
+            float litB = lit[2] * litScale;
             attrC[k] = new Vector3(
-                (lit[0] + ((va.Colour[0] + ((vb.Colour[0] - va.Colour[0]) * w) - lit[0]) * si)) * tr,
-                (lit[1] + ((va.Colour[1] + ((vb.Colour[1] - va.Colour[1]) * w) - lit[1]) * si)) * tg,
-                (lit[2] + ((va.Colour[2] + ((vb.Colour[2] - va.Colour[2]) * w) - lit[2]) * si)) * tb);
-            attrA[k] = (va.Alpha + ((vb.Alpha - va.Alpha) * w)) * DistanceFadeFactor(rt, pts[k], eye) * intensity;
+                (litR + ((va.Colour[0] + ((vb.Colour[0] - va.Colour[0]) * w) - litR) * si)) * tr,
+                (litG + ((va.Colour[1] + ((vb.Colour[1] - va.Colour[1]) * w) - litG) * si)) * tg,
+                (litB + ((va.Colour[2] + ((vb.Colour[2] - va.Colour[2]) * w) - litB) * si)) * tb);
+            Vector3 fadePos = ptsB is not null ? 0.5f * (ptsA[k] + ptsB[k]) : ptsA[k];
+            attrA[k] = (va.Alpha + ((vb.Alpha - va.Alpha) * w)) * DistanceFadeFactor(rt, fadePos, eye) * intensity;
             attrTex[k] = sa;
         }
+    }
 
-        int nseg = Math.Max(1, vis[0].TrailLen);
-        Vector3 pre = pts[0] - (pts[1] - pts[0]);
-        Vector3 post = pts[n - 1] + (pts[n - 1] - pts[n - 2]);
-        Vector3 Ctrl(int i) => i < 0 ? pre : i >= n ? post : pts[i];
-        int ribs = ((n - 1) * nseg) + 1;
-        Vector3[] rp = RentV(ref _ribP, ribs);
-        Vector3[] rside = RentV(ref _ribSide, ribs);
-        Vector3[] rc = RentV(ref _ribC, ribs);
-        float[] ra = RentF(ref _ribA, ribs);
-        int[] rtex = RentI(ref _ribTex, ribs);
-        Vector4[] rm = _ribM.Length >= ribs ? _ribM : (_ribM = new Vector4[ribs]);
-        for (int j = 0; j < ribs; j++)
+    private static void RibbonSpan(int rib, int ribs, int nseg, int n, out int span, out float sfrac, out int nextIndex)
+    {
+        if (rib == ribs - 1)
         {
-            int span = Math.Min(j / nseg, n - 2);
-            float sfrac = (float)(j - (span * nseg)) / nseg;
-            if (j == ribs - 1) { span = n - 2; sfrac = 1f; }
-            Vector3 p0 = Ctrl(span - 1), p1 = Ctrl(span), p2 = Ctrl(span + 1), p3 = Ctrl(span + 2);
-            Vector3 c1 = 0.5f * (p2 - p0);
-            Vector3 c2 = p0 - (2.5f * p1) + (2f * p2) - (0.5f * p3);
-            Vector3 c3 = (-0.5f * p0) + (1.5f * p1) - (1.5f * p2) + (0.5f * p3);
-            Vector3 pos = p1 + (c1 * sfrac) + (c2 * sfrac * sfrac) + (c3 * sfrac * sfrac * sfrac);
-            Vector3 tan = c1 + (2f * c2 * sfrac) + (3f * c3 * sfrac * sfrac);
-            if (tan.LengthSquared() < 1e-12f) tan = pts[span + 1] - pts[span];
-            tan = tan.LengthSquared() > 1e-12f ? tan.Normalized() : Vector3.Up;
-            Vector3 side = tan.Cross(eye - pos);
-            side = side.LengthSquared() > 1e-12f ? side.Normalized() : Vector3.Up;
-            int a1 = Math.Min(span + 1, n - 1);
-            float wj = attrW[span] + ((attrW[a1] - attrW[span]) * sfrac);
-            rp[j] = pos; rside[j] = side * wj;
-            rc[j] = attrC[span] + ((attrC[a1] - attrC[span]) * sfrac);
-            ra[j] = attrA[span] + ((attrA[a1] - attrA[span]) * sfrac);
-            rtex[j] = attrTex[span];
-            rm[j] = motions[span].Lerp(motions[a1], sfrac);
+            span = n - 2;
+            sfrac = 1f;
+        }
+        else
+        {
+            span = Math.Min(rib / nseg, n - 2);
+            sfrac = (float)(rib - (span * nseg)) / nseg;
         }
 
+        nextIndex = Math.Min(span + 1, n - 1);
+    }
+
+    private static void EvalCatmullRom(
+        List<Vector3> pts, Vector3 pre, Vector3 post, int span, float sfrac, out Vector3 pos, out Vector3 tan)
+    {
+        int n = pts.Count;
+        Vector3 Ctrl(int i) => i < 0 ? pre : i >= n ? post : pts[i];
+        Vector3 p0 = Ctrl(span - 1), p1 = Ctrl(span), p2 = Ctrl(span + 1), p3 = Ctrl(span + 2);
+        Vector3 c1 = 0.5f * (p2 - p0);
+        Vector3 c2 = p0 - (2.5f * p1) + (2f * p2) - (0.5f * p3);
+        Vector3 c3 = (-0.5f * p0) + (1.5f * p1) - (1.5f * p2) + (0.5f * p3);
+        float s2 = sfrac * sfrac;
+        pos = p1 + (c1 * sfrac) + (c2 * s2) + (c3 * s2 * sfrac);
+        tan = c1 + (2f * c2 * sfrac) + (3f * c3 * s2);
+    }
+
+    private static void EmitRibbonQuads(
+        Func<VisualRuntime, int, List<(Vector3, Vector2, Color, Vector2, Vector4)>> sink,
+        EmitterRuntime rt, List<VisualRuntime> vis, int ribs,
+        Vector3[] rA, Vector3[] rB, Vector3[] rc, float[] ra, int[] rtex, Vector4[] rmA, Vector4[] rmB)
+    {
         for (int j = 0; j + 1 < ribs; j++)
         {
             if (ra[j] <= 0.003f && ra[j + 1] <= 0.003f) continue;
+            if (rt.Ribbon)
+            {
+                Vector3 mid0 = 0.5f * (rA[j] + rB[j]);
+                Vector3 mid1 = 0.5f * (rA[j + 1] + rB[j + 1]);
+                if (mid0.DistanceSquaredTo(mid1) > 16.0f) continue;
+            }
             VisualRuntime tv = vis[rtex[j]];
             if (tv.Texture.Length == 0) continue;
             List<(Vector3, Vector2, Color, Vector2, Vector4)> list = sink(tv, rt.ZOrder);
-            float u0 = (float)j / (ribs - 1), u1 = (float)(j + 1) / (ribs - 1);
+            float v0 = (float)j / (ribs - 1), v1 = (float)(j + 1) / (ribs - 1);
             var c0 = new Color(rc[j].X, rc[j].Y, rc[j].Z, MathF.Max(ra[j], 0f));
             var c1 = new Color(rc[j + 1].X, rc[j + 1].Y, rc[j + 1].Z, MathF.Max(ra[j + 1], 0f));
-            list.Add((rp[j] + rside[j], new Vector2(u0, 0f), c0, Vector2.Zero, rm[j]));
-            list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero, rm[j + 1]));
-            list.Add((rp[j] - rside[j], new Vector2(u0, 1f), c0, Vector2.Zero, rm[j]));
-            list.Add((rp[j] - rside[j], new Vector2(u0, 1f), c0, Vector2.Zero, rm[j]));
-            list.Add((rp[j + 1] + rside[j + 1], new Vector2(u1, 0f), c1, Vector2.Zero, rm[j + 1]));
-            list.Add((rp[j + 1] - rside[j + 1], new Vector2(u1, 1f), c1, Vector2.Zero, rm[j + 1]));
+            list.Add((rA[j], new Vector2(0f, v0), c0, Vector2.Zero, rmA[j]));
+            list.Add((rA[j + 1], new Vector2(0f, v1), c1, Vector2.Zero, rmA[j + 1]));
+            list.Add((rB[j], new Vector2(1f, v0), c0, Vector2.Zero, rmB[j]));
+            list.Add((rB[j], new Vector2(1f, v0), c0, Vector2.Zero, rmB[j]));
+            list.Add((rA[j + 1], new Vector2(0f, v1), c1, Vector2.Zero, rmA[j + 1]));
+            list.Add((rB[j + 1], new Vector2(1f, v1), c1, Vector2.Zero, rmB[j + 1]));
         }
     }
 
