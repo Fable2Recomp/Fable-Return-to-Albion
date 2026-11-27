@@ -467,9 +467,21 @@ void main() {
 					}
 
 					// Pure-ALU windowed distance falloff & phase before any shadow texture / capsule fetches.
+					// Floating ambient lights (`soft_r > 0.0`) flatten the central `d -> 0` inverse-distance
+					// and forward-Mie spikes into a uniform volume while preserving outer window/doorway shafts.
 					float nd = max(1.0 - u2 * u2, 0.0);
-					float dist_atten = (nd * nd) * inversesqrt(d2 + 0.35);
-					float phase = henyey_greenstein(dot(l_dir, view_dir), anisotropy);
+					float soft_r = buf.entries[base + 3].w;
+					float dist_atten;
+					float phase;
+					if (soft_r > 0.0) {
+						float inv_soft_d = inversesqrt(d2 + soft_r * soft_r);
+						dist_atten = (nd * nd) * inv_soft_d * 1.65;
+						float w_dir = d * inv_soft_d;
+						phase = henyey_greenstein(dot(l_dir, view_dir), anisotropy * (w_dir * w_dir));
+					} else {
+						dist_atten = (nd * nd) * inversesqrt(d2 + 0.35);
+						phase = henyey_greenstein(dot(l_dir, view_dir), anisotropy);
+					}
 					vec3 unshadowed = flux_spot.rgb * (dist_atten * cone_atten * phase);
 					if (max(unshadowed.r, max(unshadowed.g, unshadowed.b)) <= 5e-4) {
 						continue;

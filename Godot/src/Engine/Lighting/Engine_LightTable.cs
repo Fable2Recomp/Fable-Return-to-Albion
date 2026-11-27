@@ -58,6 +58,8 @@ public static class Engine_LightTable
 
 	private static readonly float[] CachedRanges = new float[Capacity];
 
+	private static readonly float[] CachedSoftCores = new float[Capacity];
+
 	private static int _lastMetaGeneration = -1;
 
 	private static StaticShadowMapContainer? _boundShadowMap;
@@ -197,6 +199,7 @@ public static class Engine_LightTable
 				HasCachedTransform[slot] = false;
 				CachedPositions[slot] = Vector3.Zero;
 				CachedRanges[slot] = 0f;
+				CachedSoftCores[slot] = 0f;
 				AtlasRects[slot] = _boundShadowMap is not null && lightKey != 0ul &&
 					_boundShadowMap.LightRects.TryGetValue(lightKey, out Vector4 rect)
 					? rect : Vector4.Zero;
@@ -235,7 +238,7 @@ public static class Engine_LightTable
 			for (int slot = 0; slot <= _highWaterSlot; slot++)
 			{
 				Light3D? light = Slots[slot];
-				float x = 0f, y = 0f, z = 0f, range = 0f;
+				float x = 0f, y = 0f, z = 0f, range = 0f, softCore = 0f;
 
 				if (light is not null)
 				{
@@ -248,6 +251,7 @@ public static class Engine_LightTable
 						HasCachedTransform[slot] = false;
 						CachedPositions[slot] = Vector3.Zero;
 						CachedRanges[slot] = 0f;
+						CachedSoftCores[slot] = 0f;
 						AtlasRects[slot] = Vector4.Zero;
 					}
 					else
@@ -260,6 +264,7 @@ public static class Engine_LightTable
 							y = at.Y;
 							z = at.Z;
 							range = CachedRanges[slot];
+							softCore = CachedSoftCores[slot];
 							live++;
 						}
 						else if (light.IsInsideTree())
@@ -270,8 +275,10 @@ public static class Engine_LightTable
 							z = at.Z;
 							range = light is OmniLight3D omni ? omni.OmniRange
 								: light is SpotLight3D spot ? spot.SpotRange : 0f;
+							softCore = Engine_LevelLights.SurfaceSoftCoreOf(light);
 							CachedPositions[slot] = at;
 							CachedRanges[slot] = range;
+							CachedSoftCores[slot] = softCore;
 							HasCachedTransform[slot] = true;
 							live++;
 						}
@@ -280,6 +287,7 @@ public static class Engine_LightTable
 
 				float stated = range > 0f && Stated[slot] > 0f ? Stated[slot] : range;
 				Vector4 rect = useStaticShadows && range > 0f ? AtlasRects[slot] : Vector4.Zero;
+				float row2SoftCore = range > 0f ? softCore : 0f;
 				int second = (Capacity + slot) * 4;
 				if (Data[second] != stated ||
 				    Data[second + 1] != rect.X ||
@@ -295,10 +303,10 @@ public static class Engine_LightTable
 
 				int third = (Capacity * 2 + slot) * 4;
 				if (packed) changed |= Refii.AndroidRuntime.AndroidLightTablePacking.Write(Data, third, x, y, z, range, stated);
-				else if (Data[third] != rect.W)
+				else if (Data[third] != rect.W || Data[third + 1] != row2SoftCore)
 				{
 					Data[third] = rect.W;
-					Data[third + 1] = 0f;
+					Data[third + 1] = row2SoftCore;
 					Data[third + 2] = 0f;
 					Data[third + 3] = 0f;
 					changed = true;

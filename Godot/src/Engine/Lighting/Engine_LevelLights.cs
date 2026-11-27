@@ -132,6 +132,31 @@ public static class Engine_LevelLights
 	/// </summary>
 	public const float DefaultVolumetricFogScale = 5.0f;
 
+	/// <summary>
+	/// Soft shadow filter blur applied to floating ambient lights when casting dynamic entity shadows.
+	/// </summary>
+	public const float FloatingShadowBlur = 2.5f;
+
+	/// <summary>
+	/// Soft-core radius fraction of effective range for floating omni volumetric scattering.
+	/// </summary>
+	public const float FloatingVolumetricCoreFraction = 0.48f;
+
+	/// <summary>
+	/// Soft-core radius fraction of effective range for floating spot volumetric scattering.
+	/// </summary>
+	public const float FloatingSpotCoreFraction = 0.30f;
+
+	/// <summary>
+	/// Soft-core radius fraction of effective range for floating omni surface illumination.
+	/// </summary>
+	public const float FloatingSurfaceCoreFraction = 0.35f;
+
+	/// <summary>
+	/// Energy-preserving surface normalization gain for soft-core ambient lights.
+	/// </summary>
+	public const float FloatingSurfaceCoreGain = 1.35f;
+
 	/// <summary>The guest's <c>LightType</c> values. NOT the render-primitive enum.</summary>
 	/// <remarks>
 	/// There are two light enumerations in this engine and they disagree. <c>sub_825C2108</c>
@@ -200,7 +225,8 @@ public static class Engine_LevelLights
 		float FlickerBrightnessRange,
 		float FlickerRadiusRange,
 		bool IgnoreZoning = false,
-		bool IsSyntheticFlame = false);
+		bool IsSyntheticFlame = false,
+		bool IsFloatingAmbient = false);
 
 	/// <summary>
 	/// The light an entity states, or none.
@@ -324,6 +350,12 @@ public static class Engine_LevelLights
 
 	public const string RawFadeRangeMeta = "raw_fade_range";
 
+	public const string FloatingAmbientMeta = "floating_ambient";
+
+	public const string SurfaceSoftCoreMeta = "surface_soft_core";
+
+	public const string VolumetricSoftCoreMeta = "volumetric_soft_core";
+
 	/// <summary>
 	/// A live multiplier on every placed fixture's reach, for measuring what `placed_light_range`
 	/// costs WITHOUT a level reload. 1.0 is whatever the level was built with.
@@ -349,14 +381,17 @@ public static class Engine_LevelLights
 				}
 
 				float authored = (float)node.GetMeta(AuthoredRangeMeta);
+				float scaledRange = authored * RangeScale;
 				if (node is OmniLight3D omni)
 				{
-					omni.OmniRange = authored * RangeScale;
+					omni.OmniRange = scaledRange;
 				}
 				else if (node is SpotLight3D spot)
 				{
-					spot.SpotRange = authored * RangeScale;
+					spot.SpotRange = scaledRange;
 				}
+
+				UpdateSoftCoreMetas(node, scaledRange);
 			}
 		}
 	}
@@ -473,6 +508,9 @@ public static class Engine_LevelLights
 			}
 		}
 
+		UpdateSoftCoreMetas(node, scaledRange);
+		ApplyShadowTuning(node);
+
 		float rawFadeDist = node.HasMeta(RawFadeDistanceMeta)
 			? (float)node.GetMeta(RawFadeDistanceMeta).AsDouble()
 			: 0.0f;
@@ -541,6 +579,7 @@ public static class Engine_LevelLights
 		_placedRange = null;
 		_buildingInteriorLightScale = null;
 		_buildingInteriorReachScale = null;
+		_floatingLightSoftness = null;
 		_placedShadows = null;
 		_placedFade = null;
 
@@ -577,13 +616,15 @@ public static class Engine_LevelLights
 		public readonly Vector3 Position;
 		public readonly float Range;
 		public readonly float RangeSq;
+		public readonly float SurfaceSoftCore;
 		public readonly Vector3 ColorTimesEnergy;
 
-		public FxLightSample(Vector3 position, float range, float rangeSq, Vector3 colorTimesEnergy)
+		public FxLightSample(Vector3 position, float range, float rangeSq, float surfaceSoftCore, Vector3 colorTimesEnergy)
 		{
 			Position = position;
 			Range = range;
 			RangeSq = rangeSq;
+			SurfaceSoftCore = surfaceSoftCore;
 			ColorTimesEnergy = colorTimesEnergy;
 		}
 	}
@@ -642,10 +683,12 @@ public static class Engine_LevelLights
 					}
 
 					Color c = Engine_LightColour.Linear(node);
+					float softCore = SurfaceSoftCoreOf(node);
 					_fxLightSamples[count++] = new FxLightSample(
 						pos,
 						range,
 						range * range,
+						softCore,
 						new Vector3(c.R * energy, c.G * energy, c.B * energy));
 				}
 
@@ -665,13 +708,13 @@ public static class Engine_LevelLights
 					continue;
 				}
 
-				float d = MathF.Sqrt(d2);
-				float ratio = Math.Clamp(d / s.Range, 0f, 1f);
-				float r2 = ratio * ratio;
+				float r2 = Math.Clamp(d2 / s.RangeSq, 0f, 1f);
 				float r4 = r2 * r2;
 				float oneMinusR4 = 1f - r4;
 				float window = oneMinusR4 * oneMinusR4;
-				float atten = Math.Min(window / MathF.Max(d, 1f), 1f);
+				float atten = s.SurfaceSoftCore > 0f
+					? window * (FloatingSurfaceCoreGain / MathF.Sqrt(d2 + (s.SurfaceSoftCore * s.SurfaceSoftCore)))
+					: Math.Min(window / MathF.Max(MathF.Sqrt(d2), 1f), 1f);
 				if (atten <= 0f)
 				{
 					continue;
@@ -682,6 +725,82 @@ public static class Engine_LevelLights
 				lit[2] += s.ColorTimesEnergy.Z * atten;
 			}
 		}
+	}
+
+	public static bool IsBuildingRoomModelPath(string? modelPath) =>
+		modelPath is { Length: > 0 } && (
+			modelPath.Contains("building", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("interior", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("chamber", StringComparison.OrdinalIgnoreCase));
+
+	public static bool IsExplicitAmbientLightName(string? entityName) =>
+		entityName is { Length: > 0 } && (
+			entityName.Contains("PlaceableLight", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("AmbientLight", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("FillLight", StringComparison.OrdinalIgnoreCase));
+
+	public static bool IsPhysicalFixtureNameOrModel(string? entityName, string? modelPath) =>
+		(entityName is { Length: > 0 } && (
+			entityName.Contains("Lamp", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Lantern", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Torch", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Candle", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Flame", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Fire", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Brazier", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Chandelier", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Sconce", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Streetlight", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Light_Ceiling", StringComparison.OrdinalIgnoreCase) ||
+			entityName.Contains("Statue", StringComparison.OrdinalIgnoreCase))) ||
+		(modelPath is { Length: > 0 } && (
+			modelPath.Contains("Lamp", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Lantern", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Torch", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Candle", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Flame", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Fire", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Brazier", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Chandelier", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Sconce", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Lights_Town", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Light_Ceiling", StringComparison.OrdinalIgnoreCase) ||
+			modelPath.Contains("Statue", StringComparison.OrdinalIgnoreCase)));
+
+	/// <summary>
+	/// Determines whether an authored light placement represents an unattached floating ambient volume
+	/// (such as <c>PlaceableLight_*</c> mood fills in Wraithmarsh houses and clearings, or room-shell fill
+	/// lights) rather than a physical lamp, torch, candle, brazier, or FX-bearing fixture.
+	/// </summary>
+	public static bool IsFloatingAmbientPlacement(
+		bool hasModel,
+		bool isBuildingRoomModel,
+		bool hasVisualFx,
+		bool matchedRigAttachment,
+		string? entityName,
+		string? modelPath)
+	{
+		if (hasVisualFx)
+		{
+			return false;
+		}
+
+		if (IsExplicitAmbientLightName(entityName))
+		{
+			return true;
+		}
+
+		if (IsPhysicalFixtureNameOrModel(entityName, modelPath))
+		{
+			return false;
+		}
+
+		if (!hasModel || isBuildingRoomModel)
+		{
+			return true;
+		}
+
+		return !matchedRigAttachment;
 	}
 
 	public static bool IsFlameDummy(string dummy) =>
@@ -923,27 +1042,29 @@ public static class Engine_LevelLights
 
 			string? model = null;
 			modelPaths?.TryGetValue(placement.Hash, out model);
-			bool isBuildingRoomModel = model is not null && (
-				model.Contains("building", StringComparison.OrdinalIgnoreCase) ||
-				model.Contains("interior", StringComparison.OrdinalIgnoreCase) ||
-				model.Contains("chamber", StringComparison.OrdinalIgnoreCase));
+			bool hasModel = model is { Length: > 0 };
+			bool isBuildingRoomModel = IsBuildingRoomModelPath(model);
 
-			if (model is not null && model.Length != 0 && !isBuildingRoomModel)
+			if (hasModel && !isBuildingRoomModel)
 			{
 				hosts.Add(placement.Hash);
 			}
 
+			List<Engine_LevelFx.FxAttachment> modelFxList = Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
+			bool hasVisualFx = modelFxList.Count != 0;
+
 			// The entity's own origin, which is what AttachToEntityPosition asks for and also the
 			// only thing left when the placement resolved to no model at all.
-			if (light.Dummy.Length == 0 || model is null || model.Length == 0)
+			if (light.Dummy.Length == 0 || !hasModel)
 			{
-				Emit(placement.Hash, light, placed, placement.EntityName, 0);
+				bool floating = IsFloatingAmbientPlacement(
+					hasModel, isBuildingRoomModel, hasVisualFx, matchedRigAttachment: false, placement.EntityName, model);
+				Emit(placement.Hash, floating ? light with { IsFloatingAmbient = true } : light, placed, placement.EntityName, 0);
 				continue;
 			}
 
 			// EVERY dummy of that name.
 			var flameOrigins = new List<Vector3>();
-			List<Engine_LevelFx.FxAttachment> modelFxList = Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
 			for (int f = 0; f < modelFxList.Count; f++)
 			{
 				Engine_LevelFx.FxAttachment fx = modelFxList[f];
@@ -952,13 +1073,13 @@ public static class Engine_LevelLights
 					continue;
 				}
 
-				if (TryResolveDummy(model, fx.Dummy, out Transform3D fxAt))
+				if (TryResolveDummy(model!, fx.Dummy, out Transform3D fxAt))
 				{
 					flameOrigins.Add(fxAt.Origin - fx.Offset);
 				}
 
 				string fxBone = Engine_LevelFx.DummyBoneName(fx.Dummy);
-				if (fxBone.Length != 0 && TryResolveDummy(model, fxBone, out Transform3D boneAt))
+				if (fxBone.Length != 0 && TryResolveDummy(model!, fxBone, out Transform3D boneAt))
 				{
 					flameOrigins.Add(boneAt.Origin - fx.Offset);
 				}
@@ -967,11 +1088,15 @@ public static class Engine_LevelLights
 			for (int pIdx = 0; pIdx < DummyScanLimit; pIdx++)
 			{
 				string pNamed = pIdx == 0 ? "FX_Particle_DummyObject" : "FX_Particle_DummyObject" + pIdx;
-				if (TryResolveDummy(model, pNamed, out Transform3D pAt))
+				if (TryResolveDummy(model!, pNamed, out Transform3D pAt))
 				{
 					flameOrigins.Add(pAt.Origin);
 				}
 			}
+
+			bool rigFloating = IsFloatingAmbientPlacement(
+				hasModel: true, isBuildingRoomModel, hasVisualFx, matchedRigAttachment: true, placement.EntityName, model);
+			LightPlacement rigLight = rigFloating ? light with { IsFloatingAmbient = true } : light;
 
 			string bone = Engine_LevelFx.DummyBoneName(LightDummy);
 			int index = 0;
@@ -979,8 +1104,8 @@ public static class Engine_LevelLights
 			{
 				string dotted = index == 0 ? LightDummy : LightDummy + index;
 				string named = index == 0 ? bone : bone + index;
-				if (!TryResolveDummy(model, dotted, out Transform3D at) &&
-				    !TryResolveDummy(model, named, out at))
+				if (!TryResolveDummy(model!, dotted, out Transform3D at) &&
+				    !TryResolveDummy(model!, named, out at))
 				{
 					break;
 				}
@@ -990,18 +1115,16 @@ public static class Engine_LevelLights
 					at = AlignLightDummyToFlame(at, flameOrigins);
 				}
 
-				Emit(placement.Hash, light, placed * at, placement.EntityName, index);
+				Emit(placement.Hash, rigLight, placed * at, placement.EntityName, index);
 			}
 
 			// Fallback 1: Authored FX attachments.
-			if (index == 0)
+			if (index == 0 && hasVisualFx)
 			{
-				List<Engine_LevelFx.FxAttachment> fxList =
-					Engine_LevelFx.HuntFxAttachments(placement.Hash, views);
 				var usedBones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-				for (int f = 0; f < fxList.Count; f++)
+				for (int f = 0; f < modelFxList.Count; f++)
 				{
-					Engine_LevelFx.FxAttachment fx = fxList[f];
+					Engine_LevelFx.FxAttachment fx = modelFxList[f];
 					if (fx.Dummy.Length == 0)
 					{
 						continue;
@@ -1014,8 +1137,8 @@ public static class Engine_LevelLights
 						continue;
 					}
 
-					if (!TryResolveDummy(model, fx.Dummy, out Transform3D at) &&
-					    (fxBone.Length == 0 || !TryResolveDummy(model, fxBone, out at)))
+					if (!TryResolveDummy(model!, fx.Dummy, out Transform3D at) &&
+					    (fxBone.Length == 0 || !TryResolveDummy(model!, fxBone, out at)))
 					{
 						continue;
 					}
@@ -1026,7 +1149,7 @@ public static class Engine_LevelLights
 						xform *= new Transform3D(Basis.Identity, -fx.Offset);
 					}
 
-					Emit(placement.Hash, light with { Dummy = fx.Dummy }, xform, placement.EntityName, index);
+					Emit(placement.Hash, light with { Dummy = fx.Dummy, IsFloatingAmbient = false }, xform, placement.EntityName, index);
 					index++;
 				}
 			}
@@ -1040,13 +1163,13 @@ public static class Engine_LevelLights
 				{
 					string dotted = pIdx == 0 ? particleDotted : particleDotted + pIdx;
 					string named = pIdx == 0 ? particleDummy : particleDummy + pIdx;
-					if (!TryResolveDummy(model, dotted, out Transform3D at) &&
-					    !TryResolveDummy(model, named, out at))
+					if (!TryResolveDummy(model!, dotted, out Transform3D at) &&
+					    !TryResolveDummy(model!, named, out at))
 					{
 						break;
 					}
 
-					Emit(placement.Hash, light with { Dummy = dotted }, placed * at, placement.EntityName, index);
+					Emit(placement.Hash, rigLight with { Dummy = dotted }, placed * at, placement.EntityName, index);
 					index++;
 				}
 			}
@@ -1056,10 +1179,10 @@ public static class Engine_LevelLights
 			{
 				const string posDotted = "Prop.Layout.Position";
 				string posBone = Engine_LevelFx.DummyBoneName(posDotted);
-				if (TryResolveDummy(model, posDotted, out Transform3D at) ||
-				    (posBone.Length != 0 && TryResolveDummy(model, posBone, out at)))
+				if (TryResolveDummy(model!, posDotted, out Transform3D at) ||
+				    (posBone.Length != 0 && TryResolveDummy(model!, posBone, out at)))
 				{
-					Emit(placement.Hash, light, placed * at, placement.EntityName, index);
+					Emit(placement.Hash, rigLight, placed * at, placement.EntityName, index);
 					index++;
 				}
 			}
@@ -1067,7 +1190,9 @@ public static class Engine_LevelLights
 			// Fallback 4: Entity origin
 			if (index == 0)
 			{
-				Emit(placement.Hash, light, placed, placement.EntityName, 0);
+				bool originFloating = IsFloatingAmbientPlacement(
+					hasModel: true, isBuildingRoomModel, hasVisualFx, matchedRigAttachment: false, placement.EntityName, model);
+				Emit(placement.Hash, originFloating ? light with { IsFloatingAmbient = true } : light, placed, placement.EntityName, 0);
 			}
 		}
 
@@ -1103,6 +1228,11 @@ public static class Engine_LevelLights
 		string? modelPathB)
 	{
 		if (a.Type != LightTypePoint || b.Type != LightTypePoint)
+		{
+			return false;
+		}
+
+		if (a.IsFloatingAmbient != b.IsFloatingAmbient)
 		{
 			return false;
 		}
@@ -1423,6 +1553,87 @@ public static class Engine_LevelLights
 
 	private static float? _buildingInteriorReachScale;
 
+	private static float? _floatingLightSoftness;
+
+	/// <summary>`floating_light_softness`: soft-core volume radius multiplier for unattached floating ambient lights; 1.0 default (0.0 = point source).</summary>
+	public static float FloatingLightSoftness
+	{
+		get
+		{
+			if (_floatingLightSoftness is null)
+			{
+				try
+				{
+					_floatingLightSoftness = Math.Clamp(
+						Refii.Core.Engine_RefiiConfig.Float(
+							Refii.Core.Engine_RefiiConfig.Read(out _),
+							"floating_light_softness", 1.0f),
+						0.0f, 3.0f);
+				}
+				catch (Exception)
+				{
+					_floatingLightSoftness = 1.0f;
+				}
+			}
+
+			return _floatingLightSoftness.Value;
+		}
+	}
+
+	/// <summary>
+	/// Computes the surface and volumetric soft-core radii for a placed light. Pure helper for headless tests.
+	/// Physical fixtures (<paramref name="isFloatingAmbient"/> == false) always return 0.
+	/// </summary>
+	public static void ComputeSoftCoreRadii(
+		float effectiveRange,
+		bool isSpot,
+		bool isFloatingAmbient,
+		float softnessScale,
+		out float surfaceSoftCore,
+		out float volumetricSoftCore)
+	{
+		if (!isFloatingAmbient || !Engine_LightingFrame.ModernModel || effectiveRange <= 0.05f || softnessScale <= 1e-4f)
+		{
+			surfaceSoftCore = 0.0f;
+			volumetricSoftCore = 0.0f;
+			return;
+		}
+
+		float maxAllowed = effectiveRange * 0.80f;
+		if (isSpot)
+		{
+			volumetricSoftCore = MathF.Min(Math.Clamp(effectiveRange * FloatingSpotCoreFraction, 1.5f, 6.5f) * softnessScale, maxAllowed);
+			surfaceSoftCore = MathF.Min(Math.Clamp(effectiveRange * (FloatingSpotCoreFraction * 0.75f), 1.2f, 5.0f) * softnessScale, maxAllowed);
+		}
+		else
+		{
+			volumetricSoftCore = MathF.Min(Math.Clamp(effectiveRange * FloatingVolumetricCoreFraction, 2.2f, 10.0f) * softnessScale, maxAllowed);
+			surfaceSoftCore = MathF.Min(Math.Clamp(effectiveRange * FloatingSurfaceCoreFraction, 1.6f, 7.5f) * softnessScale, maxAllowed);
+		}
+	}
+
+	public static bool IsFloatingAmbient(Light3D node) =>
+		node.HasMeta(FloatingAmbientMeta) && node.GetMeta(FloatingAmbientMeta).AsBool();
+
+	public static float SurfaceSoftCoreOf(Light3D node) =>
+		node.HasMeta(SurfaceSoftCoreMeta) ? (float)node.GetMeta(SurfaceSoftCoreMeta).AsDouble() : 0.0f;
+
+	public static float VolumetricSoftCoreOf(Light3D node) =>
+		node.HasMeta(VolumetricSoftCoreMeta) ? (float)node.GetMeta(VolumetricSoftCoreMeta).AsDouble() : 0.0f;
+
+	private static void UpdateSoftCoreMetas(Light3D node, float effectiveRange)
+	{
+		ComputeSoftCoreRadii(
+			effectiveRange,
+			node is SpotLight3D,
+			IsFloatingAmbient(node),
+			FloatingLightSoftness,
+			out float surfaceSoftCore,
+			out float volumetricSoftCore);
+		node.SetMeta(SurfaceSoftCoreMeta, surfaceSoftCore);
+		node.SetMeta(VolumetricSoftCoreMeta, volumetricSoftCore);
+	}
+
 	/// <summary>`building_interior_light_scale`: multiplier on placed light intensity inside town buildings in outdoor levels; 1.0 default.</summary>
 	public static float BuildingInteriorLightScale
 	{
@@ -1712,7 +1923,8 @@ public static class Engine_LevelLights
 
 	private static void ApplyShadowTuning(Light3D node)
 	{
-		node.ShadowBlur = PlacedShadowBlur;
+		bool softFloating = IsFloatingAmbient(node) && FloatingLightSoftness > 1e-4f;
+		node.ShadowBlur = softFloating ? MathF.Max(PlacedShadowBlur, FloatingShadowBlur) : PlacedShadowBlur;
 		node.ShadowNormalBias = PlacedShadowNormalBias;
 		node.ShadowBias = float.IsNaN(PlacedShadowBias)
 			? (node is SpotLight3D ? 0.03f : 0.05f)
@@ -1787,17 +1999,20 @@ public static class Engine_LevelLights
 		node.SetMeta(RawRangeMeta, light.Range);
 		node.SetMeta(RawFadeDistanceMeta, light.FadeDistance);
 		node.SetMeta(RawFadeRangeMeta, light.FadeRange);
+		node.SetMeta(FloatingAmbientMeta, light.IsFloatingAmbient);
 		node.SetMeta(VolumetricFogScaleMeta, DefaultVolumetricFogScale);
 		ComputeEffectiveLightValues(node, out float initialEnergy, out float initialRange);
 		node.SetMeta(AuthoredRangeMeta, initialRange);
+		float scaledInitialRange = initialRange * RangeScale;
 		if (node is OmniLight3D omniInit)
 		{
-			omniInit.OmniRange = initialRange * RangeScale;
+			omniInit.OmniRange = scaledInitialRange;
 		}
 		else if (node is SpotLight3D spotInit)
 		{
-			spotInit.SpotRange = initialRange * RangeScale;
+			spotInit.SpotRange = scaledInitialRange;
 		}
+		UpdateSoftCoreMetas(node, scaledInitialRange);
 		// The component as authored, for the classic light list where no guest states one.
 		Refii.Models.Engine_ClassicPlacedLights.Stamp(node, light.ColourLinear, light.Intensity, light.Range,
 			light.Type == LightTypeSpot, light.HalfAngleRadians, light.FadeDistance, light.FadeRange,

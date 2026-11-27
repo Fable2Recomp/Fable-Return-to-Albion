@@ -7,3 +7,4 @@
 		vec4 record = vec4(packed_record.xyz, range_stated.x);
 		float d = distance(world, record.xyz);
 		float stated = range_stated.y;
+		vec4 row2 = vec4(0.0);

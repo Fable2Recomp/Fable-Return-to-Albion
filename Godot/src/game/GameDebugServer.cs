@@ -1630,13 +1630,15 @@ public partial class GameDebugServer : Node
 				foreach ((float distance, Light3D light) in rows.GetRange(0, System.Math.Min(take, rows.Count)))
 				{
 					float range = light is OmniLight3D omni ? omni.OmniRange : light is SpotLight3D spot ? spot.SpotRange : 0f;
+					float softCore = Refii.Lighting.Engine_LevelLights.VolumetricSoftCoreOf(light);
 					Vector3 p = light.GlobalPosition;
 					described.Add(
 						$"{light.Name} d={distance:0.0} at=({p.X:0.0},{p.Y:0.0},{p.Z:0.0}) range={range:0.0} " +
 						$"energy={light.LightEnergy:0.00} colour=({light.LightColor.R:0.00},{light.LightColor.G:0.00},{light.LightColor.B:0.00}) " +
 						$"fade={(light.DistanceFadeEnabled ? $"{light.DistanceFadeBegin:0}+{light.DistanceFadeLength:0}" : "off")} " +
 						$"visible={light.Visible} shadow={light.ShadowEnabled} cull=0x{light.LightCullMask:X8} " +
-						$"host={(light.HasMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta) ? $"0x{(uint)light.GetMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta).AsInt64():X8}" : "-")}");
+						$"host={(light.HasMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta) ? $"0x{(uint)light.GetMeta(Refii.Lighting.Engine_LightZones.HostRecordMeta).AsInt64():X8}" : "-")}" +
+						(softCore > 0f ? $" softCore={softCore:0.1}" : string.Empty));
 				}
 
 				return Ok(new Dictionary<string, object?>

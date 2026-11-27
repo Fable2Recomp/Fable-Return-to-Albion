@@ -618,6 +618,12 @@ public static class RuntimeCVarsGodot
                 "Multiplier on placed light radius (reach) inside town buildings in outdoor "
                 + "levels. 1.0 preserves the authored room reach without over-overlapping. "
                 + "Caves are unaffected."),
+            new("floating_light_softness", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Soft-core volume radius scale for unattached floating ambient lights (such as "
+                + "PlaceableLight mood fills in Wraithmarsh houses and clearings). 1.0 spreads "
+                + "the central point into a uniform ambient volume while preserving full reach "
+                + "and window light shafts; 0.0 restores a point-source hotspot. Physical torches "
+                + "and lamps are unaffected."),
             ..RuntimeCVarsAndroid.BakedShadows,
             ..RuntimeCVarsAndroid.IntroVideos,
             ..RuntimeCVarsAndroid.TextureStorage,

@@ -1646,7 +1646,7 @@ public partial class Engine_PostFxEffect : CompositorEffect
                 l.LinearColor.Z * fluxScale,
                 l.SpotCosHalfAngle);
             Set(s, slot + 2, l.AtlasRect.X, l.AtlasRect.Y, l.AtlasRect.Z, l.AtlasRect.W);
-            Set(s, slot + 3, l.SpotDir.X, l.SpotDir.Y, l.SpotDir.Z, nodeRange);
+            Set(s, slot + 3, l.SpotDir.X, l.SpotDir.Y, l.SpotDir.Z, MathF.Max(l.SoftCoreRadius, 0.0f));
             Set(s, slot + 4,
                 l.IndoorFromOutside ? 1.0f : 0.0f,
                 l.CasterMask & 0xFFFFu,

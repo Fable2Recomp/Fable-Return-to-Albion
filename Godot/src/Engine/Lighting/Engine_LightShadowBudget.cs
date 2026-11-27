@@ -184,6 +184,12 @@ public partial class Engine_LightShadowBudget : Node
 		/// <summary>Cached volumetric fog scattering multiplier for this fixture.</summary>
 		public float VolumetricFogScale;
 
+		/// <summary>Whether this light is an unattached floating ambient volume.</summary>
+		public bool FloatingAmbient;
+
+		/// <summary>Cached volumetric soft-core radius in metres (0 for physical fixtures).</summary>
+		public float VolumetricSoftCore;
+
 		/// <summary>World forward axis (-GlobalBasis.Z) for spotlights; zero for omni lights.</summary>
 		public Vector3 SpotDir;
 
@@ -537,7 +543,8 @@ public partial class Engine_LightShadowBudget : Node
 				IndoorFromOutside: indoorFromOutside,
 				SpotDir: f.SpotDir,
 				SpotCosHalfAngle: f.SpotCosHalfAngle,
-				CasterMask: casterMask);
+				CasterMask: casterMask,
+				SoftCoreRadius: f.VolumetricSoftCore);
 		}
 
 		if (outCount == 0)
@@ -623,6 +630,8 @@ public partial class Engine_LightShadowBudget : Node
 				fixture.VolumetricFogScale = light.HasMeta(VolumetricFogScaleName)
 					? (float)light.GetMeta(VolumetricFogScaleName).AsDouble()
 					: Engine_LevelLights.DefaultVolumetricFogScale;
+				fixture.FloatingAmbient = Engine_LevelLights.IsFloatingAmbient(light);
+				fixture.VolumetricSoftCore = Engine_LevelLights.VolumetricSoftCoreOf(light);
 				if (light is SpotLight3D spot)
 				{
 					fixture.SpotCosHalfAngle = MathF.Cos(Mathf.DegToRad(Math.Clamp(spot.SpotAngle, 1.0f, 89.0f)));
@@ -1003,7 +1012,8 @@ public partial class Engine_LightShadowBudget : Node
 				isIndoorLight,
 				f.Zone,
 				heroZone,
-				f.Casting);
+				f.Casting,
+				f.FloatingAmbient && !f.Authored);
 			if (score >= float.MaxValue)
 			{
 				continue;
@@ -1259,7 +1269,8 @@ public partial class Engine_LightShadowBudget : Node
 		bool isIndoorLight,
 		uint lightZone,
 		uint heroZone,
-		bool alreadyDynamic = false)
+		bool alreadyDynamic = false,
+		bool isFloatingAmbient = false)
 	{
 		if (!isInteriorLevel)
 		{
@@ -1303,6 +1314,13 @@ public partial class Engine_LightShadowBudget : Node
 		else if (dy > 4.2f)
 		{
 			effectiveDist += (dy - 4.2f) * 25.0f;
+		}
+
+		if (isFloatingAmbient)
+		{
+			// Prioritize physical torches, lanterns, and braziers for crisp character shadow slots
+			// ahead of unauthored floating ambient fill volumes.
+			effectiveDist += 3.5f;
 		}
 
 		float clampedEnergy = Mathf.Clamp(baseEnergy, 0.5f, 3.0f);
