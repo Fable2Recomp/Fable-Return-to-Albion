@@ -266,8 +266,9 @@ void light() {
             // No ALBEDO argument: Godot multiplies DIFFUSE_LIGHT by it after this function returns.
             DIFFUSE_LIGHT += fable_direct(NORMAL, LIGHT, atten, LIGHT_COLOR);
             if (any(notEqual(v_specular, vec3(0.0)))) {
+                float spec_amb = fable_specular_ambient_weight(LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
                 SPECULAR_LIGHT += fable_specular(
-                    NORMAL, LIGHT, VIEW, atten, LIGHT_COLOR, v_specular, v_specular_power);
+                    NORMAL, LIGHT, VIEW, atten * spec_amb, LIGHT_COLOR, v_specular, v_specular_power);
             }
         }
     }

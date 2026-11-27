@@ -343,15 +343,6 @@ public static partial class EditorModValueService
                     }
                 }
             }
-
-            if (string.IsNullOrWhiteSpace(modelPath))
-            {
-                string? curated = Refii.Core.Engine_TitleGame.Active.CuratedModelForParent(parentArchetypeHash);
-                if (!string.IsNullOrWhiteSpace(curated))
-                {
-                    modelPath = Engine_PropModelIndex.ResolveByPath(curated!);
-                }
-            }
         }
 
         string layerName = !string.IsNullOrWhiteSpace(targetLayerName)

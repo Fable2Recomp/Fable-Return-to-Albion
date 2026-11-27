@@ -85,11 +85,10 @@ public sealed class Engine_StaticTwins
     private readonly Dictionary<uint, List<Twin>> _byRecord = new();
 
     /// <summary>
-    /// EVERY drawable by model name, record or not. A building's GMD children — its doors and
-    /// windows — are emitted from the parent's layout with NO record of their own, so the
-    /// record index never sees them and the guest's live door stood next to the closed one.
-    /// This index lets a drawn entity hide the static copy that shares its model and its
-    /// place, which is the only identity such a child has.
+    /// EVERY drawable by model name, record or not. Record-less static twins — such as
+    /// companion sub-parts or pre-baked <c>engine_level</c> placements — have no <c>.save</c>
+    /// record for the record join to match on. This index lets a drawn entity hide a
+    /// record-less static copy that shares its model and place.
     /// </summary>
     private readonly Dictionary<string, List<Twin>> _byModel = new();
 

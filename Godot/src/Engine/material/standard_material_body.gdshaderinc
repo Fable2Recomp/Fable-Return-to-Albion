@@ -1005,8 +1005,9 @@ void light() {
 #else
             if (!FABLE_FOLIAGE && (!fable_zero_specular_work || any(notEqual(v_specular, vec3(0.0))))) {
 #endif
+                float spec_amb = fable_specular_ambient_weight(LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
                 SPECULAR_LIGHT += fable_specular(
-                    NORMAL, LIGHT, VIEW, atten * fable_specular_ao(v_combined_ao), LIGHT_COLOR, v_specular, v_specular_power);
+                    NORMAL, LIGHT, VIEW, atten * spec_amb * fable_specular_ao(v_combined_ao), LIGHT_COLOR, v_specular, v_specular_power);
             }
 #endif
         }

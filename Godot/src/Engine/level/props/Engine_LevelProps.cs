@@ -79,26 +79,7 @@ public sealed class PropBuildStats
 
     public int EngineLevelType21Blocks { get; set; }
 
-    public int NameMatched { get; set; }
-
-    public int CuratedMatched { get; set; }
-
-    public int RejectedBridge { get; set; }
-
     public int Companions { get; set; }
-
-    public int Shells { get; set; }
-
-    public int GmdSidecarsLoaded { get; set; }
-
-    public int GmdSidecarsMissing { get; set; }
-
-    public int GmdChildren { get; set; }
-
-    public int GmdChildrenMissing { get; set; }
-
-    /// <summary>Layout children standing on a .save placement's origin, which the guest instantiates instead.</summary>
-    public int GmdChildrenSuperseded { get; set; }
 
     public int FoliageBlocks { get; set; }
 
@@ -130,11 +111,8 @@ public sealed class PropBuildStats
         $"skipped(skeletal={Skeletal} unnamed={Unnamed} " +
         $"nomodel={NoModelHash}(of which {NoModelHashWithAppearance} DECLARE A MESH) " +
         $"unresolved={UnresolvedModel} character={RejectedCharacter} " +
-        $"bridge={RejectedBridge} shellpos={ShellBadPosition}) " +
-        $"namematched={NameMatched} curated={CuratedMatched} " +
-        $"companions={Companions} shells={Shells} " +
-        $"gmd(sidecars={GmdSidecarsLoaded}/{GmdSidecarsLoaded + GmdSidecarsMissing} " +
-        $"children={GmdChildren} unresolved={GmdChildrenMissing} superseded={GmdChildrenSuperseded}) (" +
+        $"shellpos={ShellBadPosition}) " +
+        $"companions={Companions} (" +
         $"duprecord={DuplicateRecord} duptransform={DuplicateTransform}) " +
         $"engine_level(blocks={EngineLevelBlocks} inst={EngineLevelInstances} " +
         $"unresolved={EngineLevelUnresolved} duptransform={EngineLevelDuplicate} " +
@@ -312,7 +290,7 @@ public static partial class Engine_LevelProps
     /// <summary>
     /// Collects all static shadow-casting prop blocks, light-bearing host placement hashes, and
     /// resolved placed light instances for <paramref name="level"/> using the exact same GDB +
-    /// engine_level + companion + GMD layout pipeline as <see cref="Build(LevelEntry,Func{string,byte[]?},Refii.Lighting.LightProbeField?,Refii.Lighting.LightingFrame?,Refii.Lighting.LightmapContainer?,Refii.Entities.EntityInspectData?,out PropBuildStats)"/>.
+    /// engine_level + companion pipeline as <see cref="Build(LevelEntry,Func{string,byte[]?},Refii.Lighting.LightProbeField?,Refii.Lighting.LightingFrame?,Refii.Lighting.LightmapContainer?,Refii.Entities.EntityInspectData?,out PropBuildStats)"/>.
     /// </summary>
     public static bool TryCollectStaticGeometryAndLights(
         LevelEntry level,
@@ -413,7 +391,7 @@ public static partial class Engine_LevelProps
 
         if (!GdbView.TryParseShared(gdbBytes, out view, out string why))
         {
-            GD.Print($"[props] {level}: level gdb unreadable ({why})");
+            LogLine($"[props] {level}: level gdb unreadable ({why})");
             return false;
         }
 
@@ -450,13 +428,13 @@ public static partial class Engine_LevelProps
         // THE LAYER GATE, out loud. Everything downstream is built from this list, so if it is
         // ever wrong the whole region is wrong, and the way that failure looks — a street with
         // holes in it — is indistinguishable by eye from a dozen other defects.
-        GD.Print($"[layers] {level}: {layers}");
+        LogLine($"[layers] {level}: {layers}");
 
         placements = Engine_GdbPlacements.Parse(view, saveMap);
         supplementalViews = preloadedSupplemental is { Count: > 0 }
             ? new List<GdbView>(preloadedSupplemental)
             : LoadSupplementalViews(read);
-        AugmentPlacementModelHashes(level, placements, supplementalViews, stats);
+        AugmentPlacementModelHashes(placements, supplementalViews, stats);
         AppendSupplementalPlacements(supplementalViews, saveMap, placements, stats, editorHierarchy);
         editorHierarchy?.IndexPlacements(placements);
         stats.Placements = placements.Count;
@@ -469,7 +447,6 @@ public static partial class Engine_LevelProps
 
         var recordKeys = new HashSet<string>();
         var transformKeys = new HashSet<string>();
-        var shellCandidates = new List<ShellCandidate>();
 
         AppendEngineLevelBlocks(
             read, Engine_LevelGdb.EngineLevelPath(level, read, gdbPath),
@@ -521,64 +498,10 @@ public static partial class Engine_LevelProps
                 continue;
             }
 
-            bool RejectSubstitute(string candidate, bool containerGuard)
-            {
-                if (props.RejectSubstitute(entityName, candidate))
-                {
-                    return true;
-                }
-
-                return containerGuard && inspect is not null &&
-                    inspect.Contents.ContainsKey(placement.Hash) &&
-                    !inspect.Properties.ContainsKey(placement.Hash) &&
-                    IsImplausibleContainerShellModel(candidate);
-            }
-
-            bool authoredHash = placement.ModelPathHash != 0 && !placement.ModelPathFilled;
-            string? modelPath = authoredHash
+            string? modelPath = placement.ModelPathHash != 0
                 ? Engine_PropModelIndex.Resolve(
                     placement.ModelPathHash, Array.Empty<string>())
                 : null;
-
-            bool matchedByHash = modelPath is not null;
-
-            if (modelPath is null)
-            {
-                string entityKey = Engine_PropModelIndex.EntityKey(entityName);
-                string? curated =
-                    Refii.Core.Engine_TitleGame.Active.CuratedModelForParent(placement.ParentHash) ??
-                    Refii.Core.Engine_TitleGame.Active.CuratedModelForKey(entityKey);
-
-                if (curated is not null)
-                {
-                    modelPath = Engine_PropModelIndex.ResolveByPath(curated);
-                    if (modelPath is not null && RejectSubstitute(modelPath, true))
-                    {
-                        modelPath = null;
-                    }
-
-                    if (modelPath is not null)
-                    {
-                        stats.CuratedMatched++;
-                    }
-                }
-            }
-
-            if (modelPath is null && placement.ModelPathFilled &&
-                placement.ModelPathHash != 0)
-            {
-                modelPath = Engine_PropModelIndex.Resolve(
-                    placement.ModelPathHash, Array.Empty<string>());
-                if (modelPath is not null && RejectSubstitute(modelPath, false))
-                {
-                    modelPath = null;
-                }
-
-                if (modelPath is not null)
-                {
-                    matchedByHash = true;
-                }
-            }
 
             if (modelPath is null)
             {
@@ -590,12 +513,6 @@ public static partial class Engine_LevelProps
                     {
                         stats.NoModelHashWithAppearance++;
                     }
-
-                    string shellKey = Engine_PropModelIndex.EntityKey(entityName);
-                    if (props.NoHashShellModel(shellKey) is not null && HasWorldishPosition(placement))
-                    {
-                        shellCandidates.Add(new ShellCandidate(shellKey, placement));
-                    }
                 }
                 else
                 {
@@ -606,22 +523,15 @@ public static partial class Engine_LevelProps
             }
 
             {
-                string want = OS.GetEnvironment("REFII_PROPS_DUMP");
+                string want = GetEnv("REFII_PROPS_DUMP");
                 if (want.Length != 0 && entityName.Length != 0 &&
                     entityName.Contains(want, StringComparison.OrdinalIgnoreCase))
                 {
-                    GD.Print(
+                    LogLine(
                         $"[props-dump] {entityName} hash={placement.Hash:X8} " +
-                        $"modelHash={placement.ModelPathHash:X8} filled={placement.ModelPathFilled} " +
-                        $"authored={authoredHash} byHash={matchedByHash} " +
+                        $"modelHash={placement.ModelPathHash:X8} " +
                         $"parent={placement.ParentHash:X8} at=({placement.X:F2},{placement.Y:F2},{placement.Z:F2}) -> {modelPath}");
                 }
-            }
-
-            if (!matchedByHash && IsBridgeModel(modelPath))
-            {
-                stats.RejectedBridge++;
-                continue;
             }
 
             if (IsCharacterModel(modelPath))
@@ -709,22 +619,19 @@ public static partial class Engine_LevelProps
 
             if (props.CompanionParts(modelPath, out string partsTag) is { Count: > 0 } parts)
             {
-                uint ownerHash = isEditor ? placement.Hash : 0u;
                 if (substituteCompanion is not null)
                 {
-                    AppendCompanionInstance(partsTag, substituteCompanion, transform, ownerHash);
+                    AppendCompanionInstance(partsTag, substituteCompanion, transform, placement.Hash);
                 }
 
                 foreach (string partPath in parts)
                 {
-                    AppendCompanionInstance(partsTag, partPath, transform, ownerHash);
+                    AppendCompanionInstance(partsTag, partPath, transform, placement.Hash);
                 }
             }
         }
 
-        AppendNoHashShells(props, shellCandidates, blocks, order, transformKeys, stats, isEditor);
-        AppendCompanionBlocks(blocks, order, transformKeys, stats, isEditor);
-        AppendGmdLayoutChildren(blocks, order, transformKeys, stats, isEditor);
+        AppendCompanionBlocks(blocks, order, transformKeys, stats);
 
         return stats.Instances != 0;
     }
@@ -1563,8 +1470,7 @@ public static partial class Engine_LevelProps
         Dictionary<string, PropBlockBuild> blocks,
         List<string> order,
         HashSet<string> transformKeys,
-        PropBuildStats stats,
-        bool isEditor = false)
+        PropBuildStats stats)
     {
         var additions = new List<KeyValuePair<string, PropBlockBuild>>();
 
@@ -1620,287 +1526,6 @@ public static partial class Engine_LevelProps
         }
     }
 
-    private static void AppendGmdLayoutChildren(
-        Dictionary<string, PropBlockBuild> blocks,
-        List<string> order,
-        HashSet<string> transformKeys,
-        PropBuildStats stats,
-        bool isEditor = false)
-    {
-        var additions = new Dictionary<string, PropBlockBuild>();
-        var additionOrder = new List<string>();
-        var cache = new Dictionary<string, List<GmdLayoutChild>>();
-
-        // EVERY .SAVE PLACEMENT'S ORIGIN, on a one-metre grid. A layout child is the building's
-        // authored default at a doorway or window; when the .save places a record on that same
-        // origin (the tavern's door: 2 cm apart, and often a DIFFERENT variant — V1 in the
-        // layout, V3 in the .save), the guest instantiates the record and never the child. The
-        // child is dropped here, offline, so no second door ever reaches the screen.
-        var placed = new Dictionary<(int, int, int), List<(Vector3 At, string Model)>>();
-        foreach (string key in order)
-        {
-            string model = NameOf(blocks[key].ModelPath);
-            foreach (Transform3D instance in blocks[key].Instances)
-            {
-                (int, int, int) cell = GridCell(instance.Origin);
-                if (!placed.TryGetValue(cell, out List<(Vector3, string)>? list))
-                {
-                    list = new List<(Vector3, string)>();
-                    placed[cell] = list;
-                }
-
-                list.Add((instance.Origin, model));
-            }
-        }
-
-        // WHAT SUPERSEDED WHAT, as a per-region summary — the audit that the rule is not
-        // over-culling: every child should be replaced by a placement of its own kind.
-        var superseded = new Dictionary<string, int>();
-
-        foreach (string key in new List<string>(order))
-        {
-            PropBlockBuild parent = blocks[key];
-            if (!Engine_GmdLayout.IsShellParent(parent.ModelPath))
-            {
-                continue;
-            }
-
-            if (!cache.TryGetValue(parent.ModelPath, out List<GmdLayoutChild>? children))
-            {
-                byte[]? sidecar = Engine_BnkMeshLoader.ReadBytes(parent.ModelPath + ".gmd");
-                children = Engine_GmdLayout.Parse(sidecar);
-                cache[parent.ModelPath] = children;
-
-                if (sidecar is null)
-                {
-                    stats.GmdSidecarsMissing++;
-                }
-                else
-                {
-                    stats.GmdSidecarsLoaded++;
-                }
-            }
-
-            foreach (GmdLayoutChild child in children)
-            {
-                string? childPath = ResolveGmdChild(child.AssetKey);
-                if (childPath is null)
-                {
-                    stats.GmdChildrenMissing++;
-                    continue;
-                }
-
-                if (!Engine_GmdLayout.ShouldEmit(child.AssetKey, childPath))
-                {
-                    continue;
-                }
-
-                string childKey = "gmd|" + childPath;
-                if (!additions.TryGetValue(childKey, out PropBlockBuild? build))
-                {
-                    build = new PropBlockBuild(childPath, $"gmd {NameOf(childPath)}");
-                    additions[childKey] = build;
-                    additionOrder.Add(childKey);
-                }
-
-                string dumpWant = OS.GetEnvironment("REFII_PROPS_DUMP");
-                bool dump = dumpWant.Length != 0 &&
-                    (child.AssetKey + " " + childPath).Contains(dumpWant, StringComparison.OrdinalIgnoreCase);
-                for (int i = 0; i < parent.Instances.Count; i++)
-                {
-                    Transform3D instance = parent.Instances[i];
-                    uint ownerHash = isEditor && i < parent.InstanceHashes.Count
-                        ? parent.InstanceHashes[i]
-                        : 0u;
-                    Transform3D world = ComposeChild(instance, child.Local);
-                    if (OnPlacement(placed, world.Origin, NameOf(childPath)) is string by)
-                    {
-                        stats.GmdChildrenSuperseded++;
-                        string pair = NameOf(childPath) + " -> " + by;
-                        superseded[pair] = superseded.TryGetValue(pair, out int seen) ? seen + 1 : 1;
-                        continue;
-                    }
-
-                    if (dump)
-                    {
-                        GD.Print($"[props-dump] gmd child '{child.AssetKey}' of {NameOf(parent.ModelPath)} " +
-                            $"at=({world.Origin.X:F2},{world.Origin.Y:F2},{world.Origin.Z:F2}) -> {childPath}");
-                    }
-                    if (transformKeys.Add(TransformKey(world, childPath)))
-                    {
-                        build.AddInstance(world, ownerHash);
-                        stats.GmdChildren++;
-                        stats.Instances++;
-                    }
-                }
-            }
-        }
-
-        foreach (string key in additionOrder)
-        {
-            if (additions[key].Instances.Count == 0)
-            {
-                continue;
-            }
-
-            blocks[key] = additions[key];
-            order.Add(key);
-        }
-
-        if (superseded.Count != 0)
-        {
-            var ranked = new List<KeyValuePair<string, int>>(superseded);
-            ranked.Sort((x, y) => y.Value.CompareTo(x.Value));
-            var text = new System.Text.StringBuilder("[props] gmd children superseded by a .save placement:");
-            foreach (KeyValuePair<string, int> entry in ranked)
-            {
-                text.Append(' ').Append(entry.Key).Append(" x").Append(entry.Value).Append(';');
-            }
-
-            GD.Print(text.ToString());
-        }
-    }
-
-    private const float SupersedeRadius = 0.25f;
-
-    /// <summary>
-    /// The reach for a placement of the child's OWN model. Knothole Island's shops place
-    /// `MI_Door_Double_Shop` 0.84 m and 1.05 m from the layout child of the same model, and
-    /// both stood: one shut, one open.
-    /// </summary>
-    private const float SupersedeSameModelRadius = 1.5f;
-
-    private static (int, int, int) GridCell(Vector3 at) =>
-        (Mathf.FloorToInt(at.X), Mathf.FloorToInt(at.Y), Mathf.FloorToInt(at.Z));
-
-    /// <summary>
-    /// The model of the .save placement that replaces a layout child at <paramref name="at"/>,
-    /// or null: any model within <see cref="SupersedeRadius"/>, or the child's own within
-    /// <see cref="SupersedeSameModelRadius"/>.
-    /// </summary>
-    private static string? OnPlacement(
-        Dictionary<(int, int, int), List<(Vector3 At, string Model)>> placed, Vector3 at, string childModel)
-    {
-        (int cx, int cy, int cz) = GridCell(at);
-        float limit = SupersedeRadius * SupersedeRadius;
-        float sameLimit = SupersedeSameModelRadius * SupersedeSameModelRadius;
-        for (int dx = -2; dx <= 2; dx++)
-        {
-            for (int dy = -2; dy <= 2; dy++)
-            {
-                for (int dz = -2; dz <= 2; dz++)
-                {
-                    if (!placed.TryGetValue((cx + dx, cy + dy, cz + dz), out List<(Vector3 At, string Model)>? list))
-                    {
-                        continue;
-                    }
-
-                    foreach ((Vector3 origin, string model) in list)
-                    {
-                        float distance = origin.DistanceSquaredTo(at);
-                        if (distance <= limit ||
-                            (distance <= sameLimit &&
-                            model.Equals(childModel, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            return model;
-                        }
-                    }
-                }
-            }
-        }
-
-        return null;
-    }
-
-    public static Transform3D ComposeChild(Transform3D parent, Transform3D childLocal)
-    {
-        Basis parentGame = FlipZColumn(parent.Basis);
-        Basis worldGame = parentGame * childLocal.Basis;
-        Vector3 origin = parent.Origin + (parentGame * childLocal.Origin);
-        return new Transform3D(FlipZColumn(worldGame), origin);
-    }
-
-    private static Basis FlipZColumn(Basis basis) =>
-        new(basis.X, basis.Y, -basis.Z);
-
-    private static string? ResolveGmdChild(string assetKey)
-    {
-        if (assetKey.Length == 0)
-        {
-            return null;
-        }
-
-        string? curated = Refii.Core.Engine_TitleGame.Active.CuratedModelForKey(assetKey);
-        if (curated is not null &&
-            Engine_PropModelIndex.ResolveByPath(curated) is string curatedHit)
-        {
-            return curatedHit;
-        }
-
-        IReadOnlyList<PropModelAsset> exact = Engine_PropModelIndex.ByCompactKey(assetKey);
-        if (exact.Count != 0)
-        {
-            return ChooseGmdChild(exact);
-        }
-
-        var fuzzy = new List<PropModelAsset>();
-        foreach (KeyValuePair<string, List<PropModelAsset>> entry in
-                 Engine_PropModelIndex.CompactKeys())
-        {
-            if (entry.Key.Length < 5)
-            {
-                continue;
-            }
-
-            if (entry.Key.Contains(assetKey, StringComparison.Ordinal) ||
-                assetKey.Contains(entry.Key, StringComparison.Ordinal))
-            {
-                fuzzy.AddRange(entry.Value);
-            }
-        }
-
-        return fuzzy.Count == 0 ? null : ChooseGmdChild(fuzzy);
-    }
-
-    private static string? ChooseGmdChild(IReadOnlyList<PropModelAsset> candidates)
-    {
-        string? best = null;
-        int bestScore = int.MinValue;
-
-        foreach (PropModelAsset candidate in candidates)
-        {
-            string path = candidate.VirtualPath.Replace('\\', '/').ToLowerInvariant();
-            int score = Engine_PropModelIndex.ArchivePreference(candidate.ArchivePath);
-
-            if (path.Contains("/doors_windows/", StringComparison.Ordinal))
-            {
-                score += 400;
-            }
-
-            if (path.Contains("/props/", StringComparison.Ordinal))
-            {
-                score += 200;
-            }
-
-            if (path.Contains("/buildings/", StringComparison.Ordinal))
-            {
-                score += 100;
-            }
-
-            score -= Math.Min(candidate.VirtualPath.Length, 240);
-
-            if (score > bestScore)
-            {
-                bestScore = score;
-                best = candidate.VirtualPath;
-            }
-        }
-
-        return best;
-    }
-
-    private readonly record struct ShellCandidate(string Key, GdbPlacement Placement);
-
     public static string NormalisePath(string path) =>
         path.Replace('\\', '/').ToLowerInvariant();
 
@@ -1938,95 +1563,6 @@ public static partial class Engine_LevelProps
              (MathF.Abs(p.Y + pi) < 0.02f && MathF.Abs(p.Z + pi) < 0.02f));
 
         return !looksLikeRotation;
-    }
-
-    private static void AppendNoHashShells(
-        Engine_TitleProps props,
-        List<ShellCandidate> candidates,
-        Dictionary<string, PropBlockBuild> blocks,
-        List<string> order,
-        HashSet<string> transformKeys,
-        PropBuildStats stats,
-        bool isEditor = false)
-    {
-        foreach (ShellCandidate candidate in candidates)
-        {
-            string exterior = props.NoHashShellModel(candidate.Key)!;
-
-            GdbPlacement placement = WithBorrowedRotation(candidate, candidates);
-            Transform3D transform = BuildTransform(placement);
-
-            foreach (string path in new[] { exterior, CompanionPath(exterior) })
-            {
-                if (path.Length == 0 ||
-                    Engine_PropModelIndex.ResolveByPath(path) is not string resolved)
-                {
-                    continue;
-                }
-
-                if (!transformKeys.Add(TransformKey(transform, resolved)))
-                {
-                    continue;
-                }
-
-                string key = "shell|" + resolved;
-                if (!blocks.TryGetValue(key, out PropBlockBuild? build))
-                {
-                    build = new PropBlockBuild(resolved, $"prop {NameOf(resolved)}");
-                    blocks[key] = build;
-                    order.Add(key);
-                }
-
-                build.AddInstance(transform, placement.Hash);
-                stats.Shells++;
-                stats.Instances++;
-            }
-        }
-    }
-
-    private static GdbPlacement WithBorrowedRotation(
-        ShellCandidate candidate, List<ShellCandidate> all)
-    {
-        GdbPlacement placement = candidate.Placement;
-        if (placement.HasRotation)
-        {
-            return placement;
-        }
-
-        float bestDistance = 64f;
-        GdbPlacement? best = null;
-
-        foreach (ShellCandidate other in all)
-        {
-            if (other.Key != candidate.Key || !other.Placement.HasRotation)
-            {
-                continue;
-            }
-
-            float dx = other.Placement.X - placement.X;
-            float dy = other.Placement.Y - placement.Y;
-            float distance = (dx * dx) + (dy * dy);
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                best = other.Placement;
-            }
-        }
-
-        if (best is null)
-        {
-            return placement;
-        }
-
-        GdbPlacement copy = placement.Clone();
-        copy.RotX = best.RotX;
-        copy.RotY = best.RotY;
-        copy.RotZ = best.RotZ;
-        copy.RotW = best.RotW;
-        copy.RotationIsQuaternion = best.RotationIsQuaternion;
-        copy.Yaw = best.Yaw;
-        copy.HasRotation = true;
-        return copy;
     }
 
     /// <summary>
@@ -2853,7 +2389,6 @@ public static partial class Engine_LevelProps
     }
 
     public static void AugmentPlacementModelHashes(
-        LevelEntry level,
         List<GdbPlacement> placements,
         List<GdbView> views,
         PropBuildStats stats)
@@ -2863,14 +2398,9 @@ public static partial class Engine_LevelProps
             return;
         }
 
-        Engine_TitleProps props = Refii.Core.Engine_TitleGame.Active.Props;
-
         foreach (GdbPlacement p in placements)
         {
-            string entityKey = Engine_PropModelIndex.EntityKey(p.EntityName);
-            bool allowShellAugment = p.ModelPathHash != 0 && props.AugmentsPlacedShell(level, entityKey);
-
-            if (p.Hash == 0 || (p.ModelPathHash != 0 && !allowShellAugment))
+            if (p.Hash == 0 || p.ModelPathHash != 0)
             {
                 continue;
             }
@@ -2902,28 +2432,8 @@ public static partial class Engine_LevelProps
                 continue;
             }
 
-            if (p.ModelPathHash != 0)
-            {
-                if (p.ModelPathHashes.Count == 0)
-                {
-                    p.ModelPathHashes.Add(p.ModelPathHash);
-                }
-
-                foreach (uint hash in found)
-                {
-                    if (!p.ModelPathHashes.Contains(hash))
-                    {
-                        p.ModelPathHashes.Add(hash);
-                    }
-                }
-            }
-            else
-            {
-                p.ModelPathHashes = found;
-                p.ModelPathHash = found[0];
-                p.ModelPathFilled = true;
-            }
-
+            p.ModelPathHashes = found;
+            p.ModelPathHash = found[0];
             stats.SupplementalModelFills++;
 
             if (p.ParentHash == 0 && foundParent != 0)
@@ -3033,10 +2543,6 @@ public static partial class Engine_LevelProps
     public static Basis YawScaleBasis(float s, float c, float sx, float sy, float sz) =>
         GdbTransformMath.YawScaleBasis(s, c, sx, sy, sz);
 
-    public static bool IsBridgeModel(string modelPath) =>
-        modelPath.Replace('\\', '/').ToLowerInvariant()
-            .Contains("bridge", StringComparison.Ordinal);
-
     public static string CompanionPath(string modelPath)
     {
         string path = modelPath.Replace('\\', '/');
@@ -3064,6 +2570,21 @@ public static partial class Engine_LevelProps
                path.Contains("/art/creatures/", StringComparison.Ordinal);
     }
 
+    private static void LogLine(string message)
+    {
+        if (Refii.Core.Engine_AppRoot.IsTestHost)
+        {
+            return;
+        }
+
+        GD.Print(message);
+    }
+
+    private static string GetEnv(string name) =>
+        Refii.Core.Engine_AppRoot.IsTestHost
+            ? System.Environment.GetEnvironmentVariable(name) ?? string.Empty
+            : OS.GetEnvironment(name);
+
     public static string CompactText(string value)
     {
         var text = new System.Text.StringBuilder(value.Length);
@@ -3076,67 +2597,6 @@ public static partial class Engine_LevelProps
         }
 
         return text.ToString();
-    }
-
-    public static bool KeyIsOrNumbered(string key, string baseKey)
-    {
-        if (key == baseKey)
-        {
-            return true;
-        }
-
-        if (key.Length <= baseKey.Length ||
-            !key.StartsWith(baseKey, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        for (int i = baseKey.Length; i < key.Length; i++)
-        {
-            if (!char.IsDigit(key[i]))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    public static bool KeyIsOrVariant(string key, string baseKey)
-    {
-        if (KeyIsOrNumbered(key, baseKey))
-        {
-            return true;
-        }
-
-        if (key.Length <= baseKey.Length + 1 ||
-            !key.StartsWith(baseKey, StringComparison.Ordinal) ||
-            key[baseKey.Length] != 'v')
-        {
-            return false;
-        }
-
-        for (int i = baseKey.Length + 1; i < key.Length; i++)
-        {
-            if (!char.IsDigit(key[i]))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    public static bool IsImplausibleContainerShellModel(string modelPath)
-    {
-        string key = CompactText(modelPath.Replace('\\', '/'));
-        return key.Contains("bridge", StringComparison.Ordinal) ||
-               key.Contains("facade", StringComparison.Ordinal) ||
-               key.Contains("clocktower", StringComparison.Ordinal) ||
-               modelPath.Replace('\\', '/').ToLowerInvariant()
-                   .Contains("/buildings/", StringComparison.Ordinal) ||
-               key.EndsWith("exteriormdl", StringComparison.Ordinal) ||
-               key.EndsWith("interiormdl", StringComparison.Ordinal);
     }
 
     public static string LeafOf(string path)

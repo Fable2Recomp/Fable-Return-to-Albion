@@ -4,7 +4,6 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
-import tomllib
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -138,15 +137,12 @@ class ElfAndExportTests(unittest.TestCase):
         self.assertIn('package/unique_name="org.example.test"', result)
         self.assertIn('gradle_build/min_sdk="31"', result)
 
-    def test_app_label_is_the_name_discord_shows_on_the_desktop(self):
-        # Discord on a phone shows the app's label, so it has to read as the desktop's application does.
+    def test_android_app_label_uses_the_shared_game_name(self):
         root = Path(__file__).resolve().parents[3]
-        preset = (root/"Godot/export_presets.cfg").read_text(encoding="utf-8")
-        android = preset[preset.index('name="Android ARM64"'):]
-        label = android[android.index('package/name="') + len('package/name="'):].split('"', 1)[0]
-        discord = tomllib.loads((root/"Fable2/metadata/rexnet.toml").read_text(encoding="utf-8"))["discord"]
-        self.assertEqual(label, discord["large_text"])
-        self.assertNotIn("android", label.lower())
+        presets = (root / "Godot/export_presets.cfg").read_text(encoding="utf-8")
+        android = presets.split('name="Android ARM64"', 1)[1]
+        options = android.split(".options]", 1)[1].split("\n[", 1)[0]
+        self.assertIn('package/name="Fable: Return to Albion"', options.splitlines())
 
     def test_debug_network_changes_only_android_permission_and_requires_opt_in(self):
         source = ('[preset.0]\nname="Windows"\n[preset.0.options]\npermissions/internet=true\n'

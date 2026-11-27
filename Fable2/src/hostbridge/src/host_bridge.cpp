@@ -4149,9 +4149,323 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetStatedFxCount(void) {
     return refii::vfs::StatedFxCount();
 }
 
-/// A stated effect's spline points (RefiiHostGetActiveFx flag 128): none here — Fable 2's spline
-/// override travels in the node row itself (flag 32).
-REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxSpline(uint32_t /*handle*/, float* /*out*/, uint32_t /*max_points*/) {
+static uint32_t ReadParticleEntityTypeId(const uint8_t* base, uint32_t type) {
+    if (type < 0x1000u || (uint64_t)type + 0x200ull > 0x100000000ull) {
+        return 0xFFFFFFFFu;
+    }
+    const uint32_t type_vt = GuestWordAt(base, type);
+    if (type_vt < 0x1000u || (uint64_t)type_vt + 0x40ull > 0x100000000ull) {
+        return 0xFFFFFFFFu;
+    }
+    const uint32_t fn = GuestWordAt(base, type_vt + 20u);
+    if (fn < 0x1000u || (uint64_t)fn + 8ull > 0x100000000ull) {
+        return 0xFFFFFFFFu;
+    }
+    const uint32_t w0 = GuestWordAt(base, fn);
+    const uint32_t w1 = GuestWordAt(base, fn + 4u);
+    if ((w0 & 0xFFFF0000u) == 0x38600000u && w1 == 0x4E800020u) {
+        return w0 & 0xFFFFu;
+    }
+    return 0xFFFFFFFFu;
+}
+
+/// Reads a live Type 9 `CParticleSplineEmitterNode`'s world-space spline points (`node + 0x1C8..0x1CC`,
+/// 16-byte stride, active flag at `node + 0x1B0`) for `instance_or_handle` (`fx.Instance` or `fx.Handle`).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxSpline(uint32_t instance_or_handle, float* out, uint32_t max_points) {
+    if (instance_or_handle == 0u || out == nullptr || max_points == 0u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto plausible = [](uint32_t ptr) {
+        return ptr >= 0x1000u && (uint64_t)ptr + 0x200ull <= 0x100000000ull;
+    };
+
+    const uint32_t begin = GuestWordAt(base, refii::guest::Address(0x8349E490u));
+    const uint32_t end = GuestWordAt(base, refii::guest::Address(0x8349E494u));
+    if (!plausible(begin) || end < begin) {
+        return 0u;
+    }
+
+    const uint32_t span = end - begin;
+    if ((span % 8u) != 0u || span > 0x40000u) {
+        return 0u;
+    }
+
+    const uint32_t count = span / 8u;
+    uint32_t matched_node = 0u;
+    uint32_t fallback_handle_node = 0u;
+    for (uint32_t i = 0u; i < count; ++i) {
+        const uint32_t node = GuestWordAt(base, begin + i * 8u);
+        if (!plausible(node) || GuestByteAt(base, node + 0xC8u) != 0u) {
+            continue;
+        }
+
+        if (node == instance_or_handle) {
+            matched_node = node;
+            break;
+        }
+
+        if (fallback_handle_node == 0u &&
+            GuestWordAt(base, node + 0xE8u) == instance_or_handle &&
+            ReadParticleEntityTypeId(base, GuestWordAt(base, node + 0xD0u)) == 9u &&
+            GuestByteAt(base, node + 0x1B0u) != 0u) {
+            fallback_handle_node = node;
+        }
+    }
+
+    const uint32_t target = matched_node != 0u ? matched_node : fallback_handle_node;
+    if (!plausible(target) ||
+        ReadParticleEntityTypeId(base, GuestWordAt(base, target + 0xD0u)) != 9u ||
+        GuestByteAt(base, target + 0x1B0u) == 0u) {
+        return 0u;
+    }
+
+    const uint32_t sp_begin = GuestWordAt(base, target + 0x1C8u);
+    const uint32_t sp_end = GuestWordAt(base, target + 0x1CCu);
+    if (sp_begin < 0x1000u || sp_end <= sp_begin || ((sp_end - sp_begin) & 0xFu) != 0u) {
+        return 0u;
+    }
+
+    const uint32_t sp_count = (sp_end - sp_begin) >> 4;
+    if (sp_count < 2u || sp_count > 512u ||
+        (uint64_t)sp_begin + (uint64_t)sp_count * 16ull > 0x100000000ull) {
+        return 0u;
+    }
+
+    const uint32_t to_copy = sp_count < max_points ? sp_count : max_points;
+    for (uint32_t p = 0u; p < to_copy; ++p) {
+        for (uint32_t axis = 0u; axis < 3u; ++axis) {
+            const uint32_t bits = GuestWordAt(base, sp_begin + p * 16u + axis * 4u);
+            float value;
+            std::memcpy(&value, &bits, sizeof(value));
+            if (!std::isfinite(value)) {
+                return 0u;
+            }
+            out[p * 3u + axis] = value;
+        }
+    }
+
+    return to_copy;
+}
+
+/// Reads the complete guest `Mode == 3` double-trail ring (`(EdgeA, EdgeB, keyTime)`, oldest to
+/// newest, in raw guest world coordinates, 7 floats per point) from `d = *(node + 0x168)` for
+/// `instance_or_handle` (`fx.Instance` or `fx.Handle`). Filters out torn or degenerate slots per
+/// entry so a single mid-write slot never collapses a fast-moving projectile trail (e.g. Blades).
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxDoubleTrailRing(
+    uint32_t instance_or_handle, float* out, uint32_t max_points) {
+    if (instance_or_handle == 0u || out == nullptr || max_points < 2u) {
+        return 0u;
+    }
+
+    auto* memory = SafeKernelMemory();
+    if (memory == nullptr) {
+        return 0u;
+    }
+
+    uint8_t* base = memory->virtual_membase();
+    if (base == nullptr) {
+        return 0u;
+    }
+
+    const auto read32 = [base](uint32_t at) { return GuestWordAt(base, at); };
+    const auto readf = [base](uint32_t at) {
+        const uint32_t bits = GuestWordAt(base, at);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const auto plausible = [](uint32_t ptr) {
+        return ptr >= 0x1000u && (uint64_t)ptr + 0x200ull <= 0x100000000ull;
+    };
+
+    const uint32_t begin = read32(refii::guest::Address(0x8349E490u));
+    const uint32_t end = read32(refii::guest::Address(0x8349E494u));
+    if (!plausible(begin) || end < begin) {
+        return 0u;
+    }
+
+    const uint32_t span = end - begin;
+    if ((span % 8u) != 0u || span > 0x40000u) {
+        return 0u;
+    }
+
+    const uint32_t count = span / 8u;
+    uint32_t matched_node = 0u;
+    uint32_t fallback_handle_node = 0u;
+    for (uint32_t i = 0u; i < count; ++i) {
+        const uint32_t node = read32(begin + i * 8u);
+        if (!plausible(node) || GuestByteAt(base, node + 0xC8u) != 0u) {
+            continue;
+        }
+
+        if (node == instance_or_handle) {
+            matched_node = node;
+            break;
+        }
+
+        if (fallback_handle_node == 0u &&
+            read32(node + 0xE8u) == instance_or_handle &&
+            ReadParticleEntityTypeId(base, read32(node + 0xD0u)) == 0u) {
+            const uint32_t sys_def = read32(node + 0x170u);
+            if (plausible(sys_def) && read32(sys_def + 0x20u) == 3u) {
+                fallback_handle_node = node;
+            }
+        }
+    }
+
+    const uint32_t target = matched_node != 0u ? matched_node : fallback_handle_node;
+    if (!plausible(target)) {
+        return 0u;
+    }
+
+    uint32_t sim_d = 0u;
+    uint32_t twin_ptr = 0u;
+    uint32_t twin_n = 0xFFFFu;
+    if (ReadParticleEntityTypeId(base, read32(target + 0xD0u)) == 0u) {
+        const uint32_t sys_def = read32(target + 0x170u);
+        if (plausible(sys_def) && read32(sys_def + 0x20u) == 3u) {
+            sim_d = read32(target + 0x168u);
+        }
+    }
+
+    const uint32_t twin_table = read32(refii::guest::Address(0x8349F7ACu));
+    const uint32_t twin_table_end = read32(refii::guest::Address(0x8349F7B0u));
+    const uint32_t twin_handles =
+        plausible(twin_table) && twin_table_end >= twin_table
+            ? (twin_table_end - twin_table) / 4u
+            : 0u;
+    const uint32_t holder_vtable = refii::guest::Address(0x82001AC0u);
+    if (twin_handles != 0u) {
+        const uint32_t holder = read32(target + 0x16Cu);
+        if (plausible(holder) && read32(holder) == holder_vtable) {
+            const uint32_t proxy = read32(holder + 24u);
+            const uint32_t twin_handle = plausible(proxy) ? read32(proxy + 4u) : twin_handles;
+            const uint32_t twin = twin_handle < twin_handles ? read32(twin_table + twin_handle * 4u) : 0u;
+            if (plausible(twin) && read32(twin + 16u) == twin_handle && read32(twin + 240u) == 3u) {
+                twin_ptr = twin;
+                twin_n = read32(twin + 176u);
+                const uint32_t shared = read32(twin + 180u);
+                if (!plausible(sim_d) && plausible(shared)) {
+                    sim_d = read32(shared + 4u);
+                }
+            }
+        }
+    }
+
+    if (!plausible(sim_d) || twin_n < 2u) {
+        return 0u;
+    }
+
+    const uint32_t cap = max_points < 64u ? max_points : 64u;
+    float best_buf[64u * 7u];
+    uint32_t best_written = 0u;
+
+    // Lock-free seqlock-style retry (up to 3 attempts): the guest updates each 32-byte slot
+    // without a lock, so a single read can catch edge A written before edge B (span > 6m) or
+    // `(head, cnt, twin_n)` mid-advance. Clamping to `twin_n` (`twin + 176u`) matches
+    // `RefiiHostGetClassicTrails` (`sub_82179C00`) so stale wrapped entries beyond the active
+    // render count never corrupt the leading tip of fast projectile trails (e.g. Blades).
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const uint32_t cur_twin_n = twin_ptr != 0u ? read32(twin_ptr + 176u) : 0xFFFFu;
+        if (cur_twin_n < 2u) {
+            return 0u;
+        }
+        const uint32_t ring = read32(sim_d + 8u);
+        const uint32_t ring_end = read32(sim_d + 12u);
+        const uint32_t head = read32(sim_d + 20u);
+        const uint32_t mask = read32(sim_d + 32u);
+        const uint32_t cnt = read32(sim_d + 36u);
+        if (ring < 0x1000u || mask == 0u || mask > 4095u || ((mask & (mask + 1u)) != 0u)) {
+            return 0u;
+        }
+        const uint64_t expected_end = (uint64_t)ring + (uint64_t)(mask + 1u) * 32ull;
+        if (expected_end > 0x100000000ull || (ring_end != 0u && (uint64_t)ring_end != expected_end)) {
+            return 0u;
+        }
+        const uint32_t active_cnt = (cur_twin_n != 0xFFFFu && cur_twin_n < cnt) ? cur_twin_n : cnt;
+        if (active_cnt < 2u || active_cnt > (mask + 1u) || cnt > (mask + 1u)) {
+            return 0u;
+        }
+
+        // `head + 0` is the oldest tail entry and `head + cnt - 1` is the newest leading sword tip:
+        // when `active_cnt < cnt` (`cur_twin_n < cnt`), skip expired tail entries at the front so the
+        // leading tip at the flying projectile is always preserved intact.
+        const uint32_t tail_skip = cnt - active_cnt;
+        const uint32_t cap_skip = active_cnt > cap ? (active_cnt - cap) : 0u;
+        const uint32_t start = tail_skip + cap_skip;
+        float tmp[64u * 7u];
+        uint32_t written = 0u;
+        bool saw_torn = false;
+        float prev_mx = 0.0f, prev_my = 0.0f, prev_mz = 0.0f;
+        for (uint32_t i = start; i < cnt && written < cap; ++i) {
+            const uint32_t idx = (head + i) & mask;
+            const uint32_t entry = ring + idx * 32u;
+            const float ax = readf(entry + 0u), ay = readf(entry + 4u), az = readf(entry + 8u);
+            const float bx = readf(entry + 16u), by = readf(entry + 20u), bz = readf(entry + 24u);
+            const float key_time = readf(entry + 28u);
+            if (!std::isfinite(ax) || !std::isfinite(ay) || !std::isfinite(az) ||
+                !std::isfinite(bx) || !std::isfinite(by) || !std::isfinite(bz) ||
+                !std::isfinite(key_time)) {
+                saw_torn = true;
+                continue;
+            }
+
+            const float dx = ax - bx, dy = ay - by, dz = az - bz;
+            const float span_sq = dx * dx + dy * dy + dz * dz;
+            if (span_sq <= 1e-6f || span_sq > 36.0f) {
+                saw_torn = true;
+                continue;
+            }
+
+            const float mx = 0.5f * (ax + bx);
+            const float my = 0.5f * (ay + by);
+            const float mz = 0.5f * (az + bz);
+            if (written > 0u) {
+                const float jx = mx - prev_mx, jy = my - prev_my, jz = mz - prev_mz;
+                if (jx * jx + jy * jy + jz * jz > 100.0f) {
+                    saw_torn = true;
+                    continue;
+                }
+            }
+
+            float* dst = tmp + written * 7u;
+            dst[0] = ax; dst[1] = ay; dst[2] = az;
+            dst[3] = bx; dst[4] = by; dst[5] = bz;
+            dst[6] = key_time;
+            prev_mx = mx; prev_my = my; prev_mz = mz;
+            ++written;
+        }
+
+        const uint32_t head_after = read32(sim_d + 20u);
+        const uint32_t cnt_after = read32(sim_d + 36u);
+        const uint32_t twin_n_after = twin_ptr != 0u ? read32(twin_ptr + 176u) : 0xFFFFu;
+        if (written > best_written) {
+            best_written = written;
+            std::memcpy(best_buf, tmp, written * 7u * sizeof(float));
+        }
+
+        if (!saw_torn && head_after == head && cnt_after == cnt && twin_n_after == cur_twin_n && written >= 2u) {
+            std::memcpy(out, tmp, written * 7u * sizeof(float));
+            return written;
+        }
+    }
+
+    if (best_written >= 2u) {
+        std::memcpy(out, best_buf, best_written * 7u * sizeof(float));
+        return best_written;
+    }
+
     return 0u;
 }
 
@@ -4259,6 +4573,13 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
     }
 
     uint32_t registry_hint = 0u;
+    const uint32_t twin_table = read32(refii::guest::Address(0x8349F7ACu));
+    const uint32_t twin_table_end = read32(refii::guest::Address(0x8349F7B0u));
+    const uint32_t twin_handles =
+        plausible(twin_table) && twin_table_end >= twin_table
+            ? (twin_table_end - twin_table) / 4u
+            : 0u;
+    const uint32_t holder_vtable = refii::guest::Address(0x82001AC0u);
     const uint32_t count = span / 8u;
     uint32_t written = 0u;
 
@@ -4293,6 +4614,7 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         // elem+16/+32) and every emitter hangs below it. A child's world matrix includes its own
         // motion (a spline node moves along its spline each tick), so it is not the placement.
         const bool is_root = name_hash == reserved_root;
+        const uint32_t type_id = is_root ? 6u : ReadParticleEntityTypeId(base, type);
 
         // Still emitting: `+0xC4` counts down with -1 meaning forever, gated by the finite flag
         // at `+0x104` and the age/limit pair. Tells "spawning" from "running its last particles
@@ -4390,8 +4712,16 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
         // the spawn routines bake it into each new particle (`sub_82A03D58` 0x82a04090 →
         // `sub_83228588` 0x832285f4, particle+0x48). The breadcrumber drives it every tick.
         // 1.0 is the value an untouched instance carries.
+        // The element's alpha/intensity lives at `node + 408` (`+0x198`, written by `SetAlpha`
+        // `sub_832323E0` at 0x832324a8 on every Type 0 and Type 9 emitter element, whereas
+        // `handle + 52` can remain 0 on pooled spell handles while elements carry non-zero alpha).
         float intensity = 1.0f;
-        if (plausible(handle)) {
+        if (!is_root && (type_id == 0u || type_id == 9u)) {
+            const float elem_alpha = readf(node + 408u);
+            if (std::isfinite(elem_alpha)) {
+                intensity = elem_alpha;
+            }
+        } else if (plausible(handle)) {
             const float stated = readf(handle + 52u);
             if (std::isfinite(stated)) {
                 intensity = stated;
@@ -4509,6 +4839,149 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetActiveFx(uint32_t* out, uint32_t max_
                             uint32_t bits;
                             std::memcpy(&bits, &pts[i], sizeof(bits));
                             row[7 + i] = bits;
+                        }
+                    }
+                }
+            }
+        }
+        // Type 9 `CParticleSplineEmitterNode`: world-space beam/circle spline points live in the
+        // vector at `node + 0x1C8..0x1CC` (16-byte stride) gated by `*(uint8_t*)(node + 0x1B0) != 0`
+        // (`BeamSubmitMode2` 0x82A060A4..0x82A060DC). Flag 128 (`SplineStated`) tells the host to
+        // fetch up to 512 points via `RefiiHostGetFxSpline(node, ...)`; flag 2048 (`TrailReset`)
+        // tells the host the beam has no valid baseline yet.
+        else if (!is_root && type_id == 9u) {
+            const bool sp_active = read8(node + 0x1B0u) != 0u;
+            const uint32_t sp_begin = read32(node + 0x1C8u);
+            const uint32_t sp_end = read32(node + 0x1CCu);
+            bool valid_beam_spline = false;
+            if (sp_active && sp_begin >= 0x1000u && sp_end > sp_begin && ((sp_end - sp_begin) & 0xFu) == 0u) {
+                const uint32_t sp_count = (sp_end - sp_begin) >> 4;
+                if (sp_count >= 2u && sp_count <= 512u &&
+                    (uint64_t)sp_begin + (uint64_t)sp_count * 16ull <= 0x100000000ull) {
+                    const uint32_t last_off = (sp_count - 1u) * 16u;
+                    valid_beam_spline =
+                        std::isfinite(readf(sp_begin + 0u)) &&
+                        std::isfinite(readf(sp_begin + 4u)) &&
+                        std::isfinite(readf(sp_begin + 8u)) &&
+                        std::isfinite(readf(sp_begin + last_off + 0u)) &&
+                        std::isfinite(readf(sp_begin + last_off + 4u)) &&
+                        std::isfinite(readf(sp_begin + last_off + 8u));
+                }
+            }
+            row[2] |= valid_beam_spline ? 128u : 2048u;
+        }
+        // Current-frame double-trail (kind == 3) and guest-driven single-trail (kind == 2)
+        // endpoints on Type 0 standard emitter nodes. Read the simulation ring directly at
+        // `d = *(node + 0x168)` (`sys_def = *(node + 0x170)`, `sys_mode = *(sys_def + 0x20)`) so
+        // trails at 10..15m (such as max-range magic circles) keep streaming and resetting even
+        // when the guest culls off-frustum render twins, falling back to the render twin if needed.
+        else if (!is_root) {
+            uint32_t kind = 0u;
+            uint32_t sim_d = 0u;
+            uint32_t twin_n = 0xFFFFu;
+            if (type_id == 0u) {
+                const uint32_t sys_def = read32(node + 0x170u);
+                const uint32_t sys_mode = plausible(sys_def) ? read32(sys_def + 0x20u) : 0u;
+                if (sys_mode == 3u || sys_mode == 2u) {
+                    kind = sys_mode;
+                    sim_d = read32(node + 0x168u);
+                }
+            }
+
+            if ((!plausible(sim_d) || kind == 0u) && twin_handles != 0u) {
+                const uint32_t holder = read32(node + 0x16Cu);
+                if (plausible(holder) && read32(holder) == holder_vtable) {
+                    const uint32_t proxy = read32(holder + 24u);
+                    const uint32_t twin_handle = plausible(proxy) ? read32(proxy + 4u) : twin_handles;
+                    const uint32_t twin = twin_handle < twin_handles ? read32(twin_table + twin_handle * 4u) : 0u;
+                    if (plausible(twin) && read32(twin + 16u) == twin_handle) {
+                        const uint32_t twin_kind = read32(twin + 240u);
+                        if (twin_kind == 3u || twin_kind == 2u) {
+                            kind = twin_kind;
+                            twin_n = read32(twin + 176u);
+                            const uint32_t shared = read32(twin + 180u);
+                            if (!plausible(sim_d) && plausible(shared)) {
+                                sim_d = read32(shared + 4u);
+                            }
+                        }
+                    }
+                }
+            }
+
+            const auto valid_ring = [&](uint32_t d, uint32_t& ring, uint32_t& head, uint32_t& mask, uint32_t& cnt) {
+                if (!plausible(d)) {
+                    return false;
+                }
+                ring = read32(d + 8u);
+                const uint32_t ring_end = read32(d + 12u);
+                head = read32(d + 20u);
+                mask = read32(d + 32u);
+                cnt = read32(d + 36u);
+                if (ring < 0x1000u || mask == 0u || mask > 4095u || ((mask & (mask + 1u)) != 0u)) {
+                    return false;
+                }
+                const uint64_t expected_end = (uint64_t)ring + (uint64_t)(mask + 1u) * 32ull;
+                if (expected_end > 0x100000000ull || (ring_end != 0u && (uint64_t)ring_end != expected_end)) {
+                    return false;
+                }
+                return cnt <= (mask + 1u);
+            };
+
+            if (kind == 3u) {
+                uint32_t ring = 0u, head = 0u, mask = 0u, cnt = 0u;
+                if (!valid_ring(sim_d, ring, head, mask, cnt) || twin_n < 2u || cnt < 2u) {
+                    row[2] |= 2048u;
+                } else {
+                    row[2] |= 4096u;
+                    const uint32_t idx = (head + cnt - 1u) & mask;
+                    const uint32_t entry = ring + idx * 32u;
+                    const float ax = readf(entry + 0u), ay = readf(entry + 4u), az = readf(entry + 8u);
+                    const float bx = readf(entry + 16u), by = readf(entry + 20u), bz = readf(entry + 24u);
+                    const float dx = ax - bx, dy = ay - by, dz = az - bz;
+                    const float span_sq = dx * dx + dy * dy + dz * dz;
+                    if (std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az) &&
+                        std::isfinite(bx) && std::isfinite(by) && std::isfinite(bz) &&
+                        span_sq > 1e-6f && span_sq <= 36.0f) {
+                        row[2] |= 512u;
+                        const float pts[6] = { ax, ay, az, bx, by, bz };
+                        for (int k = 0; k < 6; ++k) {
+                            uint32_t bits;
+                            std::memcpy(&bits, &pts[k], sizeof(bits));
+                            row[7 + k] = bits;
+                        }
+                        const uint32_t cnt16 = cnt > 0xFFFFu ? 0xFFFFu : cnt;
+                        const uint32_t n16 = twin_n != 0xFFFFu ? (twin_n > 0xFFFFu ? 0xFFFFu : twin_n) : cnt16;
+                        row[13] = (n16 << 16u) | cnt16;
+                        row[14] = (head + cnt) & mask;
+                        row[15] = read32(entry + 28u);
+                    }
+                }
+            } else if (kind == 2u) {
+                const float loc_sq = world[12] * world[12] + world[13] * world[13] + world[14] * world[14];
+                if (loc_sq > 0.0625f) {
+                    uint32_t ring = 0u, head = 0u, mask = 0u, cnt = 0u;
+                    if (!valid_ring(sim_d, ring, head, mask, cnt) || twin_n < 2u || cnt < 2u) {
+                        row[2] |= 2048u;
+                    } else {
+                        const uint32_t idx = (head + cnt - 1u) & mask;
+                        const uint32_t entry = ring + idx * 32u;
+                        const float ax = readf(entry + 0u), ay = readf(entry + 4u), az = readf(entry + 8u);
+                        if (std::isfinite(ax) && std::isfinite(ay) && std::isfinite(az)) {
+                            row[2] |= 1024u;
+                            const float pts[3] = { ax, ay, az };
+                            for (int k = 0; k < 3; ++k) {
+                                uint32_t bits;
+                                std::memcpy(&bits, &pts[k], sizeof(bits));
+                                row[7 + k] = bits;
+                            }
+                            row[10] = read32(entry + 20u);
+                            row[11] = 0u;
+                            row[12] = 0u;
+                            const uint32_t cnt16 = cnt > 0xFFFFu ? 0xFFFFu : cnt;
+                            const uint32_t n16 = twin_n != 0xFFFFu ? (twin_n > 0xFFFFu ? 0xFFFFu : twin_n) : cnt16;
+                            row[13] = (n16 << 16u) | cnt16;
+                            row[14] = (head + cnt) & mask;
+                            row[15] = 0u;
                         }
                     }
                 }

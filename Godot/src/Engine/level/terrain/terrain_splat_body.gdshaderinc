@@ -913,8 +913,9 @@ void light() {
 				LIGHT_COLOR);
 #ifndef FABLE_LITE
 			if (v_weather_specular > 0.001) {
+				float spec_amb = fable_specular_ambient_weight(LIGHT_IS_DIRECTIONAL, SPECULAR_AMOUNT, fable_world);
 				SPECULAR_LIGHT += fable_specular(NORMAL, LIGHT, VIEW,
-					atten * fable_specular_ao(v_combined_ao),
+					atten * spec_amb * fable_specular_ao(v_combined_ao),
 					LIGHT_COLOR, vec3(0.04 * v_weather_specular), v_weather_power);
 			}
 #endif

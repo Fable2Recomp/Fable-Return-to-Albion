@@ -148,6 +148,7 @@ public sealed class Engine_EntityAttachments
 	public static int PlacedStated;
 
 	private static readonly Dictionary<string, Refii.Models.Engine_GmdSkeleton?> GmdCache = new();
+	private static readonly Dictionary<string, (bool Found, Vector3 Hold, Vector3 Top)> WeaponBladeSpanCache = new();
 
 	/// <summary>Drops the dummy-name skeleton lookups. Keyed by model path, so region-scoped.</summary>
 	public static void ClearCaches()
@@ -155,6 +156,50 @@ public sealed class Engine_EntityAttachments
 		lock (GmdCache)
 		{
 			GmdCache.Clear();
+			WeaponBladeSpanCache.Clear();
+		}
+	}
+
+	/// <summary>
+	/// Resolves a melee weapon's authored hilt (<c>Weapon.Weapon.Hold</c>) and tip
+	/// (<c>Weapon.Weapon.Top</c>) endpoints in mesh-local Godot space from its cached <c>.mdl.gmd</c>.
+	/// </summary>
+	public static bool TryResolveWeaponBladeSpan(string modelPath, out Vector3 holdLocal, out Vector3 topLocal)
+	{
+		holdLocal = Vector3.Zero;
+		topLocal = Vector3.Zero;
+		if (string.IsNullOrEmpty(modelPath))
+		{
+			return false;
+		}
+
+		lock (GmdCache)
+		{
+			if (WeaponBladeSpanCache.TryGetValue(modelPath, out (bool Found, Vector3 Hold, Vector3 Top) cached))
+			{
+				holdLocal = cached.Hold;
+				topLocal = cached.Top;
+				return cached.Found;
+			}
+
+			Refii.Models.Engine_GmdSkeleton? gmd = Gmd(modelPath);
+			if (gmd is not null &&
+				gmd.TryResolveEntry("Weapon.Weapon.Hold", 0, out int holdNode, out Transform3D holdT) &&
+				gmd.TryResolveEntry("Weapon.Weapon.Top", 0, out int topNode, out Transform3D topT))
+			{
+				Vector3 hold = (holdNode >= 0 ? gmd.ComposeNode(holdNode) * holdT : holdT).Origin;
+				Vector3 top = (topNode >= 0 ? gmd.ComposeNode(topNode) * topT : topT).Origin;
+				if (hold.IsFinite() && top.IsFinite() && (top - hold).LengthSquared() > 1e-4f)
+				{
+					WeaponBladeSpanCache[modelPath] = (true, hold, top);
+					holdLocal = hold;
+					topLocal = top;
+					return true;
+				}
+			}
+
+			WeaponBladeSpanCache[modelPath] = (false, Vector3.Zero, Vector3.Zero);
+			return false;
 		}
 	}
 
@@ -310,6 +355,19 @@ public sealed class Engine_EntityAttachments
 	/// <summary>The parent this child hangs on, or 0.</summary>
 	public uint ParentOf(uint child) =>
 		_byChild.TryGetValue(child, out Record? record) ? record.Parent : 0u;
+
+	/// <summary>The dummy name <paramref name="child"/> hangs from on its parent, if attached.</summary>
+	public bool TryGetDummyName(uint child, out string dummy)
+	{
+		if (_byChild.TryGetValue(child, out Record? record) && !string.IsNullOrEmpty(record.Dummy))
+		{
+			dummy = record.Dummy;
+			return true;
+		}
+
+		dummy = string.Empty;
+		return false;
+	}
 
 	/// <summary>Enumerates child entities attached to the given parent entity.</summary>
 	public List<uint> ChildrenOfParent(uint parent)

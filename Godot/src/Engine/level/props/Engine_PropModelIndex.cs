@@ -24,29 +24,9 @@ public static class Engine_PropModelIndex
 
     private static Dictionary<uint, List<PropModelAsset>>? _byPathHash;
 
-    private static Dictionary<string, List<PropModelAsset>>? _byToken;
-
-    private static Dictionary<string, List<PropModelAsset>>? _byCompactKey;
-
-    private static List<(string Lower, PropModelAsset Asset)>? _lowerPaths;
-
     private static Dictionary<string, string?>? _lowerPathCache;
 
     private static readonly Dictionary<uint, PropModelAsset> _registeredPaths = new();
-
-    private static readonly string[] TokenSuffixes =
-    {
-        "facademid", "facade", "lod1", "lod0", "mid",
-    };
-
-    private static readonly string[] EntityPrefixes =
-    {
-        "NewObjectBuilding", "ObjectBuilding",
-        "NewObjectFurniture", "ObjectFurniture",
-        "NewObjectStatic", "ObjectStatic",
-        "NewObject", "Object",
-        "Static", "New",
-    };
 
     public static void SetModelSource(Func<IEnumerable<PropModelAsset>>? source)
     {
@@ -121,9 +101,6 @@ public static class Engine_PropModelIndex
     {
         ++Version;
         _byPathHash = null;
-        _byToken = null;
-        _byCompactKey = null;
-        _lowerPaths = null;
         _lowerPathCache = null;
     }
 
@@ -202,90 +179,6 @@ public static class Engine_PropModelIndex
     // Deleted rather than left unreferenced: a fallback that still compiles is a fallback
     // somebody re-wires in six months.
 
-    public static string ModelToken(string name)
-    {
-        var text = new System.Text.StringBuilder(name.Length);
-        foreach (char c in name)
-        {
-            if (c != '_')
-            {
-                text.Append(char.ToLowerInvariant(c));
-            }
-        }
-
-        string token = text.ToString();
-        foreach (string suffix in TokenSuffixes)
-        {
-            if (token.Length > suffix.Length &&
-                token.EndsWith(suffix, StringComparison.Ordinal))
-            {
-                token = token[..^suffix.Length];
-            }
-        }
-
-        return token;
-    }
-
-    public static string EntityToken(string entityName)
-    {
-        string name = entityName;
-
-        int underscore = name.LastIndexOf('_');
-        if (underscore >= 0 && underscore + 1 < name.Length)
-        {
-            bool digits = true;
-            for (int i = underscore + 1; i < name.Length; i++)
-            {
-                if (!char.IsAsciiDigit(name[i]))
-                {
-                    digits = false;
-                    break;
-                }
-            }
-
-            if (digits)
-            {
-                name = name[..underscore];
-            }
-        }
-
-        bool stripped = true;
-        while (stripped)
-        {
-            stripped = false;
-            foreach (string prefix in EntityPrefixes)
-            {
-                if (name.Length > prefix.Length &&
-                    name.StartsWith(prefix, StringComparison.Ordinal))
-                {
-                    name = name[prefix.Length..];
-                    stripped = true;
-                    break;
-                }
-            }
-        }
-
-        return ModelToken(name);
-    }
-
-    public static IReadOnlyList<PropModelAsset> ByCompactKey(string key)
-    {
-        Build();
-        return _byCompactKey is not null &&
-               _byCompactKey.TryGetValue(key, out List<PropModelAsset>? hits)
-            ? hits
-            : Array.Empty<PropModelAsset>();
-    }
-
-    public static IEnumerable<KeyValuePair<string, List<PropModelAsset>>> CompactKeys()
-    {
-        Build();
-        return _byCompactKey ?? new Dictionary<string, List<PropModelAsset>>();
-    }
-
-    public static int ArchivePreference(string archivePath) =>
-        ArchiveScore(archivePath, Array.Empty<string>());
-
     public static string EntityKey(string entityName)
     {
         string name = entityName;
@@ -300,16 +193,7 @@ public static class Engine_PropModelIndex
             }
         }
 
-        var text = new System.Text.StringBuilder(name.Length);
-        foreach (char c in name)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                text.Append(char.ToLowerInvariant(c));
-            }
-        }
-
-        return text.ToString();
+        return Engine_LevelProps.CompactText(name);
     }
 
     private static readonly string[] EntityKeyPrefixes =
@@ -320,54 +204,6 @@ public static class Engine_PropModelIndex
         "NewObject", "Object",
         "New",
     };
-
-    public static IEnumerable<string> KeysFor(string virtualPath, string name)
-    {
-        var keys = new List<string>();
-
-        void Add(string value)
-        {
-            if (value.Length != 0 && !keys.Contains(value))
-            {
-                keys.Add(value);
-            }
-        }
-
-        Add(ModelToken(name));
-        Add(Engine_GmdLayout.CompactKey(name));
-
-        string token = ModelToken(name);
-        if (token is not ("exterior" or "interior"))
-        {
-            return keys;
-        }
-
-        string normalised = virtualPath.Replace('\\', '/');
-        int leaf = normalised.LastIndexOf('/');
-        if (leaf <= 0)
-        {
-            return keys;
-        }
-
-        string parent = normalised[..leaf];
-        int parentSlash = parent.LastIndexOf('/');
-        string folder = parentSlash < 0 ? parent : parent[(parentSlash + 1)..];
-
-        Add(ModelToken(folder));
-        Add(Engine_GmdLayout.CompactKey(folder));
-        Add(ModelToken(folder) + token);
-        Add(Engine_GmdLayout.CompactKey(folder) + token);
-
-        return keys;
-    }
-
-    private static string NameWithoutExtension(string path)
-    {
-        int slash = path.LastIndexOfAny(new[] { '/', '\\' });
-        string leaf = slash < 0 ? path : path[(slash + 1)..];
-        int dot = leaf.LastIndexOf('.');
-        return dot <= 0 ? leaf : leaf[..dot];
-    }
 
     public static string? Resolve(uint pathHash, IReadOnlyList<string>? preferredArchives = null)
     {
@@ -477,11 +313,7 @@ public static class Engine_PropModelIndex
     /// an index that has not been built yet.
     ///
     /// AND THE GUARD USED TO BE PUBLISHED BEFORE THE PAYLOAD. `Build` assigned `_byPathHash`
-    /// first and the other three tables after it, while every reader tests `_byPathHash` and
-    /// then uses `_byToken` or `_byCompactKey` — so a second thread could see the index as
-    /// "already built" and read null out of the tables that had not landed yet. That is the
-    /// same shape as the guest's own `comp+0x14`, which is stamped after the payload it is
-    /// supposed to describe, and it fails the same way: silently, and only sometimes.
+    /// first and the other tables after it, while readers tested `_byPathHash`.
     /// </summary>
     private static readonly object IndexLock = new();
 
@@ -501,9 +333,6 @@ public static class Engine_PropModelIndex
         }
 
         var index = new Dictionary<uint, List<PropModelAsset>>();
-        var tokens = new Dictionary<string, List<PropModelAsset>>();
-        var compact = new Dictionary<string, List<PropModelAsset>>();
-        var lowered = new List<(string, PropModelAsset)>();
 
         if (_models is not null)
         {
@@ -522,28 +351,6 @@ public static class Engine_PropModelIndex
                 }
 
                 bucket.Add(model);
-                lowered.Add((model.VirtualPath.Replace('\\', '/').ToLowerInvariant(), model));
-
-                string name = NameWithoutExtension(model.VirtualPath);
-
-                foreach (string key in KeysFor(model.VirtualPath, name))
-                {
-                    if (!compact.TryGetValue(key, out List<PropModelAsset>? keyed))
-                    {
-                        keyed = new List<PropModelAsset>();
-                        compact[key] = keyed;
-                    }
-
-                    keyed.Add(model);
-
-                    if (!tokens.TryGetValue(key, out List<PropModelAsset>? named))
-                    {
-                        named = new List<PropModelAsset>();
-                        tokens[key] = named;
-                    }
-
-                    named.Add(model);
-                }
             }
         }
 
@@ -561,13 +368,6 @@ public static class Engine_PropModelIndex
             bucket.Insert(0, regAsset);
         }
 
-        // THE GUARD LAST. `_byPathHash` is what every reader tests to decide the index exists,
-        // so it must be the final store — publishing it first advertises three tables that are
-        // still null. The lock makes this correct on its own, but the order is what keeps it
-        // correct for any reader that ever looks without taking the lock.
-        _byToken = tokens;
-        _byCompactKey = compact;
-        _lowerPaths = lowered;
         _byPathHash = index;
     }
 }

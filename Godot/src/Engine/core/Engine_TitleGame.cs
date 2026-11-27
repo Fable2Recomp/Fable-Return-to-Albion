@@ -382,12 +382,6 @@ public abstract class Engine_TitleGame
 	/// <summary>A saved entity the title places itself, so the level's save map skips it.</summary>
 	public virtual bool IsTitleRecord(uint record) => false;
 
-	/// <summary>A model the title's curated table names for a placement's parent hash, or null.</summary>
-	public virtual string? CuratedModelForParent(uint parentHash) => null;
-
-	/// <summary>A model the title's curated table names for an entity or asset key, or null.</summary>
-	public virtual string? CuratedModelForKey(string key) => null;
-
 	/// <summary>
 	/// A line off the mod event bus that is the title's own (a kind it owns), taken; false when
 	/// it is not one and the shell carries on with it.

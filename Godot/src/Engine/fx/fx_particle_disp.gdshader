@@ -3,7 +3,7 @@ render_mode blend_add, cull_disabled, depth_draw_never, unshaded, shadows_disabl
 
 #include "res://src/Engine/fx/fx_billboard.gdshaderinc"
 
-uniform sampler2D fx_tex : hint_default_white, filter_linear, repeat_enable;
+uniform sampler2D fx_tex : hint_default_white, filter_linear, repeat_disable;
 global uniform sampler2D fx_scene_depth;
 global uniform float fx_scene_depth_valid;
 #include "res://src/Engine/core/views.gdshaderinc"

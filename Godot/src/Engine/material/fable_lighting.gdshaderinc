@@ -877,9 +877,23 @@ float fable_attenuation_weighted(float godot_attenuation, bool directional, floa
 		float d = distance(world, record.xyz);
 		vec4 row1 = texelFetch(fable_light_table, ivec2(slot, 1), 0);
 		float stated = row1.x;
+		vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
 #endif
 		if (d >= stated) {
 			return 0.0;
+		}
+
+		// Floating ambient lights (`row2.y > 0.0`) replace Godot's `1 / max(d, 1e-4)` point-source
+		// singularity with a volume-conserving soft-core profile (`1.35 / sqrt(d^2 + soft_r^2)`),
+		// while preserving dynamic entity shadow maps, spotlight cone ramps, and outer range.
+		if (row2.y > 0.0) {
+			float soft_r = row2.y;
+			float inv_soft_d = inversesqrt(d * d + soft_r * soft_r);
+			float soft_gain = 1.35 * inv_soft_d;
+			atten = min(max(godot_attenuation, 0.0) * max(d, 1e-4) * soft_gain, soft_gain);
+			if (atten <= 1e-4 || atten * surface_weight <= 1e-4) {
+				return 0.0;
+			}
 		}
 
 		// When a flickering light breathes inward below its node range (`stated < record.w`),
@@ -901,7 +915,6 @@ float fable_attenuation_weighted(float godot_attenuation, bool directional, floa
 		return atten;
 #else
 		if (row1.w > 0.0) {
-			vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
 			float static_shadow = fable_sample_static_shadow_tiered(world - record.xyz, d, atten, row1.yzw, row2.x);
 			return atten * static_shadow;
 		}
@@ -991,6 +1004,23 @@ const float FABLE_SPEC_ANGLE_GATE = 4.0;
 /// LIGHT_COLOR IS DIVIDED BY PI for the same reason `fable_direct` does it: Godot hands `light()`
 /// a colour already multiplied by PI, and the guest multiplies by the raw one.
 #ifndef FABLE_LITE
+float fable_specular_ambient_weight(bool directional, float specular_amount, vec3 world) {
+	if (directional) {
+		return 1.0;
+	}
+	int slot = int(specular_amount * 0.5 + 0.5) - 2;
+	if (slot >= 0 && slot < 1000) {
+		float soft_r = texelFetch(fable_light_table, ivec2(slot, 2), 0).y;
+		if (soft_r > 0.0) {
+			vec3 light_pos = texelFetch(fable_light_table, ivec2(slot, 0), 0).xyz;
+			vec3 diff = world - light_pos;
+			float d2 = dot(diff, diff);
+			return d2 / max(d2 + soft_r * soft_r, 1e-4);
+		}
+	}
+	return 1.0;
+}
+
 vec3 fable_specular(
 		vec3 normal,
 		vec3 light,

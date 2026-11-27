@@ -50,4 +50,85 @@ public sealed class VolumetricShaftBudgetTests
 		AssertThat(Mathf.Abs((sticky / cold) - 1.15f) < 1e-4f).IsTrue();
 		AssertThat(disabled).IsEqual(0.0f);
 	}
+
+	[TestCase]
+	public void EvaluateSampleKernel_SoftCoreEliminatesOriginHotspotAndForwardMieBullseye_WhilePreservingOuterShafts()
+	{
+		const float range = 14.8f;
+		float invStatedR2 = 1.0f / (range * range);
+		float softCore = range * Engine_LevelLights.FloatingVolumetricCoreFraction; // ~7.104m
+		const float anisotropy = 0.65f;
+
+		// 1. At d = 0 looking straight through the origin (cosTheta = +1), the legacy point-source kernel
+		//    produces a bright forward-Mie + 1/sqrt(0.35) pinpoint orb, whereas the soft-core kernel is
+		//    completely smooth and isotropic.
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: 0.0f, invStatedR2, softCoreRadius: 0.0f, cosTheta: 1.0f, anisotropy,
+			out float pointOriginAtten, out float pointOriginPhase);
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: 0.0f, invStatedR2, softCoreRadius: softCore, cosTheta: 1.0f, anisotropy,
+			out float softOriginAtten, out float softOriginPhaseForward);
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: 0.0f, invStatedR2, softCoreRadius: softCore, cosTheta: -1.0f, anisotropy,
+			out _, out float softOriginPhaseBack);
+
+		float pointOriginPeak = pointOriginAtten * pointOriginPhase;
+		float softOriginPeak = softOriginAtten * softOriginPhaseForward;
+		AssertThat(softOriginPeak < pointOriginPeak * 0.05f).IsTrue();
+		AssertThat(Mathf.IsEqualApprox(softOriginPhaseForward, softOriginPhaseBack, 1e-6f)).IsTrue();
+
+		// 2. Across the inner room volume (d = 0m vs d = 2.5m), soft-core attenuation stays uniform
+		//    instead of collapsing 4x away from a tiny point.
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: 2.5f * 2.5f, invStatedR2, softCoreRadius: softCore, cosTheta: 0.0f, anisotropy,
+			out float softInnerAtten, out _);
+		AssertThat(softInnerAtten > softOriginAtten * 0.90f).IsTrue();
+
+		// 3. At window/doorway shaft distances (d = 8.0m, forward grazing cosTheta = 0.85), soft-core
+		//    maintains full volumetric shaft brightness and directional phase so exterior blue light shafts stay strong.
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: 8.0f * 8.0f, invStatedR2, softCoreRadius: 0.0f, cosTheta: 0.85f, anisotropy,
+			out float pointMidAtten, out float pointMidPhase);
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: 8.0f * 8.0f, invStatedR2, softCoreRadius: softCore, cosTheta: 0.85f, anisotropy,
+			out float softMidAtten, out float softMidPhase);
+
+		AssertThat(softMidAtten >= pointMidAtten).IsTrue();
+		AssertThat(softMidPhase > softOriginPhaseForward * 1.5f).IsTrue();
+		AssertThat((softMidAtten * softMidPhase) > (pointMidAtten * pointMidPhase) * 0.75f).IsTrue();
+
+		// 4. Clean window cutoff at and beyond stated range R (accounting for float32 reciprocal rounding at exact boundary).
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: range * range, invStatedR2, softCoreRadius: softCore, cosTheta: 1.0f, anisotropy,
+			out float boundaryAtten, out _);
+		AssertThat(Mathf.IsEqualApprox(boundaryAtten, 0.0f, 1e-6f)).IsTrue();
+
+		Engine_VolumetricLightShafts.EvaluateSampleKernel(
+			d2: (range + 0.01f) * (range + 0.01f), invStatedR2, softCoreRadius: softCore, cosTheta: 1.0f, anisotropy,
+			out float edgeAtten, out float edgePhase);
+		AssertThat(edgeAtten).IsEqual(0.0f);
+		AssertThat(edgePhase).IsEqual(0.0f);
+	}
+
+	[TestCase]
+	public void ComputeLightCapsuleMask_ExcludesDynamicCharacterCapsulesForFloatingAmbientLightsOnly()
+	{
+		Vector3 lightPos = new(-264.2f, 23.7f, 163.1f);
+		Engine_VolumetricLightShafts.VolumetricCapsule[] capsules =
+		{
+			new(
+				SegA: lightPos + new Vector3(0.0f, -0.8f, 0.0f),
+				Radius: 0.30f,
+				SegB: lightPos + new Vector3(0.0f, 0.9f, 0.0f),
+				Feather: 0.14f),
+		};
+
+		uint physicalMask = Engine_VolumetricLightShafts.ComputeLightCapsuleMask(
+			lightPos, lightRange: 14.8f, capsules, isFloatingAmbient: false);
+		uint floatingMask = Engine_VolumetricLightShafts.ComputeLightCapsuleMask(
+			lightPos, lightRange: 14.8f, capsules, isFloatingAmbient: true);
+
+		AssertThat(physicalMask).IsEqual(1u);
+		AssertThat(floatingMask).IsEqual(0u);
+	}
 }

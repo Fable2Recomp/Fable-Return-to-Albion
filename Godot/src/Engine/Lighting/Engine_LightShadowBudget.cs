@@ -184,6 +184,12 @@ public partial class Engine_LightShadowBudget : Node
 		/// <summary>Cached volumetric fog scattering multiplier for this fixture.</summary>
 		public float VolumetricFogScale;
 
+		/// <summary>Whether this light is an unattached floating ambient volume.</summary>
+		public bool FloatingAmbient;
+
+		/// <summary>Cached volumetric soft-core radius in metres (0 for physical fixtures).</summary>
+		public float VolumetricSoftCore;
+
 		/// <summary>World forward axis (-GlobalBasis.Z) for spotlights; zero for omni lights.</summary>
 		public Vector3 SpotDir;
 
@@ -522,7 +528,7 @@ public partial class Engine_LightShadowBudget : Node
 			}
 
 			uint casterMask = capsuleCount > 0
-				? Engine_VolumetricLightShafts.ComputeLightCapsuleMask(f.At, statedRange, capsuleSpan)
+				? Engine_VolumetricLightShafts.ComputeLightCapsuleMask(f.At, statedRange, capsuleSpan, f.FloatingAmbient)
 				: 0u;
 
 			f.ShaftActive = true;
@@ -537,7 +543,8 @@ public partial class Engine_LightShadowBudget : Node
 				IndoorFromOutside: indoorFromOutside,
 				SpotDir: f.SpotDir,
 				SpotCosHalfAngle: f.SpotCosHalfAngle,
-				CasterMask: casterMask);
+				CasterMask: casterMask,
+				SoftCoreRadius: f.VolumetricSoftCore);
 		}
 
 		if (outCount == 0)
@@ -623,6 +630,8 @@ public partial class Engine_LightShadowBudget : Node
 				fixture.VolumetricFogScale = light.HasMeta(VolumetricFogScaleName)
 					? (float)light.GetMeta(VolumetricFogScaleName).AsDouble()
 					: Engine_LevelLights.DefaultVolumetricFogScale;
+				fixture.FloatingAmbient = Engine_LevelLights.IsFloatingAmbient(light);
+				fixture.VolumetricSoftCore = Engine_LevelLights.VolumetricSoftCoreOf(light);
 				if (light is SpotLight3D spot)
 				{
 					fixture.SpotCosHalfAngle = MathF.Cos(Mathf.DegToRad(Math.Clamp(spot.SpotAngle, 1.0f, 89.0f)));
@@ -807,7 +816,7 @@ public partial class Engine_LightShadowBudget : Node
 				wanted++;
 				casting++;
 				uint desiredMask = Engine_LevelLights.CasterMaskOf(
-					includeDynamicEntities: true,
+					includeDynamicEntities: classic || !f.FloatingAmbient,
 					isIndoorLight: !classic && f.IndoorBit,
 					includeStaticWorld: classic || (!f.Omni && f.Authored),
 					isOutdoorLight: !classic && f.OutdoorBit);
@@ -970,6 +979,14 @@ public partial class Engine_LightShadowBudget : Node
 				continue;
 			}
 
+			// Floating ambient fill volumes have no physical source, so dynamic casters (hero/NPCs/dog)
+			// must not cast live cubemap shadows or black out the room when running through them.
+			// Static architecture, windows, and doorways remain shadowed via `fable_static_shadow_atlas`.
+			if (!classic && f.FloatingAmbient && !f.Authored)
+			{
+				continue;
+			}
+
 			bool isIndoorLight = !classic && f.IndoorBit;
 			if (ShouldCullForBuildingZone(viewerIndoors, interior, isIndoorLight, f.Zone, heroZone))
 			{
@@ -1003,7 +1020,8 @@ public partial class Engine_LightShadowBudget : Node
 				isIndoorLight,
 				f.Zone,
 				heroZone,
-				f.Casting);
+				f.Casting,
+				f.FloatingAmbient && !f.Authored);
 			if (score >= float.MaxValue)
 			{
 				continue;
@@ -1259,7 +1277,8 @@ public partial class Engine_LightShadowBudget : Node
 		bool isIndoorLight,
 		uint lightZone,
 		uint heroZone,
-		bool alreadyDynamic = false)
+		bool alreadyDynamic = false,
+		bool isFloatingAmbient = false)
 	{
 		if (!isInteriorLevel)
 		{
@@ -1303,6 +1322,13 @@ public partial class Engine_LightShadowBudget : Node
 		else if (dy > 4.2f)
 		{
 			effectiveDist += (dy - 4.2f) * 25.0f;
+		}
+
+		if (isFloatingAmbient)
+		{
+			// Floating ambient fill volumes never cast dynamic character shadows; static walls,
+			// windows, and doorways remain shadowed via `fable_static_shadow_atlas`.
+			return float.MaxValue;
 		}
 
 		float clampedEnergy = Mathf.Clamp(baseEnergy, 0.5f, 3.0f);

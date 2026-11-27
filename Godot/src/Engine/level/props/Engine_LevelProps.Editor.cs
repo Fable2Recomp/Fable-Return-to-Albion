@@ -196,7 +196,7 @@ public static partial class Engine_LevelProps
             }
 
             // Secondary mesh for the same GDB record (e.g., 2nd/3rd mesh of StaticMultipleMeshComponent,
-            // companion interior/exterior mesh, .mdl.gmd layout door/window, or TreeMesh LOD/Shadow).
+            // companion interior/exterior mesh, or TreeMesh LOD/Shadow).
             // Parent under the primary record node with a relative local transform so moving the
             // primary node in the 3D Editor moves all of its parts as one unit without false diffs.
             single.Transform = primaryNode.Transform.AffineInverse() * single.Transform;

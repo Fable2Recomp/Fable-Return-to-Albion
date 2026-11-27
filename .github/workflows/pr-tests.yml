@@ -29,6 +29,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         timeout-minutes: 10
+        with:
+          submodules: recursive
+
+      - name: Check out the ReXGlue SDK
+        run: git submodule update --init rexglue-net/rexglue-sdk
 
       - name: Install Godot runtime dependencies
         run: |

@@ -221,6 +221,8 @@ public sealed class Engine_EntitySkeleton
 		_rig = rig;
 		_modelToGuest = modelToGuest;
 		_hipBone = -2;  // the mapping changed: re-resolve the hip on next use
+		_collapseProbeBone = -2;
+		_collapseProbeRestY = 0f;
 		_guestBones = guestBones;
 		Mapped = mapped;
 		GuestOnly = guestBones - mapped;
@@ -336,6 +338,14 @@ public sealed class Engine_EntitySkeleton
 
 	/// <summary>True while a host-driven disarticulated/crumble simulation owns this rig's bones.</summary>
 	public bool IsDisarticulated { get; set; }
+
+	/// <summary>
+	/// True when the bound mesh carries separable single-bone rigid geometry (such as Fable 2's
+	/// <c>Skeleton_Base.mdl</c>) rather than smooth multi-bone skinning.
+	/// </summary>
+	public bool IsRigidPieceMesh { get; set; }
+
+	private int _spreadAnchorGuest = -2;
 
 	private System.Func<int, bool>? _isPosedPredicate;
 
@@ -468,13 +478,151 @@ public sealed class Engine_EntitySkeleton
 	}
 
 	/// <summary>
+	/// Maximum allowed distance from the posed hip/root anchor to any non-root bone on a
+	/// smooth-skinned (non-disarticulated) character rig so detached Havok ragdoll bones can never
+	/// stretch a smooth mesh into multi-meter "string cheese".
+	/// </summary>
+	public static float SmoothBoneSpreadLimit(float restReach) =>
+		Mathf.Max(restReach * 2.5f, 3.5f);
+
+	/// <summary>
+	/// Checks whether one non-root bone translation on a smooth-skinned rig sits within the
+	/// coherent spread bound around its posed hip/root anchor.
+	/// </summary>
+	public static bool IsSmoothBoneSpreadPlausible(
+		Vector3 boneTranslation,
+		Vector3 anchorTranslation,
+		float restReach,
+		out float spread)
+	{
+		float limit = SmoothBoneSpreadLimit(restReach);
+		float distSq = boneTranslation.DistanceSquaredTo(anchorTranslation);
+		if (distSq <= limit * limit)
+		{
+			spread = 0f;
+			return true;
+		}
+
+		spread = Mathf.Sqrt(distSq);
+		return false;
+	}
+
+	/// <summary>
+	/// Pure-C# coherence check for a smooth-skinned pose: verifies every non-root bone lies within
+	/// <see cref="SmoothBoneSpreadLimit"/> of the posed anchor bone while permitting arbitrary
+	/// root-motion offsets away from the model origin.
+	/// </summary>
+	public static bool IsSmoothPoseCoherent(
+		ReadOnlySpan<Vector3> boneTranslations,
+		ReadOnlySpan<int> parents,
+		int anchorIndex,
+		float restReach,
+		out int offendingBone,
+		out float offendingSpread)
+	{
+		offendingBone = -1;
+		offendingSpread = 0f;
+		if ((uint)anchorIndex >= (uint)boneTranslations.Length)
+		{
+			return true;
+		}
+
+		Vector3 anchor = boneTranslations[anchorIndex];
+		if (!anchor.IsFinite())
+		{
+			offendingBone = anchorIndex;
+			offendingSpread = float.PositiveInfinity;
+			return false;
+		}
+
+		for (int i = 0; i < boneTranslations.Length; ++i)
+		{
+			if (i == anchorIndex || (i < parents.Length && parents[i] < 0))
+			{
+				continue;
+			}
+
+			Vector3 t = boneTranslations[i];
+			if (!t.IsFinite())
+			{
+				offendingBone = i;
+				offendingSpread = float.PositiveInfinity;
+				return false;
+			}
+
+			if (!IsSmoothBoneSpreadPlausible(t, anchor, restReach, out float spread))
+			{
+				offendingBone = i;
+				offendingSpread = spread;
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private int ResolveSpreadAnchorGuest()
+	{
+		if (_spreadAnchorGuest != -2)
+		{
+			return _spreadAnchorGuest;
+		}
+
+		int anchor = -1;
+		for (int m = 0; m < _modelToGuest.Length; ++m)
+		{
+			int g = _modelToGuest[m];
+			if (g >= 0 && _rig.Parents[m] >= 0 && _rig.Names[m].Contains("Hip", StringComparison.OrdinalIgnoreCase))
+			{
+				anchor = g;
+				break;
+			}
+		}
+
+		if (anchor < 0 && TryBone(Refii.Animations.Engine_TitleRig.RigRole.Hip, out int hip) &&
+			hip < _modelToGuest.Length && _modelToGuest[hip] >= 0 && _rig.Parents[hip] >= 0)
+		{
+			anchor = _modelToGuest[hip];
+		}
+
+		if (anchor < 0)
+		{
+			for (int m = 0; m < _modelToGuest.Length; ++m)
+			{
+				if (_modelToGuest[m] >= 0 && _rig.Parents[m] >= 0)
+				{
+					anchor = _modelToGuest[m];
+					break;
+				}
+			}
+		}
+
+		_spreadAnchorGuest = anchor;
+		return anchor;
+	}
+
+	/// <summary>
 	/// Whether a pose could be this rig's. The double-read tear detector in the bridge catches
 	/// a write that lands BETWEEN its two copies; garbage that reads identically twice is what
-	/// this catches: a non-finite lane, a non-unit rotation, or overflow coordinates beyond
-	/// <see cref="MaxBoneCoordinate"/>.
+	/// this catches: a non-finite lane, a non-unit rotation, overflow coordinates beyond
+	/// <see cref="MaxBoneCoordinate"/>, or (on smooth-skinned rigs) bones scattered far past the
+	/// rig's coherent rest reach.
 	/// </summary>
 	private bool Plausible(in HostBridge.BonePose pose)
 	{
+		bool enforceSmoothSpread = !IsDisarticulated && !IsRigidPieceMesh;
+		int anchorGuest = enforceSmoothSpread ? ResolveSpreadAnchorGuest() : -1;
+		bool hasAnchor = anchorGuest >= 0 && anchorGuest < pose.BoneCount;
+		Vector3 anchorPos = hasAnchor ? pose.Translation(anchorGuest) : Vector3.Zero;
+		if (hasAnchor && !anchorPos.IsFinite())
+		{
+			hasAnchor = false;
+		}
+
+		float effectiveReach = _reachIncludesGuestRest
+			? Mathf.Max(_restReach, GuestRestReach)
+			: _restReach;
+
 		for (int m = 0; m < _modelToGuest.Length; ++m)
 		{
 			int g = _modelToGuest[m];
@@ -486,18 +634,28 @@ public sealed class Engine_EntitySkeleton
 			Vector3 t = pose.Translation(g);
 			Quaternion q = pose.Rotation(g);
 			Vector3 sc = pose.Scale(g);
-			if (IsPlausibleBone(t, q, sc, out string? why))
+			if (!IsPlausibleBone(t, q, sc, out string? why))
 			{
-				continue;
+				if (_refusalsLogged < 12)
+				{
+					++_refusalsLogged;
+					GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
+				}
+
+				return false;
 			}
 
-			if (_refusalsLogged < 12)
+			if (hasAnchor && g != anchorGuest && _rig.Parents[m] >= 0 &&
+				!IsSmoothBoneSpreadPlausible(t, anchorPos, effectiveReach, out float spread))
 			{
-				++_refusalsLogged;
-				GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': {why} |t|={t.Length():0.000} |q|²={q.LengthSquared():0.000} scale={sc}");
-			}
+				if (_refusalsLogged < 12)
+				{
+					++_refusalsLogged;
+					GD.Print($"[rig-refuse] '{_skeleton.Name}' bone {g} '{BoneName(m)}': smooth spread {spread:0.00}m > {SmoothBoneSpreadLimit(effectiveReach):0.00}m (reach {effectiveReach:0.00}m)");
+				}
 
-			return false;
+				return false;
+			}
 		}
 
 		return true;
@@ -754,6 +912,50 @@ public sealed class Engine_EntitySkeleton
 		return posed.Length() < 1e-4f
 			? float.NaN
 			: Mathf.RadToDeg(forward.SignedAngleTo(posed.Normalized(), Vector3.Up));
+	}
+
+	private int _collapseProbeBone = -2;
+	private float _collapseProbeRestY;
+
+	/// <summary>
+	/// Returns true when the rig's upper-body probe bone (Head, else Chest, else Hip) has dropped
+	/// well below its standing rest height, confirming a dead body actually collapsed rather than
+	/// freezing upright. Lazily resolved once on first call; never called on living entities.
+	/// </summary>
+	public bool IsPoseCollapsed()
+	{
+		if (_collapseProbeBone == -2)
+		{
+			_collapseProbeBone = -1;
+			_collapseProbeRestY = 0f;
+			ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole.Head);
+			if (_collapseProbeBone < 0) ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole.Chest);
+			if (_collapseProbeBone < 0) ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole.Hip);
+		}
+
+		if (_collapseProbeBone < 0)
+		{
+			return false;
+		}
+
+		float posedY = _skeleton.GetBoneGlobalPose(_collapseProbeBone).Origin.Y;
+		return Engine_CorpsePolicy.IsPoseCollapsed(_collapseProbeRestY, posedY);
+	}
+
+	private void ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole role)
+	{
+		if (TryBone(role, out int bone) &&
+			bone >= 0 &&
+			bone < _modelToGuest.Length &&
+			_modelToGuest[bone] >= 0)
+		{
+			float restY = _skeleton.GetBoneGlobalRest(bone).Origin.Y;
+			if (float.IsFinite(restY) && restY >= Engine_CorpsePolicy.MinCollapseProbeRestHeight)
+			{
+				_collapseProbeBone = bone;
+				_collapseProbeRestY = restY;
+			}
+		}
 	}
 
 	/// <summary>

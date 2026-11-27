@@ -22,15 +22,16 @@ public partial class AndroidTouchEditor : CanvasLayer
     private Label? _picked;
     private Label? _preset;
     private Label? _opacity;
+    private CheckButton? _hideControls;
     private int _presetAt;
     private LineEdit? _name;
     private Button? _smaller, _bigger, _resetOne, _delete;
 
-    /// <summary>The live refii.toml, where the controls' opacity is written.</summary>
+    /// <summary>The live refii.toml, where the touch settings are written.</summary>
     public Func<string>? ConfigPath { get; set; }
 
-    /// <summary>Runs after the opacity is written, so the touch controls reread it now rather than at their next poll.</summary>
-    public Action? OpacityWritten { get; set; }
+    /// <summary>Runs after a touch setting is written, so the touch controls reread it now rather than at their next poll.</summary>
+    public Action? SettingsWritten { get; set; }
 
     /// <summary>The kind of screen the touch controls are laid out for.</summary>
     public Func<TouchContext>? Screen { get; set; }
@@ -77,6 +78,10 @@ public partial class AndroidTouchEditor : CanvasLayer
         _opacity.VerticalAlignment = VerticalAlignment.Center;
         opacity.AddChild(_opacity);
         Add(opacity, "+", 70, () => StepOpacity(0.1f));
+
+        _hideControls = new CheckButton { Text = "Hide on-screen controls" };
+        _hideControls.Toggled += SetControlsHidden;
+        Row(body).AddChild(_hideControls);
 
         var presets = Row(body);
         // Stepped with < and >, not a drop-down: a popup is a window of its own, which takes every touch
@@ -182,13 +187,29 @@ public partial class AndroidTouchEditor : CanvasLayer
         Refresh();
     }
 
+    /// <summary>Turns the overlay off or restores it through the runtime's touch input setting.</summary>
+    private void SetControlsHidden(bool hidden)
+    {
+        if (ConfigPath?.Invoke() is not { Length: > 0 } config) return;
+        try
+        {
+            AndroidQuickSettings.SetHideTouchControls(config, hidden);
+            SettingsWritten?.Invoke();
+        }
+        catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
+        {
+            GD.PrintErr("[android] touch controls: " + error.Message);
+        }
+        Refresh();
+    }
+
     private void StepOpacity(float step)
     {
         if (ConfigPath?.Invoke() is not { Length: > 0 } config) return;
         try
         {
             AndroidQuickSettings.SetTouchOpacity(config, AndroidQuickSettings.TouchOpacity(config) + step);
-            OpacityWritten?.Invoke();
+            SettingsWritten?.Invoke();
         }
         catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException)
         {
@@ -253,7 +274,11 @@ public partial class AndroidTouchEditor : CanvasLayer
             if (button is not null) button.Disabled = picked is null;
         if (_opacity is not null && ConfigPath?.Invoke() is { Length: > 0 } config)
         {
-            try { _opacity.Text = $"Opacity {AndroidQuickSettings.TouchOpacity(config) * 100:0}%"; }
+            try
+            {
+                _hideControls?.SetPressedNoSignal(AndroidQuickSettings.HideTouchControls(config));
+                _opacity.Text = $"Opacity {AndroidQuickSettings.TouchOpacity(config) * 100:0}%";
+            }
             catch (Exception error) when (error is System.IO.IOException or UnauthorizedAccessException) { _opacity.Text = "Opacity"; }
         }
 

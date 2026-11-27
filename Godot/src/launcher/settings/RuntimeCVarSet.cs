@@ -72,6 +72,10 @@ public static class RuntimeCVarsGodot
                 "The remaster switch: modernized textures and materials, or the game exactly as " +
                 "it shipped. Off restores the original look — no upscaling, no occlusion, no " +
                 "metallic, no parallax. Everything below follows this unless set explicitly."),
+            new("fx_remaster_magic_circle", Category, RuntimeCVarType.Bool, "true",
+                "Enhance Will spell targeting and charge circles with counter-rotating arcane " +
+                "rings, rising Will motes, and cyan ground light. Off keeps the original " +
+                "single-band circle. Follows materials_modernized unless set."),
             new("texture_upscaling_enabled", Category, RuntimeCVarType.Bool, "true",
                 "Enhance textures at runtime. Off keeps the original assets exactly as shipped. " +
                 "Follows materials_modernized unless set."),
@@ -614,6 +618,12 @@ public static class RuntimeCVarsGodot
                 "Multiplier on placed light radius (reach) inside town buildings in outdoor "
                 + "levels. 1.0 preserves the authored room reach without over-overlapping. "
                 + "Caves are unaffected."),
+            new("floating_light_softness", LightingCategory, RuntimeCVarType.Double, "1.0",
+                "Soft-core volume radius scale for unattached floating ambient lights (such as "
+                + "PlaceableLight mood fills in Wraithmarsh houses and clearings). 1.0 spreads "
+                + "the central point into a uniform ambient volume while preserving full reach "
+                + "and window light shafts; 0.0 restores a point-source hotspot. Physical torches "
+                + "and lamps are unaffected."),
             ..RuntimeCVarsAndroid.BakedShadows,
             ..RuntimeCVarsAndroid.IntroVideos,
             ..RuntimeCVarsAndroid.TextureStorage,
