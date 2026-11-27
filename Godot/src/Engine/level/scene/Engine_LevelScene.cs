@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Godot;
 using Refii.Lighting;
 
@@ -180,6 +181,21 @@ public static class Engine_LevelMesh
 /// <summary>Builds detached region presentation nodes from the game's stated landscape and scenario assets.</summary>
 public static class Engine_LevelScene
 {
+	private static readonly ConditionalWeakTable<Node3D, Refii.Gdb.GdbView> LevelGdbViews = new();
+
+	/// <summary>Returns the parsed level <see cref="Refii.Gdb.GdbView"/> attached to a built region root, if any.</summary>
+	public static bool TryGetLevelGdbView(Node3D? region, out Refii.Gdb.GdbView? view)
+	{
+		if (region is not null && LevelGdbViews.TryGetValue(region, out Refii.Gdb.GdbView? found))
+		{
+			view = found;
+			return true;
+		}
+
+		view = null;
+		return false;
+	}
+
 	/// <summary>Meta on every level root: the world it belongs to.</summary>
 	public const string WorldMeta = "refii_level_world";
 
@@ -959,7 +975,12 @@ public static class Engine_LevelScene
         bool needLightingBake = false;
         if (source is not null)
         {
-            Engine_LevelGdb.TryRead(level, p => source(p), out bakedGdbPath);
+            byte[]? levelGdbBytes = Engine_LevelGdb.TryRead(level, p => source(p), out bakedGdbPath);
+            if (levelGdbBytes is not null &&
+                Refii.Gdb.GdbView.TryParseShared(levelGdbBytes, out Refii.Gdb.GdbView levelGdbView, out _))
+            {
+                LevelGdbViews.AddOrUpdate(root, levelGdbView);
+            }
             GD.Print($"[level] {level}: scenario='{level.Scenario}' gdb={bakedGdbPath}");
             Engine_LevelBakedLighting.TryLoad(
                 bakedGdbPath, p => source(p), out bakedLightmaps, out probeField);

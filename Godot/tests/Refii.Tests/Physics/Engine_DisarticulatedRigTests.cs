@@ -316,4 +316,131 @@ public sealed class Engine_DisarticulatedRigTests
             AssertThat(rig60.Bodies[m].Position.DistanceTo(rig144.Bodies[m].Position)).IsLess(0.65f);
         }
     }
+
+    [TestCase]
+    public void DissipatesMechanicalEnergyOnFlatGroundWithoutArtificialJumping()
+    {
+        var entityWorld = new Transform3D(Basis.Identity, new Vector3(0f, 0f, 0f));
+        Transform3D[] rest = MakeRestGlobals(CrumbleNames.Length);
+        var rig = new Engine_DisarticulatedRig();
+        rig.Initialize(entityWorld, CrumbleNames, rest, CrumbleParents, null, Vector3.Zero, 2026u);
+
+        Engine_DisarticulatedRig.TrySampleGroundContact flat = (Vector3 pos, out Vector3 contact, out Vector3 normal) =>
+        {
+            contact = new Vector3(pos.X, 0f, pos.Z);
+            normal = Vector3.Up;
+            return true;
+        };
+
+        static float TotalEnergy(Engine_DisarticulatedRig r)
+        {
+            float e = 0f;
+            for (int m = 1; m < r.BoneCount; ++m)
+            {
+                Engine_DisarticulatedRig.BoneBody b = r.Bodies[m];
+                if (!b.IsSimulated)
+                {
+                    continue;
+                }
+
+                float inertia = 1f / b.InvInertia;
+                float ke = (0.5f * b.Mass * b.LinearVelocity.LengthSquared()) +
+                    (0.5f * inertia * b.AngularVelocity.LengthSquared());
+                float pe = b.Mass * 9.81f * MathF.Max(0f, b.ComPosition.Y - b.Radius);
+                e += ke + pe;
+            }
+
+            return e;
+        }
+
+        float initialEnergy = TotalEnergy(rig);
+        float prevEnergy = initialEnergy;
+        for (int step = 0; step < 300; ++step)
+        {
+            rig.Step(1f / 60f, entityWorld, flat, default, 0);
+            float curEnergy = TotalEnergy(rig);
+            // Allow tiny discrete penetration-push jitter (< 0.15 J across 7 bones) while prohibiting energy-injecting jumps.
+            AssertThat(curEnergy).IsLessEqual(prevEnergy + 0.15f);
+            AssertThat(curEnergy).IsLessEqual(initialEnergy + 0.25f);
+            prevEnergy = curEnergy;
+        }
+
+        AssertThat(rig.AllAsleep).IsTrue();
+        AssertThat(prevEnergy).IsLess(0.1f);
+    }
+
+    [TestCase]
+    public void IndoorFloorIgnoresFallingGuestHavokBones()
+    {
+        var indoorEntity = new Transform3D(Basis.Identity, new Vector3(5f, 3.2f, 5f));
+        Transform3D[] rest = MakeRestGlobals(CrumbleNames.Length);
+        var indoorRig = new Engine_DisarticulatedRig();
+        indoorRig.Initialize(indoorEntity, CrumbleNames, rest, CrumbleParents, null, Vector3.Zero, 101u);
+
+        // Simulate guest Havok ragdoll bones falling 3.5m to 60m through unmounted guest floor collision.
+        var fallingGuest = new Vector3[CrumbleNames.Length];
+        for (int i = 0; i < fallingGuest.Length; ++i)
+        {
+            fallingGuest[i] = new Vector3(5f + (i * 0.5f), i % 2 == 0 ? -0.3f : -55.0f, 5f);
+        }
+
+        for (int step = 0; step < 240; ++step)
+        {
+            indoorRig.Step(1f / 60f, indoorEntity, null, fallingGuest, fallingGuest.Length);
+        }
+
+        AssertThat(indoorRig.AllAsleep).IsTrue();
+        for (int m = 1; m < indoorRig.BoneCount; ++m)
+        {
+            AssertThat(indoorRig.Bodies[m].Position.Y).IsGreaterEqual(3.2f + indoorRig.Bodies[m].Radius - 1e-3f);
+        }
+    }
+
+    [TestCase]
+    public void StandingKillScattersWidelyAndStatedBoundsEncloseAllBonesWithHysteresis()
+    {
+        var entityWorld = new Transform3D(Basis.Identity, new Vector3(4f, 0f, -6f));
+        Transform3D[] rest = MakeRestGlobals(CrumbleNames.Length);
+        var rig = new Engine_DisarticulatedRig();
+        rig.Initialize(entityWorld, CrumbleNames, rest, CrumbleParents, null, Vector3.Zero, 4242u);
+
+        Engine_DisarticulatedRig.TrySampleGroundContact flat = (Vector3 pos, out Vector3 contact, out Vector3 normal) =>
+        {
+            contact = new Vector3(pos.X, 0f, pos.Z);
+            normal = Vector3.Up;
+            return true;
+        };
+
+        AssertThat(rig.TryUpdateStatedBounds(entityWorld, force: true, out Aabb bounds)).IsTrue();
+        int writes = 1;
+        Transform3D invEntity = entityWorld.AffineInverse();
+
+        for (int step = 0; step < 300; ++step)
+        {
+            rig.Step(1f / 60f, entityWorld, flat, default, 0);
+            if (rig.TryUpdateStatedBounds(entityWorld, force: false, out Aabb updated))
+            {
+                bounds = updated;
+                ++writes;
+            }
+
+            for (int m = 1; m < rig.BoneCount; ++m)
+            {
+                Vector3 localCom = invEntity * rig.Bodies[m].ComPosition;
+                AssertThat(bounds.HasPoint(localCom)).IsTrue();
+            }
+        }
+
+        AssertThat(rig.AllAsleep).IsTrue();
+        AssertThat(writes).IsLess(12);
+
+        float maxHoriz = 0f;
+        for (int m = 1; m < rig.BoneCount; ++m)
+        {
+            Vector3 d = rig.Bodies[m].ComPosition - entityWorld.Origin;
+            maxHoriz = MathF.Max(maxHoriz, MathF.Sqrt((d.X * d.X) + (d.Z * d.Z)));
+        }
+
+        AssertThat(maxHoriz).IsGreater(1.4f);
+    }
 }

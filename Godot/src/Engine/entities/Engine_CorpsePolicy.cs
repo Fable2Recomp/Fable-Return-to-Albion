@@ -35,20 +35,54 @@ public static partial class Engine_CorpsePolicy
     /// <summary>Horizontal distance in metres beyond which distant corpses are evicted first.</summary>
     public const float DistantEvictionRadiusMeters = 25.0f;
 
-    private const uint BeetlesBaseHash = 0x88CCE036u;
-    private const uint BansheesBaseHash = 0x8E3A9AF8u;
-    private const uint BansheeChildHash = 0x19020080u;
-    private const uint TrollsBaseHash = 0x5AAACE13u;
-    private const uint SpireShardsBaseHash = 0xFDF0DC5Bu;
+    /// <summary>Authoritative corpse persistence mode resolved from GDB metadata and runtime gates.</summary>
+    public enum CorpseDeathMode : byte
+    {
+        Excluded = 0,
+        PhysicalRagdoll = 1,
+        CrumbleSplode = 2,
+    }
 
+    /// <summary>Minimum rest height in metres for a bone to act as a reliable collapse probe.</summary>
+    public const float MinCollapseProbeRestHeight = 0.35f;
+
+    /// <summary>Maximum posed-to-rest height ratio treated as collapsed on the ground.</summary>
+    public const float CollapseHeightRatio = 0.62f;
+
+    // Cross-title Lionhead GDB schema hashes (verified identical across Fable 2 and Fable 3).
+    internal const uint CreatureComponentHash = 0xC3B90D4Fu;
+    internal const uint DeathTypeHash = 0xCD9174D9u;
+    internal const uint DeathMeshHash = 0x0D364222u;
+    internal const uint CreatureSpecialisationHash = 0xD3755112u;
+    internal const uint CreatureBaseTypeHash = 0x72DB57C9u;
+    internal const uint PhysicsNavigatorComponentHash = 0xC5A11B7Au;
+    internal const uint PhysicsControlledComponentHash = 0xD51F7655u;
+    internal const uint PhysicsStaticComponentHash = 0xF73572C4u;
+    internal const uint HasRagdollHash = 0xD09A6BC0u;
+    internal const uint VillagerComponentHash = 0x5BA014D4u;
+    internal const uint JobTagHash = 0x7FA702D2u;
+    internal const uint GhostOccupationTagHash = 0xFC18ABA6u; // TEXT_CHARACTER_OCCUPATION_GHOST
+
+    private const uint ShadowSpecialisationValue = 4u; // CREATURE_SPECIALISE_SHADOW
+    private const uint DogBaseTypeValue = 8u;          // CREATURE_DOG (do NOT exclude DogComponent: F3 wolves inherit it)
+
+    private const uint DeathTypeDoNothing = 0u;
+    private const uint DeathTypeDestroy = 1u;
+    private const uint DeathTypeDropDead = 2u;
+    private const uint DeathTypePlayAction = 3u;
+    private const uint DeathTypePlayActionAndDestroy = 4u;
+    private const uint DeathTypeHollowManSplode = 5u;
+    private const uint DeathTypeFadeOut = 6u;
+    private const uint DeathTypeShadowCreature = 7u;
+    private const uint DeathTypeShard = 8u;
+
+    // Component slots that mark non-corpse supernatural/statue archetypes even when DeathType == 2.
     private static readonly uint[] ExcludedComponentFieldHashes =
     {
-        0x2B1E4BC7u, // ShadowCreatureComponent (BansheeChild, Shadow Bandit/Hobbe/Balverine/Beetle/Troll)
-        0x6122274Cu, // BansheeComponent
-        0xFD04EFA9u, // BeetleComponent
-        0x107B894Cu, // ShardComponent
-        0xEA238706u, // HollowmanWispComponent
-        0xC5FFF38Bu, // TrollComponent
+        0x2B1E4BC7u, // ShadowCreatureComponent (Shadows, Banshee Children, Cornelius Grim Shadow, F3 Chessboard)
+        0xFB6177C1u, // GhostVillagerComponent (F3 ghost villagers incl. Max & Sam)
+        0xEA238706u, // HollowmanWispComponent (F3 wisps)
+        0xB77F7EB2u, // HeroStatueComponent (F2 & F3 statues)
     };
 
     private static readonly string[] ExcludedTokens =
@@ -64,7 +98,6 @@ public static partial class Engine_CorpsePolicy
         "summon",
         "shard",
         "crawler",
-        "sentinel",
         "darkness",
         "poltergeist",
         "slime",
@@ -75,8 +108,11 @@ public static partial class Engine_CorpsePolicy
     private static float _cachedLifetime = DefaultLifetimeSeconds;
     private static int _cachedConfiguredMax;
 
-    private static GdbMulti? _cachedGdb;
-    private static readonly Dictionary<uint, bool> ExcludedRecordCache = new();
+    private static GdbView? _activeLevelGdb;
+    private static GdbMulti? _cachedBaseGdb;
+    private static GdbView? _cachedLevelGdb;
+    private static GdbMulti? _cachedEffectiveGdb;
+    private static readonly Dictionary<uint, (CorpseDeathMode Mode, bool FromGdb)> RecordModeCache = new();
 
     /// <summary>Inputs evaluated to decide whether a retired guest entity should be kept as a corpse.</summary>
     public readonly record struct CorpseCandidate(
@@ -88,7 +124,12 @@ public static partial class Engine_CorpsePolicy
         bool IsCompanion,
         uint RecordHash,
         string? ModelPath,
-        bool RecordExcluded);
+        CorpseDeathMode DeathMode,
+        bool ClassifiedFromGdb,
+        bool SawPosedWhileDead,
+        bool SawRagdollWhileDead,
+        bool SawDisarticulatedWhileDead,
+        bool SawCollapsedPoseWhileDead);
 
     /// <summary>Lightweight per-corpse summary passed to <see cref="SelectEvictionIndex"/>.</summary>
     public readonly record struct CorpseSlotSummary(Vector3 Position, float Age, bool FadingOut);
@@ -228,7 +269,17 @@ public static partial class Engine_CorpsePolicy
     public static bool IsEtherealAppearance(in HostBridge.EntityAppearance look)
     {
         float maxTint = MathF.Max(look.TintLanes.X, MathF.Max(look.TintLanes.Y, look.TintLanes.Z));
-        return look.Alpha < 0.90f || maxTint > 1.5f;
+        return look.Alpha <= 0.92f || maxTint > 1.5f;
+    }
+
+    /// <summary>
+    /// Returns true when a living creature exhibits a normal opaque appearance, clearing any transient
+    /// spawn fade-in flag so solid enemies are not permanently disqualified.
+    /// </summary>
+    public static bool IsSolidLivingAppearance(in HostBridge.EntityAppearance look)
+    {
+        float maxTint = MathF.Max(look.TintLanes.X, MathF.Max(look.TintLanes.Y, look.TintLanes.Z));
+        return look.Drawable && look.Alpha >= 0.98f && maxTint <= 1.2f;
     }
 
     /// <summary>Returns true if a record name or model asset path matches an exploding bug or ethereal entity.</summary>
@@ -250,55 +301,161 @@ public static partial class Engine_CorpsePolicy
         return false;
     }
 
-    /// <summary>
-    /// Checks whether a GDB record hash or its inherited parent hierarchy (or model path) belongs to
-    /// an excluded non-corpse archetype such as Beetles, Banshees, Ghosts, or Spire Shards.
-    /// </summary>
-    public static bool IsExcludedRecord(uint recordHash, string? modelPath)
+    /// <summary>Sets or clears the active region's level GDB so level-local creature records resolve cleanly.</summary>
+    public static void SetActiveLevelGdb(GdbView? levelView)
     {
-        if (HasExcludedName(modelPath))
-        {
-            return true;
-        }
-
-        if (recordHash == 0u || recordHash == GdbHash.Null)
-        {
-            return false;
-        }
-
-        GdbMulti? multi = Engine_GameGdb.Database;
         lock (CacheGate)
         {
-            if (!ReferenceEquals(_cachedGdb, multi))
+            if (ReferenceEquals(_activeLevelGdb, levelView))
             {
-                _cachedGdb = multi;
-                ExcludedRecordCache.Clear();
+                return;
             }
 
-            if (ExcludedRecordCache.TryGetValue(recordHash, out bool cached))
-            {
-                return cached;
-            }
+            _activeLevelGdb = levelView;
+            _cachedLevelGdb = null;
+            _cachedEffectiveGdb = null;
+            RecordModeCache.Clear();
         }
-
-        bool excluded = EvaluateRecordExcluded(multi, recordHash);
-        lock (CacheGate)
-        {
-            if (ReferenceEquals(_cachedGdb, multi))
-            {
-                if (ExcludedRecordCache.Count > 4096)
-                {
-                    ExcludedRecordCache.Clear();
-                }
-
-                ExcludedRecordCache[recordHash] = excluded;
-            }
-        }
-
-        return excluded;
     }
 
-    /// <summary>Returns true if a GDB component field hash denotes an excluded shadow/exploding/ethereal creature type.</summary>
+    private static GdbMulti? BuildEffectiveGdb(GdbMulti? baseMulti, GdbView? levelView)
+    {
+        if (levelView is null)
+        {
+            return baseMulti;
+        }
+
+        if (baseMulti is null)
+        {
+            return GdbMulti.Build(new[] { levelView });
+        }
+
+        var views = new List<GdbView>(baseMulti.Views.Count + 1);
+        views.AddRange(baseMulti.Views);
+        views.Add(levelView);
+        return GdbMulti.Build(views);
+    }
+
+    private static GdbMulti? ResolveEffectiveGdbAndTryCache(
+        uint recordHash,
+        out (CorpseDeathMode Mode, bool FromGdb) cached,
+        out bool hit,
+        out GdbMulti? baseSnap,
+        out GdbView? levelSnap)
+    {
+        GdbMulti? baseMulti = Engine_GameGdb.Database;
+        GdbView? targetLevel;
+        lock (CacheGate)
+        {
+            targetLevel = _activeLevelGdb;
+            if (ReferenceEquals(_cachedBaseGdb, baseMulti) && ReferenceEquals(_cachedLevelGdb, targetLevel))
+            {
+                baseSnap = _cachedBaseGdb;
+                levelSnap = _cachedLevelGdb;
+                if (RecordModeCache.TryGetValue(recordHash, out cached))
+                {
+                    hit = true;
+                    return _cachedEffectiveGdb;
+                }
+
+                hit = false;
+                return _cachedEffectiveGdb;
+            }
+        }
+
+        GdbMulti? built = BuildEffectiveGdb(baseMulti, targetLevel);
+        lock (CacheGate)
+        {
+            if (!ReferenceEquals(_cachedBaseGdb, baseMulti) || !ReferenceEquals(_cachedLevelGdb, targetLevel))
+            {
+                _cachedBaseGdb = baseMulti;
+                _cachedLevelGdb = targetLevel;
+                _cachedEffectiveGdb = built;
+                RecordModeCache.Clear();
+            }
+
+            baseSnap = _cachedBaseGdb;
+            levelSnap = _cachedLevelGdb;
+            if (RecordModeCache.TryGetValue(recordHash, out cached))
+            {
+                hit = true;
+                return _cachedEffectiveGdb;
+            }
+
+            hit = false;
+            return _cachedEffectiveGdb;
+        }
+    }
+
+    private static void StoreCachedRecordMode(
+        GdbMulti? baseSnap,
+        GdbView? levelSnap,
+        uint recordHash,
+        (CorpseDeathMode Mode, bool FromGdb) value)
+    {
+        lock (CacheGate)
+        {
+            if (ReferenceEquals(_cachedBaseGdb, baseSnap) && ReferenceEquals(_cachedLevelGdb, levelSnap))
+            {
+                if (RecordModeCache.Count > 4096)
+                {
+                    RecordModeCache.Clear();
+                }
+
+                RecordModeCache[recordHash] = value;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Classifies how a creature record behaves on death using layered global + active-level GDB
+    /// metadata (<c>EDeathType</c>, <c>DeathMesh</c>, <c>HasRagdoll</c>, and component slots),
+    /// falling back to model path tokens only when GDB lacks an authoritative creature classification.
+    /// </summary>
+    public static CorpseDeathMode ClassifyRecord(uint recordHash, string? modelPath) =>
+        ClassifyRecord(recordHash, modelPath, out _);
+
+    /// <summary>
+    /// Classifies how a creature record behaves on death and reports whether the classification came
+    /// authoritatively from GDB schema data (<paramref name="classifiedFromGdb"/>).
+    /// </summary>
+    public static CorpseDeathMode ClassifyRecord(uint recordHash, string? modelPath, out bool classifiedFromGdb)
+    {
+        if (recordHash == 0u || recordHash == GdbHash.Null)
+        {
+            classifiedFromGdb = false;
+            return HasExcludedName(modelPath) ? CorpseDeathMode.Excluded : CorpseDeathMode.PhysicalRagdoll;
+        }
+
+        GdbMulti? effective = ResolveEffectiveGdbAndTryCache(
+            recordHash,
+            out (CorpseDeathMode Mode, bool FromGdb) cached,
+            out bool hit,
+            out GdbMulti? baseSnap,
+            out GdbView? levelSnap);
+        if (!hit)
+        {
+            CorpseDeathMode evaluated = EvaluateRecordMode(effective, recordHash, out bool fromGdb);
+            cached = (evaluated, fromGdb);
+            StoreCachedRecordMode(baseSnap, levelSnap, recordHash, cached);
+        }
+
+        classifiedFromGdb = cached.FromGdb;
+        if (!classifiedFromGdb && HasExcludedName(modelPath))
+        {
+            return CorpseDeathMode.Excluded;
+        }
+
+        return cached.Mode;
+    }
+
+    /// <summary>
+    /// Checks whether a GDB record hash (or fallback model path) resolves to <see cref="CorpseDeathMode.Excluded"/>.
+    /// </summary>
+    public static bool IsExcludedRecord(uint recordHash, string? modelPath) =>
+        ClassifyRecord(recordHash, modelPath) == CorpseDeathMode.Excluded;
+
+    /// <summary>Returns true if a GDB component field hash denotes an excluded non-corpse archetype.</summary>
     public static bool IsExcludedComponentFieldHash(uint fieldHash)
     {
         foreach (uint excluded in ExcludedComponentFieldHashes)
@@ -312,67 +469,148 @@ public static partial class Engine_CorpsePolicy
         return false;
     }
 
-    private static bool IsExcludedArchetypeHash(uint recordHash) =>
-        recordHash is BeetlesBaseHash or BansheesBaseHash or BansheeChildHash or TrollsBaseHash or SpireShardsBaseHash;
-
-    private static bool HasExcludedComponentSlot(in GdbCursor cursor)
+    internal static CorpseDeathMode EvaluateRecordMode(GdbMulti? multi, uint recordHash, out bool classifiedFromGdb)
     {
+        if (multi is null ||
+            recordHash == 0u ||
+            recordHash == GdbHash.Null ||
+            !multi.TryLookup(recordHash, out GdbCursor start) ||
+            !start.Valid)
+        {
+            classifiedFromGdb = false;
+            return CorpseDeathMode.PhysicalRagdoll;
+        }
+
         foreach (uint fieldHash in ExcludedComponentFieldHashes)
         {
-            if (cursor.View.TryFindLocalRaw(cursor.Record, fieldHash, (int)GdbFieldType.Reference, out _, out _))
+            if (multi.TryFindInherited(start, fieldHash, (int)GdbFieldType.Reference, out _, out _, out _))
             {
-                return true;
+                classifiedFromGdb = true;
+                return CorpseDeathMode.Excluded;
             }
         }
 
-        return false;
+        if (multi.TryFindInherited(start, VillagerComponentHash, (int)GdbFieldType.Reference, out _, out uint villagerCompHash, out _) &&
+            multi.TryLookup(villagerCompHash, out GdbCursor villagerCursor) &&
+            multi.TryFindInherited(villagerCursor, JobTagHash, -1, out _, out uint jobTagHash, out _) &&
+            jobTagHash == GhostOccupationTagHash)
+        {
+            classifiedFromGdb = true;
+            return CorpseDeathMode.Excluded;
+        }
+
+        bool hasCreature = false;
+        if (multi.TryFindInherited(start, CreatureComponentHash, (int)GdbFieldType.Reference, out _, out uint creatureCompHash, out _) &&
+            multi.TryLookup(creatureCompHash, out GdbCursor creatureCursor))
+        {
+            hasCreature = true;
+
+            if (multi.TryFindInherited(creatureCursor, CreatureSpecialisationHash, -1, out _, out uint spec, out _) &&
+                spec == ShadowSpecialisationValue)
+            {
+                classifiedFromGdb = true;
+                return CorpseDeathMode.Excluded;
+            }
+
+            if (multi.TryFindInherited(creatureCursor, CreatureBaseTypeHash, -1, out _, out uint baseType, out _) &&
+                baseType == DogBaseTypeValue)
+            {
+                classifiedFromGdb = true;
+                return CorpseDeathMode.Excluded;
+            }
+
+            if (multi.TryFindInherited(creatureCursor, DeathTypeHash, -1, out _, out uint deathType, out _))
+            {
+                switch (deathType)
+                {
+                    case DeathTypeDropDead:
+                    case DeathTypePlayAction:
+                        break;
+
+                    case DeathTypeHollowManSplode:
+                        if (multi.TryFindInherited(creatureCursor, DeathMeshHash, -1, out _, out uint deathMeshRaw, out _) &&
+                            deathMeshRaw != 0u &&
+                            deathMeshRaw != GdbHash.Null)
+                        {
+                            classifiedFromGdb = true;
+                            return CorpseDeathMode.CrumbleSplode;
+                        }
+
+                        classifiedFromGdb = true;
+                        return CorpseDeathMode.Excluded;
+
+                    case DeathTypeDoNothing:
+                    case DeathTypeDestroy:
+                    case DeathTypePlayActionAndDestroy:
+                    case DeathTypeFadeOut:
+                    case DeathTypeShadowCreature:
+                    case DeathTypeShard:
+                    default:
+                        classifiedFromGdb = true;
+                        return CorpseDeathMode.Excluded;
+                }
+            }
+        }
+
+        if (multi.TryFindInherited(start, PhysicsNavigatorComponentHash, (int)GdbFieldType.Reference, out _, out uint navPhysHash, out _) &&
+            multi.TryLookup(navPhysHash, out GdbCursor physCursor))
+        {
+            if (multi.TryFindInherited(physCursor, HasRagdollHash, -1, out _, out uint hasRagdoll, out _) &&
+                hasRagdoll == 0u)
+            {
+                classifiedFromGdb = true;
+                return CorpseDeathMode.Excluded;
+            }
+
+            classifiedFromGdb = hasCreature;
+            return CorpseDeathMode.PhysicalRagdoll;
+        }
+
+        if (multi.TryFindInherited(start, PhysicsControlledComponentHash, (int)GdbFieldType.Reference, out _, out _, out _) ||
+            multi.TryFindInherited(start, PhysicsStaticComponentHash, (int)GdbFieldType.Reference, out _, out _, out _))
+        {
+            classifiedFromGdb = true;
+            return CorpseDeathMode.Excluded;
+        }
+
+        if (!hasCreature && HasExcludedName(multi.NameOf(recordHash)))
+        {
+            classifiedFromGdb = false;
+            return CorpseDeathMode.Excluded;
+        }
+
+        classifiedFromGdb = hasCreature;
+        return CorpseDeathMode.PhysicalRagdoll;
     }
 
-    internal static bool EvaluateRecordExcluded(GdbMulti? multi, uint recordHash)
+    /// <summary>
+    /// Returns true when a bone's posed Y height has dropped far enough below its standing rest Y
+    /// height to confirm the body collapsed rather than freezing upright.
+    /// </summary>
+    public static bool IsPoseCollapsed(float restHeightY, float posedHeightY) =>
+        float.IsFinite(restHeightY) &&
+        float.IsFinite(posedHeightY) &&
+        restHeightY >= MinCollapseProbeRestHeight &&
+        posedHeightY <= restHeightY * CollapseHeightRatio;
+
+    /// <summary>
+    /// Verifies that the guest drove a genuine dead pose (ragdoll, disarticulation, or collapsed
+    /// death clip) rather than leaving an offscreen or uncrumbled entity frozen upright.
+    /// </summary>
+    public static bool HasValidDeathPose(
+        CorpseDeathMode mode,
+        bool sawPosedWhileDead,
+        bool sawRagdollWhileDead,
+        bool sawDisarticulatedWhileDead,
+        bool sawCollapsedPoseWhileDead) => mode switch
     {
-        if (IsExcludedArchetypeHash(recordHash))
-        {
-            return true;
-        }
-
-        if (multi is null)
-        {
-            return false;
-        }
-
-        uint current = recordHash;
-        for (int depth = 0; depth < 16 && current != 0u && current != GdbHash.Null; ++depth)
-        {
-            if (IsExcludedArchetypeHash(current) || HasExcludedName(multi.NameOf(current)))
-            {
-                return true;
-            }
-
-            if (!multi.TryLookup(current, out GdbCursor cursor) || !cursor.Valid)
-            {
-                break;
-            }
-
-            if (HasExcludedComponentSlot(in cursor))
-            {
-                return true;
-            }
-
-            if (!cursor.View.TryFindLocalRaw(cursor.Record, GdbView.HashParent, (int)GdbFieldType.Reference, out uint parent, out _))
-            {
-                break;
-            }
-
-            if (parent == current)
-            {
-                break;
-            }
-
-            current = parent;
-        }
-
-        return false;
-    }
+        CorpseDeathMode.Excluded => false,
+        CorpseDeathMode.CrumbleSplode =>
+            sawDisarticulatedWhileDead || (sawPosedWhileDead && sawRagdollWhileDead && sawCollapsedPoseWhileDead),
+        CorpseDeathMode.PhysicalRagdoll =>
+            sawPosedWhileDead && (sawRagdollWhileDead || sawCollapsedPoseWhileDead),
+        _ => false,
+    };
 
     /// <summary>Evaluates all eligibility gates for turning a retired guest entity into a persistent corpse.</summary>
     public static bool IsEligibleCorpse(in CorpseCandidate candidate) =>
@@ -382,8 +620,14 @@ public static partial class Engine_CorpsePolicy
         !candidate.SawEtherealWhileAlive &&
         !candidate.IsPrincipal &&
         !candidate.IsCompanion &&
-        !candidate.RecordExcluded &&
-        !HasExcludedName(candidate.ModelPath);
+        candidate.DeathMode != CorpseDeathMode.Excluded &&
+        (candidate.ClassifiedFromGdb || !HasExcludedName(candidate.ModelPath)) &&
+        HasValidDeathPose(
+            candidate.DeathMode,
+            candidate.SawPosedWhileDead,
+            candidate.SawRagdollWhileDead,
+            candidate.SawDisarticulatedWhileDead,
+            candidate.SawCollapsedPoseWhileDead);
 
     /// <summary>
     /// Selects which active non-fading corpse to evict first when exceeding the cap, strongly
