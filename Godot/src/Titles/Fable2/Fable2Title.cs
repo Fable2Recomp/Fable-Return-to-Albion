@@ -216,10 +216,6 @@ public sealed class Fable2Title : Engine_TitleGame
 
 	public override Refii.Level.DynamicWeatherRule? WeatherRule(Refii.Level.LevelEntry level) => Fable2LevelRules.WeatherRule(level);
 
-	public override string? CuratedModelForParent(uint parentHash) => Engine_GdbModelHashlist.LookupParentHash(parentHash);
-
-	public override string? CuratedModelForKey(string key) => Engine_GdbModelHashlist.LookupEntityKey(key);
-
 	public override bool HandleBusLine(int kind, string fields)
 	{
 		if (kind != CoopHeroKit.PickKind)
