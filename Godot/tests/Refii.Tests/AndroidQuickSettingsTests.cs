@@ -25,6 +25,26 @@ public class AndroidQuickSettingsTests
         return path;
     }
 
+    /// <summary>Hiding and restoring the overlay preserves the existing layout opacity.</summary>
+    [TestCase]
+    public void TouchControlsCanBeHiddenAndRestored()
+    {
+        string directory = Directory.CreateTempSubdirectory("refii-touch-").FullName;
+        string config = Path.Combine(directory, "refii.toml");
+        string otherTitle = Path.Combine(directory, "refiii.toml");
+        try
+        {
+            File.WriteAllText(config, "touch_opacity = 0.7\n");
+            AssertThat(AndroidQuickSettings.HideTouchControls(config)).IsFalse();
+            AndroidQuickSettings.SetHideTouchControls(config, true);
+            AssertThat(AndroidQuickSettings.HideTouchControls(otherTitle)).IsTrue();
+            AndroidQuickSettings.SetHideTouchControls(otherTitle, false);
+            AssertThat(AndroidQuickSettings.HideTouchControls(config)).IsFalse();
+            AssertThat(AndroidQuickSettings.TouchOpacity(config)).IsEqual(0.7f);
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    }
+
     [TestCase]
     public void TestFrameCapRowOffersUncappedTwentyThirtyFortySixty()
     {

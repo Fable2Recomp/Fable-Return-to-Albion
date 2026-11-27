@@ -77,6 +77,24 @@ public sealed class AndroidTouchControlsTests
         AssertThat(wheel).NotContains("Stick", "Look", "RT");
     }
 
+    /// <summary>The childhood pistol enables the world Y button before the equipped slot is filled.</summary>
+    [TestCase]
+    public void ChildhoodPistolUnlocksTheRangedButton()
+    {
+        bool OffersY(uint? equipped, ulong carried, int count)
+        {
+            bool ranged = AndroidTouchControls.CanUseRanged(equipped, () => carried, () => count);
+            return AndroidTouchLayout.Build(Phone, 1f, TouchContext.World, hero: new TouchHero(ranged, false, false))
+                .Any(control => control.Id == "Y" && control.Bits == GameInput.PadY);
+        }
+
+        AssertThat(OffersY(0, 0, 0)).IsFalse();
+        AssertThat(OffersY(0, 0, 1)).IsTrue();
+        AssertThat(OffersY(0, 42, 0)).IsTrue();
+        AssertThat(OffersY(42, 0, 0)).IsTrue();
+        AssertThat(OffersY(null, 0, -1)).IsTrue();
+    }
+
     /// <summary>
     /// A button stands only when it would act — Y with a ranged weapon, B with a spell, Spells with
     /// two — and the rest keep their places when one goes.
