@@ -676,12 +676,12 @@ public static class Engine_FxRecipes
 						if (stagger is not null)
 						{
 							stagger.Timeout += () =>
-						{
-							if (GodotObject.IsInstanceValid(late))
 							{
-								late.Playing = true;
-							}
-						};
+								if (GodotObject.IsInstanceValid(late))
+								{
+									late.Playing = true;
+								}
+							};
 						}
 					}
 					if (ReferenceEquals(parent, node))

@@ -24,6 +24,27 @@ using Refii.Ui;
 /// </summary>
 public static class Engine_UiRealEstatePage
 {
+	/// <summary>TU1-normalized in-game screen id for the real-estate screen.</summary>
+	public const uint ScreenId = 28u;
+
+	/// <summary>
+	/// Packs the <see cref="Fable2Bridge.RealEstate"/> flags tested by <c>RealEstateMenu</c>'s
+	/// row conditions into a compact bitmask (known, owned, tenanted, business) so the list
+	/// rebuilds whenever any condition-relevant property attribute changes.
+	/// </summary>
+	/// <param name="estate">The sampled real-estate snapshot.</param>
+	/// <returns>
+	/// Bitmask covering <see cref="Fable2Bridge.RealEstate.Known"/>,
+	/// <see cref="Fable2Bridge.RealEstate.Owned"/>,
+	/// <see cref="Fable2Bridge.RealEstate.HasTenant"/>, and
+	/// <see cref="Fable2Bridge.RealEstate.IsBusiness"/>.
+	/// </returns>
+	public static int ConditionKey(in Fable2Bridge.RealEstate estate) =>
+		(estate.Known ? 1 : 0) |
+		(estate.Owned ? 2 : 0) |
+		(estate.HasTenant ? 4 : 0) |
+		(estate.IsBusiness ? 8 : 0);
+
 	// Page one. Paths read out of the binary's own statics rather than guessed —
 	// `Foreground.Book.Pages.Page1.Contents.Title` at 0x820EB14C, and so on.
 	private const string Title = "Page1.Contents.Title";

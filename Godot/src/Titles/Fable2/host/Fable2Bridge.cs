@@ -45,6 +45,12 @@ public static class Fable2Bridge
 	[System.ThreadStatic]
 	private static uint[]? _minimapWords;
 
+	[ThreadStatic]
+	private static uint[]? _realEstateWords;
+
+	[ThreadStatic]
+	private static byte[]? _realEstateOccupant;
+
 	[DllImport("refii_hostbridge")]
 	private static extern int RefiiHostGetLoadingScreenLayout(uint[] outWords);
 
@@ -1134,8 +1140,9 @@ public static class Fable2Bridge
 			return default;
 		}
 
-		uint[] words = new uint[15];
-		var occupant = new byte[128];
+		uint[] words = _realEstateWords ??= new uint[15];
+		byte[] occupant = _realEstateOccupant ??= new byte[128];
+		occupant[0] = 0;
 		uint known;
 		try
 		{
@@ -1146,11 +1153,7 @@ public static class Fable2Bridge
 			return default;
 		}
 
-		return known == 0u ? default : new RealEstate(
-			true, words[0], words[1], words[2] != 0u, words[3] != 0u,
-			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
-			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
-			Utf8(occupant), words[14]);
+		return known == 0u ? default : DecodeRealEstate(true, words, occupant);
 	}
 
 	/// <summary>Reads screen 28's building. See <see cref="RealEstate"/>.</summary>
@@ -1161,8 +1164,9 @@ public static class Fable2Bridge
 			return default;
 		}
 
-		uint[] words = new uint[15];
-		var occupant = new byte[128];
+		uint[] words = _realEstateWords ??= new uint[15];
+		byte[] occupant = _realEstateOccupant ??= new byte[128];
+		occupant[0] = 0;
 		uint known;
 		try
 		{
@@ -1174,12 +1178,15 @@ public static class Fable2Bridge
 			return default;
 		}
 
-		return new RealEstate(
-			known != 0u, words[0], words[1], words[2] != 0u, words[3] != 0u,
+		return DecodeRealEstate(known != 0u, words, occupant);
+	}
+
+	private static RealEstate DecodeRealEstate(bool known, uint[] words, byte[] occupant) =>
+		new(
+			known, words[0], words[1], words[2] != 0u, words[3] != 0u,
 			(int)words[4], (int)words[5], (int)words[6], (int)words[7], (int)words[8],
 			(int)words[9], (int)words[10], (int)words[11], (int)words[12], words[13],
-			Utf8(occupant), words[14]);
-	}
+			occupant[0] == 0 ? string.Empty : Utf8(occupant), words[14]);
 
 	/// <summary>Reads the crime screen. See <see cref="CrimeScreen"/>.</summary>
 	public static CrimeScreen GetCrimeScreen()

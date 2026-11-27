@@ -127,19 +127,19 @@ public partial class GameUi
 		// Sell, Rent Out, Evict…) off the resolved building record, and this build never sees
 		// them: the host draws screen 28's list, the guest's population lands in its own
 		// presentation, so the rows are AUTHORED in the templates (Engine_UiGameTemplates) and
-		// each states the fact its own branch of the guest's decision tree tests.
-		Engine_UiRowConditions.Register("estate.known",
-			() => Fable2Bridge.GetRealEstate() is { Known: true });
-		Engine_UiRowConditions.Register("estate.owned",
-			() => Fable2Bridge.GetRealEstate() is { Known: true, Owned: true });
-		Engine_UiRowConditions.Register("estate.vacant",
-			() => Fable2Bridge.GetRealEstate() is { Known: true, HasTenant: false });
-		Engine_UiRowConditions.Register("estate.tenanted",
-			() => Fable2Bridge.GetRealEstate() is { Known: true, HasTenant: true });
-		Engine_UiRowConditions.Register("estate.business",
-			() => Fable2Bridge.GetRealEstate() is { Known: true } own && own.IsBusiness);
-		Engine_UiRowConditions.Register("estate.home",
-			() => Fable2Bridge.GetRealEstate() is { Known: true } own && !own.IsBusiness);
+		// each states the fact its own branch of the guest's decision tree tests against the
+		// cached _estateSnapshot sampled once per list pass.
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.EstateKnown, () => _estateSnapshot.Known);
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.EstateOwned,
+			() => _estateSnapshot is { Known: true, Owned: true });
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.EstateVacant,
+			() => _estateSnapshot is { Known: true, HasTenant: false });
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.EstateTenanted,
+			() => _estateSnapshot is { Known: true, HasTenant: true });
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.EstateBusiness,
+			() => _estateSnapshot.Known && _estateSnapshot.IsBusiness);
+		Engine_UiRowConditions.Register(Engine_UiRowConditions.EstateHome,
+			() => _estateSnapshot.Known && !_estateSnapshot.IsBusiness);
 	}
 
 	/// <summary>

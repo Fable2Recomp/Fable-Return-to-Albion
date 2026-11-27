@@ -574,7 +574,7 @@ public static class Engine_UiGameTemplates
         {
           "name": "GUI_SCREEN_REAL_ESTATE_BUY",
           "tag": "GUI_SCREEN_REAL_ESTATE_BUY",
-          "when": "!estate.owned",
+          "when": "estate.known,!estate.owned",
           "eventType": 111
         },
         {
@@ -586,19 +586,19 @@ public static class Engine_UiGameTemplates
         {
           "name": "GUI_SCREEN_REAL_ESTATE_RENT_OUT",
           "tag": "GUI_SCREEN_REAL_ESTATE_RENT_OUT",
-          "when": "estate.owned,estate.vacant",
+          "when": "estate.owned,estate.home,estate.vacant",
           "eventType": 112
         },
         {
           "name": "GUI_SCREEN_REAL_ESTATE_EVICT_TENNANT",
           "tag": "GUI_SCREEN_REAL_ESTATE_EVICT_TENNANT",
-          "when": "estate.tenanted",
+          "when": "estate.owned,estate.tenanted",
           "eventType": 119
         },
         {
           "name": "GUI_SCREEN_REAL_ESTATE_ADJUST_RENT",
           "tag": "GUI_SCREEN_REAL_ESTATE_ADJUST_RENT",
-          "when": "estate.tenanted",
+          "when": "estate.owned,estate.tenanted",
           "eventType": 117
         },
         {
@@ -610,7 +610,7 @@ public static class Engine_UiGameTemplates
         {
           "name": "GUI_SCREEN_REAL_ESTATE_SET_BUDGET",
           "tag": "GUI_SCREEN_REAL_ESTATE_SET_BUDGET",
-          "when": "estate.owned,estate.home",
+          "when": "estate.owned,estate.home,estate.vacant",
           "eventType": 115
         }
       ]

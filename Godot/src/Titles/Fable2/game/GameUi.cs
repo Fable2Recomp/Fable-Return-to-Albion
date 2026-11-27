@@ -328,6 +328,7 @@ public partial class GameUi : Node, IGameTitleUi
 		LeaveGuiNativeModels();
 		_menuModel.Reset();
 		_menuModelSeenLive.Clear();
+		_estateSnapshot = default;
 		HasInGameUi = false;
 	}
 
@@ -4904,19 +4905,11 @@ public partial class GameUi : Node, IGameTitleUi
 	private Engine_UiScreenMenu? _screenMenu;
 
 	/// <summary>
-	/// The last estate state the real-estate list was built from — known / owned / tenant, as
-	/// bits. Screen 28's rows are conditioned on it (`estate.*` in <see cref="Engine_UiRowConditions"/>)
-	/// and the guest answers it a sample or two AFTER the screen opens, so the list is rebuilt
-	/// when the answer changes instead of standing on the previous building's.
+	/// The latest real-estate building snapshot sampled for screen 28. Sampled once per list
+	/// pass so all <c>estate.*</c> row conditions read a consistent snapshot with zero extra
+	/// P/Invokes, and cleared when leaving screen 28.
 	/// </summary>
-	private int _estateStateKey = -1;
-
-	/// <summary>`Fable2Bridge.RealEstate` reduced to the bits the row conditions ask.</summary>
-	private static int EstateStateKey()
-	{
-		Fable2Bridge.RealEstate estate = Fable2Bridge.GetRealEstate();
-		return (estate.Known ? 1 : 0) | (estate.Owned ? 2 : 0) | (estate.HasTenant ? 4 : 0);
-	}
+	private Fable2Bridge.RealEstate _estateSnapshot;
 
 	/// <summary>The detail page's last inputs (screen, row, page, data generation, fold) and the book they filled — a refill runs on a change or a guest frame.</summary>
 	private (uint, string, int, uint, bool) _detailKey;
@@ -8824,6 +8817,10 @@ public partial class GameUi : Node, IGameTitleUi
 		if (screen != _inGameScreen)
 		{
 			_inGameScreen = screen;
+			if ((uint?)screen != Engine_UiRealEstatePage.ScreenId)
+			{
+				_estateSnapshot = default;
+			}
 
 			// A NEW SCREEN OPENS ON ITS FIRST PAGE.
 			Fable2PageProviders.BookPage = 0;
@@ -9930,22 +9927,14 @@ public partial class GameUi : Node, IGameTitleUi
 						: 0u;
 
 			// SCREEN 28'S ROWS CARRY THE ESTATE'S OWN STATE, and the guest answers that state a
-			// sample or two AFTER the screen opens: the first build sees the building the screen
-			// before it resolved — or none — which put `Buy` on a property the hero already
-			// owned and kept `Sell` off it. Re-evaluate the authored rows whenever that answer
-			// changes; the rebuild carries the fold and the cursor across by name.
-			if (list.ScreenId == 28u)
+			// sample or two AFTER the screen opens: the first build sees no building — or the
+			// previous one — until the pump answers. Sample once into _estateSnapshot so all
+			// row conditions read one consistent snapshot, and invalidate only this list instance
+			// when the condition bits change; the rebuild carries the fold and cursor by name.
+			if (list.ScreenId == Engine_UiRealEstatePage.ScreenId)
 			{
-				int estate = EstateStateKey();
-				if (estate != _estateStateKey)
-				{
-					_estateStateKey = estate;
-					list.InvalidateAuthored();
-				}
-			}
-			else
-			{
-				_estateStateKey = -1;
+				_estateSnapshot = Fable2Bridge.GetRealEstate();
+				list.InvalidateAuthoredIfChanged(Engine_UiRealEstatePage.ConditionKey(_estateSnapshot));
 			}
 
 			bool rebuilt;
