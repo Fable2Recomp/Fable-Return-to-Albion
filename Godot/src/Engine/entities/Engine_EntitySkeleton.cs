@@ -221,6 +221,8 @@ public sealed class Engine_EntitySkeleton
 		_rig = rig;
 		_modelToGuest = modelToGuest;
 		_hipBone = -2;  // the mapping changed: re-resolve the hip on next use
+		_collapseProbeBone = -2;
+		_collapseProbeRestY = 0f;
 		_guestBones = guestBones;
 		Mapped = mapped;
 		GuestOnly = guestBones - mapped;
@@ -910,6 +912,50 @@ public sealed class Engine_EntitySkeleton
 		return posed.Length() < 1e-4f
 			? float.NaN
 			: Mathf.RadToDeg(forward.SignedAngleTo(posed.Normalized(), Vector3.Up));
+	}
+
+	private int _collapseProbeBone = -2;
+	private float _collapseProbeRestY;
+
+	/// <summary>
+	/// Returns true when the rig's upper-body probe bone (Head, else Chest, else Hip) has dropped
+	/// well below its standing rest height, confirming a dead body actually collapsed rather than
+	/// freezing upright. Lazily resolved once on first call; never called on living entities.
+	/// </summary>
+	public bool IsPoseCollapsed()
+	{
+		if (_collapseProbeBone == -2)
+		{
+			_collapseProbeBone = -1;
+			_collapseProbeRestY = 0f;
+			ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole.Head);
+			if (_collapseProbeBone < 0) ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole.Chest);
+			if (_collapseProbeBone < 0) ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole.Hip);
+		}
+
+		if (_collapseProbeBone < 0)
+		{
+			return false;
+		}
+
+		float posedY = _skeleton.GetBoneGlobalPose(_collapseProbeBone).Origin.Y;
+		return Engine_CorpsePolicy.IsPoseCollapsed(_collapseProbeRestY, posedY);
+	}
+
+	private void ResolveCollapseProbe(Refii.Animations.Engine_TitleRig.RigRole role)
+	{
+		if (TryBone(role, out int bone) &&
+			bone >= 0 &&
+			bone < _modelToGuest.Length &&
+			_modelToGuest[bone] >= 0)
+		{
+			float restY = _skeleton.GetBoneGlobalRest(bone).Origin.Y;
+			if (float.IsFinite(restY) && restY >= Engine_CorpsePolicy.MinCollapseProbeRestHeight)
+			{
+				_collapseProbeBone = bone;
+				_collapseProbeRestY = restY;
+			}
+		}
 	}
 
 	/// <summary>

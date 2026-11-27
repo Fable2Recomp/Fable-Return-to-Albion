@@ -261,8 +261,14 @@ public partial class GameEntities : Node3D
     {
         public uint RecordHash;
         public string? ModelPath;
-        public bool RecordExcluded;
+        public Refii.Entities.Engine_CorpsePolicy.CorpseDeathMode DeathMode;
+        public bool RecordClassified;
+        public bool ClassifiedFromGdb;
         public bool SawVisibleWhileDead;
+        public bool SawPosedWhileDead;
+        public bool SawRagdollWhileDead;
+        public bool SawDisarticulatedWhileDead;
+        public bool SawCollapsedPoseWhileDead;
         public bool FadePinned;
         public bool HasPinnedPos;
         public Vector3 PinnedPos;
@@ -2097,9 +2103,22 @@ public partial class GameEntities : Node3D
 
                     if (writeBones)
                     {
+                        DeadCorpseTrack? deadPoseTrack = entity.Appearance.IsDeadCreature &&
+                            _deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? foundDead)
+                            ? foundDead
+                            : null;
+                        if (deadPoseTrack is not null)
+                        {
+                            deadPoseTrack.SawPosedWhileDead = true;
+                        }
+
                         if (disarticulated &&
                             _disarticulated.TryGetValue(entity.Address, out Refii.Physics.Engine_DisarticulatedRig? shatter))
                         {
+                            if (deadPoseTrack is not null)
+                            {
+                                deadPoseTrack.SawDisarticulatedWhileDead = true;
+                            }
                             Transform3D entityWorld = node.IsInsideTree()
                                 ? node.GlobalTransform
                                 : toWorld * ToGodot(entity.Position, entity.Rotation);
@@ -2145,6 +2164,11 @@ public partial class GameEntities : Node3D
                                 }
                                 else
                                 {
+                                    if (deadPoseTrack is not null && animator.LastFallback == "ragdoll")
+                                    {
+                                        deadPoseTrack.SawRagdollWhileDead = true;
+                                    }
+
                                     // The feed is about to write this skeleton, so the animator's
                                     // written-pose cache no longer describes it.
                                     animator.ForgetWrittenPose();
@@ -2253,6 +2277,17 @@ public partial class GameEntities : Node3D
         foreach ((uint address, MeshInstance3D posedNode, Refii.Entities.Engine_EntitySkeleton posedRig) in _afterPose)
         {
             StateVisibleExtent(address, posedNode, posedRig);
+
+            if (_deadCorpseState.Count > 0 &&
+                _deadCorpseState.TryGetValue(address, out DeadCorpseTrack? deadTrack) &&
+                !deadTrack.SawCollapsedPoseWhileDead &&
+                !deadTrack.SawDisarticulatedWhileDead &&
+                ((deadTrack.DeathMode == Refii.Entities.Engine_CorpsePolicy.CorpseDeathMode.PhysicalRagdoll && !deadTrack.SawRagdollWhileDead) ||
+                 (deadTrack.DeathMode == Refii.Entities.Engine_CorpsePolicy.CorpseDeathMode.CrumbleSplode && deadTrack.SawRagdollWhileDead)) &&
+                posedRig.IsPoseCollapsed())
+            {
+                deadTrack.SawCollapsedPoseWhileDead = true;
+            }
 
             if (_reports < 10)
             {
@@ -4574,6 +4609,10 @@ public partial class GameEntities : Node3D
             {
                 _sawEtherealAlive.Add(entity.Address);
             }
+            else if (Refii.Entities.Engine_CorpsePolicy.IsSolidLivingAppearance(entity.Appearance))
+            {
+                _sawEtherealAlive.Remove(entity.Address);
+            }
             _deadCorpseState.Remove(entity.Address);
             return;
         }
@@ -4586,29 +4625,40 @@ public partial class GameEntities : Node3D
             };
             _deadCorpseState[entity.Address] = track;
         }
+        else if (track.RecordHash != entity.RecordHash)
+        {
+            track.RecordHash = entity.RecordHash;
+            track.ModelPath = null;
+            track.RecordClassified = false;
+            track.ClassifiedFromGdb = false;
+        }
 
         track.DeathAge += walkDelta;
-        track.RecordHash = entity.RecordHash;
 
-        if (track.ModelPath is null)
+        if (!track.RecordClassified || (!track.ClassifiedFromGdb && track.ModelPath is null))
         {
-            string? resolved = entity.ModelHash != 0u
-                ? Refii.Level.Engine_PropModelIndex.Resolve(entity.ModelHash, System.Array.Empty<string>())
-                : null;
-            if (string.IsNullOrEmpty(resolved) && _nodeMesh.TryGetValue(entity.Address, out Mesh? existingMesh))
+            if (track.ModelPath is null)
             {
-                resolved = FirstExcludedCompositeModelPath(existingMesh);
+                string? resolved = entity.ModelHash != 0u
+                    ? Refii.Level.Engine_PropModelIndex.Resolve(entity.ModelHash, System.Array.Empty<string>())
+                    : null;
+                if (string.IsNullOrEmpty(resolved) && _nodeMesh.TryGetValue(entity.Address, out Mesh? existingMesh))
+                {
+                    resolved = FirstExcludedCompositeModelPath(existingMesh);
+                }
+
+                if (!string.IsNullOrEmpty(resolved))
+                {
+                    track.ModelPath = resolved;
+                }
             }
 
-            if (!string.IsNullOrEmpty(resolved))
-            {
-                track.ModelPath = resolved;
-                track.RecordExcluded = Refii.Entities.Engine_CorpsePolicy.IsExcludedRecord(entity.RecordHash, track.ModelPath);
-            }
-            else if (!track.RecordExcluded)
-            {
-                track.RecordExcluded = Refii.Entities.Engine_CorpsePolicy.IsExcludedRecord(entity.RecordHash, null);
-            }
+            track.DeathMode = Refii.Entities.Engine_CorpsePolicy.ClassifyRecord(
+                entity.RecordHash,
+                track.ModelPath,
+                out bool fromGdb);
+            track.ClassifiedFromGdb = fromGdb;
+            track.RecordClassified = true;
         }
 
         if (entity.Appearance.Drawn(false) && entity.Appearance.Scale > 0.05f)
@@ -4650,7 +4700,14 @@ public partial class GameEntities : Node3D
             (!_skeletons.ContainsKey(entity.Address) && !_awaitingRig.Contains(entity.Address)) ||
             !_deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? track) ||
             !track.SawVisibleWhileDead ||
-            track.RecordExcluded)
+            track.DeathMode == Refii.Entities.Engine_CorpsePolicy.CorpseDeathMode.Excluded ||
+            (!track.ClassifiedFromGdb && Refii.Entities.Engine_CorpsePolicy.HasExcludedName(track.ModelPath)) ||
+            !Refii.Entities.Engine_CorpsePolicy.HasValidDeathPose(
+                track.DeathMode,
+                track.SawPosedWhileDead,
+                track.SawRagdollWhileDead,
+                track.SawDisarticulatedWhileDead || _disarticulated.ContainsKey(entity.Address),
+                track.SawCollapsedPoseWhileDead))
         {
             return entity.Appearance;
         }
@@ -4777,6 +4834,11 @@ public partial class GameEntities : Node3D
             profile.Pieces);
         crumbledRig.ApplyModelSpacePoses(shatter.ModelPoses);
         _disarticulated[address] = shatter;
+        if (_deadCorpseState.TryGetValue(address, out DeadCorpseTrack? deadTrack))
+        {
+            deadTrack.SawDisarticulatedWhileDead = true;
+            deadTrack.SawPosedWhileDead = true;
+        }
     }
 
     private bool TryAutoStartRigidPieceCrumble(
@@ -4819,6 +4881,11 @@ public partial class GameEntities : Node3D
             entity.Address ^ (uint)entity.UniqueId,
             profile.Pieces);
         _disarticulated[entity.Address] = shatter;
+        if (_deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? deadTrack))
+        {
+            deadTrack.SawDisarticulatedWhileDead = true;
+            deadTrack.SawPosedWhileDead = true;
+        }
         return true;
     }
 
@@ -4847,7 +4914,12 @@ public partial class GameEntities : Node3D
             IsCompanion: address == Refii.Core.Engine_TitleGame.Active.CompanionEntityAddress,
             RecordHash: track.RecordHash,
             ModelPath: track.ModelPath,
-            RecordExcluded: track.RecordExcluded);
+            DeathMode: track.DeathMode,
+            ClassifiedFromGdb: track.ClassifiedFromGdb,
+            SawPosedWhileDead: track.SawPosedWhileDead,
+            SawRagdollWhileDead: track.SawRagdollWhileDead,
+            SawDisarticulatedWhileDead: track.SawDisarticulatedWhileDead || shatter is not null,
+            SawCollapsedPoseWhileDead: track.SawCollapsedPoseWhileDead);
 
         if (!Refii.Entities.Engine_CorpsePolicy.IsEligibleCorpse(in candidate))
         {
