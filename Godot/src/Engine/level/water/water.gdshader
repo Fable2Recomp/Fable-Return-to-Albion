@@ -84,6 +84,8 @@ global uniform vec3 fable_sun_colour;
 global uniform float fable_emission_boost = 1.0;
 global uniform float dynamic_surface_time;
 global uniform float dynamic_surface_rain;
+global uniform sampler2D fable_light_table;
+global uniform sampler2DArray fable_static_shadow_atlas : filter_linear;
 
 uniform vec3 beta_rayleigh = vec3(0.001, 0.0015, 0.004);
 uniform vec3 beta_mie = vec3(0.0056, 0.0064, 0.0105);
@@ -445,6 +447,205 @@ float linear_depth_from_raw(float d, mat4 inv_proj) {
 
 float linear_depth(vec2 uv, mat4 inv_proj) {
 	return linear_depth_from_raw(textureLod(depth_tex, uv, 0.0).r, inv_proj);
+}
+
+// Pure-texelFetch octahedral static shadow sampling matching `fable_lighting.gdshaderinc` (DXIL-safe in `light()`).
+vec2 water_octahedral_uv(vec3 dir) {
+	vec3 n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-6);
+	vec2 oct = n.z >= 0.0
+		? n.xy
+		: (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+	return (oct * 0.5) + 0.5;
+}
+
+float water_sample_static_shadow_bilinear_pcf(
+	vec3 sample_dir,
+	vec3 atlas_rect,
+	vec2 atlas_size,
+	ivec2 tile_min,
+	ivec2 tile_max,
+	int layer_i,
+	float receiver,
+	float tap_softness
+) {
+	vec2 tile_uv = water_octahedral_uv(sample_dir);
+	vec2 uv = atlas_rect.xy + (tile_uv * atlas_rect.z);
+	vec2 texel_pos = (uv * atlas_size) - vec2(0.5);
+	vec2 base_f = floor(texel_pos);
+	vec2 frac_uv = texel_pos - base_f;
+
+	ivec2 p00 = clamp(ivec2(base_f), tile_min, tile_max);
+	ivec2 p10 = clamp(p00 + ivec2(1, 0), tile_min, tile_max);
+	ivec2 p01 = clamp(p00 + ivec2(0, 1), tile_min, tile_max);
+	ivec2 p11 = clamp(p00 + ivec2(1, 1), tile_min, tile_max);
+
+	float d00 = texelFetch(fable_static_shadow_atlas, ivec3(p00, layer_i), 0).r;
+	float d10 = texelFetch(fable_static_shadow_atlas, ivec3(p10, layer_i), 0).r;
+	float d01 = texelFetch(fable_static_shadow_atlas, ivec3(p01, layer_i), 0).r;
+	float d11 = texelFetch(fable_static_shadow_atlas, ivec3(p11, layer_i), 0).r;
+
+	float edge0 = receiver - tap_softness;
+	float s00 = smoothstep(edge0, receiver, d00);
+	float s10 = smoothstep(edge0, receiver, d10);
+	float s01 = smoothstep(edge0, receiver, d01);
+	float s11 = smoothstep(edge0, receiver, d11);
+
+	return mix(mix(s00, s10, frac_uv.x), mix(s01, s11, frac_uv.x), frac_uv.y);
+}
+
+float water_sample_static_shadow(vec3 light_to_world, float d, float atten, vec3 atlas_rect, float layer) {
+	if (atlas_rect.z <= 0.0 || d <= 1e-4) {
+		return 1.0;
+	}
+
+	ivec3 atlas_dims = textureSize(fable_static_shadow_atlas, 0);
+	vec2 atlas_size = vec2(max(atlas_dims.xy, ivec2(4)));
+	int layer_i = clamp(int(round(layer)), 0, max(atlas_dims.z - 1, 0));
+
+	ivec2 inner_min = ivec2(round(atlas_rect.xy * atlas_size));
+	ivec2 inner_max = ivec2(round((atlas_rect.xy + vec2(atlas_rect.z)) * atlas_size));
+	ivec2 tile_min = max(ivec2(0), inner_min - ivec2(1));
+	ivec2 tile_max = min(max(atlas_dims.xy - ivec2(1), ivec2(0)), inner_max);
+
+	float tile_texels = max(atlas_rect.z * atlas_size.x, 16.0);
+	float texel_angle = 3.6 / tile_texels;
+	float bias = max(0.006, d * 0.0022);
+	float tap_softness = max(0.008, d * 0.0022);
+	float receiver = d - bias;
+
+	vec3 dir = light_to_world / max(d, 1e-4);
+	if (water_quality_tier <= 1 || atten <= 0.06) {
+		return water_sample_static_shadow_bilinear_pcf(
+			dir, atlas_rect, atlas_size, tile_min, tile_max, layer_i, receiver, tap_softness);
+	}
+
+	vec3 up_ref = abs(dir.y) < 0.92 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+	vec3 t1 = normalize(cross(up_ref, dir));
+	vec3 t2 = cross(dir, t1);
+
+	float filter_angle = clamp(max(0.011 / max(d, 0.45), texel_angle * 0.42), texel_angle * 0.30, 0.020);
+	vec3 o0 = (t1 * (filter_angle * 0.62)) + (t2 * (filter_angle * 0.28));
+	vec3 o1 = (-t1 * (filter_angle * 0.28)) + (t2 * (filter_angle * 0.62));
+
+	float k0 = water_sample_static_shadow_bilinear_pcf(
+		dir + o0, atlas_rect, atlas_size, tile_min, tile_max, layer_i, receiver, tap_softness);
+	float k1 = water_sample_static_shadow_bilinear_pcf(
+		dir - o0, atlas_rect, atlas_size, tile_min, tile_max, layer_i, receiver, tap_softness);
+	float k2 = water_sample_static_shadow_bilinear_pcf(
+		dir + o1, atlas_rect, atlas_size, tile_min, tile_max, layer_i, receiver, tap_softness);
+	float k3 = water_sample_static_shadow_bilinear_pcf(
+		dir - o1, atlas_rect, atlas_size, tile_min, tile_max, layer_i, receiver, tap_softness);
+
+	return (k0 + k1 + k2 + k3) * 0.25;
+}
+
+float water_placed_light_attenuation(float godot_atten, float specular_amount, vec3 world) {
+	float atten = clamp(godot_atten, 0.0, 1.0);
+	if (atten <= 1e-4) {
+		return 0.0;
+	}
+
+	int slot = int((specular_amount * 0.5) + 0.5) - 2;
+	if (slot >= 0 && slot < 1000) {
+		vec4 record = texelFetch(fable_light_table, ivec2(slot, 0), 0);
+		float d = distance(world, record.xyz);
+		vec4 row1 = texelFetch(fable_light_table, ivec2(slot, 1), 0);
+		float stated = row1.x;
+		if (d >= stated) {
+			return 0.0;
+		}
+
+		if (stated < (record.w - 1e-3)) {
+			float r_s = clamp(d / max(stated, 1e-3), 0.0, 1.0);
+			float w_s = 1.0 - (r_s * r_s * r_s * r_s);
+			w_s *= w_s;
+			float r_n = clamp(d / max(record.w, 1e-3), 0.0, 1.0);
+			float w_n = 1.0 - (r_n * r_n * r_n * r_n);
+			w_n *= w_n;
+			atten *= clamp(w_s / max(w_n, 1e-4), 0.0, 1.0);
+			if (atten <= 1e-4) {
+				return 0.0;
+			}
+		}
+
+		if (row1.w > 0.0) {
+			vec4 row2 = texelFetch(fable_light_table, ivec2(slot, 2), 0);
+			atten *= water_sample_static_shadow(world - record.xyz, d, atten, row1.yzw, row2.x);
+		}
+	}
+
+	return atten;
+}
+
+// Sparkle-gated 3D screen-space ray blocker check along a directional light ray (`rd` in view space).
+// Uses explicit `textureLod(depth_tex, ..., 0.0)` so it is DXIL-safe in both `fragment()` and `light()`.
+float water_directional_ray_vis(
+	vec3 ro,
+	vec3 rd,
+	vec3 world_pos,
+	vec2 frag_xy,
+	mat4 proj,
+	mat4 inv_proj,
+	mat4 inv_view
+) {
+	if (water_quality_tier <= 0 || rd.z >= -0.04) {
+		return 1.0;
+	}
+	float water_lin = -ro.z;
+	if (water_lin <= 0.10) {
+		return 1.0;
+	}
+
+	int steps = water_quality_tier >= 2 ? 6 : 4;
+	float growth = water_quality_tier >= 2 ? 2.85 : 3.70;
+	float thick_ratio = water_quality_tier >= 2 ? 0.68 : 0.76;
+	float jitter = fable_bayer_threshold(frag_xy);
+	float t_ray = (water_quality_tier >= 2 ? 0.75 : 0.80) * pow(growth, jitter);
+
+	vec4 clip_ro = proj * vec4(ro, 1.0);
+	vec4 clip_rd = proj * vec4(rd, 0.0);
+
+	const int MAX_DIR_STEPS = 6;
+	for (int i = 0; i < MAX_DIR_STEPS; i++) {
+		if (i >= steps) {
+			break;
+		}
+		vec4 clip = clip_ro + (clip_rd * t_ray);
+		if (clip.w <= 0.01) {
+			break;
+		}
+		float safe_w = max(clip.w, 1e-4);
+		vec2 uv = ((clip.xy / safe_w) * 0.5) + 0.5;
+		if (any(lessThan(uv, vec2(0.001))) || any(greaterThan(uv, vec2(0.999)))) {
+			break;
+		}
+
+		float raw_d = textureLod(depth_tex, uv, 0.0).r;
+		if (raw_d > 1e-5) {
+			float scene_lin = linear_depth_from_raw(raw_d, inv_proj);
+			float ray_lin = -(ro.z + (rd.z * t_ray));
+			float gap = ray_lin - scene_lin;
+			float max_thick = 0.90 + (t_ray * thick_ratio);
+			if (scene_lin > (water_lin + 0.12) && gap >= -0.04 && gap <= max_thick) {
+				vec4 hit_h = inv_proj * vec4((uv * 2.0) - 1.0, raw_d, 1.0);
+				float safe_hw = abs(hit_h.w) > 1e-6 ? hit_h.w : 1e-6;
+				vec3 hit_view = hit_h.xyz / safe_hw;
+				vec3 hit_world = (inv_view * vec4(hit_view, 1.0)).xyz;
+				if (hit_world.y > (world_pos.y + 0.06)) {
+					vec2 b = min(uv, 1.0 - uv);
+					float edge = smoothstep(0.0, 0.025, min(b.x, b.y));
+					float depth_conf = 1.0 - smoothstep(max_thick * 0.72, max_thick, max(gap, 0.0));
+					float height_conf = smoothstep(0.06, 0.22, hit_world.y - world_pos.y);
+					float occ = edge * depth_conf * height_conf;
+					if (occ > 0.02) {
+						return 1.0 - occ;
+					}
+				}
+			}
+		}
+		t_ray *= growth;
+	}
+	return 1.0;
 }
 
 void fragment() {
@@ -818,6 +1019,7 @@ void fragment() {
 			float ssr_planar_dist = water_quality_tier >= 3 ? 52.0 : (water_quality_tier == 2 ? 36.0 : 0.0);
 			float ssr_open_dist = water_quality_tier >= 2 ? 150.0 : 110.0;
 			float ssr_max_dist = planar_covered ? ssr_planar_dist : ssr_open_dist;
+			float ssr_hit_weight = 0.0;
 			if (water_quality_tier >= 1 && F > 0.038 && dist < ssr_max_dist) {
 				vec3 ro = VERTEX;
 				vec3 rd = normalize((VIEW_MATRIX * vec4(R_world, 0.0)).xyz);
@@ -917,6 +1119,7 @@ void fragment() {
 						float hit_weight = edge * conf * forward_gate * above_water_gate
 							* smoothstep(ssr_max_dist, ssr_max_dist * 0.62, dist);
 						if (hit_weight > 0.004) {
+							ssr_hit_weight = hit_weight;
 							vec3 ssr_col = max(textureLod(screen_tex, hit_uv, roughness * 2.0).rgb, vec3(0.0));
 							refl_col = mix(refl_col, ssr_col, hit_weight);
 						}
@@ -994,10 +1197,17 @@ void fragment() {
 			// is cresting/setting across HorizonFade (cel_dir_world.y < 0.082) before DirectionalLight3D reaches full
 			// strength. Uses tight, non-expanding wave-facet thresholds + physical wave-crest incidence (eff_ndl > 0)
 			// so rising/setting half-discs produce crisp scattered sparkles with zero reverse cone or solid beam.
+			float sky_luma = dot(sky_refl, vec3(0.2126, 0.7152, 0.0722));
+			float planar_luma = dot(planar_col, vec3(0.2126, 0.7152, 0.0722));
+			float planar_sky_open = planar_reflection
+				? mix(1.0, smoothstep(0.32, 0.72, (planar_luma + 0.004) / (sky_luma + 0.004)), reproj_valid)
+				: 1.0;
+			float refl_open = clamp(planar_sky_open * (1.0 - ssr_hit_weight), 0.0, 1.0);
+
 			float hdr_headroom = 1.0 + (max(fable_emission_boost - 1.0, 0.0) * 2.6666667);
 			float cel_strength = max(w_celestial.x, 0.0);
 			vec3 pre_horizon_glint_hdr = vec3(0.0);
-			if (low_horizon_fill > 0.002 && cel_strength > 0.001) {
+			if (low_horizon_fill > 0.002 && cel_strength > 0.001 && refl_open > 0.004) {
 				vec3 eff_cel_dir = normalize(vec3(cel_dir_world.x, max(cel_dir_world.y, 0.016), cel_dir_world.z));
 				float eff_ndl = clamp(dot(world_nf, eff_cel_dir), 0.0, 1.0);
 				if (eff_ndl > 0.002) {
@@ -1021,12 +1231,11 @@ void fragment() {
 					float q = 0.5 * (((ds_side * ds_side) / (sig_side * sig_side))
 						+ ((ds_along * ds_along) / (sig_along * sig_along)));
 					if (q < 8.5) {
-						float sky_luma = dot(sky_refl, vec3(0.2126, 0.7152, 0.0722));
-						float planar_luma = dot(planar_col, vec3(0.2126, 0.7152, 0.0722));
-						float planar_sky_open = planar_reflection
-							? mix(1.0, smoothstep(0.32, 0.72, (planar_luma + 0.004) / (sky_luma + 0.004)), reproj_valid)
-							: 1.0;
-						if (planar_sky_open > 0.002) {
+						vec3 eff_cel_view = normalize((VIEW_MATRIX * vec4(eff_cel_dir, 0.0)).xyz);
+						float cel_vis = refl_open * water_directional_ray_vis(
+							VERTEX, eff_cel_view, v_world, FRAGCOORD.xy,
+							PROJECTION_MATRIX, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
+						if (cel_vis > 0.004) {
 							bool is_moon = w_celestial.z > 0.5;
 							float q_env = exp(-q) * smoothstep(8.5, 4.5, q);
 							float crest_gain = smoothstep(0.005, 0.14, eff_ndl);
@@ -1038,10 +1247,10 @@ void fragment() {
 									: vec3(0.90, 0.94, 1.0))
 								: mix(clamp(refl_chroma, vec3(0.25), vec3(2.4)), vec3(1.0, 0.92, 0.78), 0.45);
 							float hdr_glint_gain = mix(1.0, hdr_headroom, is_moon ? 0.65 : 0.82);
-							float base_peak = is_moon ? 5.2 : 9.0;
+							float base_peak = is_moon ? 5.2 : 14.5;
 							pre_horizon_glint_hdr = glint_tint
 								* (q_env * crest_gain * base_peak * hdr_glint_gain * f_glitter
-								* cel_strength * low_horizon_fill * planar_sky_open * mix(0.25, 1.0, v_cloud_t));
+								* cel_strength * low_horizon_fill * cel_vis * mix(0.25, 1.0, v_cloud_t));
 						}
 					}
 				}
@@ -1064,7 +1273,11 @@ void fragment() {
 			NORMAL = normalize((VIEW_MATRIX * vec4(world_nf, 0.0)).xyz);
 			ROUGHNESS = roughness;
 			METALLIC = 0.0;
-			BACKLIGHT = fog_t;
+			vec3 fog_clamped = clamp(fog_t, vec3(0.0), vec3(1.0));
+			BACKLIGHT = vec3(
+				(floor((refl_open * 1023.0) + 0.5) * 2.0) + (fog_clamped.r * 0.9995),
+				fog_clamped.g,
+				fog_clamped.b);
 			ALBEDO = max(lit_albedo, vec3(0.0));
 			EMISSION = max(lit_emissive, vec3(0.0));
 			ALPHA = modern_alpha;
@@ -1076,89 +1289,114 @@ void fragment() {
 // Guarded with `if` rather than `return;` per Godot's light processor rule.
 void light() {
 	if (!guest_water && ALPHA > 0.002) {
-		float cloud_gate = LIGHT_IS_DIRECTIONAL ? v_cloud_t : 1.0;
-		vec3 radiance = (LIGHT_COLOR * (1.0 / PI)) * ATTENUATION * cloud_gate;
-		float ndl = dot(NORMAL, LIGHT);
+		float packed_band = floor(BACKLIGHT.r * 0.5);
+		float refl_open_l = clamp(packed_band * (1.0 / 1023.0), 0.0, 1.0);
+		vec3 fog_trans = vec3(
+			clamp((BACKLIGHT.r - (packed_band * 2.0)) * (1.0 / 0.9995), 0.0, 1.0),
+			BACKLIGHT.g,
+			BACKLIGHT.b);
 
-		// Subsurface wrap diffuse illuminates ALBEDO water volume, aerated foam, & shallow sun caustics
-		// while dropping cleanly into shadow behind pillars, cliffs, bridges, and trees.
-		float wrap_diff = clamp((ndl + 0.35) / 1.35, 0.0, 1.0);
-		DIFFUSE_LIGHT += radiance * wrap_diff;
+		float light_atten = LIGHT_IS_DIRECTIONAL
+			? (clamp(ATTENUATION, 0.0, 1.0) * v_cloud_t)
+			: water_placed_light_attenuation(ATTENUATION, SPECULAR_AMOUNT, v_world);
 
-		// Subsurface wave-crest scattering (SSS) gives backlit swells a translucent liquid interior.
-		if (LIGHT_IS_DIRECTIONAL && water_quality_tier >= 2) {
-			vec3 up_view = normalize(VIEW_MATRIX[1].xyz);
-			float cos_up = clamp(dot(NORMAL, up_view), -1.0, 1.0);
-			float wave_sin = sqrt(max(1.0 - (cos_up * cos_up), 0.0));
-			vec3 back_dir = normalize(LIGHT + (NORMAL * 0.55));
-			float sss_phase = 0.20 + (0.80 * pow(clamp(dot(VIEW, -back_dir), 0.0, 1.0), 2.6));
-			float sss_crest = smoothstep(0.06, 0.36, wave_sin) * clamp(ndl + 0.55, 0.0, 1.0);
-			vec3 sss_col = mix(w_deep.rgb, w_surface.rgb, 0.82) * 2.2;
-			SPECULAR_LIGHT += radiance * sss_col * (sss_phase * sss_crest * 0.65) * BACKLIGHT;
-		}
+		if (light_atten > 1e-4) {
+			vec3 radiance = (LIGHT_COLOR * (1.0 / PI)) * light_atten;
+			float ndl = dot(NORMAL, LIGHT);
 
-		// Unified single-cone HDR solar & lunar wave-facet glitter + finite-bulb harbor/ship lamps.
-		float min_spec_ndl = LIGHT_IS_DIRECTIONAL ? 0.001 : -0.15;
-		if (ndl > min_spec_ndl && SPECULAR_AMOUNT > 0.0) {
-			vec3 R_v = reflect(-VIEW, NORMAL);
-			float is_moon_l = LIGHT_IS_DIRECTIONAL ? clamp(w_celestial.z, 0.0, 1.0) : 0.0;
-			float disc_sin = LIGHT_IS_DIRECTIONAL ? clamp(w_celestial.w, 0.008, 0.040) : 0.065;
-			vec3 center_to_ray = R_v - (dot(R_v, LIGHT) * LIGHT);
-			float ctr_len = length(center_to_ray);
-			vec3 L_rep = normalize(LIGHT + (center_to_ray * clamp(disc_sin / max(ctr_len, 1e-4), 0.0, 1.0)));
+			// Subsurface wrap diffuse illuminates ALBEDO water volume, aerated foam, & shallow sun caustics
+			// while dropping cleanly into shadow behind pillars, cliffs, bridges, and trees.
+			float wrap_diff = clamp((ndl + 0.35) / 1.35, 0.0, 1.0);
+			DIFFUSE_LIGHT += radiance * wrap_diff;
 
-			vec3 H = normalize(L_rep + VIEW);
-			float ndh = clamp(dot(NORMAL, H), 0.0, 1.0);
-			float ndv_l = clamp(dot(NORMAL, VIEW), 0.001, 1.0);
-			float ndl_spec = LIGHT_IS_DIRECTIONAL
-				? clamp(ndl, 0.0, 1.0)
-				: clamp((ndl * 0.85) + 0.15, 0.001, 1.0);
-			float vdh = clamp(dot(VIEW, H), 0.0, 1.0);
-
-			float a_sharp = clamp(ROUGHNESS * 0.80, 0.042, 0.36);
-			float a2_s = a_sharp * a_sharp;
-			float denom_s = (ndh * ndh * (a2_s - 1.0)) + 1.0;
-			float D_s = a2_s / max(PI * denom_s * denom_s, 1e-5);
-			float gv_s = ndl_spec * sqrt((ndv_l * ndv_l * (1.0 - a2_s)) + a2_s);
-			float gl_s = ndv_l * sqrt((ndl_spec * ndl_spec * (1.0 - a2_s)) + a2_s);
-			float Vis_s = min(0.5 / max(gv_s + gl_s, 0.18), 1.45);
-
-			float spec_brdf;
-			vec3 spec_fog = BACKLIGHT;
-			if (LIGHT_IS_DIRECTIONAL) {
-				float hdr_headroom_l = 1.0 + (max(fable_emission_boost - 1.0, 0.0) * 2.6666667);
-				float max_lc = max(LIGHT_COLOR.r, max(LIGHT_COLOR.g, LIGHT_COLOR.b));
-				float cel_boost = max(smoothstep(0.14, 0.95, max_lc), clamp(w_celestial.x, 0.0, 1.0) * 0.88);
-				float hdr_cel_gain = mix(1.0, hdr_headroom_l, mix(0.62, 0.72, is_moon_l) * cel_boost);
-				float f_solar = mix(
-					0.04 + (0.96 * pow(1.0 - vdh, 5.0)),
-					0.55 + (0.45 * pow(1.0 - vdh, 3.0)),
-					cel_boost);
-				float cap_sharp = mix(18.0, 72.0 * hdr_cel_gain, cel_boost);
-				float glit_scale = clamp(w_reflp.w * mix(0.20, 0.44, cel_boost), 0.40, 2.80) * mix(1.0, hdr_cel_gain, 0.48);
-
-				vec3 H_raw = normalize(LIGHT + VIEW);
-				float ndh_g = clamp(dot(NORMAL, H_raw), 0.0, 1.0);
-				float a_glint = clamp((ROUGHNESS * 1.15) + 0.065, 0.08, 0.24);
-				float a2_g = a_glint * a_glint;
-				float denom_g = (ndh_g * ndh_g * (a2_g - 1.0)) + 1.0;
-				float D_g = a2_g / max(PI * denom_g * denom_g, 1e-5);
-
-				spec_brdf = ((min(D_s * Vis_s, cap_sharp) * glit_scale)
-					+ (D_g * cel_boost * hdr_cel_gain * clamp(w_reflp.w * 0.12, 0.22, 0.90))) * f_solar;
-				float dist_view = distance(v_local, v_eye_local);
-				vec3 cel_fog_floor = vec3(exp(-dist_view * 0.00065));
-				spec_fog = mix(BACKLIGHT, max(sqrt(max(BACKLIGHT, vec3(0.0))), cel_fog_floor), 0.78 * cel_boost);
-			} else {
-				float f_lamp = 0.26 + (0.74 * pow(1.0 - vdh, 3.5));
-				float a_lamp = clamp((ROUGHNESS * 1.8) + 0.12, 0.14, 0.45);
-				float a2_l = a_lamp * a_lamp;
-				float denom_l = (ndh * ndh * (a2_l - 1.0)) + 1.0;
-				float D_l = a2_l / max(PI * denom_l * denom_l, 1e-5);
-				spec_brdf = ((min(D_s * Vis_s, 44.0) * 1.45) + (D_l * 0.95)) * f_lamp;
+			// Subsurface wave-crest scattering (SSS) gives backlit swells a translucent liquid interior.
+			if (LIGHT_IS_DIRECTIONAL && water_quality_tier >= 2) {
+				vec3 up_view = normalize(VIEW_MATRIX[1].xyz);
+				float cos_up = clamp(dot(NORMAL, up_view), -1.0, 1.0);
+				float wave_sin = sqrt(max(1.0 - (cos_up * cos_up), 0.0));
+				vec3 back_dir = normalize(LIGHT + (NORMAL * 0.55));
+				float sss_phase = 0.20 + (0.80 * pow(clamp(dot(VIEW, -back_dir), 0.0, 1.0), 2.6));
+				float sss_crest = smoothstep(0.06, 0.36, wave_sin) * clamp(ndl + 0.55, 0.0, 1.0);
+				vec3 sss_col = mix(w_deep.rgb, w_surface.rgb, 0.82) * 2.2;
+				SPECULAR_LIGHT += radiance * sss_col * (sss_phase * sss_crest * 0.65) * fog_trans;
 			}
 
-			SPECULAR_LIGHT += radiance * (spec_brdf * ndl_spec * SPECULAR_AMOUNT) * spec_fog;
+			// Unified single-cone HDR solar & lunar wave-facet glitter + finite-bulb harbor/ship lamps.
+			// Placed lights carry their Engine_LightTable slot in SPECULAR_AMOUNT (`2 * (slot + 2) >= 4.0`),
+			// never a brightness multiplier; only unregistered FX lights scale by SPECULAR_AMOUNT in [0, 1].
+			if (ndl > 0.001 && SPECULAR_AMOUNT > 0.0) {
+				float spec_weight = (LIGHT_IS_DIRECTIONAL || SPECULAR_AMOUNT >= 3.5)
+					? 1.0
+					: clamp(SPECULAR_AMOUNT, 0.0, 1.0);
+				vec3 R_v = reflect(-VIEW, NORMAL);
+				float is_moon_l = LIGHT_IS_DIRECTIONAL ? clamp(w_celestial.z, 0.0, 1.0) : 0.0;
+				float disc_sin = LIGHT_IS_DIRECTIONAL ? clamp(w_celestial.w, 0.008, 0.040) : 0.032;
+				vec3 center_to_ray = R_v - (dot(R_v, LIGHT) * LIGHT);
+				float ctr_len = length(center_to_ray);
+				vec3 L_rep = normalize(LIGHT + (center_to_ray * clamp(disc_sin / max(ctr_len, 1e-4), 0.0, 1.0)));
+
+				vec3 H = normalize(L_rep + VIEW);
+				float ndh = clamp(dot(NORMAL, H), 0.0, 1.0);
+				float ndv_l = clamp(dot(NORMAL, VIEW), 0.001, 1.0);
+				float ndl_spec = clamp(ndl, 0.0, 1.0);
+				float vdh = clamp(dot(VIEW, H), 0.0, 1.0);
+
+				float a_sharp = clamp(ROUGHNESS * 0.80, 0.042, 0.36);
+				float a2_s = a_sharp * a_sharp;
+				float denom_s = (ndh * ndh * (a2_s - 1.0)) + 1.0;
+				float D_s = a2_s / max(PI * denom_s * denom_s, 1e-5);
+				float gv_s = ndl_spec * sqrt((ndv_l * ndv_l * (1.0 - a2_s)) + a2_s);
+				float gl_s = ndv_l * sqrt((ndl_spec * ndl_spec * (1.0 - a2_s)) + a2_s);
+				float Vis_s = min(0.5 / max(gv_s + gl_s, 0.18), 1.45);
+
+				float spec_brdf;
+				vec3 spec_fog = fog_trans;
+				if (LIGHT_IS_DIRECTIONAL) {
+					float hdr_headroom_l = 1.0 + (max(fable_emission_boost - 1.0, 0.0) * 2.6666667);
+					float max_lc = max(LIGHT_COLOR.r, max(LIGHT_COLOR.g, LIGHT_COLOR.b));
+					float cel_boost = max(smoothstep(0.14, 0.95, max_lc), clamp(w_celestial.x, 0.0, 1.0) * 0.88);
+					float hdr_cel_gain = mix(1.0, hdr_headroom_l, mix(0.88, 0.72, is_moon_l) * cel_boost);
+					float f_solar = mix(
+						0.04 + (0.96 * pow(1.0 - vdh, 5.0)),
+						0.55 + (0.45 * pow(1.0 - vdh, 3.0)),
+						cel_boost);
+					float cap_sharp = mix(18.0, mix(135.0, 72.0, is_moon_l) * hdr_cel_gain, cel_boost);
+					float glit_scale = clamp(w_reflp.w * mix(0.20, 0.44, cel_boost), 0.40, 2.80)
+						* mix(1.0, hdr_cel_gain, 0.48) * mix(1.75, 1.0, is_moon_l);
+
+					vec3 H_raw = normalize(LIGHT + VIEW);
+					float ndh_g = clamp(dot(NORMAL, H_raw), 0.0, 1.0);
+					float a_glint = clamp((ROUGHNESS * 1.15) + 0.065, 0.08, 0.24);
+					float a2_g = a_glint * a_glint;
+					float denom_g = (ndh_g * ndh_g * (a2_g - 1.0)) + 1.0;
+					float D_g = a2_g / max(PI * denom_g * denom_g, 1e-5);
+
+					spec_brdf = ((min(D_s * Vis_s, cap_sharp) * glit_scale)
+						+ (D_g * cel_boost * hdr_cel_gain * clamp(w_reflp.w * 0.12, 0.22, 0.90) * mix(1.55, 1.0, is_moon_l))) * f_solar;
+
+					float dir_vis = refl_open_l;
+					if ((spec_brdf * light_atten * dir_vis) > 0.004) {
+						vec3 ro_view = (VIEW_MATRIX * vec4(v_world, 1.0)).xyz;
+						dir_vis *= water_directional_ray_vis(
+							ro_view, LIGHT, v_world, FRAGCOORD.xy,
+							PROJECTION_MATRIX, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX);
+					}
+					spec_brdf *= dir_vis;
+
+					float dist_view = distance(v_local, v_eye_local);
+					vec3 cel_fog_floor = vec3(exp(-dist_view * 0.00065));
+					spec_fog = mix(fog_trans, max(sqrt(max(fog_trans, vec3(0.0))), cel_fog_floor), 0.78 * cel_boost);
+				} else {
+					float f_lamp = 0.12 + (0.88 * pow(1.0 - vdh, 4.0));
+					float a_lamp = clamp((ROUGHNESS * 1.8) + 0.12, 0.14, 0.45);
+					float a2_l = a_lamp * a_lamp;
+					float denom_l = (ndh * ndh * (a2_l - 1.0)) + 1.0;
+					float D_l = a2_l / max(PI * denom_l * denom_l, 1e-5);
+					spec_brdf = ((min(D_s * Vis_s, 18.0) * 0.52) + (D_l * 0.28)) * f_lamp;
+				}
+
+				SPECULAR_LIGHT += radiance * (spec_brdf * ndl_spec * spec_weight) * spec_fog;
+			}
 		}
 	}
 }

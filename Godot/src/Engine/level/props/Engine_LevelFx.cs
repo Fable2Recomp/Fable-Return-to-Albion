@@ -1019,8 +1019,9 @@ public static class Engine_LevelFx
 
         if (!haveRig)
         {
-            var mesh = ResourceLoader.Load<Mesh>(
-                Engine_BnkMeshLoader.PathPrefix + modelPath);
+            var mesh = Refii.Core.Engine_AppRoot.IsTestHost
+                ? null
+                : ResourceLoader.Load<Mesh>(Engine_BnkMeshLoader.PathPrefix + modelPath);
             rig = Engine_MdlRig.TryFrom(mesh);
             lock (RigCache)
             {

@@ -1103,4 +1103,273 @@ public class LightZonesAndPlacementsTests
             System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", prevEnv);
         }
     }
+
+    [TestCase]
+    public void FloatingAmbientClassification_TargetsPlaceableAndRoomFillLights_WhileExcludingPhysicalFixtures()
+    {
+        Engine_LevelFx.ClearCaches();
+        try
+        {
+            var db = new GdbPatchDatabase();
+
+            const uint compPointAtOrigin = 0x60000001u;
+            var compOriginRec = new GdbPatchEntry(compPointAtOrigin, 0x01);
+            compOriginRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.LightType, GdbFieldType.Int, Engine_LevelLights.LightTypePoint));
+            compOriginRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Range, GdbFieldType.Float, FloatBits(10.0f)));
+            compOriginRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Intensity, GdbFieldType.Float, FloatBits(1.25f)));
+            compOriginRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.AttachToEntityPosition, GdbFieldType.Bool, 1u));
+            db.Entries.Add(compOriginRec);
+
+            const uint compDummyLight = 0x60000002u;
+            var compDummyRec = new GdbPatchEntry(compDummyLight, 0x01);
+            compDummyRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.LightType, GdbFieldType.Int, Engine_LevelLights.LightTypePoint));
+            compDummyRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Range, GdbFieldType.Float, FloatBits(9.0f)));
+            compDummyRec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.Intensity, GdbFieldType.Float, FloatBits(1.05f)));
+            db.Entries.Add(compDummyRec);
+
+            const string lampModel = "Art/Environment/Regions/Wraithmarsh/Lights/WM_Lamp_Post.mdl";
+            var lampGmd = Engine_GmdSkeleton.CreateForTesting(
+                names: Array.Empty<string>(),
+                parents: Array.Empty<int>(),
+                locals: Array.Empty<Transform3D>(),
+                attachments: new[]
+                {
+                    new GmdAttachment(Engine_LevelLights.LightDummy, new Transform3D(Basis.Identity, new Vector3(0f, 3.1f, 0f)), -1)
+                });
+            Engine_LevelFx.InjectGmdForTesting(lampModel, lampGmd);
+
+            const string houseInteriorModel = "Art/Environment/Regions/Bowerstone/Buildings/dotXSI/BS_TownHouse_01/BS_TownHouse_01_interior.mdl";
+            var houseGmd = Engine_GmdSkeleton.CreateForTesting(
+                names: Array.Empty<string>(),
+                parents: Array.Empty<int>(),
+                locals: Array.Empty<Transform3D>(),
+                attachments: Array.Empty<GmdAttachment>());
+            Engine_LevelFx.InjectGmdForTesting(houseInteriorModel, houseGmd);
+
+            const string lanternDummy = "Prop.FX.Particle.FXENV_Lamp_Flame_01.par";
+            uint lanternDummyHash = Engine_GameHash.Fnv1(lanternDummy);
+            db.Names[lanternDummyHash] = lanternDummy;
+            const string lanternModel = "Art/Environment/Shared assets/Lights/dotXSI/RS_Hanging_Lantern.mdl";
+            var lanternGmd = Engine_GmdSkeleton.CreateForTesting(
+                names: Array.Empty<string>(),
+                parents: Array.Empty<int>(),
+                locals: Array.Empty<Transform3D>(),
+                attachments: new[]
+                {
+                    new GmdAttachment(lanternDummy, Transform3D.Identity, -1)
+                });
+            Engine_LevelFx.InjectGmdForTesting(lanternModel, lanternGmd);
+
+            const uint fxItemLanternHash = 0x60000003u;
+            var fxItemLantern = new GdbPatchEntry(fxItemLanternHash, 0x01);
+            fxItemLantern.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.String, 0x48A6D808u));
+            fxItemLantern.Properties.Add(new GdbPatchProperty(Engine_LevelFx.DummyObject, GdbFieldType.String, lanternDummyHash));
+            db.Entries.Add(fxItemLantern);
+
+            const uint placeableHash = 0x92ED42FAu;
+            const uint unnamedHash = 0x61000002u;
+            const uint roomShellHash = 0x61000003u;
+            const uint lampPostHash = 0x61000004u;
+            const uint caveTorchHash = 0x61000005u;
+            const uint brazierHash = 0x61000006u;
+            const uint tombStatueHash = 0x61000007u;
+            const uint synthLanternHash = 0x61000008u;
+
+            foreach (uint h in new[] { placeableHash, unnamedHash, caveTorchHash, brazierHash, tombStatueHash })
+            {
+                var rec = new GdbPatchEntry(h, 0x01);
+                rec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.GraphicAppearanceLightComponent, GdbFieldType.Reference, compPointAtOrigin));
+                db.Entries.Add(rec);
+            }
+
+            foreach (uint h in new[] { roomShellHash, lampPostHash })
+            {
+                var rec = new GdbPatchEntry(h, 0x01);
+                rec.Properties.Add(new GdbPatchProperty(Engine_LevelLights.GraphicAppearanceLightComponent, GdbFieldType.Reference, compDummyLight));
+                db.Entries.Add(rec);
+            }
+
+            var synthRec = new GdbPatchEntry(synthLanternHash, 0x01);
+            synthRec.Properties.Add(new GdbPatchProperty(Engine_LevelFx.ParticleEmitter, GdbFieldType.Reference, fxItemLanternHash));
+            db.Entries.Add(synthRec);
+
+            var placements = new List<GdbPlacement>
+            {
+                new() { Hash = placeableHash, EntityName = "PlaceableLight_5", X = -264.2f, Y = 163.1f, Z = 23.7f },
+                new() { Hash = unnamedHash, EntityName = "", X = -240.0f, Y = 150.0f, Z = 22.0f },
+                new() { Hash = roomShellHash, EntityName = "TownHouse_InteriorFill", X = -220.0f, Y = 140.0f, Z = 24.0f },
+                new() { Hash = lampPostHash, EntityName = "WM_Lamp_Post_01", X = -200.0f, Y = 130.0f, Z = 21.0f },
+                new() { Hash = caveTorchHash, EntityName = "Cave_Torch_Floor_01", X = -180.0f, Y = 120.0f, Z = 20.0f },
+                new() { Hash = brazierHash, EntityName = "BrazierWall_01", X = -160.0f, Y = 110.0f, Z = 20.0f },
+                new() { Hash = tombStatueHash, EntityName = "Tomb_Statue_V2_01", X = -140.0f, Y = 100.0f, Z = 20.0f },
+                new() { Hash = synthLanternHash, EntityName = "Market_Lantern_01", X = -120.0f, Y = 90.0f, Z = 20.0f },
+            };
+
+            var modelPaths = new Dictionary<uint, string>
+            {
+                [roomShellHash] = houseInteriorModel,
+                [lampPostHash] = lampModel,
+                [synthLanternHash] = lanternModel,
+            };
+
+            byte[] bytes = GdbWriter.Serialize(db);
+            AssertThat(GdbView.TryParse(bytes, out GdbView view, out _)).IsTrue();
+
+            var hosts = new HashSet<uint>();
+            List<Engine_LevelLights.ResolvedLightInstance> resolved = Engine_LevelLights.ResolvePlacements(
+                view,
+                new List<GdbView>(),
+                placements,
+                modelPaths,
+                hosts,
+                out _,
+                out _);
+
+            AssertThat(resolved.Count).IsEqual(8);
+
+            // Floating ambient placements:
+            AssertThat(resolved.Find(r => r.Entity == placeableHash).Light.IsFloatingAmbient).IsTrue();
+            AssertThat(resolved.Find(r => r.Entity == unnamedHash).Light.IsFloatingAmbient).IsTrue();
+            AssertThat(resolved.Find(r => r.Entity == roomShellHash).Light.IsFloatingAmbient).IsTrue();
+            AssertThat(hosts.Contains(roomShellHash)).IsFalse();
+
+            // Physical fixtures & synthetic flames must NEVER be marked floating ambient:
+            AssertThat(resolved.Find(r => r.Entity == lampPostHash).Light.IsFloatingAmbient).IsFalse();
+            AssertThat(hosts.Contains(lampPostHash)).IsTrue();
+            AssertThat(resolved.Find(r => r.Entity == caveTorchHash).Light.IsFloatingAmbient).IsFalse();
+            AssertThat(resolved.Find(r => r.Entity == brazierHash).Light.IsFloatingAmbient).IsFalse();
+            AssertThat(resolved.Find(r => r.Entity == tombStatueHash).Light.IsFloatingAmbient).IsFalse();
+            Engine_LevelLights.ResolvedLightInstance synthResolved = resolved.Find(r => r.Entity == synthLanternHash);
+            AssertThat(synthResolved.Light.IsSyntheticFlame).IsTrue();
+            AssertThat(synthResolved.Light.IsFloatingAmbient).IsFalse();
+            AssertThat(hosts.Contains(synthLanternHash)).IsTrue();
+        }
+        finally
+        {
+            Engine_LevelFx.ClearCaches();
+        }
+    }
+
+    [TestCase]
+    public void FloatingAmbientClusteringSoftCoreAndShadowPriority_RespectInvariantsAndCvar()
+    {
+        string? prevEnv = System.Environment.GetEnvironmentVariable("REFII_LIGHTING_MODEL");
+        System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", "modern");
+        try
+        {
+            var baseLight = new Engine_LevelLights.LightPlacement(
+                ColourLinear: new Vector3(1.0f, 0.6f, 0.2f),
+                Intensity: 1.25f,
+                Range: 8.0f,
+                Type: Engine_LevelLights.LightTypePoint,
+                HalfAngleRadians: 0.0f,
+                FadeDistance: 0.0f,
+                FadeRange: 0.0f,
+                CastShadows: false,
+                Active: true,
+                Dummy: string.Empty,
+                FlickerRate: 0.0f,
+                FlickerBrightnessRange: 0.0f,
+                FlickerRadiusRange: 0.0f);
+            var floatingLight = baseLight with { IsFloatingAmbient = true };
+
+            // 1. Floating ambient lights never merge into adjacent physical candle clusters.
+            AssertThat(Engine_LevelLights.AreLightsClusterCompatible(
+                baseLight, "Candle_01", null, baseLight, "Candle_02", null)).IsTrue();
+            AssertThat(Engine_LevelLights.AreLightsClusterCompatible(
+                floatingLight, "PlaceableLight_1", null, baseLight, "Candle_01", null)).IsFalse();
+
+            // 2. Soft-core radii calculation for physical vs floating omni/spot lights.
+            Engine_LevelLights.ComputeSoftCoreRadii(
+                effectiveRange: 14.8f,
+                isSpot: false,
+                isFloatingAmbient: false,
+                softnessScale: 1.0f,
+                out float fixtureSurf,
+                out float fixtureVol);
+            AssertThat(fixtureSurf).IsEqual(0.0f);
+            AssertThat(fixtureVol).IsEqual(0.0f);
+
+            Engine_LevelLights.ComputeSoftCoreRadii(
+                effectiveRange: 14.8f,
+                isSpot: false,
+                isFloatingAmbient: true,
+                softnessScale: 1.0f,
+                out float omniSurf,
+                out float omniVol);
+            AssertThat(Mathf.IsEqualApprox(omniVol, 14.8f * Engine_LevelLights.FloatingVolumetricCoreFraction, 1e-3f)).IsTrue();
+            AssertThat(Mathf.IsEqualApprox(omniSurf, 14.8f * Engine_LevelLights.FloatingSurfaceCoreFraction, 1e-3f)).IsTrue();
+
+            Engine_LevelLights.ComputeSoftCoreRadii(
+                effectiveRange: 12.0f,
+                isSpot: true,
+                isFloatingAmbient: true,
+                softnessScale: 1.0f,
+                out float spotSurf,
+                out float spotVol);
+            AssertThat(Mathf.IsEqualApprox(spotVol, 12.0f * Engine_LevelLights.FloatingSpotCoreFraction, 1e-3f)).IsTrue();
+            AssertThat(spotSurf > 0.0f && spotSurf < spotVol).IsTrue();
+
+            // Upper bound clamp at 80% of effective range even at maximum softnessScale (3.0).
+            Engine_LevelLights.ComputeSoftCoreRadii(
+                effectiveRange: 10.0f,
+                isSpot: false,
+                isFloatingAmbient: true,
+                softnessScale: 3.0f,
+                out float maxSurf,
+                out float maxVol);
+            AssertThat(maxVol <= 8.0f + 1e-4f).IsTrue();
+            AssertThat(maxSurf <= 8.0f + 1e-4f).IsTrue();
+
+            // 3. Live CVar `floating_light_softness` toggles soft-core radii cleanly.
+            AssertThat(Engine_RefiiConfig.TrySetGodotCvar("floating_light_softness", "0.0")).IsTrue();
+            AssertThat(Mathf.IsEqualApprox(Engine_LevelLights.FloatingLightSoftness, 0.0f, 1e-4f)).IsTrue();
+            Engine_LevelLights.ComputeSoftCoreRadii(
+                effectiveRange: 14.8f,
+                isSpot: false,
+                isFloatingAmbient: true,
+                softnessScale: Engine_LevelLights.FloatingLightSoftness,
+                out float disabledSurf,
+                out float disabledVol);
+            AssertThat(disabledSurf).IsEqual(0.0f);
+            AssertThat(disabledVol).IsEqual(0.0f);
+
+            // 4. Dynamic entity shadow budget gives physical torches priority (+3.5m effective distance offset)
+            //    while keeping floating lights eligible when slots are available.
+            Vector3 heroPos = new(-260.0f, 22.0f, 160.0f);
+            Vector3 lightPos = new(-263.0f, 23.8f, 162.0f);
+            float physicalScore = Engine_LightShadowBudget.ScoreDynamicEntityShadowLight(
+                lightPos,
+                heroPos,
+                range: 12.0f,
+                baseEnergy: 2.5f,
+                viewerIndoors: true,
+                isInteriorLevel: false,
+                isIndoorLight: true,
+                lightZone: 0x00207800u,
+                heroZone: 0x00207800u,
+                alreadyDynamic: false,
+                isFloatingAmbient: false);
+            float floatingScore = Engine_LightShadowBudget.ScoreDynamicEntityShadowLight(
+                lightPos,
+                heroPos,
+                range: 12.0f,
+                baseEnergy: 2.5f,
+                viewerIndoors: true,
+                isInteriorLevel: false,
+                isIndoorLight: true,
+                lightZone: 0x00207800u,
+                heroZone: 0x00207800u,
+                alreadyDynamic: false,
+                isFloatingAmbient: true);
+
+            AssertThat(physicalScore < floatingScore).IsTrue();
+            AssertThat(floatingScore < float.MaxValue).IsTrue();
+        }
+        finally
+        {
+            Engine_RefiiConfig.TrySetGodotCvar("floating_light_softness", "1.0");
+            System.Environment.SetEnvironmentVariable("REFII_LIGHTING_MODEL", prevEnv);
+        }
+    }
 }

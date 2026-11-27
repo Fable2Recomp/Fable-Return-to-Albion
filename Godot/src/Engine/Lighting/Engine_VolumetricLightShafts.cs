@@ -29,6 +29,56 @@ public static class Engine_VolumetricLightShafts
 	public const float ActiveHysteresisMultiplier = 1.15f;
 
 	/// <summary>
+	/// Energy-preserving volumetric normalization gain for soft-core floating ambient lights.
+	/// </summary>
+	public const float AmbientVolumeGain = 1.65f;
+
+	/// <summary>
+	/// Mirrors the per-step distance attenuation and Henyey-Greenstein phase evaluation in
+	/// <c>fable_postfx_volumetric_shafts.glsl</c> for headless mathematical verification.
+	/// </summary>
+	public static void EvaluateSampleKernel(
+		float d2,
+		float invStatedR2,
+		float softCoreRadius,
+		float cosTheta,
+		float anisotropy,
+		out float distAtten,
+		out float phase)
+	{
+		const float invFourPi = 0.07957747154f;
+		float u2 = d2 * invStatedR2;
+		if (u2 >= 1.0f)
+		{
+			distAtten = 0.0f;
+			phase = 0.0f;
+			return;
+		}
+
+		float nd = MathF.Max(1.0f - (u2 * u2), 0.0f);
+		float window = nd * nd;
+		float g = anisotropy;
+
+		if (softCoreRadius > 0.0f)
+		{
+			float invSoftD = 1.0f / MathF.Sqrt(d2 + (softCoreRadius * softCoreRadius));
+			distAtten = window * invSoftD * AmbientVolumeGain;
+			float d = MathF.Sqrt(MathF.Max(d2, 0.0f));
+			float wDir = d * invSoftD;
+			g = anisotropy * (wDir * wDir);
+		}
+		else
+		{
+			distAtten = window / MathF.Sqrt(d2 + 0.35f);
+		}
+
+		float g2 = g * g;
+		float denom = MathF.Max(1.0f + g2 - (2.0f * g * cosTheta), 1e-4f);
+		float hg = (1.0f - g2) / (denom * MathF.Sqrt(denom));
+		phase = invFourPi * (1.0f + ((hg - 1.0f) * 0.64f));
+	}
+
+	/// <summary>
 	/// Candidate light descriptor used for pure, allocation-free camera-apparent flux ranking.
 	/// </summary>
 	public readonly record struct ShaftCandidateSpec(
@@ -143,7 +193,8 @@ public static class Engine_VolumetricLightShafts
 		bool IndoorFromOutside,
 		Vector3 SpotDir = default,
 		float SpotCosHalfAngle = -2.0f,
-		uint CasterMask = 0u);
+		uint CasterMask = 0u,
+		float SoftCoreRadius = 0.0f);
 
 	public readonly record struct VolumetricCapsule(
 		Vector3 SegA,

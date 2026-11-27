@@ -354,6 +354,21 @@ public sealed class WaterMeshAndQualityTests
 		AssertThat(celestialCs.Contains("ModernMoonScale = 0.75f;", StringComparison.Ordinal)).IsTrue();
 		AssertThat(celestialCs.Contains("moonNode.SetMeta(MoonPhaseMeta, meshPhaseKey);", StringComparison.Ordinal)).IsTrue();
 		AssertThat(celestialCs.Contains(": Math.Clamp(moonPhase, 0, 7);", StringComparison.Ordinal)).IsTrue();
+
+		// Placed-light static shadow atlas reuse, SPECULAR_AMOUNT slot-index isolation,
+		// daytime Sun sparkle boost with Moon parity, and sparkle-gated directional ray occlusion.
+		AssertThat(clean.Contains("global uniform sampler2D fable_light_table;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("global uniform sampler2DArray fable_static_shadow_atlas : filter_linear;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("water_placed_light_attenuation(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("texelFetch(fable_static_shadow_atlas,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("texelFetch(fable_light_table,", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("spec_brdf * ndl_spec * SPECULAR_AMOUNT", StringComparison.Ordinal)).IsFalse();
+		AssertThat(clean.Contains("spec_brdf * ndl_spec * spec_weight", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("mix(0.88, 0.72, is_moon_l)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("mix(135.0, 72.0, is_moon_l)", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("float base_peak = is_moon ? 5.2 : 14.5;", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("water_directional_ray_vis(", StringComparison.Ordinal)).IsTrue();
+		AssertThat(clean.Contains("if ((spec_brdf * light_atten * dir_vis) > 0.004)", StringComparison.Ordinal)).IsTrue();
 	}
 
 	[TestCase]

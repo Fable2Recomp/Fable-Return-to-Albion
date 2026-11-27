@@ -114,6 +114,27 @@ vec3 fable_direct(vec3 normal, vec3 light, float attenuation, vec3 light_colour)
 	return clamp(dot(n, l), 0.0, 1.0) * a * (c / PI);
 }
 
+float fable_specular_ambient_weight(bool directional, float specular_amount, vec3 world) {
+	if (directional) {
+		return 1.0;
+	}
+#if defined(FABLE_LITE_ONE_ROW_LIGHT) && defined(FABLE_LITE_NO_STATIC_SHADOW)
+	return 1.0;
+#else
+	int slot = int(specular_amount * 0.5 + 0.5) - 2;
+	if (slot >= 0 && slot < 1000) {
+		float soft_r = texelFetch(fable_light_table, ivec2(slot, 2), 0).y;
+		if (soft_r > 0.0) {
+			vec3 light_pos = texelFetch(fable_light_table, ivec2(slot, 0), 0).xyz;
+			vec3 diff = world - light_pos;
+			float d2 = dot(diff, diff);
+			return d2 / max(d2 + soft_r * soft_r, 1e-4);
+		}
+	}
+	return 1.0;
+#endif
+}
+
 vec3 fable_specular(
 		vec3 normal,
 		vec3 light,

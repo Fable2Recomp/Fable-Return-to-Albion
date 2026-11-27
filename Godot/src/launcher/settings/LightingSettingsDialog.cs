@@ -321,6 +321,12 @@ public partial class LightingSettingsDialog : Control
 			"Multiplier on placed light radius inside town buildings in outdoor levels (default: 1.0x; caves unaffected).",
 			0.25, 3.0, 0.05));
 
+		contentCol.AddChild(BuildSliderSpinRow(
+			"floating_light_softness",
+			"Floating Ambient Light Softness",
+			"Spreads unattached floating mood lights into a uniform volume without a visible point core while preserving range and window shafts (1.0=default, 0.0=point source; torches/lamps unaffected).",
+			0.0, 2.0, 0.05));
+
 		contentCol.AddChild(BuildOptionRow(
 			"static_shadow_resolution",
 			"Static Shadow Resolution",
@@ -831,6 +837,7 @@ public partial class LightingSettingsDialog : Control
 			"building_interior_ambient_scale",
 			"building_interior_light_scale",
 			"building_interior_reach_scale",
+			"floating_light_softness",
 			"static_shadow_resolution",
 			"terrain_ao_resolution",
 			"sdfgi_enabled",
