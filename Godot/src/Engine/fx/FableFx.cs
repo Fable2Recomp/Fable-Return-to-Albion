@@ -126,6 +126,7 @@ public partial class FableFx : Node3D
 	private bool _emitted;
 	private Vector3 _emitPos;
 	private bool _emitAddNull = true;
+	private float _emitRibbonIntensity = -1f;
 	private bool _emitMainActive;
 	private bool _emitDispActive;
 	private bool _emitAddActive;
@@ -281,6 +282,169 @@ public partial class FableFx : Node3D
 	{
 		EnsureBuilt();
 		_system.SetSplineOverride(nodeLocalPoints);
+	}
+
+	/// <summary>True when this effect contains at least one ribbon emitter (<c>Mode == 2</c> or <c>3</c>).</summary>
+	public bool HasRibbon => _built && _system.HasRibbon;
+
+	/// <summary>True when this effect contains a <c>Mode == 3</c> melee weapon double-trail emitter.</summary>
+	public bool IsWeaponDoubleTrail => _built && _system.IsWeaponDoubleTrail;
+
+	/// <summary>True when this effect contains at least one <c>Mode == 3</c> double-trail emitter.</summary>
+	public bool HasDoubleTrail => _built && _system.HasDoubleTrail;
+
+	/// <summary>
+	/// When true, live <c>Mode == 3</c> double trails suppress spawning until <see cref="SetDoubleTrailSpan"/>
+	/// supplies a valid endpoint pair rather than emitting an arbitrary vertical fallback quad.
+	/// </summary>
+	public bool RequireDoubleTrailSpan
+	{
+		get => _system.RequireDoubleTrailSpan;
+		set => _system.RequireDoubleTrailSpan = value;
+	}
+
+	/// <summary>
+	/// When true, guest-driven <c>Mode == 2</c> single trails suppress spawning until
+	/// <see cref="SetSingleTrailHead"/> supplies a valid head point.
+	/// </summary>
+	public bool RequireSingleTrailHead
+	{
+		get => _system.RequireSingleTrailHead;
+		set => _system.RequireSingleTrailHead = value;
+	}
+
+	/// <summary>
+	/// When true, live <c>Type 9</c> beam/spline emitters suppress fallback 3m bars until a guest
+	/// spline baseline is supplied via <see cref="SetBeamSplineForType"/> or <see cref="SetSplineOverride"/>.
+	/// </summary>
+	public bool RequireBeamSpline
+	{
+		get => _system.RequireBeamSpline;
+		set => _system.RequireBeamSpline = value;
+	}
+
+	/// <summary>True when this effect contains at least one <c>Type 9</c> spline/beam emitter.</summary>
+	public bool HasBeam
+	{
+		get
+		{
+			EnsureBuilt();
+			return _system.HasBeam;
+		}
+	}
+
+	/// <summary>Number of <c>Type 9</c> spline/beam emitters in this effect.</summary>
+	public int BeamEmitterCount
+	{
+		get
+		{
+			EnsureBuilt();
+			return _system.BeamEmitterCount;
+		}
+	}
+
+	/// <summary>Sets or clears the runtime spline points (in node-local Godot space) for a <c>Type 9</c> beam emitter.</summary>
+	public int SetBeamSplineForType(uint emitterEntityId, int occurrence, ReadOnlySpan<Vector3> nodeLocalPoints)
+	{
+		EnsureBuilt();
+		return _system.SetBeamSplineForType(emitterEntityId, occurrence, nodeLocalPoints);
+	}
+
+	/// <summary>Sets or clears the runtime spline points (in node-local Godot space) by beam index.</summary>
+	public void SetBeamSpline(int beamIndex, ReadOnlySpan<Vector3> nodeLocalPoints)
+	{
+		EnsureBuilt();
+		_system.SetBeamSpline(beamIndex, nodeLocalPoints);
+	}
+
+	/// <summary>Clears all per-beam spline overrides on this effect.</summary>
+	public void ClearBeamSplines()
+	{
+		if (_built)
+		{
+			_system.ClearBeamSplines();
+		}
+	}
+
+	/// <summary>Updates per-chain (<c>part.Vector</c>) placement roots in node-local Godot space.</summary>
+	public void SetChainRoots(ReadOnlySpan<Transform3D> nodeLocalRoots)
+	{
+		EnsureBuilt();
+		_system.SetChainRoots(nodeLocalRoots);
+	}
+
+	/// <summary>
+	/// Sets the two world-aligned blade/span endpoints in this node's local Godot space for
+	/// host-driven <c>Mode == 3</c> double-trail spawning, optionally carrying guest ring cursor state.
+	/// </summary>
+	public void SetDoubleTrailSpan(
+		Vector3 nodeLocalEdgeA,
+		Vector3 nodeLocalEdgeB,
+		bool hasGuestCursor = false,
+		uint guestTail = 0u,
+		uint guestCount = 0u)
+	{
+		EnsureBuilt();
+		_system.SetDoubleTrailSpan(nodeLocalEdgeA, nodeLocalEdgeB, hasGuestCursor, guestTail, guestCount);
+	}
+
+	/// <summary>Clears any host-supplied double-trail blade span, reverting to emitter-basis fallback.</summary>
+	public void ClearDoubleTrailSpan()
+	{
+		if (_built)
+		{
+			_system.ClearDoubleTrailSpan();
+		}
+	}
+
+	/// <summary>
+	/// Supplies the complete guest <c>Mode == 3</c> double-trail ring (oldest to newest, in this
+	/// node's local Godot space) with exact per-slot <c>KeyTime</c> values.
+	/// </summary>
+	public void SetDoubleTrailRing(ReadOnlySpan<Engine_FxSystem.DoubleTrailRingPoint> nodeLocalPoints)
+	{
+		EnsureBuilt();
+		_system.SetDoubleTrailRing(nodeLocalPoints);
+	}
+
+	/// <summary>Clears any direct guest <c>Mode == 3</c> double-trail ring override.</summary>
+	public void ClearDoubleTrailRing()
+	{
+		if (_built)
+		{
+			_system.ClearDoubleTrailRing();
+		}
+	}
+
+	/// <summary>
+	/// Sets the guest-driven <c>Mode == 2</c> single-trail head point in this node's local Godot space.
+	/// </summary>
+	public void SetSingleTrailHead(
+		Vector3 nodeLocalHead,
+		bool hasGuestCursor = false,
+		uint guestTail = 0u,
+		uint guestCount = 0u)
+	{
+		EnsureBuilt();
+		_system.SetSingleTrailHead(nodeLocalHead, hasGuestCursor, guestTail, guestCount);
+	}
+
+	/// <summary>Clears any guest-driven single-trail head point.</summary>
+	public void ClearSingleTrailHead()
+	{
+		if (_built)
+		{
+			_system.ClearSingleTrailHead();
+		}
+	}
+
+	/// <summary>Flushes active ribbon particles (<c>Mode == 2</c> and/or <c>Mode == 3</c>) on guest reset.</summary>
+	public void ResetTrails(int modeFilter = 0)
+	{
+		if (_built)
+		{
+			_system.ResetTrails(modeFilter);
+		}
 	}
 
 	/// <summary>
@@ -931,7 +1095,11 @@ public partial class FableFx : Node3D
 		// vertex shader's job, and what is still built against the camera (a ribbon's side vector
 		// `tan.Cross(eye - pos)` and the back-to-front sort) reads only the camera's position.
 		bool turned = !_emitted || cameraPos.DistanceSquaredTo(_emitPos) > 0.25f;
-		if (_system.LastSteps == 0 && !_system.LastRebased && !turned && (addMesh is null) == _emitAddNull && GuestDrawn == _emitGuest)
+		float liveRibbonIntensity = Intensity * RecipeIntensity * StatedColour.A;
+		bool ribbonDirty = (_system.HasRibbon &&
+			(MathF.Abs(liveRibbonIntensity - _emitRibbonIntensity) > 1e-3f || _system.ConsumeLiveWeaponTipDirty())) ||
+			_system.ConsumeBeamDirty();
+		if (_system.LastSteps == 0 && !_system.LastRebased && !turned && !ribbonDirty && (addMesh is null) == _emitAddNull && GuestDrawn == _emitGuest)
 		{
 			if (_emitDispActive) Refii.AndroidRuntime.AndroidDisplacementGate.WakeEffect(this, CachedGlobalTransform, _dispMesh);
 			if (_emitAddActive) Engine_FxAdditiveLayer.NotifyActive();
@@ -946,6 +1114,7 @@ public partial class FableFx : Node3D
 		_emitPos = cameraPos;
 		_emitAddNull = addMesh is null;
 		_emitGuest = GuestDrawn;
+		_emitRibbonIntensity = liveRibbonIntensity;
 		if (GuestDrawn)
 		{
 			if (_emitMainActive && _mesh.GetSurfaceCount() > 0) _mesh.ClearSurfaces();
@@ -962,8 +1131,17 @@ public partial class FableFx : Node3D
 		// every call.
 		_lookupMaterial ??= LookupMaterial;
 		FrameWork.Lap(4, ref lapAt);
+		Engine_FxGroundConform.GroundContext? groundConform = null;
+		if (_system.GroundConform && !Refii.Models.Engine_ClassicMaterial.Active)
+		{
+			Engine_FxGroundConform.GroundHeightSampler? sampler = Engine_FxGroundConform.TryGetLiveGroundSampler();
+			if (sampler is not null)
+			{
+				groundConform = new Engine_FxGroundConform.GroundContext(CachedGlobalTransform, sampler);
+			}
+		}
 		_system.EmitGeometry(
-			_mesh, _lookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh, GuestDrawn ? null : addMesh, !GuestDrawn);
+			_mesh, _lookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh, GuestDrawn ? null : addMesh, !GuestDrawn, groundConform);
 		lapAt = System.Diagnostics.Stopwatch.GetTimestamp();
 		_emitMainActive = !GuestDrawn && _mesh.GetSurfaceCount() > 0;
 		_emitDispActive = _dispMesh is not null && _dispMesh.GetSurfaceCount() > 0;
@@ -1218,16 +1396,18 @@ public partial class FableFx : Node3D
 	{
 		farOnly = false;
 		Vector3 origin = CachedGlobalTransform.Origin;
+		float cullRadius = MathF.Max(FreezeRadius, _system.ActiveBoundRadius);
 		Plane[] planes = _frustum[view];
 		for (int i = 0; i < planes.Length; i++)
 		{
-			if (planes[i].DistanceTo(origin) > FreezeRadius)
+			if (planes[i].DistanceTo(origin) > cullRadius)
 			{
 				return false;
 			}
 		}
 
-		float freezeReach = Engine_FxSystem.EffectiveFreezeDistance(Refii.Lighting.Engine_LightingFrame.ModernModel);
+		float freezeReach = Engine_FxSystem.EffectiveFreezeDistance(Refii.Lighting.Engine_LightingFrame.ModernModel) +
+			MathF.Max(0f, cullRadius - FreezeRadius);
 		if (origin.DistanceSquaredTo(camPos) > freezeReach * freezeReach)
 		{
 			farOnly = true;
@@ -1243,17 +1423,19 @@ public partial class FableFx : Node3D
 	{
 		farOnly = false;
 		Vector3 origin = CachedGlobalTransform.Origin;
+		float cullRadius = MathF.Max(FreezeRadius, _system.ActiveBoundRadius);
 		Plane[] planes = FrameFrustum(camera, view);
 		for (int i = 0; i < planes.Length; i++)
 		{
-			if (planes[i].DistanceTo(origin) > FreezeRadius)
+			if (planes[i].DistanceTo(origin) > cullRadius)
 			{
 				return false;
 			}
 		}
 
 		Vector3 camPos = cameraPos ?? camera.GlobalPosition;
-		float freezeReach = Engine_FxSystem.EffectiveFreezeDistance(Refii.Lighting.Engine_LightingFrame.ModernModel);
+		float freezeReach = Engine_FxSystem.EffectiveFreezeDistance(Refii.Lighting.Engine_LightingFrame.ModernModel) +
+			MathF.Max(0f, cullRadius - FreezeRadius);
 		if (origin.DistanceSquaredTo(camPos) > freezeReach * freezeReach)
 		{
 			farOnly = true;
@@ -1586,6 +1768,7 @@ public partial class FableFx : Node3D
 		}
 
 		_system.Build(bank, new[] { placement });
+		_system.GroundConform = placement.EffectHash != 0u && Engine_FxGroundConform.ShouldConformEffect(placement.EffectHash);
 		BuildPieces(bank, placement);
 		_hasDisplacement = _system.HasDisplacement;
 		_hasMeshParticles = _system.HasMeshParticles;

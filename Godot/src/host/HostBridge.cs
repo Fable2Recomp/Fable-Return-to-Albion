@@ -4366,7 +4366,31 @@ public static partial class HostBridge
 
 		/// <summary>A Type 5 <c>CParticleSplineNode</c> carries runtime world-space spline override
 		/// endpoints in <see cref="Rows"/>[0..count-1] with count in <see cref="Scale"/> (flag 32).</summary>
-		bool SplineOverride = false);
+		bool SplineOverride = false,
+
+		/// <summary>A <c>Mode == 3</c> double-trail emitter node carries its newest world-space
+		/// <c>(EdgeA, EdgeB)</c> endpoints in <see cref="Rows"/>[0..1] (flag 512).</summary>
+		bool DoubleTrailSpan = false,
+
+		/// <summary>A guest-driven <c>Mode == 2</c> single-trail emitter node carries its newest
+		/// world-space head point in <see cref="Rows"/>[0] (flag 1024).</summary>
+		bool SingleTrailHead = false,
+
+		/// <summary>A guest trail ring buffer was cleared/reset (<c>n &lt; 2 || cnt &lt; 2</c>, flag 2048).</summary>
+		bool TrailReset = false,
+
+		/// <summary>Packed trail ring metadata <c>(min(n, 0xFFFF) &lt;&lt; 16) | min(cnt, 0xFFFF)</c>.</summary>
+		uint TrailRingMeta = 0u,
+
+		/// <summary>Guest trail ring write cursor <c>(head + cnt) &amp; mask</c>.</summary>
+		uint TrailRingTail = 0u,
+
+		/// <summary>A <c>Mode == 3</c> double-trail emitter carries a valid guest ring readable via
+		/// <see cref="GetFxDoubleTrailRing"/> (flag 4096).</summary>
+		bool DoubleTrailRing = false);
+
+	/// <summary>One raw guest-space entry from <see cref="GetFxDoubleTrailRing"/>.</summary>
+	public readonly record struct GuestDoubleTrailPoint(Vector3 EdgeA, Vector3 EdgeB, float KeyTime);
 
 	/// <summary>
 	/// Every particle effect the guest is currently playing, in world space — the only route
@@ -4408,6 +4432,10 @@ public static partial class HostBridge
 
 			bool isRoot = (flags & 8u) != 0;
 			bool isSplineOverride = (flags & 32u) != 0;
+			bool hasDoubleSpan = (flags & 512u) != 0;
+			bool hasSingleHead = (flags & 1024u) != 0;
+			bool hasTrailReset = (flags & 2048u) != 0;
+			bool hasDoubleRing = (flags & 4096u) != 0;
 			effects.Add(new ActiveFx(
 				_activeFx[at + 0],
 				_activeFx[at + 16],
@@ -4430,7 +4458,13 @@ public static partial class HostBridge
 				_activeFx[at + 26],
 				(flags & 256u) != 0,
 				(flags & 128u) != 0,
-				SplineOverride: isSplineOverride));
+				SplineOverride: isSplineOverride,
+				DoubleTrailSpan: hasDoubleSpan,
+				SingleTrailHead: hasSingleHead,
+				TrailReset: hasTrailReset,
+				TrailRingMeta: (hasDoubleSpan || hasSingleHead) ? _activeFx[at + 13] : 0u,
+				TrailRingTail: (hasDoubleSpan || hasSingleHead) ? _activeFx[at + 14] : 0u,
+				DoubleTrailRing: hasDoubleRing));
 		}
 
 		return effects;
@@ -4438,7 +4472,7 @@ public static partial class HostBridge
 
 	private static float Bits(uint raw) => BitConverter.Int32BitsToSingle(unchecked((int)raw));
 
-	private static readonly float[] _fxSpline = new float[96];
+	private static readonly float[] _fxSpline = new float[1536];
 
 	/// <summary>
 	/// The points an effect's spline setter last stated (<see cref="ActiveFx.SplineStated"/>), raw
@@ -4457,6 +4491,55 @@ public static partial class HostBridge
 		for (int i = 0; i < count; i++)
 		{
 			into[i] = new Vector3(_fxSpline[i * 3], _fxSpline[(i * 3) + 1], _fxSpline[(i * 3) + 2]);
+		}
+
+		return count;
+	}
+
+	private static readonly float[] _fxDoubleRing = new float[64 * 7];
+	private static bool _hasFxDoubleTrailRing = true;
+
+	/// <summary>
+	/// Reads the complete guest <c>Mode == 3</c> double-trail ring (<c>(EdgeA, EdgeB, KeyTime)</c>,
+	/// oldest-to-newest, raw guest world axes) for <paramref name="nodeOrHandle"/>. Returns how many
+	/// valid slots were written (0 when unavailable or fewer than 2 valid slots).
+	/// </summary>
+	public static int GetFxDoubleTrailRing(uint nodeOrHandle, Span<GuestDoubleTrailPoint> into)
+	{
+		if (!_hasFxDoubleTrailRing || nodeOrHandle == 0u || TryGetAbiVersion() is null || into.Length < 2)
+		{
+			return 0;
+		}
+
+		uint max = (uint)Math.Min(into.Length, _fxDoubleRing.Length / 7);
+		int count;
+		try
+		{
+			count = (int)RefiiHostGetFxDoubleTrailRing(nodeOrHandle, _fxDoubleRing, max);
+		}
+		catch (EntryPointNotFoundException)
+		{
+			_hasFxDoubleTrailRing = false;
+			return 0;
+		}
+
+		if (count < 2)
+		{
+			return 0;
+		}
+
+		if (count > (int)max)
+		{
+			count = (int)max;
+		}
+
+		for (int i = 0; i < count; i++)
+		{
+			int at = i * 7;
+			into[i] = new GuestDoubleTrailPoint(
+				new Vector3(_fxDoubleRing[at + 0], _fxDoubleRing[at + 1], _fxDoubleRing[at + 2]),
+				new Vector3(_fxDoubleRing[at + 3], _fxDoubleRing[at + 4], _fxDoubleRing[at + 5]),
+				_fxDoubleRing[at + 6]);
 		}
 
 		return count;
@@ -8350,6 +8433,9 @@ public static partial class HostBridge
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetFxSpline(uint handle, float[] outPoints, uint maxPoints);
+
+	[DllImport(Library)]
+	private static extern uint RefiiHostGetFxDoubleTrailRing(uint nodeOrHandle, float[] outPoints, uint maxPoints);
 
 	[DllImport(Library)]
 	private static extern uint RefiiHostGetSaveCards(out uint cursor, out uint baseSlot, [Out] byte[]? text, uint capacity);

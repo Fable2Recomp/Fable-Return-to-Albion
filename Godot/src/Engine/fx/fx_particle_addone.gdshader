@@ -9,7 +9,7 @@ render_mode blend_add, cull_disabled, depth_draw_never, depth_test_disabled, uns
 // does. Composition is 0210's: `oC0.rgb = vc.a * B.w * vc.rgb * tex.rgb * tex.rgb`, alpha ONE.
 // No clamp here: the layer is clamped whole when it joins the scene, as the guest's A8R8G8B8
 // target does.
-uniform sampler2D fx_tex : hint_default_white, filter_linear, repeat_enable;
+uniform sampler2D fx_tex : hint_default_white, filter_linear, repeat_disable;
 uniform float fx_alpha_ref = 1.0;
 uniform float fx_soft_inv = 0.0;
 global uniform sampler2D fx_scene_depth;

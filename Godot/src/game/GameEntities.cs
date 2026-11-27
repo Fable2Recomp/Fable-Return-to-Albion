@@ -2912,6 +2912,313 @@ public partial class GameEntities : Node3D
         return false;
     }
 
+    private readonly List<uint> _weaponChildrenScratch = new();
+
+    /// <summary>
+    /// Resolves a weapon's live drawn blade endpoints (<c>Weapon.Weapon.Hold</c> to
+    /// <c>Weapon.Weapon.Top</c>) in Godot world space for host-driven double-trail FX.
+    /// </summary>
+    public bool TryGetWeaponTrailSpan(uint owner, uint attachedTarget, out Vector3 worldEdgeA, out Vector3 worldEdgeB)
+    {
+        if (attachedTarget != 0u && TryGetEntityWeaponSpan(attachedTarget, allowAabbFallback: true, out worldEdgeA, out worldEdgeB))
+        {
+            return true;
+        }
+
+        if (owner != 0u && TryGetEntityWeaponSpan(owner, allowAabbFallback: _attachments.ParentOf(owner) != 0u, out worldEdgeA, out worldEdgeB))
+        {
+            return true;
+        }
+
+        if (owner != 0u)
+        {
+            _attachments.ChildrenOfParent(owner, _weaponChildrenScratch);
+            for (int i = 0; i < _weaponChildrenScratch.Count; i++)
+            {
+                uint child = _weaponChildrenScratch[i];
+                if (_attachments.TryGetDummyName(child, out string dummy) &&
+                    dummy.Contains("Sheath", System.StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (TryGetEntityWeaponSpan(child, allowAabbFallback: false, out worldEdgeA, out worldEdgeB))
+                {
+                    return true;
+                }
+            }
+        }
+
+        worldEdgeA = Vector3.Zero;
+        worldEdgeB = Vector3.Zero;
+        return false;
+    }
+
+    private bool TryResolveWeaponLocalSpan(MeshInstance3D node, out Vector3 holdLocal, out Vector3 topLocal)
+    {
+        foreach (string part in PartPaths(node))
+        {
+            if (Refii.Entities.Engine_EntityAttachments.TryResolveWeaponBladeSpan(part, out holdLocal, out topLocal))
+            {
+                return true;
+            }
+        }
+
+        holdLocal = Vector3.Zero;
+        topLocal = Vector3.Zero;
+        return false;
+    }
+
+    /// <summary>
+    /// Evaluates whether a guest-stated blade/spline span (<paramref name="trailEdgeA"/>,
+    /// <paramref name="trailEdgeB"/>) matches a drawn melee weapon's stated Hold/Top span
+    /// (<paramref name="weaponHold"/>, <paramref name="weaponTop"/>), tolerating the 15/30 Hz phase
+    /// offset of fast 360-degree flourish spins while rejecting unrelated weapons and ground effects.
+    /// </summary>
+    public static bool IsCompatibleWeaponTrailMatch(
+        Vector3 weaponHold,
+        Vector3 weaponTop,
+        Vector3 trailEdgeA,
+        Vector3 trailEdgeB,
+        out bool swapped,
+        out float score)
+    {
+        const float MaxHiltDistSq = 1.15f * 1.15f;
+        const float MaxTipDistSq = 1.85f * 1.85f;
+        const float MinAlignmentDot = -0.25f;
+
+        swapped = false;
+        score = float.PositiveInfinity;
+
+        Vector3 weaponVec = weaponTop - weaponHold;
+        Vector3 trailVec = trailEdgeB - trailEdgeA;
+        float weaponLen = weaponVec.Length();
+        float trailLen = trailVec.Length();
+        if (!float.IsFinite(weaponLen) || !float.IsFinite(trailLen) ||
+            weaponLen < 0.15f || trailLen < 0.15f || trailLen > 3.5f ||
+            trailLen < weaponLen * 0.65f || trailLen > weaponLen * 1.45f)
+        {
+            return false;
+        }
+
+        Vector3 weaponDir = weaponVec / weaponLen;
+        Vector3 trailDir = trailVec / trailLen;
+        float dot = weaponDir.Dot(trailDir);
+
+        float directHiltSq = weaponHold.DistanceSquaredTo(trailEdgeA);
+        float directTipSq = weaponTop.DistanceSquaredTo(trailEdgeB);
+        if (directHiltSq <= MaxHiltDistSq && directTipSq <= MaxTipDistSq && dot >= MinAlignmentDot)
+        {
+            score = (directHiltSq * 2f) + directTipSq;
+            swapped = false;
+        }
+
+        float swapHiltSq = weaponHold.DistanceSquaredTo(trailEdgeB);
+        float swapTipSq = weaponTop.DistanceSquaredTo(trailEdgeA);
+        if (swapHiltSq <= MaxHiltDistSq && swapTipSq <= MaxTipDistSq && -dot >= MinAlignmentDot)
+        {
+            float swapScore = (swapHiltSq * 2f) + swapTipSq;
+            if (swapScore < score)
+            {
+                score = swapScore;
+                swapped = true;
+            }
+        }
+
+        return float.IsFinite(score);
+    }
+
+    /// <summary>
+    /// Matches a guest-stated <c>Mode == 3</c> double-trail endpoint pair (<paramref name="statedWorldA"/>,
+    /// <paramref name="statedWorldB"/>) against all currently drawn non-sheath melee weapons so unowned
+    /// sword trails still lock to Godot's 60/120 FPS animated weapon pose. Returns false for non-weapon
+    /// trails such as spell circles.
+    /// </summary>
+    public bool TryMatchDrawnWeaponTrailSpan(
+        Vector3 statedWorldA,
+        Vector3 statedWorldB,
+        out uint matchedEntity,
+        out bool swapped,
+        out Vector3 drawnWorldA,
+        out Vector3 drawnWorldB)
+    {
+        matchedEntity = 0u;
+        swapped = false;
+        drawnWorldA = Vector3.Zero;
+        drawnWorldB = Vector3.Zero;
+        float bestErr = float.PositiveInfinity;
+
+        foreach (uint child in _attachments.Children)
+        {
+            if (_attachments.TryGetDummyName(child, out string dummy) &&
+                dummy.Contains("Sheath", System.StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!_nodes.TryGetValue(child, out MeshInstance3D? node) ||
+                !GodotObject.IsInstanceValid(node) ||
+                !TryGetStatedAndDrawnTransform(child, out Transform3D stated, out Transform3D drawn) ||
+                !TryResolveWeaponLocalSpan(node, out Vector3 holdLocal, out Vector3 topLocal))
+            {
+                continue;
+            }
+
+            Vector3 statedHold = stated * holdLocal;
+            Vector3 statedTop = stated * topLocal;
+            if (!IsCompatibleWeaponTrailMatch(
+                    statedHold, statedTop, statedWorldA, statedWorldB, out bool candidateSwapped, out float err) ||
+                err >= bestErr)
+            {
+                continue;
+            }
+
+            Vector3 dHold = drawn * holdLocal;
+            Vector3 dTop = drawn * topLocal;
+            if (!dHold.IsFinite() || !dTop.IsFinite())
+            {
+                continue;
+            }
+
+            bestErr = err;
+            matchedEntity = child;
+            swapped = candidateSwapped;
+            drawnWorldA = candidateSwapped ? dTop : dHold;
+            drawnWorldB = candidateSwapped ? dHold : dTop;
+        }
+
+        return matchedEntity != 0u;
+    }
+
+    /// <summary>
+    /// Matches an unowned 2..3 point Type 5 weapon spline override (<c>FX_64D9750B</c> when the guest
+    /// reports <c>attached == 0</c>) against the best drawn non-sheath melee weapon and latches its
+    /// local-space control points.
+    /// </summary>
+    public bool TryMatchWeaponEntityForSpline(
+        System.ReadOnlySpan<Vector3> statedWorldSpline,
+        out uint weaponEntity,
+        out Vector3[] localPts)
+    {
+        weaponEntity = 0u;
+        localPts = System.Array.Empty<Vector3>();
+        if (statedWorldSpline.Length is < 2 or > 3)
+        {
+            return false;
+        }
+
+        Vector3 first = statedWorldSpline[0];
+        Vector3 last = statedWorldSpline[statedWorldSpline.Length - 1];
+        float bestErr = float.PositiveInfinity;
+
+        foreach (uint child in _attachments.Children)
+        {
+            if (_attachments.TryGetDummyName(child, out string dummy) &&
+                dummy.Contains("Sheath", System.StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!_nodes.TryGetValue(child, out MeshInstance3D? node) ||
+                !GodotObject.IsInstanceValid(node) ||
+                !TryGetStatedAndDrawnTransform(child, out Transform3D stated, out _) ||
+                !TryResolveWeaponLocalSpan(node, out Vector3 holdLocal, out Vector3 topLocal))
+            {
+                continue;
+            }
+
+            if (!IsCompatibleWeaponTrailMatch(
+                    stated * holdLocal, stated * topLocal, first, last, out _, out float err) ||
+                err >= bestErr ||
+                !GameFx.TryLatchLocalSpline(stated, statedWorldSpline, out Vector3[] candidateLocal))
+            {
+                continue;
+            }
+
+            bestErr = err;
+            weaponEntity = child;
+            localPts = candidateLocal;
+        }
+
+        return weaponEntity != 0u;
+    }
+
+    /// <summary>
+    /// Reads the live drawn blade endpoints for a previously matched non-sheath weapon entity on
+    /// intermediate display frames without rescanning all attachments.
+    /// </summary>
+    public bool TryGetDrawnWeaponTrailSpanForEntity(
+        uint weaponEntity,
+        bool swapped,
+        out Vector3 drawnWorldA,
+        out Vector3 drawnWorldB)
+    {
+        drawnWorldA = Vector3.Zero;
+        drawnWorldB = Vector3.Zero;
+        if (weaponEntity == 0u ||
+            (_attachments.TryGetDummyName(weaponEntity, out string dummy) &&
+             dummy.Contains("Sheath", System.StringComparison.OrdinalIgnoreCase)) ||
+            !_nodes.TryGetValue(weaponEntity, out MeshInstance3D? node) ||
+            !GodotObject.IsInstanceValid(node) ||
+            !TryGetStatedAndDrawnTransform(weaponEntity, out _, out Transform3D drawn) ||
+            !TryResolveWeaponLocalSpan(node, out Vector3 holdLocal, out Vector3 topLocal))
+        {
+            return false;
+        }
+
+        Vector3 dHold = drawn * holdLocal;
+        Vector3 dTop = drawn * topLocal;
+        if (!dHold.IsFinite() || !dTop.IsFinite())
+        {
+            return false;
+        }
+
+        drawnWorldA = swapped ? dTop : dHold;
+        drawnWorldB = swapped ? dHold : dTop;
+        return true;
+    }
+
+    private bool TryGetEntityWeaponSpan(uint entityAddress, bool allowAabbFallback, out Vector3 worldEdgeA, out Vector3 worldEdgeB)
+    {
+        worldEdgeA = Vector3.Zero;
+        worldEdgeB = Vector3.Zero;
+        if (entityAddress == 0u ||
+            !_nodes.TryGetValue(entityAddress, out MeshInstance3D? node) ||
+            !GodotObject.IsInstanceValid(node) ||
+            !TryGetStatedAndDrawnTransform(entityAddress, out _, out Transform3D drawn))
+        {
+            return false;
+        }
+
+        if (TryResolveWeaponLocalSpan(node, out Vector3 holdLocal, out Vector3 topLocal))
+        {
+            worldEdgeA = drawn * holdLocal;
+            worldEdgeB = drawn * topLocal;
+            return worldEdgeA.IsFinite() && worldEdgeB.IsFinite();
+        }
+
+        if (allowAabbFallback && node.Mesh is { } mesh)
+        {
+            Aabb aabb = mesh.GetAabb();
+            Vector3 size = aabb.Size;
+            int axis = size.X >= size.Y && size.X >= size.Z ? 0 : (size.Y >= size.Z ? 1 : 2);
+            float extent = size[axis];
+            if (extent is >= 0.25f and <= 3.0f)
+            {
+                Vector3 center = aabb.Position + (size * 0.5f);
+                Vector3 localA = center;
+                Vector3 localB = center;
+                localA[axis] = aabb.Position[axis];
+                localB[axis] = aabb.Position[axis] + extent;
+                worldEdgeA = drawn * localA;
+                worldEdgeB = drawn * localB;
+                return worldEdgeA.IsFinite() && worldEdgeB.IsFinite();
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// A child's model path and furniture verdict, as <see cref="ChildModelPathOf"/> and
     /// <see cref="IsFurnitureEntity"/> answer them, kept while the node, the mesh it shows and the

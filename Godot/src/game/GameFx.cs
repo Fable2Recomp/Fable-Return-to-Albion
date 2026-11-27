@@ -21,6 +21,13 @@ public partial class GameFx : Node3D
     /// <summary>Whether to log the census. Off by default.</summary>
     public const string ReportSettingKey = "fx_live_report";
 
+    private sealed class BeamSplineEntry
+    {
+        public uint EntityId;
+        public int Count;
+        public readonly Vector3[] Points = new Vector3[512];
+    }
+
     /// <summary>
     /// Single persisted state record per live guest effect handle (<c>rootKey</c>), consolidating
     /// node ownership, timeline smoothing, attachment targets, and weapon spline latch state so
@@ -39,13 +46,46 @@ public partial class GameFx : Node3D
         public Vector3 StatedGuestPos;
         public Transform3D LastRootTransform = Transform3D.Identity;
         public bool LastRootIdentity;
+        public bool HasPreviousPlacedOrigin;
+        public Vector3 PreviousPlacedOrigin;
         public Refii.Core.Engine_TickTimeline? Timeline;
         public Vector3[]? LastStatedSpline;
         public int LastStatedSplineCount;
         public uint WeaponSplineTarget;
+        public bool WeaponSplineUnowned;
         public Vector3[]? WeaponSplineLocal;
         public Vector3[]? DrawnSplinePool;
         public bool HasSplineOverride;
+        public readonly List<BeamSplineEntry> BeamSplines = new();
+        public int BeamSplineCount;
+        public bool HasBeamSplines;
+        public Transform3D[]? WorldRoots;
+        public Transform3D[]? LocalRootsScratch;
+        public int WorldRootsCount;
+        public bool HasChainRoots;
+        public bool HasDoubleTrailSpan;
+        public bool HasStatedDoubleSpan;
+        public Vector3 StatedDoubleSpanA;
+        public Vector3 StatedDoubleSpanB;
+        public readonly Engine_FxSystem.DoubleTrailRingPoint[] DoubleTrailRing = new Engine_FxSystem.DoubleTrailRingPoint[64];
+        public int DoubleTrailRingCount;
+        public bool HasDoubleTrailRing;
+        public bool HasRingTipHistory;
+        public Vector3 RingPrevTipA;
+        public Vector3 RingPrevTipB;
+        public Vector3 RingCurrTipA;
+        public Vector3 RingCurrTipB;
+        public double RingPrevStamp;
+        public double RingCurrStamp;
+        public uint DoubleTrailWeaponTarget;
+        public bool DoubleTrailWeaponSwapped;
+        public bool IsDoubleTrailHostLatched;
+        public uint TrailRingTail;
+        public uint TrailRingCount;
+        public bool HasStatedSingleHead;
+        public Vector3 StatedSingleHead;
+        public bool HasSingleTrailHead;
+        public bool IsGuestSingleTrail;
     }
 
     /// <summary>Pooled per-walk snapshot gathered from the guest's active node vector before lifecycle/placement decisions.</summary>
@@ -55,7 +95,9 @@ public partial class GameFx : Node3D
         public Transform3D RootTransform = Transform3D.Identity;
         public bool RootIdentity;
         public Vector3 RootGuestPos;
+        public readonly List<Transform3D> Roots = new();
         public bool HasAliveNode;
+        public bool HasEmitterIntensity;
         public uint EffectHash;
         public uint ObservedOwner;
         public uint ObservedAttached;
@@ -63,8 +105,20 @@ public partial class GameFx : Node3D
         public bool AnyGuestDrawn;
         public bool HasStatedSpline;
         public bool GuestSpline;
-        public Vector3[] StatedSpline = new Vector3[32];
+        public Vector3[] StatedSpline = new Vector3[512];
         public int StatedSplineCount;
+        public readonly List<BeamSplineEntry> BeamSplines = new();
+        public int BeamSplineCount;
+        public bool HasStatedDoubleSpan;
+        public Vector3 StatedDoubleSpanA;
+        public Vector3 StatedDoubleSpanB;
+        public readonly Engine_FxSystem.DoubleTrailRingPoint[] DoubleTrailRing = new Engine_FxSystem.DoubleTrailRingPoint[64];
+        public int DoubleTrailRingCount;
+        public bool HasStatedSingleHead;
+        public Vector3 StatedSingleHead;
+        public bool HasTrailReset;
+        public uint TrailRingTail;
+        public uint TrailRingCount;
         public bool HasEmitterState;
         public float Scale = 1f;
         public float Fade = 1f;
@@ -80,7 +134,9 @@ public partial class GameFx : Node3D
             RootTransform = Transform3D.Identity;
             RootIdentity = false;
             RootGuestPos = Vector3.Zero;
+            Roots.Clear();
             HasAliveNode = false;
+            HasEmitterIntensity = false;
             EffectHash = 0u;
             ObservedOwner = 0u;
             ObservedAttached = 0u;
@@ -89,6 +145,16 @@ public partial class GameFx : Node3D
             HasStatedSpline = false;
             GuestSpline = false;
             StatedSplineCount = 0;
+            BeamSplineCount = 0;
+            HasStatedDoubleSpan = false;
+            StatedDoubleSpanA = Vector3.Zero;
+            StatedDoubleSpanB = Vector3.Zero;
+            DoubleTrailRingCount = 0;
+            HasStatedSingleHead = false;
+            StatedSingleHead = Vector3.Zero;
+            HasTrailReset = false;
+            TrailRingTail = 0u;
+            TrailRingCount = 0u;
             HasEmitterState = false;
             Scale = 1f;
             Fade = 1f;
@@ -122,7 +188,21 @@ public partial class GameFx : Node3D
     /// </summary>
     private readonly Dictionary<uint, (Transform3D StatedEntityRoot, Transform3D BoneEntityRoot, bool Unrotated)> _boneRoots = new();
 
-    private readonly Vector3[] _guestSplineRead = new Vector3[32];
+    private readonly Vector3[] _guestSplineRead = new Vector3[512];
+    private readonly HostBridge.GuestDoubleTrailPoint[] _guestDoubleRingRead = new HostBridge.GuestDoubleTrailPoint[64];
+    private readonly Engine_FxSystem.DoubleTrailRingPoint[] _localDoubleRingScratch = new Engine_FxSystem.DoubleTrailRingPoint[64];
+    private readonly int[] _spellSlotsScratch = { -1, -1, -1, -1, -1 };
+
+    private static readonly uint PlayerSpellChargerHash = Refii.Core.Engine_GameHash.Fnv1("PlayerSpellCharger");
+
+    private static readonly uint[] PlayerSpellChargeHashes =
+    {
+        Refii.Core.Engine_GameHash.Fnv1("PlayerSpellcharge1"),
+        Refii.Core.Engine_GameHash.Fnv1("PlayerSpellcharge2"),
+        Refii.Core.Engine_GameHash.Fnv1("PlayerSpellcharge3"),
+        Refii.Core.Engine_GameHash.Fnv1("PlayerSpellcharge4"),
+        Refii.Core.Engine_GameHash.Fnv1("PlayerSpellcharge5"),
+    };
 
     /// <summary>Drawn Godot world-space spline override points resolved onto the live host weapon/entity this frame.</summary>
     private readonly Dictionary<uint, Vector3[]> _drawnSplineByKey = new();
@@ -135,7 +215,7 @@ public partial class GameFx : Node3D
     private readonly HashSet<uint> _counted = new();
 
     /// <summary>Scratch buffer for transforming world-space spline override endpoints into node-local space.</summary>
-    private readonly Vector3[] _localSplineScratch = new Vector3[32];
+    private readonly Vector3[] _localSplineScratch = new Vector3[512];
 
     /// <summary>Every effect hash the guest has played, and how many instances carried it.</summary>
     private readonly Dictionary<uint, int> _census = new();
@@ -252,6 +332,25 @@ public partial class GameFx : Node3D
              (!wasEmitting && incomingAnyEmitting)));
 
     /// <summary>
+    /// Computes the continuous <c>[0, 1]</c> interpolation fraction for an unlatched <c>Mode == 3</c>
+    /// double-trail ring tip on <see cref="Refii.Entities.Engine_DrawnFrame.DrawTick"/> across both
+    /// 30 Hz (<c>span = 1</c>) and 15 Hz (<c>span = 2</c>) guest particle groups so the leading edge
+    /// advances monotonically without stalling at <c>1.0</c> on intermediate 30 Hz ticks.
+    /// </summary>
+    public static float ComputeDoubleTrailTipAlpha(double drawTick, double prevStamp, double currStamp)
+    {
+        double spanTicks = currStamp - prevStamp;
+        if (double.IsNaN(drawTick) || !double.IsFinite(spanTicks) || spanTicks <= 1e-4)
+        {
+            return 1f;
+        }
+
+        double clampedSpan = Math.Clamp(spanTicks, 1.0, 4.0);
+        double startTick = currStamp - 1.0;
+        return (float)Math.Clamp((drawTick - startTick) / clampedSpan, 0.0, 1.0);
+    }
+
+    /// <summary>
     /// Resolves whether a live <see cref="FableFx"/> node should keep emission open on this walk.
     /// If the guest already closed a short/instant burst's emission window before the host node
     /// stepped once (<c>!sawGuestEmitting &amp;&amp; debugSpawned == 0</c>), keep emission open
@@ -337,6 +436,7 @@ public partial class GameFx : Node3D
         _retiringNodes.Clear();
 
         ReleaseWalkSnapshots();
+        Engine_RemasterMagicCircle.ClearAll();
         _keyByInstance.Clear();
         _boneRoots.Clear();
         _drawnSplineByKey.Clear();
@@ -524,6 +624,7 @@ public partial class GameFx : Node3D
         _draw = Engine_LiveFx.Draws(config);
         _report = Refii.Core.Engine_RefiiConfig.Bool(config, ReportSettingKey, false);
         Refii.Fx.Engine_FxFastPaths.Configure(config);
+        Refii.Fx.Engine_RemasterMagicCircle.Configure(config);
         ConfigureSpawns(config);
 
         // Under classic the title's particle path (Engine_ClassicParticles) draws every live
@@ -578,6 +679,7 @@ public partial class GameFx : Node3D
     private void RetireTracked(uint key, TrackedEffect tracked)
     {
         _tracked.Remove(key);
+        Engine_RemasterMagicCircle.Remove(key);
         RetireTrackedNode(tracked);
     }
 
@@ -666,6 +768,7 @@ public partial class GameFx : Node3D
 
         FxBank? bank = FableFx.SharedBank();
         Engine_FxRecipes.Begin();
+        Engine_RemasterMagicCircle.BeginWalk();
         _seen.Clear();
         _counted.Clear();
         _spawns.BeginWalk();
@@ -709,14 +812,18 @@ public partial class GameFx : Node3D
             {
                 // A root nobody has positioned is identity at the origin: the node ctor
                 // `sub_8322A228` seeds +0x20 with `sub_8223BDB0` (identity).
-                if (!snap.HasRoot &&
-                    fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach &&
+                if (fx.Position.IsFinite() && fx.Position.Length() < MaxFxReach &&
                     fx.Position != Vector3.Zero)
                 {
-                    snap.HasRoot = true;
-                    snap.RootTransform = ToGodot(fx.Position, fx.Rows);
-                    snap.RootIdentity = IsExactGuestIdentityRows(fx.Rows);
-                    snap.RootGuestPos = fx.Position;
+                    Transform3D rootTf = ToGodot(fx.Position, fx.Rows);
+                    snap.Roots.Add(rootTf);
+                    if (!snap.HasRoot)
+                    {
+                        snap.HasRoot = true;
+                        snap.RootTransform = rootTf;
+                        snap.RootIdentity = IsExactGuestIdentityRows(fx.Rows);
+                        snap.RootGuestPos = fx.Position;
+                    }
                 }
 
                 continue;
@@ -732,7 +839,11 @@ public partial class GameFx : Node3D
                 snap.AliveInstances.Add(fx.Instance);
             }
 
-            snap.AnyEmitting |= fx.Emitting;
+            FxEmitter? emitterDef = fx.NamesEffect ? null : bank?.EmitterForType(fx.NameHash);
+            if (fx.NamesEffect || emitterDef is { TypeId: 0 or 7 or 8 or 9 })
+            {
+                snap.AnyEmitting |= fx.Emitting;
+            }
             if (fx.Owner != 0u && snap.ObservedOwner == 0u)
             {
                 snap.ObservedOwner = fx.Owner;
@@ -742,8 +853,6 @@ public partial class GameFx : Node3D
             {
                 snap.ObservedAttached = fx.Attached;
             }
-
-            FxEmitter? emitterDef = fx.NamesEffect ? null : bank?.EmitterForType(fx.NameHash);
 
             // Runtime spline override endpoints on a Type 5 `CParticleSplineNode` (`sub_8322E858`),
             // exported by `RefiiHostGetActiveFx` with flag 32 (`fx.SplineOverride`) in `fx.Rows[0..count-1]`
@@ -777,11 +886,83 @@ public partial class GameFx : Node3D
                 }
             }
 
-            // A spline setter's points (Fable 3: an energy beam's ends, an arc's list), guest world.
-            if (fx.SplineStated && !snap.HasStatedSpline)
+            // Current-frame double-trail endpoints on a `Mode == 3` double-trail emitter node,
+            // exported by `RefiiHostGetActiveFx` with flag 512 (`fx.DoubleTrailSpan`) in
+            // `fx.Rows[0]` (EdgeA) and `fx.Rows[1]` (EdgeB) in raw guest world coordinates.
+            if (fx.DoubleTrailSpan && !snap.HasStatedDoubleSpan && fx.Rows.Length >= 2)
             {
-                int count = HostBridge.GetFxSpline(fx.Handle, _guestSplineRead);
-                bool usable = count >= 2 && count <= snap.StatedSpline.Length;
+                Vector3 rawA = fx.Rows[0];
+                Vector3 rawB = fx.Rows[1];
+                if (rawA.IsFinite() && rawB.IsFinite() &&
+                    rawA.Length() < MaxFxReach && rawB.Length() < MaxFxReach)
+                {
+                    snap.StatedDoubleSpanA = ToGodot(rawA);
+                    snap.StatedDoubleSpanB = ToGodot(rawB);
+                    snap.HasStatedDoubleSpan = true;
+                    snap.TrailRingCount = fx.TrailRingMeta & 0xFFFFu;
+                    snap.TrailRingTail = fx.TrailRingTail;
+                }
+            }
+
+            // Full guest `Mode == 3` double-trail ring (`(EdgeA, EdgeB, KeyTime)`, oldest to newest),
+            // exported when flag 4096 (`fx.DoubleTrailRing`) is set so fast-moving unlatched trails
+            // (such as flying Blades swords, `FX_B2848F7C`) match the guest's exact taper and fade.
+            if (fx.DoubleTrailRing && snap.DoubleTrailRingCount == 0)
+            {
+                uint ringQueryId = fx.Instance != 0u ? fx.Instance : fx.Handle;
+                int rawCount = HostBridge.GetFxDoubleTrailRing(ringQueryId, _guestDoubleRingRead);
+                int validCount = 0;
+                for (int r = 0; r < rawCount && validCount < snap.DoubleTrailRing.Length; r++)
+                {
+                    HostBridge.GuestDoubleTrailPoint pt = _guestDoubleRingRead[r];
+                    if (pt.EdgeA.IsFinite() && pt.EdgeB.IsFinite() && float.IsFinite(pt.KeyTime) &&
+                        pt.EdgeA.Length() < MaxFxReach && pt.EdgeB.Length() < MaxFxReach)
+                    {
+                        snap.DoubleTrailRing[validCount++] = new Engine_FxSystem.DoubleTrailRingPoint(
+                            ToGodot(pt.EdgeA), ToGodot(pt.EdgeB), pt.KeyTime);
+                    }
+                }
+
+                if (validCount >= 2)
+                {
+                    snap.DoubleTrailRingCount = validCount;
+                    if (!snap.HasStatedDoubleSpan)
+                    {
+                        snap.StatedDoubleSpanA = snap.DoubleTrailRing[validCount - 1].EdgeA;
+                        snap.StatedDoubleSpanB = snap.DoubleTrailRing[validCount - 1].EdgeB;
+                        snap.HasStatedDoubleSpan = true;
+                        snap.TrailRingCount = (uint)validCount;
+                    }
+                }
+            }
+
+            // Current-frame head point on a guest-driven `Mode == 2` single-trail emitter node
+            // (e.g., `FX_DAD44F56`), exported with flag 1024 (`fx.SingleTrailHead`) in `fx.Rows[0]`.
+            if (fx.SingleTrailHead && !snap.HasStatedSingleHead && fx.Rows.Length >= 1)
+            {
+                Vector3 rawHead = fx.Rows[0];
+                if (rawHead.IsFinite() && rawHead.Length() < MaxFxReach)
+                {
+                    snap.StatedSingleHead = ToGodot(rawHead);
+                    snap.HasStatedSingleHead = true;
+                    snap.TrailRingCount = fx.TrailRingMeta & 0xFFFFu;
+                    snap.TrailRingTail = fx.TrailRingTail;
+                }
+            }
+
+            if (fx.TrailReset && emitterDef is not { TypeId: 9 })
+            {
+                snap.HasTrailReset = true;
+            }
+
+            // A spline setter's points: Type 9 `CParticleSplineEmitterNode` beams/spell circles in
+            // Fable 2 (up to 512 world points per beam emitter via `fx.Instance`), or handle-level
+            // stated splines in Fable 3.
+            if (fx.SplineStated)
+            {
+                uint splineQueryId = emitterDef is { TypeId: 9 } && fx.Instance != 0u ? fx.Instance : fx.Handle;
+                int count = HostBridge.GetFxSpline(splineQueryId, _guestSplineRead);
+                bool usable = count >= 2 && count <= _guestSplineRead.Length;
                 for (int p = 0; p < count && usable; p++)
                 {
                     usable = _guestSplineRead[p].IsFinite() && _guestSplineRead[p].Length() < MaxFxReach;
@@ -789,15 +970,48 @@ public partial class GameFx : Node3D
 
                 if (usable)
                 {
-                    for (int p = 0; p < count; p++)
+                    if (emitterDef is { TypeId: 9 })
                     {
-                        snap.StatedSpline[p] = ToGodot(_guestSplineRead[p]);
+                        BeamSplineEntry entry;
+                        if (snap.BeamSplineCount < snap.BeamSplines.Count)
+                        {
+                            entry = snap.BeamSplines[snap.BeamSplineCount];
+                        }
+                        else
+                        {
+                            entry = new BeamSplineEntry();
+                            snap.BeamSplines.Add(entry);
+                        }
+                        snap.BeamSplineCount++;
+                        entry.EntityId = fx.NameHash;
+                        entry.Count = count;
+                        for (int p = 0; p < count; p++)
+                        {
+                            entry.Points[p] = ToGodot(_guestSplineRead[p]);
+                        }
                     }
+                    else if (!snap.HasStatedSpline && count <= snap.StatedSpline.Length)
+                    {
+                        for (int p = 0; p < count; p++)
+                        {
+                            snap.StatedSpline[p] = ToGodot(_guestSplineRead[p]);
+                        }
 
-                    snap.HasStatedSpline = true;
-                    snap.GuestSpline = true;
-                    snap.StatedSplineCount = count;
+                        snap.HasStatedSpline = true;
+                        snap.GuestSpline = true;
+                        snap.StatedSplineCount = count;
+                    }
                 }
+            }
+
+            // Element alpha/intensity (`node + 408` on Type 0 and Type 9 emitters) takes priority
+            // over any preceding helper node's `handle + 52` fallback.
+            if (!snap.HasEmitterIntensity &&
+                (fx.NamesEffect || emitterDef is { TypeId: 0 or 9 }) &&
+                float.IsFinite(fx.Intensity))
+            {
+                snap.HasEmitterIntensity = true;
+                snap.Intensity = fx.Intensity;
             }
 
             // Scale and fade live on the element, and only a standard emitter's slots mean
@@ -859,7 +1073,10 @@ public partial class GameFx : Node3D
             {
                 snap.HasAliveNode = true;
                 snap.EffectHash = effect;
-                snap.Intensity = fx.Intensity;
+                if (!snap.HasEmitterIntensity)
+                {
+                    snap.Intensity = fx.Intensity;
+                }
                 snap.StatedColour = fx.StatedColour ?? Colors.White;
                 snap.StatedFlushes = fx.StatedFlushes;
                 snap.SaturationMask = fx.SaturationMask;
@@ -938,6 +1155,8 @@ public partial class GameFx : Node3D
                         EffectName = $"FX_{snap.EffectHash:X8}",
                         Loop = LiveFxDefaultLoop,
                         Emitting = true,
+                        RequireDoubleTrailSpan = true,
+                        RequireBeamSpline = true,
                     };
                     if (!SpawnsUnnamed)
                     {
@@ -969,10 +1188,71 @@ public partial class GameFx : Node3D
 
                 tracked.Owner = snap.ObservedOwner;
                 tracked.Attached = ResolveAttachedTarget(tracked.Attached, snap.ObservedOwner, snap.ObservedAttached);
-                if (ShouldClearWeaponSpline(tracked.Attached, tracked.WeaponSplineTarget))
+                if (!tracked.WeaponSplineUnowned && ShouldClearWeaponSpline(tracked.Attached, tracked.WeaponSplineTarget))
                 {
                     tracked.WeaponSplineTarget = 0u;
                     tracked.WeaponSplineLocal = null;
+                }
+                else if (tracked.WeaponSplineUnowned && tracked.Attached != 0u && tracked.Attached != tracked.WeaponSplineTarget)
+                {
+                    tracked.WeaponSplineUnowned = false;
+                    tracked.WeaponSplineTarget = 0u;
+                    tracked.WeaponSplineLocal = null;
+                }
+
+                if (snap.Roots.Count > 1)
+                {
+                    bool distinctRoots = false;
+                    Transform3D firstRoot = snap.Roots[0];
+                    for (int r = 1; r < snap.Roots.Count; r++)
+                    {
+                        if (firstRoot.Origin.DistanceSquaredTo(snap.Roots[r].Origin) > 0.0025f ||
+                            !firstRoot.Basis.IsEqualApprox(snap.Roots[r].Basis))
+                        {
+                            distinctRoots = true;
+                            break;
+                        }
+                    }
+
+                    if (distinctRoots)
+                    {
+                        if (tracked.WorldRoots is null || tracked.WorldRoots.Length < snap.Roots.Count)
+                        {
+                            tracked.WorldRoots = new Transform3D[snap.Roots.Count];
+                        }
+                        for (int r = 0; r < snap.Roots.Count; r++)
+                        {
+                            tracked.WorldRoots[r] = snap.Roots[r];
+                        }
+                        tracked.WorldRootsCount = snap.Roots.Count;
+                    }
+                    else
+                    {
+                        tracked.WorldRootsCount = 0;
+                    }
+                }
+                else
+                {
+                    tracked.WorldRootsCount = 0;
+                }
+
+                tracked.BeamSplineCount = snap.BeamSplineCount;
+                for (int b = 0; b < snap.BeamSplineCount; b++)
+                {
+                    BeamSplineEntry src = snap.BeamSplines[b];
+                    BeamSplineEntry dst;
+                    if (b < tracked.BeamSplines.Count)
+                    {
+                        dst = tracked.BeamSplines[b];
+                    }
+                    else
+                    {
+                        dst = new BeamSplineEntry();
+                        tracked.BeamSplines.Add(dst);
+                    }
+                    dst.EntityId = src.EntityId;
+                    dst.Count = src.Count;
+                    Array.Copy(src.Points, dst.Points, src.Count);
                 }
 
                 if (snap.HasStatedSpline && snap.StatedSplineCount >= 2)
@@ -989,6 +1269,122 @@ public partial class GameFx : Node3D
                     tracked.LastStatedSplineCount = 0;
                 }
 
+                if (snap.DoubleTrailRingCount >= 2)
+                {
+                    bool tornShrink = false;
+                    if (tracked.DoubleTrailRingCount >= 2 && snap.DoubleTrailRingCount < tracked.DoubleTrailRingCount)
+                    {
+                        Engine_FxSystem.DoubleTrailRingPoint newTip = snap.DoubleTrailRing[snap.DoubleTrailRingCount - 1];
+                        Engine_FxSystem.DoubleTrailRingPoint prevPenult = tracked.DoubleTrailRing[tracked.DoubleTrailRingCount - 2];
+                        tornShrink = newTip.EdgeA.DistanceSquaredTo(prevPenult.EdgeA) < 0.04f &&
+                                     newTip.EdgeB.DistanceSquaredTo(prevPenult.EdgeB) < 0.04f;
+                    }
+
+                    if (!tornShrink)
+                    {
+                        Array.Copy(snap.DoubleTrailRing, tracked.DoubleTrailRing, snap.DoubleTrailRingCount);
+                        tracked.DoubleTrailRingCount = snap.DoubleTrailRingCount;
+
+                        int lastIdx = tracked.DoubleTrailRingCount - 1;
+                        Vector3 newA = tracked.DoubleTrailRing[lastIdx].EdgeA;
+                        Vector3 newB = tracked.DoubleTrailRing[lastIdx].EdgeB;
+                        if (!tracked.HasRingTipHistory)
+                        {
+                            tracked.RingPrevTipA = tracked.DoubleTrailRing[lastIdx - 1].EdgeA;
+                            tracked.RingPrevTipB = tracked.DoubleTrailRing[lastIdx - 1].EdgeB;
+                            tracked.RingCurrTipA = newA;
+                            tracked.RingCurrTipB = newB;
+                            // Unlatched projectile double trails (e.g. `FX_B2848F7C`, `UpdateFrequency = 0`)
+                            // step every 2 guest 30 Hz ticks (15 Hz); seed a 2-tick span on first arrival.
+                            tracked.RingPrevStamp = _tickNow - 2.0;
+                            tracked.RingCurrStamp = _tickNow;
+                            tracked.HasRingTipHistory = true;
+                        }
+                        else
+                        {
+                            float moveSq = tracked.RingCurrTipA.DistanceSquaredTo(newA) +
+                                           tracked.RingCurrTipB.DistanceSquaredTo(newB);
+                            if (moveSq > 1e-6f && moveSq <= 72.0f)
+                            {
+                                tracked.RingPrevTipA = tracked.RingCurrTipA;
+                                tracked.RingPrevTipB = tracked.RingCurrTipB;
+                                tracked.RingPrevStamp = tracked.RingCurrStamp;
+                                tracked.RingCurrTipA = newA;
+                                tracked.RingCurrTipB = newB;
+                                tracked.RingCurrStamp = _tickNow;
+                            }
+                            else if (moveSq > 72.0f)
+                            {
+                                tracked.RingPrevTipA = tracked.DoubleTrailRing[lastIdx - 1].EdgeA;
+                                tracked.RingPrevTipB = tracked.DoubleTrailRing[lastIdx - 1].EdgeB;
+                                tracked.RingPrevStamp = _tickNow - 2.0;
+                                tracked.RingCurrTipA = newA;
+                                tracked.RingCurrTipB = newB;
+                                tracked.RingCurrStamp = _tickNow;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    tracked.DoubleTrailRingCount = 0;
+                    tracked.HasRingTipHistory = false;
+                }
+
+                if (snap.HasStatedDoubleSpan)
+                {
+                    tracked.HasStatedDoubleSpan = true;
+                    tracked.StatedDoubleSpanA = snap.StatedDoubleSpanA;
+                    tracked.StatedDoubleSpanB = snap.StatedDoubleSpanB;
+                    tracked.TrailRingTail = snap.TrailRingTail;
+                    tracked.TrailRingCount = snap.TrailRingCount;
+                }
+                else
+                {
+                    tracked.HasStatedDoubleSpan = false;
+                }
+
+                if (snap.HasStatedSingleHead)
+                {
+                    tracked.IsGuestSingleTrail = true;
+                    tracked.HasStatedSingleHead = true;
+                    tracked.StatedSingleHead = snap.StatedSingleHead;
+                    tracked.TrailRingTail = snap.TrailRingTail;
+                    tracked.TrailRingCount = snap.TrailRingCount;
+                    tracked.Node.RequireSingleTrailHead = true;
+                }
+                else
+                {
+                    tracked.HasStatedSingleHead = false;
+                    if (snap.HasTrailReset && tracked.IsGuestSingleTrail)
+                    {
+                        tracked.Node.RequireSingleTrailHead = true;
+                    }
+                }
+
+                if (snap.HasTrailReset)
+                {
+                    bool noDouble = !snap.HasStatedDoubleSpan && snap.DoubleTrailRingCount < 2;
+                    if (noDouble && !snap.HasStatedSingleHead)
+                    {
+                        tracked.Node.ResetTrails();
+                        tracked.HasDoubleTrailRing = false;
+                        tracked.HasRingTipHistory = false;
+                        tracked.DoubleTrailWeaponTarget = 0u;
+                    }
+                    else if (noDouble)
+                    {
+                        tracked.Node.ResetTrails(modeFilter: 3);
+                        tracked.HasDoubleTrailRing = false;
+                        tracked.HasRingTipHistory = false;
+                        tracked.DoubleTrailWeaponTarget = 0u;
+                    }
+                    else if (!snap.HasStatedSingleHead)
+                    {
+                        tracked.Node.ResetTrails(modeFilter: 2);
+                    }
+                }
+
                 _seen.Add(key);
             }
         }
@@ -1000,6 +1396,20 @@ public partial class GameFx : Node3D
         // Stage 3c: Place nodes, update simulation state/recipes, and retire absent handles.
         if (_draw)
         {
+            float maxMagicWaveIntensity = 0f;
+            foreach ((uint key, WalkEffectSnapshot snap) in _walkSnapshots)
+            {
+                if (_seen.Contains(key) &&
+                    snap.EffectHash == Engine_RemasterMagicCircle.MagicCircleWaveEffectHash &&
+                    float.IsFinite(snap.Intensity) &&
+                    snap.Intensity > maxMagicWaveIntensity)
+                {
+                    maxMagicWaveIntensity = snap.Intensity;
+                }
+            }
+
+            bool hudChargerActive = IsHudSpellChargerActive();
+
             foreach ((uint key, WalkEffectSnapshot snap) in _walkSnapshots)
             {
                 if (!_seen.Contains(key) || !_tracked.TryGetValue(key, out TrackedEffect? tracked))
@@ -1036,8 +1446,13 @@ public partial class GameFx : Node3D
                 FableFx node = tracked.Node;
                 float scale = snap.HasEmitterState ? snap.Scale : 1f;
                 float fade = snap.HasEmitterState ? snap.Fade : 1f;
+                bool suppressOriginalCircle = Engine_RemasterMagicCircle.ShouldSuppressOriginalEffect(snap.EffectHash);
+                if (node.Visible == suppressOriginalCircle)
+                {
+                    node.Visible = !suppressOriginalCircle;
+                }
                 node.Emitting = ResolveNodeEmitting(snap.AnyEmitting, tracked.SawGuestEmitting, node.DebugSpawned);
-                node.SuppressLights = false;
+                node.SuppressLights = suppressOriginalCircle;
                 node.Intensity = snap.Intensity * fade;
                 node.LightFade = fade;
                 // The guest's element scale carries a mod effect's authored scale (the instance hooks,
@@ -1049,8 +1464,38 @@ public partial class GameFx : Node3D
                 node.StatedSaturationMask = snap.SaturationMask;
                 node.GuestDrawn |= snap.AnyGuestDrawn;
                 Engine_FxRecipes.Apply(node, snap.EffectHash, tracked.Owner, tracked.Attached, key);
+                if (snap.EffectHash == Engine_RemasterMagicCircle.MagicCircleEffectHash && snap.BeamSplineCount > 0)
+                {
+                    BeamSplineEntry circleSpline = snap.BeamSplines[0];
+                    ReadOnlySpan<Vector3> splinePts = circleSpline.Points.AsSpan(0, circleSpline.Count);
+                    int chargeLevel = ResolveLiveMagicCircleChargeLevel(splinePts);
+                    ReadOnlySpan<int> spellSlots = ReadAssignedSpellSlots();
+                    float effectiveIntensity = snap.Intensity;
+                    if (maxMagicWaveIntensity > 0.001f)
+                    {
+                        effectiveIntensity = MathF.Max(effectiveIntensity, maxMagicWaveIntensity * 1.5f);
+                    }
+                    if (effectiveIntensity <= 0.001f && hudChargerActive && fade > 0.01f)
+                    {
+                        effectiveIntensity = Engine_RemasterMagicCircle.AuthoredMaxIntensity;
+                    }
+
+                    Engine_RemasterMagicCircle.Observe(
+                        this,
+                        key,
+                        snap.EffectHash,
+                        splinePts,
+                        effectiveIntensity,
+                        fade,
+                        snap.StatedColour,
+                        node.Tint,
+                        chargeLevel,
+                        spellSlots,
+                        GameEntities.HeroPosition);
+                }
             }
 
+            Engine_RemasterMagicCircle.EndWalk();
             _spawns.EndWalk();
 
             // One absence is not a retirement. A walk that fills its buffer stops at the cap, and the
@@ -1105,7 +1550,10 @@ public partial class GameFx : Node3D
             bool hasWeaponSpline = tracked.WeaponSplineLocal is { Length: >= 2 };
             bool hasAttachment = tracked.Owner != 0u || tracked.Attached != 0u;
             bool hasTimeline = tracked.Timeline is { Settled: false };
-            if (!hasWeaponSpline && !hasAttachment && !hasTimeline)
+            bool hasDoubleTrail = tracked.IsDoubleTrailHostLatched ||
+                tracked.HasDoubleTrailRing ||
+                (tracked.Node.IsWeaponDoubleTrail && (hasAttachment || tracked.DoubleTrailWeaponTarget != 0u));
+            if (!hasWeaponSpline && !hasAttachment && !hasTimeline && !hasDoubleTrail)
             {
                 continue;
             }
@@ -1157,18 +1605,30 @@ public partial class GameFx : Node3D
             uint attached = tracked?.Attached ?? snap.ObservedAttached;
 
             if (tracked is not null &&
-                attached != 0u &&
                 !snap.GuestSpline &&
                 snap.HasStatedSpline &&
-                snap.StatedSplineCount >= 2 &&
-                (tracked.WeaponSplineLocal is null ||
-                 tracked.WeaponSplineTarget != attached ||
-                 tracked.WeaponSplineLocal.Length != snap.StatedSplineCount) &&
-                entities.TryGetStatedAndDrawnTransform(attached, out Transform3D targetStated, out _) &&
-                TryLatchLocalSpline(targetStated, snap.StatedSpline.AsSpan(0, snap.StatedSplineCount), out Vector3[] localPts))
+                snap.StatedSplineCount >= 2)
             {
-                tracked.WeaponSplineTarget = attached;
-                tracked.WeaponSplineLocal = localPts;
+                ReadOnlySpan<Vector3> statedPts = snap.StatedSpline.AsSpan(0, snap.StatedSplineCount);
+                if (attached != 0u &&
+                    (tracked.WeaponSplineLocal is null ||
+                     tracked.WeaponSplineTarget != attached ||
+                     tracked.WeaponSplineLocal.Length != snap.StatedSplineCount) &&
+                    entities.TryGetStatedAndDrawnTransform(attached, out Transform3D targetStated, out _) &&
+                    TryLatchLocalSpline(targetStated, statedPts, out Vector3[] localPts))
+                {
+                    tracked.WeaponSplineTarget = attached;
+                    tracked.WeaponSplineUnowned = false;
+                    tracked.WeaponSplineLocal = localPts;
+                }
+                else if (attached == 0u &&
+                    (tracked.WeaponSplineLocal is null || tracked.WeaponSplineLocal.Length != snap.StatedSplineCount) &&
+                    entities.TryMatchWeaponEntityForSpline(statedPts, out uint matchedWeapon, out Vector3[] matchedLocal))
+                {
+                    tracked.WeaponSplineTarget = matchedWeapon;
+                    tracked.WeaponSplineUnowned = true;
+                    tracked.WeaponSplineLocal = matchedLocal;
+                }
             }
 
             if (tracked is not null)
@@ -1187,7 +1647,7 @@ public partial class GameFx : Node3D
         TrackedEffect tracked, GameEntities entities, uint rootKey, out Vector3[]? drawnPts)
     {
         drawnPts = null;
-        if (ShouldClearWeaponSpline(tracked.Attached, tracked.WeaponSplineTarget))
+        if (!tracked.WeaponSplineUnowned && ShouldClearWeaponSpline(tracked.Attached, tracked.WeaponSplineTarget))
         {
             tracked.WeaponSplineTarget = 0u;
             tracked.WeaponSplineLocal = null;
@@ -1197,6 +1657,12 @@ public partial class GameFx : Node3D
         if (tracked.WeaponSplineLocal is not { Length: >= 2 } localSpline ||
             !entities.TryGetStatedAndDrawnTransform(tracked.WeaponSplineTarget, out _, out Transform3D currentTargetDrawn))
         {
+            if (tracked.WeaponSplineUnowned)
+            {
+                tracked.WeaponSplineTarget = 0u;
+                tracked.WeaponSplineUnowned = false;
+                tracked.WeaponSplineLocal = null;
+            }
             return false;
         }
 
@@ -1265,11 +1731,34 @@ public partial class GameFx : Node3D
                 : Engine_FxSystem.EntityMeshToFxTransform(bonePlacement.BoneEntityRoot);
             activeWorldSpline = statedWorldSpline;
         }
+        else if (tracked.HasStatedDoubleSpan ||
+                 tracked.DoubleTrailRingCount >= 2 ||
+                 tracked.HasStatedSingleHead ||
+                 tracked.BeamSplineCount > 0 ||
+                 statedWorldSpline.Length >= 2 ||
+                 tracked.WorldRootsCount > 1)
+        {
+            tracked.Timeline = null;
+            bool activeContinuousRing = (tracked.HasStatedDoubleSpan || tracked.DoubleTrailRingCount >= 2 || tracked.HasStatedSingleHead) &&
+                                        (tracked.TrailRingCount >= 2u || tracked.DoubleTrailRingCount >= 2);
+            float resetJumpThreshold = activeContinuousRing ? 8.5f : 4f;
+            if (tracked.HasPreviousPlacedOrigin &&
+                tracked.PreviousPlacedOrigin.DistanceTo(placed.Origin) > resetJumpThreshold &&
+                IsInstanceValid(tracked.Node))
+            {
+                tracked.Node.ResetTrails();
+            }
+            smoothed = placed;
+            activeWorldSpline = statedWorldSpline;
+        }
         else
         {
             smoothed = Smoothed(tracked, placed, refreshed);
             activeWorldSpline = statedWorldSpline;
         }
+
+        tracked.PreviousPlacedOrigin = smoothed.Origin;
+        tracked.HasPreviousPlacedOrigin = true;
 
         FableFx node = tracked.Node;
         if (!node.Placed.IsEqualApprox(smoothed))
@@ -1278,7 +1767,441 @@ public partial class GameFx : Node3D
             node.Placed = smoothed;
         }
 
+        ApplyChainRoots(node, tracked, smoothed);
         ApplyWorldSplineOverride(node, tracked, smoothed, activeWorldSpline);
+        ApplyBeamSplines(node, tracked, smoothed, refreshed);
+        ApplyDoubleTrailSpan(node, tracked, smoothed, refreshed);
+        ApplySingleTrailHead(node, tracked, smoothed, refreshed);
+    }
+
+    private static void ApplyChainRoots(FableFx node, TrackedEffect tracked, Transform3D nodePlaced)
+    {
+        if (tracked.WorldRootsCount > 1 && tracked.WorldRoots is { } worldRoots)
+        {
+            float det = nodePlaced.Basis.Determinant();
+            if (!float.IsFinite(det) || Mathf.Abs(det) <= 1e-6f)
+            {
+                return;
+            }
+
+            Transform3D toNodeLocal = nodePlaced.AffineInverse();
+            if (tracked.LocalRootsScratch is null || tracked.LocalRootsScratch.Length < tracked.WorldRootsCount)
+            {
+                tracked.LocalRootsScratch = new Transform3D[tracked.WorldRootsCount];
+            }
+
+            for (int r = 0; r < tracked.WorldRootsCount; r++)
+            {
+                Transform3D local = toNodeLocal * worldRoots[r];
+                if (!local.Origin.IsFinite())
+                {
+                    return;
+                }
+                tracked.LocalRootsScratch[r] = local;
+            }
+
+            node.SetChainRoots(tracked.LocalRootsScratch.AsSpan(0, tracked.WorldRootsCount));
+            tracked.HasChainRoots = true;
+        }
+        else if (tracked.HasChainRoots)
+        {
+            node.SetChainRoots(ReadOnlySpan<Transform3D>.Empty);
+            tracked.HasChainRoots = false;
+        }
+    }
+
+    private void ApplyBeamSplines(FableFx node, TrackedEffect tracked, Transform3D nodePlaced, bool refreshed)
+    {
+        if (tracked.BeamSplineCount > 0)
+        {
+            if (!refreshed && tracked.HasBeamSplines && node.Placed.IsEqualApprox(nodePlaced))
+            {
+                return;
+            }
+
+            float det = nodePlaced.Basis.Determinant();
+            if (!float.IsFinite(det) || Mathf.Abs(det) <= 1e-6f)
+            {
+                return;
+            }
+
+            Transform3D toNodeLocal = nodePlaced.AffineInverse();
+            int totalBeams = node.BeamEmitterCount;
+            Span<bool> assigned = totalBeams > 0 && totalBeams <= 64 ? stackalloc bool[totalBeams] : Span<bool>.Empty;
+            for (int b = 0; b < tracked.BeamSplineCount; b++)
+            {
+                BeamSplineEntry entry = tracked.BeamSplines[b];
+                int occurrence = 0;
+                for (int prev = 0; prev < b; prev++)
+                {
+                    if (tracked.BeamSplines[prev].EntityId == entry.EntityId)
+                    {
+                        occurrence++;
+                    }
+                }
+
+                int count = Math.Min(entry.Count, _localSplineScratch.Length);
+                bool finite = count >= 2;
+                for (int i = 0; i < count && finite; i++)
+                {
+                    Vector3 local = toNodeLocal * entry.Points[i];
+                    if (!local.IsFinite())
+                    {
+                        finite = false;
+                        break;
+                    }
+                    _localSplineScratch[i] = local;
+                }
+
+                if (finite)
+                {
+                    int matchedIdx = node.SetBeamSplineForType(entry.EntityId, occurrence, _localSplineScratch.AsSpan(0, count));
+                    if (matchedIdx >= 0 && matchedIdx < assigned.Length)
+                    {
+                        assigned[matchedIdx] = true;
+                    }
+                }
+            }
+
+            for (int idx = 0; idx < assigned.Length; idx++)
+            {
+                if (!assigned[idx])
+                {
+                    node.SetBeamSpline(idx, ReadOnlySpan<Vector3>.Empty);
+                }
+            }
+
+            tracked.HasBeamSplines = true;
+        }
+        else if (tracked.HasBeamSplines)
+        {
+            node.ClearBeamSplines();
+            tracked.HasBeamSplines = false;
+        }
+    }
+
+    private void ApplyDoubleTrailSpan(FableFx node, TrackedEffect tracked, Transform3D nodePlaced, bool refreshed)
+    {
+        if (!tracked.HasStatedDoubleSpan && tracked.DoubleTrailRingCount < 2 && !node.HasDoubleTrail && tracked.DoubleTrailWeaponTarget == 0u)
+        {
+            return;
+        }
+
+        bool isWeapon = node.IsWeaponDoubleTrail;
+        if (!isWeapon)
+        {
+            tracked.DoubleTrailWeaponTarget = 0u;
+            tracked.IsDoubleTrailHostLatched = false;
+            if (!refreshed && tracked.DoubleTrailRingCount < 2)
+            {
+                return;
+            }
+        }
+        else if (!refreshed &&
+                 !tracked.IsDoubleTrailHostLatched &&
+                 tracked.DoubleTrailRingCount < 2 &&
+                 tracked.Owner == 0u &&
+                 tracked.Attached == 0u &&
+                 tracked.DoubleTrailWeaponTarget == 0u)
+        {
+            return;
+        }
+
+        bool haveWorldSpan = false;
+        bool hostLatched = false;
+        Vector3 worldA = Vector3.Zero;
+        Vector3 worldB = Vector3.Zero;
+        GameEntities? entities = isWeapon ? GameEntities.Current : null;
+
+        if (entities is not null &&
+            (tracked.Owner != 0u || tracked.Attached != 0u) &&
+            entities.TryGetWeaponTrailSpan(tracked.Owner, tracked.Attached, out worldA, out worldB))
+        {
+            haveWorldSpan = true;
+            hostLatched = true;
+        }
+        else if (entities is not null &&
+            tracked.DoubleTrailWeaponTarget != 0u &&
+            entities.TryGetDrawnWeaponTrailSpanForEntity(
+                tracked.DoubleTrailWeaponTarget, tracked.DoubleTrailWeaponSwapped, out Vector3 latchedA, out Vector3 latchedB))
+        {
+            // Keep the latched weapon across the full swing so fast 360-degree flourishes never
+            // drop back to 15/30 Hz guest coordinates mid-spin; only re-match if a newly stated
+            // guest span jumped > 4.5m to a different character across the scene.
+            bool jumpedAway = refreshed &&
+                tracked.HasStatedDoubleSpan &&
+                latchedA.DistanceSquaredTo(tracked.StatedDoubleSpanA) > 20.25f &&
+                latchedB.DistanceSquaredTo(tracked.StatedDoubleSpanA) > 20.25f;
+            if (!jumpedAway)
+            {
+                worldA = latchedA;
+                worldB = latchedB;
+                haveWorldSpan = true;
+                hostLatched = true;
+            }
+            else
+            {
+                tracked.DoubleTrailWeaponTarget = 0u;
+            }
+        }
+
+        if (!haveWorldSpan && tracked.HasStatedDoubleSpan)
+        {
+            if (entities is not null &&
+                refreshed &&
+                entities.TryMatchDrawnWeaponTrailSpan(
+                    tracked.StatedDoubleSpanA, tracked.StatedDoubleSpanB,
+                    out uint matched, out bool swapped, out worldA, out worldB))
+            {
+                tracked.DoubleTrailWeaponTarget = matched;
+                tracked.DoubleTrailWeaponSwapped = swapped;
+                haveWorldSpan = true;
+                hostLatched = true;
+            }
+            else if (refreshed)
+            {
+                worldA = tracked.StatedDoubleSpanA;
+                worldB = tracked.StatedDoubleSpanB;
+                haveWorldSpan = true;
+                hostLatched = false;
+            }
+            else if (tracked.DoubleTrailRingCount < 2)
+            {
+                tracked.IsDoubleTrailHostLatched = false;
+                return;
+            }
+        }
+
+        tracked.IsDoubleTrailHostLatched = hostLatched;
+        if (!hostLatched && tracked.DoubleTrailRingCount >= 2)
+        {
+            float det = nodePlaced.Basis.Determinant();
+            if (!float.IsFinite(det) || Mathf.Abs(det) <= 1e-6f)
+            {
+                return;
+            }
+
+            Transform3D toNodeLocal = nodePlaced.AffineInverse();
+            int count = Math.Min(tracked.DoubleTrailRingCount, _localDoubleRingScratch.Length);
+            double drawTick = Refii.Entities.Engine_DrawnFrame.DrawTick;
+            float tipAlpha = tracked.HasRingTipHistory
+                ? ComputeDoubleTrailTipAlpha(drawTick, tracked.RingPrevStamp, tracked.RingCurrStamp)
+                : 1f;
+
+            // When `tipAlpha` is near 0 (start of a new 15 Hz interval), `DoubleTrailRing[count - 1]`
+            // was just pushed at `RingCurrTip` while `DoubleTrailRing[count - 2]` sits at `RingPrevTip`.
+            // Interpolate the newest point smoothly out from `RingPrevTip -> RingCurrTip` and slide
+            // `KeyTime` along with `tipAlpha` so there is zero zero-length duplicate pinch or age pop.
+            float keyStep = count >= 2
+                ? MathF.Max(0f, tracked.DoubleTrailRing[count - 2].KeyTime - tracked.DoubleTrailRing[count - 1].KeyTime)
+                : 0f;
+            float keyRewind = keyStep * (1f - tipAlpha);
+
+            int outCount = 0;
+            bool finite = count >= 2;
+            for (int i = 0; i < count && finite; i++)
+            {
+                Engine_FxSystem.DoubleTrailRingPoint wpt = tracked.DoubleTrailRing[i];
+                Vector3 worldEdgeA;
+                Vector3 worldEdgeB;
+                float adjustedKey;
+                if (i == count - 1 && tracked.HasRingTipHistory)
+                {
+                    if (tipAlpha <= 0.02f && count >= 3)
+                    {
+                        // At the exact boundary (`tipAlpha ~ 0`), `count - 2` already holds `RingPrevTip`;
+                        // skip the coincident nascent tip so Catmull-Rom tangents stay well-conditioned.
+                        continue;
+                    }
+                    Engine_FxSystem.InterpolateDoubleTrailSpan(
+                        tracked.RingPrevTipA, tracked.RingPrevTipB,
+                        tracked.RingCurrTipA, tracked.RingCurrTipB,
+                        tipAlpha, out worldEdgeA, out worldEdgeB);
+                    adjustedKey = wpt.KeyTime;
+                }
+                else
+                {
+                    worldEdgeA = wpt.EdgeA;
+                    worldEdgeB = wpt.EdgeB;
+                    adjustedKey = MathF.Max(0f, wpt.KeyTime - keyRewind);
+                }
+                Vector3 localA = toNodeLocal * worldEdgeA;
+                Vector3 localB = toNodeLocal * worldEdgeB;
+                if (!localA.IsFinite() || !localB.IsFinite() || !float.IsFinite(adjustedKey))
+                {
+                    finite = false;
+                    break;
+                }
+                _localDoubleRingScratch[outCount++] = new Engine_FxSystem.DoubleTrailRingPoint(localA, localB, adjustedKey);
+            }
+
+            if (finite && outCount >= 2)
+            {
+                node.SetDoubleTrailRing(_localDoubleRingScratch.AsSpan(0, outCount));
+                tracked.HasDoubleTrailRing = true;
+                if (tracked.HasDoubleTrailSpan)
+                {
+                    node.ClearDoubleTrailSpan();
+                    tracked.HasDoubleTrailSpan = false;
+                }
+                return;
+            }
+        }
+
+        if (tracked.HasDoubleTrailRing && (hostLatched || refreshed))
+        {
+            node.ClearDoubleTrailRing();
+            tracked.HasDoubleTrailRing = false;
+        }
+
+        if (haveWorldSpan)
+        {
+            float det = nodePlaced.Basis.Determinant();
+            if (!float.IsFinite(det) || Mathf.Abs(det) <= 1e-6f)
+            {
+                return;
+            }
+
+            Transform3D toNodeLocal = nodePlaced.AffineInverse();
+            Vector3 localA = toNodeLocal * worldA;
+            Vector3 localB = toNodeLocal * worldB;
+            if (localA.IsFinite() && localB.IsFinite())
+            {
+                node.SetDoubleTrailSpan(
+                    localA,
+                    localB,
+                    hasGuestCursor: !hostLatched,
+                    guestTail: tracked.TrailRingTail,
+                    guestCount: tracked.TrailRingCount);
+                tracked.HasDoubleTrailSpan = true;
+                return;
+            }
+        }
+
+        if (tracked.HasDoubleTrailSpan)
+        {
+            node.ClearDoubleTrailSpan();
+            tracked.HasDoubleTrailSpan = false;
+        }
+    }
+
+    private ReadOnlySpan<int> ReadAssignedSpellSlots()
+    {
+        Refii.Ui.Engine_UiModel.SpellAssignState assign = HostBridge.GetSpellAssign();
+        for (int i = 0; i < _spellSlotsScratch.Length; i++)
+        {
+            _spellSlotsScratch[i] = assign.Known && i < assign.Assigned.Length
+                ? assign.Assigned[i]
+                : -1;
+        }
+
+        return _spellSlotsScratch;
+    }
+
+    private static bool IsHudSpellChargerActive()
+    {
+        Refii.Ui.Engine_HudValues? hudValues = Refii.Ui.Engine_HudView.Current?.Values;
+        if (hudValues is null)
+        {
+            return false;
+        }
+
+        if (hudValues.RegistrySlide(2, PlayerSpellChargerHash) == 2 ||
+            hudValues.RegistrySlide(3, PlayerSpellChargerHash) == 2 ||
+            hudValues.RegistrySlide(9, PlayerSpellChargerHash) == 2)
+        {
+            return true;
+        }
+
+        for (int i = 0; i < PlayerSpellChargeHashes.Length; i++)
+        {
+            if (hudValues.RegistrySlide(10, PlayerSpellChargeHashes[i]) == 4)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int ResolveLiveMagicCircleChargeLevel(ReadOnlySpan<Vector3> worldPoints)
+    {
+        // Primary: guest HUD slide set (`sub_825E9D58`, registry 10) marks the active current
+        // charge tier as slide 4 (red) on `PlayerSpellcharge1..5`. Prefer slide 4 over stale
+        // cyan slide 3 pips left over on higher slots from a prior cast.
+        Refii.Ui.Engine_HudValues? hudValues = Refii.Ui.Engine_HudView.Current?.Values;
+        if (hudValues is not null)
+        {
+            int highestActiveTier = 0;
+            for (int i = 0; i < PlayerSpellChargeHashes.Length; i++)
+            {
+                if (hudValues.RegistrySlide(10, PlayerSpellChargeHashes[i]) == 4)
+                {
+                    highestActiveTier = i + 1;
+                }
+            }
+
+            if (highestActiveTier >= 1)
+            {
+                return highestActiveTier;
+            }
+        }
+
+        // Fallback when HUD is hidden, Henchman casts, or before the first slide transition:
+        // estimate tier 1..5 cleanly from the circle spline's horizontal diameter.
+        if (worldPoints.Length >= 8)
+        {
+            int half = worldPoints.Length / 2;
+            Vector3 p0 = worldPoints[0];
+            Vector3 p1 = worldPoints[half];
+            if (p0.IsFinite() && p1.IsFinite())
+            {
+                float dx = p0.X - p1.X;
+                float dz = p0.Z - p1.Z;
+                float r = 0.5f * MathF.Sqrt((dx * dx) + (dz * dz));
+                if (r >= 9.2f) return 5;
+                if (r >= 6.8f) return 4;
+                if (r >= 4.6f) return 3;
+                if (r >= 2.7f) return 2;
+            }
+        }
+
+        return 1;
+    }
+
+    private static void ApplySingleTrailHead(FableFx node, TrackedEffect tracked, Transform3D nodePlaced, bool refreshed)
+    {
+        if (tracked.HasStatedSingleHead)
+        {
+            if (!refreshed)
+            {
+                return;
+            }
+
+            float det = nodePlaced.Basis.Determinant();
+            if (!float.IsFinite(det) || Mathf.Abs(det) <= 1e-6f)
+            {
+                return;
+            }
+
+            Vector3 localHead = nodePlaced.AffineInverse() * tracked.StatedSingleHead;
+            if (localHead.IsFinite())
+            {
+                node.SetSingleTrailHead(
+                    localHead,
+                    hasGuestCursor: true,
+                    guestTail: tracked.TrailRingTail,
+                    guestCount: tracked.TrailRingCount);
+                tracked.HasSingleTrailHead = true;
+                return;
+            }
+        }
+
+        if (tracked.HasSingleTrailHead)
+        {
+            node.ClearSingleTrailHead();
+            tracked.HasSingleTrailHead = false;
+        }
     }
 
     private void ApplyWorldSplineOverride(
@@ -1342,6 +2265,7 @@ public partial class GameFx : Node3D
             uint key = _deadKeys[i];
             if (_tracked.Remove(key, out TrackedEffect? tracked))
             {
+                Engine_RemasterMagicCircle.Remove(key);
                 RetireTrackedNode(tracked);
             }
         }
@@ -1421,6 +2345,10 @@ public partial class GameFx : Node3D
             (_tickNow > timeline.NewestTick && _tickNow - timeline.NewestTick > 8))
         {
             timeline.Reset(_tickNow, entityStated);
+            if (IsInstanceValid(tracked.Node))
+            {
+                tracked.Node.ResetTrails();
+            }
             return stated;
         }
 

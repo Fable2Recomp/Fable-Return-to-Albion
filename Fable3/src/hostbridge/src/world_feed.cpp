@@ -299,6 +299,12 @@ REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxSpline(uint32_t handle, float* out,
     return refii_bridge_fx_spline_read(handle, out, max_points);
 }
 
+/// Fable 2 direct Mode 3 double-trail ring reader; Fable 3 does not expose raw particle rings.
+REFII_HOST_ABI_EXPORT uint32_t RefiiHostGetFxDoubleTrailRing(
+    uint32_t /*instance_or_handle*/, float* /*out*/, uint32_t /*max_points*/) {
+    return 0u;
+}
+
 /// The decals the guest handed its renderer (world_hooks.cpp's take of sub_82C73BF8), oldest
 /// first, Fable 2's 27 words: [0..14] serial, owner twin, texture name hash, position, direction,
 /// half sizes, life, flag; [15..26] the owner twin's world matrix, the three float4 rows at

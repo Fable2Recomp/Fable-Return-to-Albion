@@ -568,6 +568,10 @@ public static class DesktopSettingMetadata
                 SettingsTab.Graphics, "Advanced Graphics", SettingTier.Advanced, "Max Persistent Corpses",
                 "Maximum fallen corpses kept in the active region before the oldest distant corpse fades early (0 = Auto; -1 = Unlimited).",
                 new NumericRange(0, 256, 4, "", ZeroLabel: "Auto", AllowGreater: true), Order: 685),
+            ["fx_remaster_magic_circle"] = new(
+                SettingsTab.Graphics, "Advanced Graphics", SettingTier.Advanced, "Remaster Will Magic Circle",
+                "Adds layered arcane Will rings, rising perimeter motes, and dynamic cyan ground light to spell circles.",
+                Order: 686),
             ["texture_cache_max_mb"] = new(
                 SettingsTab.Graphics, "Advanced Texture & Material Tuning", SettingTier.Advanced, "Texture Cache Disk Limit",
                 null, new NumericRange(0, 32768, 512, " MB", "Auto"), Order: 690),
