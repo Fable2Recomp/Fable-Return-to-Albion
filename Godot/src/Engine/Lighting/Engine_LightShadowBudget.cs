@@ -528,7 +528,7 @@ public partial class Engine_LightShadowBudget : Node
 			}
 
 			uint casterMask = capsuleCount > 0
-				? Engine_VolumetricLightShafts.ComputeLightCapsuleMask(f.At, statedRange, capsuleSpan)
+				? Engine_VolumetricLightShafts.ComputeLightCapsuleMask(f.At, statedRange, capsuleSpan, f.FloatingAmbient)
 				: 0u;
 
 			f.ShaftActive = true;
@@ -816,7 +816,7 @@ public partial class Engine_LightShadowBudget : Node
 				wanted++;
 				casting++;
 				uint desiredMask = Engine_LevelLights.CasterMaskOf(
-					includeDynamicEntities: true,
+					includeDynamicEntities: classic || !f.FloatingAmbient,
 					isIndoorLight: !classic && f.IndoorBit,
 					includeStaticWorld: classic || (!f.Omni && f.Authored),
 					isOutdoorLight: !classic && f.OutdoorBit);
@@ -975,6 +975,14 @@ public partial class Engine_LightShadowBudget : Node
 			}
 
 			if (!remaster && !f.Authored)
+			{
+				continue;
+			}
+
+			// Floating ambient fill volumes have no physical source, so dynamic casters (hero/NPCs/dog)
+			// must not cast live cubemap shadows or black out the room when running through them.
+			// Static architecture, windows, and doorways remain shadowed via `fable_static_shadow_atlas`.
+			if (!classic && f.FloatingAmbient && !f.Authored)
 			{
 				continue;
 			}
@@ -1318,9 +1326,9 @@ public partial class Engine_LightShadowBudget : Node
 
 		if (isFloatingAmbient)
 		{
-			// Prioritize physical torches, lanterns, and braziers for crisp character shadow slots
-			// ahead of unauthored floating ambient fill volumes.
-			effectiveDist += 3.5f;
+			// Floating ambient fill volumes never cast dynamic character shadows; static walls,
+			// windows, and doorways remain shadowed via `fable_static_shadow_atlas`.
+			return float.MaxValue;
 		}
 
 		float clampedEnergy = Mathf.Clamp(baseEnergy, 0.5f, 3.0f);

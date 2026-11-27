@@ -1334,8 +1334,9 @@ public class LightZonesAndPlacementsTests
             AssertThat(disabledSurf).IsEqual(0.0f);
             AssertThat(disabledVol).IsEqual(0.0f);
 
-            // 4. Dynamic entity shadow budget gives physical torches priority (+3.5m effective distance offset)
-            //    while keeping floating lights eligible when slots are available.
+            // 4. Dynamic entity shadow budget excludes floating ambient volumes (preventing characters
+            //    from blacking out the room when running through them) while keeping physical fixtures eligible
+            //    and leaving static baked shadows (`fable_static_shadow_atlas`) untouched.
             Vector3 heroPos = new(-260.0f, 22.0f, 160.0f);
             Vector3 lightPos = new(-263.0f, 23.8f, 162.0f);
             float physicalScore = Engine_LightShadowBudget.ScoreDynamicEntityShadowLight(
@@ -1363,8 +1364,8 @@ public class LightZonesAndPlacementsTests
                 alreadyDynamic: false,
                 isFloatingAmbient: true);
 
-            AssertThat(physicalScore < floatingScore).IsTrue();
-            AssertThat(floatingScore < float.MaxValue).IsTrue();
+            AssertThat(physicalScore < float.MaxValue).IsTrue();
+            AssertThat(floatingScore).IsEqual(float.MaxValue);
         }
         finally
         {

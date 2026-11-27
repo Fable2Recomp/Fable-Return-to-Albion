@@ -2032,7 +2032,7 @@ public static class Engine_LevelLights
 		node.ShadowOpacity = 0.0f;
 		node.SetMeta(AuthoredShadowMeta, light.CastShadows);
 		node.ShadowCasterMask = CasterMaskOf(
-			includeDynamicEntities: !Refii.Models.Engine_ClassicMaterial.Active,
+			includeDynamicEntities: !Refii.Models.Engine_ClassicMaterial.Active && !light.IsFloatingAmbient,
 			includeStaticWorld: Refii.Models.Engine_ClassicMaterial.Active);
 		ApplyShadowTuning(node);
 
