@@ -771,29 +771,6 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         }
     }
 
-    private IEnumerable<string> EnumerateStreamingHints()
-    {
-        if (_filesystem is null)
-        {
-            yield break;
-        }
-
-        foreach (BnkFile file in _filesystem.EnumerateAllFiles())
-        {
-            if (!file.SourceArchiveName.Contains(
-                    "streaming", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (file.VirtualPath.EndsWith(".hkx", StringComparison.OrdinalIgnoreCase) ||
-                file.VirtualPath.EndsWith(".mdl.gmd", StringComparison.OrdinalIgnoreCase))
-            {
-                yield return file.VirtualPath;
-            }
-        }
-    }
-
     private IEnumerable<Refii.Level.PropModelAsset> EnumerateModelAssets()
     {
         if (_filesystem is null)
@@ -827,7 +804,6 @@ public partial class BnkMountPlugin : EditorPlugin, ISerializationListener
         Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
         Refii.Textures.Engine_TexPathIndex.SetPathSource(EnumerateTexturePaths);
         Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
-        Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
         Refii.Entities.Engine_EntityIndex.SetResolver(ResolveBytes);
         // The shared runtime database the owned detail pages read. Bound here as well as in
         // Engine_GameAssets so the editor and the running game answer the same, which is the

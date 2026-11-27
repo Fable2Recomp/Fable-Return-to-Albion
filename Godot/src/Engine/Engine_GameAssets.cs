@@ -693,8 +693,6 @@ public partial class Engine_GameAssets : Node
 		Refii.Level.Engine_Clouds.SetTexturePathSource(EnumerateTexturePaths);
 		Refii.Textures.Engine_TexPathIndex.SetPathSource(EnumerateTexturePaths);
 		Refii.Level.Engine_PropModelIndex.SetModelSource(EnumerateModelAssets);
-
-		Refii.Level.Engine_StreamingCandidates.SetHintSource(EnumerateStreamingHints);
 		Refii.Entities.Engine_EntityIndex.SetResolver(ReadAllBytes);
 
 		if (_entityLoader is null)
@@ -751,24 +749,6 @@ public partial class Engine_GameAssets : Node
 		foreach (BnkFile file in fs.EnumerateAllFiles())
 		{
 			if (file.VirtualPath.EndsWith(".tex", StringComparison.OrdinalIgnoreCase))
-			{
-				yield return file.VirtualPath;
-			}
-		}
-	}
-
-	/// <summary>Paths from a streaming bank: models the game pages in rather than ships resident.</summary>
-	private IEnumerable<string> EnumerateStreamingHints()
-	{
-		BnkFileSystem? fs = Snapshot();
-		if (fs is null)
-		{
-			yield break;
-		}
-
-		foreach (BnkFile file in fs.EnumerateAllFiles())
-		{
-			if (file.SourceArchiveName.Contains("streaming", StringComparison.OrdinalIgnoreCase))
 			{
 				yield return file.VirtualPath;
 			}

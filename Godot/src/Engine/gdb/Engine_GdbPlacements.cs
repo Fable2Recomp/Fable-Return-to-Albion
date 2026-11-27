@@ -38,8 +38,6 @@ public sealed class GdbPlacement
 
     public uint ModelPathHash { get; set; }
 
-    public bool ModelPathFilled { get; set; }
-
     public uint SkeletonFileHash { get; set; }
 
     public uint RetargetSkeletonFileHash { get; set; }
@@ -72,7 +70,6 @@ public sealed class GdbPlacement
         RotW = RotW,
         Scale = Scale,
         ModelPathHash = ModelPathHash,
-        ModelPathFilled = ModelPathFilled,
         SkeletonFileHash = SkeletonFileHash,
         RetargetSkeletonFileHash = RetargetSkeletonFileHash,
         ModelPathHashes = new List<uint>(ModelPathHashes),
