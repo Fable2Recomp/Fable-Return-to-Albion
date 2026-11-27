@@ -62,11 +62,11 @@ public sealed class Engine_DisarticulatedRig
 
     private const float Gravity = -9.81f;
     private const float AirDragPerSecond = 0.22f;
-    private const float GroundSlideFrictionPerSec = 3.2f;
-    private const float GroundAngularDecayPerSec = 4.5f;
-    private const float GroundCoulombSlideDecel = 5.8f;
-    private const float GroundRollingAngularDecel = 14.0f;
-    private const float ImpactCoulombMu = 0.58f;
+    private const float GroundSlideFrictionPerSec = 1.8f;
+    private const float GroundAngularDecayPerSec = 3.2f;
+    private const float GroundCoulombSlideDecel = 4.2f;
+    private const float GroundRollingResistanceMu = 0.35f;
+    private const float ImpactCoulombMu = 0.32f;
     private const float BounceMinNormalSpeed = 0.40f;
     private const float BoneCollisionRestitution = 0.16f;
     private const float BoneCollisionMinSpeed = 0.35f;
@@ -96,6 +96,8 @@ public sealed class Engine_DisarticulatedRig
     private float _originGroundY;
     private bool _originGroundSampled;
     private ulong _lastSteppedFrame = ulong.MaxValue;
+    private bool _hasStatedBounds;
+    private Aabb _statedBounds;
 
     /// <summary>Total bone count in model order (simulated pieces + rigid followers + root wrapper).</summary>
     public int BoneCount { get; private set; }
@@ -190,6 +192,8 @@ public sealed class Engine_DisarticulatedRig
         _spawnOriginY = entityWorld.Origin.IsFinite() ? entityWorld.Origin.Y : 0f;
         _originGroundY = _spawnOriginY;
         _lastSteppedFrame = ulong.MaxValue;
+        _hasStatedBounds = false;
+        _statedBounds = new Aabb();
         _activeCount = 0;
 
         bool hasDescriptors = descriptors.Length == count;
@@ -350,19 +354,20 @@ public sealed class Engine_DisarticulatedRig
 
             radial = radial.LengthSquared() > 1e-6f ? radial.Normalized() : Vector3.Forward;
 
-            // Natural collapse & outward separation (upper bones fan slightly further, lower bones collapse locally).
+            // Natural radial shatter burst: upper torso/arms/skull fan outward in a clear arc
+            // while lower shins/feet scatter moderately and skitter across terrain before settling.
             float heightFrac = Math.Clamp((body.ComPosition.Y - _spawnOriginY) / 1.7f, 0f, 1f);
-            float outwardSpeed = 0.45f + (0.65f * heightFrac) + (rOut * 0.75f);
-            float upwardSpeed = (-0.08f + (0.28f * heightFrac)) + (ry * 0.28f);
-            Vector3 lateralJitter = new Vector3(rx, 0f, rz) * 0.28f;
+            float outwardSpeed = 1.35f + (1.15f * heightFrac) + (rOut * 1.35f);
+            float upwardSpeed = 0.45f + (0.75f * heightFrac) + (ry * 0.65f);
+            Vector3 lateralJitter = new Vector3(rx, 0f, rz) * 0.55f;
             body.LinearVelocity = inherited + (radial * outwardSpeed) + lateralJitter + (Vector3.Up * upwardSpeed);
 
-            // Topple outward around the horizontal tangent perpendicular to radial direction plus subtle tumble.
+            // Topple outward around the horizontal tangent perpendicular to radial direction plus crisp tumble.
             Vector3 toppleAxis = Vector3.Up.Cross(radial);
             Vector3 jitterAxis = new Vector3(NextUnit(ref rng), NextUnit(ref rng) * 0.5f, NextUnit(ref rng));
             Vector3 spinAxis = (toppleAxis * 0.75f) + (jitterAxis * 0.35f);
             spinAxis = spinAxis.LengthSquared() > 1e-4f ? spinAxis.Normalized() : Vector3.Right;
-            float spinRate = 2.2f + (rSpin * 3.8f);
+            float spinRate = 3.2f + (rSpin * 5.2f);
             body.AngularVelocity = spinAxis * spinRate;
         }
 
@@ -754,7 +759,11 @@ public sealed class Engine_DisarticulatedRig
 
                 body.AngularVelocity *= angDecay;
                 float spinLen = body.AngularVelocity.Length();
-                float rollStop = GroundRollingAngularDecel * subDt;
+                // Physically scaled rolling resistance torque: tau = mu_roll * m * g * ny * R -> dOmega = tau * InvInertia * dt.
+                // Scales identically with gravity's slope rolling torque so small bones (neck/hand) and large bones (femur/skull)
+                // both settle cleanly on Wraithmarsh hills without endless downhill rolling.
+                float rollStop = GroundRollingResistanceMu * (-Gravity) * MathF.Max(avgNormal.Y, 0.25f) *
+                    MathF.Max(body.Radius, 0.03f) * body.Mass * body.InvInertia * subDt;
                 if (spinLen <= rollStop || spinLen <= 1e-5f)
                 {
                     body.AngularVelocity = Vector3.Zero;
@@ -790,6 +799,103 @@ public sealed class Engine_DisarticulatedRig
         }
 
         WriteModelPoses(entityWorld, guestWorldBones, guestValidCount);
+    }
+
+    /// <summary>
+    /// Computes an exact entity-local <see cref="Aabb"/> enclosing every actively simulated bone's
+    /// two capsule endpoints (grown by each piece's radius plus <paramref name="margin"/>) with
+    /// zero Godot interop crossings or heap allocations.
+    /// </summary>
+    public Aabb ComputeLocalBounds(Transform3D entityWorld, float margin = 0.25f)
+    {
+        if (_activeCount == 0)
+        {
+            return new Aabb();
+        }
+
+        Transform3D invEntity = entityWorld.AffineInverse();
+        float pad = float.IsFinite(margin) && margin > 0f ? margin : 0f;
+        bool initialized = false;
+        Vector3 min = Vector3.Zero;
+        Vector3 max = Vector3.Zero;
+
+        static void ExpandSphere(ref bool init, ref Vector3 bMin, ref Vector3 bMax, Vector3 center, float extent)
+        {
+            if (!center.IsFinite())
+            {
+                return;
+            }
+
+            Vector3 lo = center - new Vector3(extent, extent, extent);
+            Vector3 hi = center + new Vector3(extent, extent, extent);
+            if (!init)
+            {
+                bMin = lo;
+                bMax = hi;
+                init = true;
+                return;
+            }
+
+            if (lo.X < bMin.X) bMin.X = lo.X;
+            if (lo.Y < bMin.Y) bMin.Y = lo.Y;
+            if (lo.Z < bMin.Z) bMin.Z = lo.Z;
+            if (hi.X > bMax.X) bMax.X = hi.X;
+            if (hi.Y > bMax.Y) bMax.Y = hi.Y;
+            if (hi.Z > bMax.Z) bMax.Z = hi.Z;
+        }
+
+        for (int a = 0; a < _activeCount; ++a)
+        {
+            ref readonly BoneBody body = ref _bodies[_activeIndices[a]];
+            float ext = body.Radius + pad;
+            if (body.HalfLength > 1e-4f)
+            {
+                Vector3 axis = body.Rotation * body.LocalAxis;
+                Vector3 e0 = invEntity * (body.ComPosition - (axis * body.HalfLength));
+                Vector3 e1 = invEntity * (body.ComPosition + (axis * body.HalfLength));
+                ExpandSphere(ref initialized, ref min, ref max, e0, ext);
+                ExpandSphere(ref initialized, ref min, ref max, e1, ext);
+            }
+            else
+            {
+                Vector3 localCenter = invEntity * body.ComPosition;
+                ExpandSphere(ref initialized, ref min, ref max, localCenter, ext);
+            }
+        }
+
+        return initialized ? new Aabb(min, max - min) : new Aabb();
+    }
+
+    /// <summary>
+    /// Updates the cached frustum-culling envelope when the live capsule bounds outgrow the
+    /// previously stated <see cref="Aabb"/> (or when <paramref name="force"/> is true, e.g. on
+    /// initialization, corpse adoption, or final sleep settle). Returns <c>true</c> only when the
+    /// caller should write <paramref name="statedBounds"/> to <c>MeshInstance3D.CustomAabb</c>.
+    /// </summary>
+    public bool TryUpdateStatedBounds(
+        Transform3D entityWorld,
+        bool force,
+        out Aabb statedBounds,
+        float growHysteresis = 0.50f)
+    {
+        Aabb exact = ComputeLocalBounds(entityWorld);
+        if (!exact.Position.IsFinite() || !exact.Size.IsFinite() || exact.Size.LengthSquared() < 1e-6f)
+        {
+            statedBounds = _statedBounds;
+            return false;
+        }
+
+        if (!force && _hasStatedBounds && _statedBounds.Encloses(exact))
+        {
+            statedBounds = _statedBounds;
+            return false;
+        }
+
+        float grow = float.IsFinite(growHysteresis) && growHysteresis > 0f ? growHysteresis : 0f;
+        _statedBounds = grow > 0f ? exact.Grow(grow) : exact;
+        _hasStatedBounds = true;
+        statedBounds = _statedBounds;
+        return true;
     }
 
     private void WriteReassemblyPoses(

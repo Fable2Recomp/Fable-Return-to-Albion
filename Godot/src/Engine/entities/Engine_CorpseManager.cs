@@ -69,8 +69,13 @@ public sealed class Engine_CorpseManager
         Engine_EntityAppearance.Apply(node, opaqueLook, principal: false);
         node.Visible = true;
 
-        if (shatter is null && rig is not null && GodotObject.IsInstanceValid(rig.Node))
+        if (shatter is not null)
         {
+            SyncDisarticulatedBounds(node, shatter, node.GlobalTransform, force: true);
+        }
+        else if (rig is not null && GodotObject.IsInstanceValid(rig.Node))
+        {
+            ApplyCustomBounds(node, rig.Bounds(false).Grow(0.55f));
             Engine_ShadowSkeletons.SetEveryFrame(rig.Node, false);
             Engine_ShadowSkeletons.Placed(node);
         }
@@ -118,9 +123,17 @@ public sealed class Engine_CorpseManager
             {
                 if (corpse.Rig is { } rig && GodotObject.IsInstanceValid(rig.Node))
                 {
-                    shatter.Step(stepDt, corpse.Node.GlobalTransform, sampleGround, default, 0);
+                    Transform3D corpseWorld = corpse.Node.GlobalTransform;
+                    shatter.Step(stepDt, corpseWorld, sampleGround, default, 0);
                     rig.ApplyModelSpacePoses(shatter.ModelPoses);
-                    if (shatter.AllAsleep || shatter.Elapsed >= 10.0f)
+                    bool settledNow = shatter.AllAsleep || shatter.Elapsed >= 10.0f;
+                    SyncDisarticulatedBounds(
+                        corpse.Node,
+                        shatter,
+                        corpseWorld,
+                        force: settledNow,
+                        hysteresis: settledNow ? 0.25f : 0.50f);
+                    if (settledNow)
                     {
                         Engine_ShadowSkeletons.SetEveryFrame(rig.Node, false);
                         Engine_ShadowSkeletons.Placed(corpse.Node);
@@ -217,6 +230,43 @@ public sealed class Engine_CorpseManager
         }
 
         _corpses.Clear();
+    }
+
+    /// <summary>
+    /// Updates <paramref name="node"/> and its shadow proxy's <c>CustomAabb</c> when a disarticulated
+    /// bone pile grows outside its previously stated hysteresis envelope (or on forced init/settle),
+    /// preventing Godot from frustum-culling scattered bones still visible on screen.
+    /// </summary>
+    internal static void SyncDisarticulatedBounds(
+        MeshInstance3D node,
+        Engine_DisarticulatedRig shatter,
+        Transform3D entityWorld,
+        bool force = false,
+        float hysteresis = 0.50f)
+    {
+        if (!GodotObject.IsInstanceValid(node))
+        {
+            return;
+        }
+
+        if (shatter.TryUpdateStatedBounds(entityWorld, force, out Aabb stated, hysteresis))
+        {
+            ApplyCustomBounds(node, stated);
+        }
+    }
+
+    private static void ApplyCustomBounds(MeshInstance3D node, Aabb bounds)
+    {
+        if (!bounds.Position.IsFinite() || !bounds.Size.IsFinite() || bounds.Size.LengthSquared() < 1e-6f)
+        {
+            return;
+        }
+
+        node.CustomAabb = bounds;
+        if (Engine_ShadowProxy.ProxyOf(node) is { } proxy && GodotObject.IsInstanceValid(proxy))
+        {
+            proxy.CustomAabb = bounds;
+        }
     }
 
     private static void DropShadow(RetainedCorpse corpse)

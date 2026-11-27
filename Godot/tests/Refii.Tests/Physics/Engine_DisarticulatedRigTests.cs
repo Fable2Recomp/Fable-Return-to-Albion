@@ -395,4 +395,52 @@ public sealed class Engine_DisarticulatedRigTests
             AssertThat(indoorRig.Bodies[m].Position.Y).IsGreaterEqual(3.2f + indoorRig.Bodies[m].Radius - 1e-3f);
         }
     }
+
+    [TestCase]
+    public void StandingKillScattersWidelyAndStatedBoundsEncloseAllBonesWithHysteresis()
+    {
+        var entityWorld = new Transform3D(Basis.Identity, new Vector3(4f, 0f, -6f));
+        Transform3D[] rest = MakeRestGlobals(CrumbleNames.Length);
+        var rig = new Engine_DisarticulatedRig();
+        rig.Initialize(entityWorld, CrumbleNames, rest, CrumbleParents, null, Vector3.Zero, 4242u);
+
+        Engine_DisarticulatedRig.TrySampleGroundContact flat = (Vector3 pos, out Vector3 contact, out Vector3 normal) =>
+        {
+            contact = new Vector3(pos.X, 0f, pos.Z);
+            normal = Vector3.Up;
+            return true;
+        };
+
+        AssertThat(rig.TryUpdateStatedBounds(entityWorld, force: true, out Aabb bounds)).IsTrue();
+        int writes = 1;
+        Transform3D invEntity = entityWorld.AffineInverse();
+
+        for (int step = 0; step < 300; ++step)
+        {
+            rig.Step(1f / 60f, entityWorld, flat, default, 0);
+            if (rig.TryUpdateStatedBounds(entityWorld, force: false, out Aabb updated))
+            {
+                bounds = updated;
+                ++writes;
+            }
+
+            for (int m = 1; m < rig.BoneCount; ++m)
+            {
+                Vector3 localCom = invEntity * rig.Bodies[m].ComPosition;
+                AssertThat(bounds.HasPoint(localCom)).IsTrue();
+            }
+        }
+
+        AssertThat(rig.AllAsleep).IsTrue();
+        AssertThat(writes).IsLess(12);
+
+        float maxHoriz = 0f;
+        for (int m = 1; m < rig.BoneCount; ++m)
+        {
+            Vector3 d = rig.Bodies[m].ComPosition - entityWorld.Origin;
+            maxHoriz = MathF.Max(maxHoriz, MathF.Sqrt((d.X * d.X) + (d.Z * d.Z)));
+        }
+
+        AssertThat(maxHoriz).IsGreater(1.4f);
+    }
 }

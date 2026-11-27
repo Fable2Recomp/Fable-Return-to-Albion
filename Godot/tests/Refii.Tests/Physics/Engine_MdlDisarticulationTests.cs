@@ -295,11 +295,21 @@ public sealed class Engine_MdlDisarticulationTests
         Transform3D expectedIndexRel = restGlobals[lHandIdx].AffineInverse() * restGlobals[lIndexIdx];
         Transform3D expectedIndex2Rel = restGlobals[lIndexIdx].AffineInverse() * restGlobals[lIndex2Idx];
 
-        for (int step = 0; step < 240; ++step)
+        AssertThat(rig.TryUpdateStatedBounds(crumbleWorld, force: true, out Aabb statedBounds)).IsTrue();
+        int aabbWrites = 1;
+        Transform3D invCrumble = crumbleWorld.AffineInverse();
+
+        for (int step = 0; step < 300; ++step)
         {
             rig.Step(1f / 60f, crumbleWorld, slopeGround, default, 0);
+            if (rig.TryUpdateStatedBounds(crumbleWorld, force: false, out Aabb nextBounds))
+            {
+                statedBounds = nextBounds;
+                ++aabbWrites;
+            }
 
-            // Both capsule endpoints of every simulated piece must stay above the sloped terrain.
+            // Both capsule endpoints of every simulated piece must stay above the sloped terrain
+            // AND strictly inside the frustum-culling stated AABB on every frame.
             for (int m = 0; m < rig.BoneCount; ++m)
             {
                 Engine_DisarticulatedRig.BoneBody b = rig.Bodies[m];
@@ -315,6 +325,11 @@ public sealed class Engine_MdlDisarticulationTests
                 float floor1 = 2.0f + (0.18f * (e1.X - 10f));
                 AssertThat(e0.Y).IsGreaterEqual(floor0 + b.Radius - 2e-3f);
                 AssertThat(e1.Y).IsGreaterEqual(floor1 + b.Radius - 2e-3f);
+
+                Vector3 le0 = invCrumble * e0;
+                Vector3 le1 = invCrumble * e1;
+                AssertThat(statedBounds.HasPoint(le0)).IsTrue();
+                AssertThat(statedBounds.HasPoint(le1)).IsTrue();
             }
 
             // Finger phalanges must stay rigidly attached to their parent hand throughout scatter.
@@ -326,6 +341,7 @@ public sealed class Engine_MdlDisarticulationTests
         }
 
         AssertThat(rig.AllAsleep).IsTrue();
+        AssertThat(aabbWrites).IsLess(12);
 
         // Hollowman comes back to life at its spawn/rise transform: bones must lift off the ground and fly back.
         var respawnWorld = new Transform3D(new Basis(Vector3.Up, 0.7f), new Vector3(10.5f, 2.09f, -4.0f));

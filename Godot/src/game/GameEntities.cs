@@ -1593,8 +1593,10 @@ public partial class GameEntities : Node3D
                     // dresses after it was rigged. Compared against what this feed assigned, not the
                     // node's property: that read is a crossing per entity per frame.
                     _dirtyPlaceHides = true;
+                    _extentHeldStreak.Remove(entity.Address);
                     Unbatch(entity.Address, node);
                     node.Mesh = mesh;
+                    node.CustomAabb = new Aabb();
                     _nodeMesh[entity.Address] = mesh;
 
                     // The rig is the mesh's: a composite's bone table is the union of its parts, and
@@ -2140,6 +2142,7 @@ public partial class GameEntities : Node3D
                             }
 
                             rig.ApplyModelSpacePoses(shatter.ModelPoses);
+                            Refii.Entities.Engine_CorpseManager.SyncDisarticulatedBounds(node, shatter, entityWorld);
                         }
                         else
                         {
@@ -2161,6 +2164,7 @@ public partial class GameEntities : Node3D
                                     autoShatter.Step(_lastFrameDelta, entityWorld, SampleActiveGround, default, 0);
                                     autoShatter.LastSteppedFrame = Refii.Core.Engine_ProcessFrame.Current;
                                     rig.ApplyModelSpacePoses(autoShatter.ModelPoses);
+                                    Refii.Entities.Engine_CorpseManager.SyncDisarticulatedBounds(node, autoShatter, entityWorld);
                                 }
                                 else
                                 {
@@ -4833,6 +4837,8 @@ public partial class GameEntities : Node3D
             address ^ (uint)uniqueId,
             profile.Pieces);
         crumbledRig.ApplyModelSpacePoses(shatter.ModelPoses);
+        _extentHeldStreak.Remove(address);
+        Refii.Entities.Engine_CorpseManager.SyncDisarticulatedBounds(node, shatter, entityWorld, force: true);
         _disarticulated[address] = shatter;
         if (_deadCorpseState.TryGetValue(address, out DeadCorpseTrack? deadTrack))
         {
@@ -4880,6 +4886,8 @@ public partial class GameEntities : Node3D
             ComputeInheritedVelocity(in entity),
             entity.Address ^ (uint)entity.UniqueId,
             profile.Pieces);
+        _extentHeldStreak.Remove(entity.Address);
+        Refii.Entities.Engine_CorpseManager.SyncDisarticulatedBounds(node, shatter, entityWorld, force: true);
         _disarticulated[entity.Address] = shatter;
         if (_deadCorpseState.TryGetValue(entity.Address, out DeadCorpseTrack? deadTrack))
         {
@@ -6135,6 +6143,13 @@ public partial class GameEntities : Node3D
     /// </summary>
     private void StateVisibleExtent(uint address, MeshInstance3D node, Refii.Entities.Engine_EntitySkeleton rig)
     {
+        // Disarticulated bone piles maintain exact capsule-endpoint bounds via
+        // Engine_CorpseManager.SyncDisarticulatedBounds; do not overwrite them on the standing-rig cadence.
+        if (_disarticulated.ContainsKey(address))
+        {
+            return;
+        }
+
         // Not every frame. The box only has to bound the pose, not track it, and re-stating it
         // per character per frame is work the renderer does not need. Once a rig's stated box
         // has enclosed two consecutive checks without overflowing, its restate cadence drops tenfold.
@@ -6999,6 +7014,7 @@ public partial class GameEntities : Node3D
                     shatter.Step(_lastFrameDelta, entityWorld, SampleActiveGround, default, 0);
                     shatter.LastSteppedFrame = currentFrame;
                     rig.ApplyModelSpacePoses(shatter.ModelPoses);
+                    Refii.Entities.Engine_CorpseManager.SyncDisarticulatedBounds(node, shatter, entityWorld);
                 }
             }
 
