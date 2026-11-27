@@ -99,9 +99,6 @@ public sealed class Fable2Props : Engine_TitleProps
         _ => null,
     };
 
-    public override bool IsShellParent(string normalisedPath) =>
-        normalisedPath.Contains("bs_market_tarotstall/", StringComparison.Ordinal);
-
     public override bool IsMultiInstanceModel(string normalisedPath) =>
         normalisedPath.Contains("bs_townhouse_basic_snow_v2", StringComparison.Ordinal);
 

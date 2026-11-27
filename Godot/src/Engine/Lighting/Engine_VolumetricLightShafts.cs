@@ -309,9 +309,10 @@ public static class Engine_VolumetricLightShafts
 	public static uint ComputeLightCapsuleMask(
 		Vector3 lightPos,
 		float lightRange,
-		ReadOnlySpan<VolumetricCapsule> capsules)
+		ReadOnlySpan<VolumetricCapsule> capsules,
+		bool isFloatingAmbient = false)
 	{
-		if (lightRange <= 1e-3f || capsules.IsEmpty)
+		if (isFloatingAmbient || lightRange <= 1e-3f || capsules.IsEmpty)
 		{
 			return 0u;
 		}

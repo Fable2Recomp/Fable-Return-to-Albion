@@ -2230,7 +2230,7 @@ public partial class GameEntities : Node3D
 
         // A count that holds still for SettleTicks, OR twenty seconds of ticks: Bowerstone
         // Market never holds still (NPCs come and go every few ticks), and gating the reconcile
-        // on stillness alone left every layout door standing beside its live twin for a whole
+        // on stillness alone left every record-less static twin standing beside its live twin for a whole
         // session in the first region of a run.
         _everSettled |= _settledFor >= SettleTicks || _ticks >= SettleFallbackTicks;
 
@@ -2295,8 +2295,8 @@ public partial class GameEntities : Node3D
             Twins.Reconcile(
                 _liveRecords, _drawnRecords, !HostBridge.EntitiesTruncated,
                 deactivated is null ? null : _layerIsDeactivated ??= _deactivatedLayers.Contains);
-            // THE RECORD-LESS TWINS — a building's doors and windows come from its layout with
-            // no record of their own, so only the model and the place can name them.
+            // RECORD-LESS TWINS — companion props and engine_level placements have no .save
+            // record of their own, so only the model and the place can name them.
             if (_dirtyPlaceHides || !_everSettled)
             {
                 _dirtyPlaceHides = false;

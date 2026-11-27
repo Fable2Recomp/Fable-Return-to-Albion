@@ -45,9 +45,6 @@ public class Engine_TitleProps
 	/// <summary>A model the index offers for an entity that the title knows is wrong for it.</summary>
 	public virtual bool RejectSubstitute(string entityName, string modelPath) => false;
 
-	/// <summary>A model beyond the exterior/interior pair whose layout children are placed with it.</summary>
-	public virtual bool IsShellParent(string normalisedPath) => false;
-
 	/// <summary>A model file holding several instances of one mesh, re-parsed into each.</summary>
 	public virtual bool IsMultiInstanceModel(string normalisedPath) => false;
 

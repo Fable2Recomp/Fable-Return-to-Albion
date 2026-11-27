@@ -109,4 +109,26 @@ public sealed class VolumetricShaftBudgetTests
 		AssertThat(edgeAtten).IsEqual(0.0f);
 		AssertThat(edgePhase).IsEqual(0.0f);
 	}
+
+	[TestCase]
+	public void ComputeLightCapsuleMask_ExcludesDynamicCharacterCapsulesForFloatingAmbientLightsOnly()
+	{
+		Vector3 lightPos = new(-264.2f, 23.7f, 163.1f);
+		Engine_VolumetricLightShafts.VolumetricCapsule[] capsules =
+		{
+			new(
+				SegA: lightPos + new Vector3(0.0f, -0.8f, 0.0f),
+				Radius: 0.30f,
+				SegB: lightPos + new Vector3(0.0f, 0.9f, 0.0f),
+				Feather: 0.14f),
+		};
+
+		uint physicalMask = Engine_VolumetricLightShafts.ComputeLightCapsuleMask(
+			lightPos, lightRange: 14.8f, capsules, isFloatingAmbient: false);
+		uint floatingMask = Engine_VolumetricLightShafts.ComputeLightCapsuleMask(
+			lightPos, lightRange: 14.8f, capsules, isFloatingAmbient: true);
+
+		AssertThat(physicalMask).IsEqual(1u);
+		AssertThat(floatingMask).IsEqual(0u);
+	}
 }
