@@ -26,8 +26,6 @@ public static class Engine_PropModelIndex
 
     private static Dictionary<string, List<PropModelAsset>>? _byToken;
 
-    private static Dictionary<string, List<PropModelAsset>>? _byCompactKey;
-
     private static List<(string Lower, PropModelAsset Asset)>? _lowerPaths;
 
     private static Dictionary<string, string?>? _lowerPathCache;
@@ -122,7 +120,6 @@ public static class Engine_PropModelIndex
         ++Version;
         _byPathHash = null;
         _byToken = null;
-        _byCompactKey = null;
         _lowerPaths = null;
         _lowerPathCache = null;
     }
@@ -268,24 +265,6 @@ public static class Engine_PropModelIndex
         return ModelToken(name);
     }
 
-    public static IReadOnlyList<PropModelAsset> ByCompactKey(string key)
-    {
-        Build();
-        return _byCompactKey is not null &&
-               _byCompactKey.TryGetValue(key, out List<PropModelAsset>? hits)
-            ? hits
-            : Array.Empty<PropModelAsset>();
-    }
-
-    public static IEnumerable<KeyValuePair<string, List<PropModelAsset>>> CompactKeys()
-    {
-        Build();
-        return _byCompactKey ?? new Dictionary<string, List<PropModelAsset>>();
-    }
-
-    public static int ArchivePreference(string archivePath) =>
-        ArchiveScore(archivePath, Array.Empty<string>());
-
     public static string EntityKey(string entityName)
     {
         string name = entityName;
@@ -300,16 +279,7 @@ public static class Engine_PropModelIndex
             }
         }
 
-        var text = new System.Text.StringBuilder(name.Length);
-        foreach (char c in name)
-        {
-            if (char.IsLetterOrDigit(c))
-            {
-                text.Append(char.ToLowerInvariant(c));
-            }
-        }
-
-        return text.ToString();
+        return Engine_LevelProps.CompactText(name);
     }
 
     private static readonly string[] EntityKeyPrefixes =
@@ -334,7 +304,7 @@ public static class Engine_PropModelIndex
         }
 
         Add(ModelToken(name));
-        Add(Engine_GmdLayout.CompactKey(name));
+        Add(Engine_LevelProps.CompactText(name));
 
         string token = ModelToken(name);
         if (token is not ("exterior" or "interior"))
@@ -354,9 +324,9 @@ public static class Engine_PropModelIndex
         string folder = parentSlash < 0 ? parent : parent[(parentSlash + 1)..];
 
         Add(ModelToken(folder));
-        Add(Engine_GmdLayout.CompactKey(folder));
+        Add(Engine_LevelProps.CompactText(folder));
         Add(ModelToken(folder) + token);
-        Add(Engine_GmdLayout.CompactKey(folder) + token);
+        Add(Engine_LevelProps.CompactText(folder) + token);
 
         return keys;
     }
@@ -477,8 +447,8 @@ public static class Engine_PropModelIndex
     /// an index that has not been built yet.
     ///
     /// AND THE GUARD USED TO BE PUBLISHED BEFORE THE PAYLOAD. `Build` assigned `_byPathHash`
-    /// first and the other three tables after it, while every reader tests `_byPathHash` and
-    /// then uses `_byToken` or `_byCompactKey` — so a second thread could see the index as
+    /// first and the other tables after it, while every reader tests `_byPathHash` and
+    /// then uses `_byToken` or `_lowerPaths` — so a second thread could see the index as
     /// "already built" and read null out of the tables that had not landed yet. That is the
     /// same shape as the guest's own `comp+0x14`, which is stamped after the payload it is
     /// supposed to describe, and it fails the same way: silently, and only sometimes.
@@ -502,7 +472,6 @@ public static class Engine_PropModelIndex
 
         var index = new Dictionary<uint, List<PropModelAsset>>();
         var tokens = new Dictionary<string, List<PropModelAsset>>();
-        var compact = new Dictionary<string, List<PropModelAsset>>();
         var lowered = new List<(string, PropModelAsset)>();
 
         if (_models is not null)
@@ -528,14 +497,6 @@ public static class Engine_PropModelIndex
 
                 foreach (string key in KeysFor(model.VirtualPath, name))
                 {
-                    if (!compact.TryGetValue(key, out List<PropModelAsset>? keyed))
-                    {
-                        keyed = new List<PropModelAsset>();
-                        compact[key] = keyed;
-                    }
-
-                    keyed.Add(model);
-
                     if (!tokens.TryGetValue(key, out List<PropModelAsset>? named))
                     {
                         named = new List<PropModelAsset>();
@@ -562,11 +523,10 @@ public static class Engine_PropModelIndex
         }
 
         // THE GUARD LAST. `_byPathHash` is what every reader tests to decide the index exists,
-        // so it must be the final store — publishing it first advertises three tables that are
+        // so it must be the final store — publishing it first advertises tables that are
         // still null. The lock makes this correct on its own, but the order is what keeps it
         // correct for any reader that ever looks without taking the lock.
         _byToken = tokens;
-        _byCompactKey = compact;
         _lowerPaths = lowered;
         _byPathHash = index;
     }

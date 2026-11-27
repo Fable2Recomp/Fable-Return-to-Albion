@@ -88,12 +88,12 @@ public static class Engine_StreamingCandidates
             var candidate = new StreamingModelCandidate
             {
                 HintPath = hint,
-                Key = Engine_GmdLayout.CompactKey(display),
+                Key = Engine_LevelProps.CompactText(display),
                 FromGmd = fromGmd,
                 ResolvedPath = Engine_PropModelIndex.ResolveByPath(hint) ?? string.Empty,
             };
 
-            candidate.PathKey = Engine_GmdLayout.CompactKey(
+            candidate.PathKey = Engine_LevelProps.CompactText(
                 candidate.HintPath + " " + candidate.ResolvedPath);
 
             seen[norm] = candidate;

@@ -2029,7 +2029,7 @@ public partial class GameWorld : Node3D
 		// Both halves of the region are built from the level's `.save` map and so is the guest,
 		// so a door is drawn twice — a ghost you cannot interact with standing inside the one
 		// you can. The obvious cure is to delete the static half outright and it is wrong twice
-		// over: the props container also holds foliage, engine_level blocks and GMD children
+		// over: the props container also holds foliage, engine_level blocks and companion parts
 		// that no `.save` record names and the guest never states, and of the guest's 1437 live
 		// entities only 1030 name a model at all, so the rest have no live copy to replace the
 		// static one with. Freeing the whole container emptied the street.
@@ -2679,8 +2679,7 @@ public partial class GameWorld : Node3D
 	/// if you stop after the first.
 	///
 	/// Step one is per placement: <see cref="Refii.Level.Engine_LevelProps.BuildTransform"/>
-	/// puts a prop at <c>(X, Z, Y)</c> and <c>Engine_GmdLayout</c> puts a GMD child at the
-	/// same, which on its own is a MIRROR — determinant -1. Step two is the level root:
+	/// puts a prop at <c>(X, Z, Y)</c>, which on its own is a MIRROR — determinant -1. Step two is the level root:
 	/// <c>Engine_LevelScene.TryBuild</c> gives it <c>Scale = (-1, 1, 1)</c>, a second mirror.
 	/// The two compose to <c>(x, y, z) -> (-x, z, y)</c>, determinant +1 — a proper
 	/// rotation. THE WORLD IS NOT MIRRORED; it just gets there in two moves.
