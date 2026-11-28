@@ -7,7 +7,7 @@ namespace Refii.Ui;
 /// A script passes a Babel TAG, not a sentence — the display string is the host's to look up.
 /// Three steps, in order: the tag as given, the tag with a `TEXT_` prefix (scripts are
 /// inconsistent, and the engine's own text path retries with it), then the literal. The literal
-/// fallback is correct rather than a guard — authored non-tag strings reach the same path — so
+/// fallback uses the host's locale catalog for common authored text, so
 /// a miss is not an error. <see cref="Engine_UiScreen"/> resolves `.fac` text the same way.
 /// </remarks>
 public static class Engine_UiGuiText
@@ -20,7 +20,7 @@ public static class Engine_UiGuiText
 	/// </summary>
 	/// <param name="tag">What the script passed.</param>
 	/// <param name="strings">The loaded Babel database, or null before it is up.</param>
-	/// <param name="localised">True when a lookup actually hit — for reports, never for logic.</param>
+	/// <param name="localised">True when a Babel lookup actually hit — for reports, never for logic.</param>
 	public static string Resolve(
 		string? tag, Refii.Text.Engine_BabelDatabase? strings, out bool localised)
 	{
@@ -32,7 +32,7 @@ public static class Engine_UiGuiText
 
 		if (strings is null)
 		{
-			return Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag);
+			return Refii.Text.Engine_HostText.Get(Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag));
 		}
 
 		if (strings.TryGetString(tag, out string direct))
@@ -48,7 +48,7 @@ public static class Engine_UiGuiText
 			return prefixed;
 		}
 
-		return Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag);
+		return Refii.Text.Engine_HostText.Get(Refii.AndroidRuntime.AndroidMenuWords.ForPhone(tag));
 	}
 
 	/// <summary>The display string, discarding whether it resolved.</summary>
