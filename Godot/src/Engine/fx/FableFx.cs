@@ -110,7 +110,21 @@ public partial class FableFx : Node3D
 		return true;
 	}
 
+	private static uint _nextSeedCounter;
+
 	private readonly Engine_FxSystem _system = new();
+
+	public FableFx()
+	{
+		_system.Seed(
+			System.Threading.Interlocked.Increment(ref _nextSeedCounter),
+			randomizePhase: true,
+			enableColorVariation: true);
+	}
+
+	/// <summary>Overrides this effect node's RNG seed, phase staggering, and subtle colour variation.</summary>
+	public void SetRandomSeed(uint seed, bool randomizePhase = true, bool enableColorVariation = true) =>
+		_system.Seed(seed, randomizePhase, enableColorVariation);
 	private readonly Dictionary<string, VisualBatchMaterial> _materials = new();
 	private readonly Dictionary<string, Engine_FxSystem.MeshInstanceData> _meshData = new();
 	private readonly Dictionary<string, MultiMeshInstance3D> _meshNodes = new();
@@ -1062,11 +1076,8 @@ public partial class FableFx : Node3D
 		}
 
 		EnsureLayerInstances();
-		Transform3D camTransform = sharedCameraTransform ?? camera.GlobalTransform;
-		Transform3D local = CachedGlobalInverse * camTransform;
-		Vector3 cameraPos = local.Origin;
-		Vector3 cameraRight = local.Basis.X.Normalized();
-		Vector3 cameraUp = local.Basis.Y.Normalized();
+		Vector3 worldCamPos = sharedCameraPos ?? sharedCameraTransform?.Origin ?? camera.GlobalPosition;
+		Vector3 cameraPos = CachedGlobalInverse * worldCamPos;
 
 		// Facing is the shader's: `fx_billboard.gdshaderinc` expands each camera-facing quad from
 		// its centre along the axes of the view it is drawn through, so a turn does not rebuild
@@ -1110,6 +1121,19 @@ public partial class FableFx : Node3D
 			return;
 		}
 
+		if (!_emitMainActive && !_emitAddActive && !_emitDispActive && _meshData.Count == 0 &&
+			_system.AliveCount() == 0 && !_system.HasDoubleTrailRing)
+		{
+			_emitted = true;
+			_emitPos = cameraPos;
+			_emitAddNull = addMesh is null;
+			_emitGuest = GuestDrawn;
+			_emitRibbonIntensity = liveRibbonIntensity;
+			FrameWork.Lap(4, ref lapAt);
+			FrameWork.Lap(5, ref lapAt);
+			return;
+		}
+
 		_emitted = true;
 		_emitPos = cameraPos;
 		_emitAddNull = addMesh is null;
@@ -1141,7 +1165,7 @@ public partial class FableFx : Node3D
 			}
 		}
 		_system.EmitGeometry(
-			_mesh, _lookupMaterial, cameraPos, cameraRight, cameraUp, _meshData, _dispMesh, GuestDrawn ? null : addMesh, !GuestDrawn, groundConform);
+			_mesh, _lookupMaterial, cameraPos, Vector3.Right, Vector3.Up, _meshData, _dispMesh, GuestDrawn ? null : addMesh, !GuestDrawn, groundConform);
 		lapAt = System.Diagnostics.Stopwatch.GetTimestamp();
 		_emitMainActive = !GuestDrawn && _mesh.GetSurfaceCount() > 0;
 		_emitDispActive = _dispMesh is not null && _dispMesh.GetSurfaceCount() > 0;
