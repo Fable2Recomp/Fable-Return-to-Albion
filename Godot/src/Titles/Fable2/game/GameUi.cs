@@ -2361,10 +2361,9 @@ public partial class GameUi : Node, IGameTitleUi
 			CursorTemplate = book?.Art("MenuHighlight"),
 			CursorPose = cursorPose,
 
-			// The end-slot fades this presentation's populate stated; ScreenId is the template
-			// fallback for a list with no stated menu — see Engine_FrontEndMenuView.FadesTopEnd.
+			// Preserve the guest's fades except where the host's expanded options need footer space.
 			ScreenId = screenId,
-			StatedEndFades = () => StatedMenuEndFades(address),
+			StatedEndFades = () => Fable2UiTemplates.MenuEndFades(screenId, StatedMenuEndFades(address)),
 
 			// The star and pip states, read out of THIS screen's document — every screen
 			// authors its own button pool, so the slides differ per file.

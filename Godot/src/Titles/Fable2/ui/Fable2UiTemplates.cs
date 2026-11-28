@@ -14,6 +14,16 @@ using static Refii.Ui.Engine_UiTemplates;
 /// </summary>
 public static class Fable2UiTemplates
 {
+	/// <summary>
+	/// Resolves the guest's menu fades for the host's layout. Options can expand to an arbitrary
+	/// number of mod rows, so its bottom slot must leave room for the book's Back button.
+	/// </summary>
+	/// <param name="screenId">The screen whose menu is being drawn.</param>
+	/// <param name="stated">The guest's fades, or null before its population has arrived.</param>
+	/// <returns>The fades to apply, or null to keep the screen template's fallback.</returns>
+	internal static (bool Top, bool Bottom)? MenuEndFades(uint screenId, (bool Top, bool Bottom)? stated) =>
+		screenId == 18 ? (stated?.Top ?? true, true) : stated;
+
 	/// <summary>The game's records, as the shell composes them: the population tables, then the file.</summary>
 	public static void Apply(Engine_UiTemplateSet set)
 	{
