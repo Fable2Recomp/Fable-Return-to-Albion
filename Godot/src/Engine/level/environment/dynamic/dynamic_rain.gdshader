@@ -14,7 +14,7 @@ void vertex() {
 	float bokeh;
 	float view_depth;
 	POSITION = precip_place(true, UV2.x, UV, PROJECTION_MATRIX, VIEW_MATRIX, INV_VIEW_MATRIX,
-		CAMERA_POSITION_WORLD, VIEWPORT_SIZE, TIME, REFII_SECOND_VIEW, col, bokeh, view_depth);
+		CAMERA_POSITION_WORLD, VIEWPORT_SIZE, motion_time, REFII_SECOND_VIEW, col, bokeh, view_depth);
 	v_depth = view_depth;
 	v_col = col;
 	v_uv = UV;

@@ -289,7 +289,7 @@ public partial class GameSession : Node
 			{
 				bool guestFrame = Refii.Core.Engine_GuestFrame.Changed;
 				Refii.Fx.Engine_ModernDecals.Ensure(this).Pump();
-				Refii.Level.Engine_ModernMist.Ensure(this).Pump();
+				Refii.Level.Engine_ModernMist.Ensure(this).Pump(Refii.Core.Engine_DrawAdvance.Seconds(delta));
 				Refii.Lighting.Engine_LightZones.Pump();
 				if (guestFrame)
 				{

@@ -37,6 +37,7 @@ internal static class PrecipitationNames
     public static readonly StringName box = "box";
     public static readonly StringName box_far = "box_far";
     public static readonly StringName depth_fade = "depth_fade";
+    public static readonly StringName fall_offset = "fall_offset";
     public static readonly StringName fall_speed = "fall_speed";
     public static readonly StringName fog_tint = "fog_tint";
     public static readonly StringName lightning_flash = "lightning_flash";
@@ -83,11 +84,11 @@ public partial class Engine_DynamicPrecipitation : Node3D
     private int _snowCount = -1;
     private float _brightness = -1f;
     private Vector3 _wind;
-    private double _windX;
-    private double _windZ;
-    private double _snowWindX;
-    private double _snowWindZ;
-    private double _motionTime;
+    private DynamicPrecipitationMotionState _motion;
+    private float _lastLightning = float.NaN;
+    private bool _rainMotionDirty = true;
+    private bool _snowMotionDirty = true;
+    private bool _visible;
     private DynamicPrecipitationLook _look = DynamicPrecipitationLook.Default;
 
     public DynamicPrecipitationLook Look
@@ -270,24 +271,52 @@ public partial class Engine_DynamicPrecipitation : Node3D
         }
     }
 
+    private void PublishLayerMotion(MeshInstance3D? layer, bool isSnow, float lightning)
+    {
+        if (layer?.MaterialOverride is not ShaderMaterial material)
+        {
+            return;
+        }
+
+        material.SetShaderParameter(PrecipitationNames.motion_time, (float)_motion.MotionTime);
+        material.SetShaderParameter(PrecipitationNames.wind_offset,
+            isSnow ? _motion.SnowWindOffset : _motion.RainWindOffset);
+        material.SetShaderParameter(PrecipitationNames.fall_offset,
+            isSnow ? (float)_motion.SnowFallOffset : (float)_motion.RainFallOffset);
+        material.SetShaderParameter(PrecipitationNames.lightning_flash, lightning);
+    }
+
     public void AdvanceMotion(float delta, float lightning)
     {
-        if (!float.IsFinite(delta) || delta < 0f) return;
-        _windX += _wind.X * (double)delta;
-        _windZ += _wind.Z * (double)delta;
-        _motionTime += delta;
-        double gust = 1.0 + 0.35 * Math.Sin(_motionTime * 0.43) + 0.15 * Math.Sin(_motionTime * 1.13);
-        _snowWindX += _wind.X * delta * gust;
-        _snowWindZ += _wind.Z * delta * gust;
-        for (int l = 0; l < 2; l++)
+        float clampedLightning = float.IsFinite(lightning) ? Math.Clamp(lightning, 0f, 2f) : 0f;
+        bool moved = _motion.Advance(
+            delta,
+            _wind,
+            MathF.Max(_look.RainSpeed, 0.1f),
+            MathF.Max(_look.SnowSpeed, 0.05f));
+        bool lightningChanged = float.IsNaN(_lastLightning) || clampedLightning != _lastLightning;
+        if (!moved && !lightningChanged && !_rainMotionDirty && !_snowMotionDirty)
         {
-            MeshInstance3D? layer = l == 0 ? _rain : _snow;
-            if (layer?.MaterialOverride is not ShaderMaterial material) continue;
-            material.SetShaderParameter(PrecipitationNames.motion_time, (float)_motionTime);
-            material.SetShaderParameter(PrecipitationNames.wind_offset, layer == _snow
-                ? new Vector2((float)_snowWindX, (float)_snowWindZ)
-                : new Vector2((float)_windX, (float)_windZ));
-            material.SetShaderParameter(PrecipitationNames.lightning_flash, float.IsFinite(lightning) ? Math.Clamp(lightning, 0f, 2f) : 0f);
+            return;
+        }
+
+        _lastLightning = clampedLightning;
+        if (moved || lightningChanged)
+        {
+            _rainMotionDirty = true;
+            _snowMotionDirty = true;
+        }
+
+        if (_rainCount > 0 && _rainMotionDirty)
+        {
+            PublishLayerMotion(_rain, false, clampedLightning);
+            _rainMotionDirty = false;
+        }
+
+        if (_snowCount > 0 && _snowMotionDirty)
+        {
+            PublishLayerMotion(_snow, true, clampedLightning);
+            _snowMotionDirty = false;
         }
     }
 
@@ -301,6 +330,11 @@ public partial class Engine_DynamicPrecipitation : Node3D
             _rainCount = rainCount;
             rainMaterial.SetShaderParameter(CountName, rainCount);
             _rain.Visible = rainCount > 0;
+            if (rainCount > 0 && _rainMotionDirty)
+            {
+                PublishLayerMotion(_rain, false, float.IsNaN(_lastLightning) ? 0f : _lastLightning);
+                _rainMotionDirty = false;
+            }
         }
 
         if (snowCount != _snowCount && _snow?.MaterialOverride is ShaderMaterial snowMaterial)
@@ -308,6 +342,11 @@ public partial class Engine_DynamicPrecipitation : Node3D
             _snowCount = snowCount;
             snowMaterial.SetShaderParameter(CountName, snowCount);
             _snow.Visible = snowCount > 0;
+            if (snowCount > 0 && _snowMotionDirty)
+            {
+                PublishLayerMotion(_snow, true, float.IsNaN(_lastLightning) ? 0f : _lastLightning);
+                _snowMotionDirty = false;
+            }
         }
 
         if (windDir.LengthSquared() < 1e-6f)
@@ -323,24 +362,33 @@ public partial class Engine_DynamicPrecipitation : Node3D
         _wind = wind;
         _brightness = brightness;
 
-        foreach (MeshInstance3D? layer in new[] { _rain, _snow })
+        if (windChanged || brightnessChanged)
         {
-            if (layer?.MaterialOverride is not ShaderMaterial material)
+            for (int l = 0; l < 2; l++)
             {
-                continue;
-            }
+                MeshInstance3D? layer = l == 0 ? _rain : _snow;
+                if (layer?.MaterialOverride is not ShaderMaterial material)
+                {
+                    continue;
+                }
 
-            if (windChanged)
-            {
-                material.SetShaderParameter(WindName, wind);
-            }
+                if (windChanged)
+                {
+                    material.SetShaderParameter(WindName, wind);
+                }
 
-            if (brightnessChanged)
-            {
-                material.SetShaderParameter(BrightnessName, brightness);
+                if (brightnessChanged)
+                {
+                    material.SetShaderParameter(BrightnessName, brightness);
+                }
             }
         }
 
-        Visible = rainCount > 0 || snowCount > 0;
+        bool anyVisible = rainCount > 0 || snowCount > 0;
+        if (_visible != anyVisible)
+        {
+            _visible = anyVisible;
+            Visible = anyVisible;
+        }
     }
 }

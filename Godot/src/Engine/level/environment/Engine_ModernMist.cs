@@ -24,6 +24,7 @@ public partial class Engine_ModernMist : Node3D
     private static readonly StringName ExtinctionName = "extinction";
     private static readonly StringName RemapName = "remap";
     private static readonly StringName MotionName = "motion";
+    private static readonly StringName NoisePhaseName = "noise_phase";
     private static readonly StringName FlattenName = "flatten";
 
     private sealed class DrawnMist
@@ -39,6 +40,8 @@ public partial class Engine_ModernMist : Node3D
         public Vector4 Remap;
         public Vector3 Motion;
         public float Flatten;
+        public double NoisePhase;
+        public float PublishedNoisePhase = float.NaN;
     }
 
     private readonly float[] _raw = new float[MaxVolumes * Refii.Host.HostBridge.ClassicMistStride];
@@ -64,7 +67,6 @@ public partial class Engine_ModernMist : Node3D
             return 0;
         }
 
-        float timeSec = Time.GetTicksMsec() * 0.001f;
         int limit = System.Math.Min(Drawn, _drawn.Count);
         int outCount = 0;
         for (int i = 0; i < limit && outCount < dst.Length; i++)
@@ -78,11 +80,12 @@ public partial class Engine_ModernMist : Node3D
             Vector3 half = d.Size * 0.5f;
             Vector3 min = d.Position - half;
             Vector3 max = d.Position + half;
+            float phase = (float)d.NoisePhase;
             var scaleOffset = new Vector4(
                 d.Remap.X * d.Motion.X,
                 d.Remap.Y * d.Motion.Y,
-                (d.Remap.Z * d.Motion.X) + (timeSec * d.Motion.Z),
-                (d.Remap.W * d.Motion.Y) + (timeSec * d.Motion.Z));
+                (d.Remap.Z * d.Motion.X) + phase,
+                (d.Remap.W * d.Motion.Y) + phase);
 
             dst[outCount++] = new Refii.Lighting.Engine_VolumetricLightShafts.MistVolumeSnapshot(
                 Min: min,
@@ -125,75 +128,101 @@ public partial class Engine_ModernMist : Node3D
         return mist;
     }
 
-    /// <summary>Follows the guest's mist objects. Main thread, once a frame.</summary>
-    public void Pump()
+    /// <summary>Follows the guest's mist objects and advances host noise phases. Main thread, once a frame.</summary>
+    public void Pump(double worldDelta = 0.0)
     {
-        if (_pumpedOnce && !Refii.Core.Engine_GuestFrame.Changed)
+        if (!_pumpedOnce || Refii.Core.Engine_GuestFrame.Changed)
+        {
+            _pumpedOnce = true;
+
+            Engine_GuestAtmosphere.Read();
+            int count = System.Math.Min((int)Refii.Host.HostBridge.GetClassicMists(_raw), MaxVolumes);
+            _shader ??= GD.Load<Shader>(ShaderPath);
+            float strength = Engine_GuestAtmosphere.MistStrength;
+            int stride = Refii.Host.HostBridge.ClassicMistStride;
+            for (int i = 0; i < count; i++)
+            {
+                Refii.Models.Engine_ClassicMist.Read(_raw, i * stride, _volume);
+                if (i >= _drawn.Count)
+                {
+                    var material = new ShaderMaterial { Shader = _shader };
+                    var node = new FogVolume
+                    {
+                        Name = $"LiveMist{i}",
+                        Shape = RenderingServer.FogVolumeShape.Box,
+                        Material = material,
+                        TopLevel = true,
+                    };
+                    AddChild(node);
+                    _drawn.Add(new DrawnMist { Node = node, Material = material });
+                }
+                Place(_drawn[i], _volume, strength);
+            }
+            for (int i = count; i < _drawn.Count; i++)
+            {
+                if (!_drawn[i].Applied || _drawn[i].Visible)
+                {
+                    _drawn[i].Node.Visible = false;
+                    _drawn[i].Visible = false;
+                    _drawn[i].Applied = true;
+                }
+            }
+
+            if (count != Drawn)
+            {
+                Drawn = count;
+                // The level's baked mist stands aside while the guest states its own set.
+                if (Engine_LevelScene.BakedMist is { } baked && GodotObject.IsInstanceValid(baked))
+                {
+                    baked.Visible = count == 0;
+                }
+                if (count != 0 && Engine_SkyEnvironmentNode.Current?.Environment is { } environment)
+                {
+                    bool worldVolumetric = Refii.Lighting.Engine_LightingFrame.ModernModel &&
+                                           Refii.Lighting.Engine_LightingFrame.VolumetricFogEnabled;
+                    environment.VolumetricFogEnabled = true;
+                    if (!worldVolumetric)
+                    {
+                        // The volumes are the only fog when world volumetric fog is off; global density stays at zero.
+                        environment.VolumetricFogDensity = 0f;
+                    }
+                }
+                else if (count == 0 && Engine_SkyEnvironmentNode.Current?.Environment is { } envOff)
+                {
+                    bool worldVolumetric = Refii.Lighting.Engine_LightingFrame.ModernModel &&
+                                           Refii.Lighting.Engine_LightingFrame.VolumetricFogEnabled;
+                    if (!worldVolumetric)
+                    {
+                        envOff.VolumetricFogEnabled = false;
+                    }
+                }
+            }
+        }
+
+        if (Drawn <= 0)
         {
             return;
         }
-        _pumpedOnce = true;
 
-        Engine_GuestAtmosphere.Read();
-        int count = System.Math.Min((int)Refii.Host.HostBridge.GetClassicMists(_raw), MaxVolumes);
-        _shader ??= GD.Load<Shader>(ShaderPath);
-        float strength = Engine_GuestAtmosphere.MistStrength;
-        int stride = Refii.Host.HostBridge.ClassicMistStride;
-        for (int i = 0; i < count; i++)
+        double dt = Engine_PhaseIntegrator.SanitizeDelta(worldDelta);
+        for (int i = 0, limit = System.Math.Min(Drawn, _drawn.Count); i < limit; i++)
         {
-            Refii.Models.Engine_ClassicMist.Read(_raw, i * stride, _volume);
-            if (i >= _drawn.Count)
+            DrawnMist d = _drawn[i];
+            if (!d.Visible)
             {
-                var material = new ShaderMaterial { Shader = _shader };
-                var node = new FogVolume
-                {
-                    Name = $"LiveMist{i}",
-                    Shape = RenderingServer.FogVolumeShape.Box,
-                    Material = material,
-                    TopLevel = true,
-                };
-                AddChild(node);
-                _drawn.Add(new DrawnMist { Node = node, Material = material });
+                continue;
             }
-            Place(_drawn[i], _volume, strength);
-        }
-        for (int i = count; i < _drawn.Count; i++)
-        {
-            if (!_drawn[i].Applied || _drawn[i].Visible)
-            {
-                _drawn[i].Node.Visible = false;
-                _drawn[i].Visible = false;
-                _drawn[i].Applied = true;
-            }
-        }
 
-        if (count != Drawn)
-        {
-            Drawn = count;
-            // The level's baked mist stands aside while the guest states its own set.
-            if (Engine_LevelScene.BakedMist is { } baked && GodotObject.IsInstanceValid(baked))
+            if (dt > 0.0 && d.Motion.Z != 0f)
             {
-                baked.Visible = count == 0;
+                d.NoisePhase = Engine_PhaseIntegrator.AdvanceLinear(d.NoisePhase, d.Motion.Z, dt);
             }
-            if (count != 0 && Engine_SkyEnvironmentNode.Current?.Environment is { } environment)
+
+            float phaseF = (float)d.NoisePhase;
+            if (float.IsNaN(d.PublishedNoisePhase) || phaseF != d.PublishedNoisePhase)
             {
-                bool worldVolumetric = Refii.Lighting.Engine_LightingFrame.ModernModel &&
-                                       Refii.Lighting.Engine_LightingFrame.VolumetricFogEnabled;
-                environment.VolumetricFogEnabled = true;
-                if (!worldVolumetric)
-                {
-                    // The volumes are the only fog when world volumetric fog is off; global density stays at zero.
-                    environment.VolumetricFogDensity = 0f;
-                }
-            }
-            else if (count == 0 && Engine_SkyEnvironmentNode.Current?.Environment is { } envOff)
-            {
-                bool worldVolumetric = Refii.Lighting.Engine_LightingFrame.ModernModel &&
-                                       Refii.Lighting.Engine_LightingFrame.VolumetricFogEnabled;
-                if (!worldVolumetric)
-                {
-                    envOff.VolumetricFogEnabled = false;
-                }
+                d.PublishedNoisePhase = phaseF;
+                d.Material.SetShaderParameter(NoisePhaseName, phaseF);
             }
         }
     }

@@ -5,6 +5,10 @@ uniform vec4 wind_vec;
 uniform vec4 rain_p;
 uniform vec4 snow_p;
 uniform vec4 area;
+// Host-integrated phases: (rain_fall [0,1), snow_fall [0,1), snow_drift_x [0,1), snow_drift_z [0,1))
+uniform vec4 weather_phase = vec4(0.0);
+// Host-integrated world clock for snow sway, wrapped at exact common period 20*PI.
+uniform float weather_time = 0.0;
 
 // World to the dry volume's unit box (Engine_WeatherShelter): nothing falls inside it.
 uniform mat4 shelter_box = mat4(1.0);
@@ -38,7 +42,6 @@ void vertex() {
 	vec3 cam_up = normalize(inv_model * INV_VIEW_MATRIX[1].xyz);
 	float tan_half_x = 1.0 / PROJECTION_MATRIX[0][0];
 
-	float t = TIME;
 	float seed = (pid * (is_rain ? 1.6180339 : 2.2360679)) + (is_rain ? 0.0 : 71.0);
 	float h1 = wx_hash(seed + 1.3);
 	float h2 = wx_hash(seed + 7.7);
@@ -54,7 +57,7 @@ void vertex() {
 		float H = area.y;
 		float speed = max(rain_p.z, 1.0);
 		vec3 fall = vec3(wind_vec.x * 0.14, -speed, wind_vec.z * 0.14);
-		float yfrac = 1.0 - fract(h2 + (t * speed / H));
+		float yfrac = 1.0 - fract(h2 + weather_phase.x);
 		center.x = eye.x + ((h1 * 2.0) - 1.0) * R;
 		center.z = eye.z + ((h3 * 2.0) - 1.0) * R;
 		center.y = eye.y - (H * 0.5) + (yfrac * H);
@@ -71,15 +74,12 @@ void vertex() {
 	} else {
 		float R = area.z;
 		float H = area.w;
-		float speed = max(snow_p.z, 0.15);
-		float yfrac = 1.0 - fract(h2 + (t * speed / H));
-		float drift_x = wind_vec.x * t * 0.35 / max(2.0 * R, 1.0);
-		float drift_z = wind_vec.z * t * 0.35 / max(2.0 * R, 1.0);
-		center.x = eye.x + ((fract(h1 + drift_x) * 2.0) - 1.0) * R;
-		center.z = eye.z + ((fract(h3 + drift_z) * 2.0) - 1.0) * R;
+		float yfrac = 1.0 - fract(h2 + weather_phase.y);
+		center.x = eye.x + ((fract(h1 + weather_phase.z) * 2.0) - 1.0) * R;
+		center.z = eye.z + ((fract(h3 + weather_phase.w) * 2.0) - 1.0) * R;
 		center.y = eye.y - (H * 0.5) + (yfrac * H);
-		center.x += sin((t * 0.9) + (h4 * 6.2831)) * 0.45 * snow_p.w;
-		center.z += cos((t * 0.7) + (h4 * 12.566)) * 0.35 * snow_p.w;
+		center.x += sin((weather_time * 0.9) + (h4 * 6.2831)) * 0.45 * snow_p.w;
+		center.z += cos((weather_time * 0.7) + (h4 * 12.566)) * 0.35 * snow_p.w;
 
 		float s = wx_hash(seed + 5.3) * clamp(snow_p.y, 0.0, 1.0) * 0.109375 *
 		          2.0 * tan_half_x;
