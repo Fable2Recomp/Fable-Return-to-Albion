@@ -1,7 +1,7 @@
 key,value
 SKATE_MOD_NAME,Skateboard
-SKATE_MOD_DESCRIPTION,"Parcourez Albion en skateboard : K pour monter ou descendre, Espace pour sauter, clic gauche pour une Fioriture, clic droit pour une Saisie, et enchaînez les combos."
-SKATE_INPUT_TOGGLE,Activer ou désactiver le skateboard
+SKATE_MOD_DESCRIPTION,"Parcourez Albion en skateboard : K pour monter ou descendre, Espace pour sauter, clic gauche pour une Fioriture, clic droit pour une Saisie, et enchaînez les figures."
+SKATE_INPUT_TOGGLE,Monter sur le skateboard ou en descendre
 SKATE_INPUT_OLLIE,Saut
 SKATE_INPUT_FLIP,Fioriture
 SKATE_INPUT_GRAB,Saisie
@@ -10,8 +10,8 @@ SKATE_TOUCH_TOGGLE,Skate
 SKATE_TOUCH_HOP,Saut
 SKATE_TOUCH_FLOURISH,Fioriture
 SKATE_TOUCH_GRAB,Saisie
-SKATE_TOUCH_WHEELIE,Wheelie
-SKATE_TOUCH_GRIND,Grind
+SKATE_TOUCH_WHEELIE,Cabrer
+SKATE_TOUCH_GRIND,Glisser
 SKATE_TRICK_FLOURISH,Fioriture
 SKATE_TRICK_BACK_FLOURISH,Fioriture arrière
 SKATE_TRICK_CHEEKY_SHOVE,Poussée effrontée
@@ -20,10 +20,10 @@ SKATE_TRICK_PIE_GRAB,Saisie de tarte
 SKATE_TRICK_HEROS_GRIP,Prise du héros
 SKATE_TRICK_BALVERINES_TAIL,Queue de Balverine
 SKATE_TRICK_GARGOYLES_NOSE,Nez de gargouille
-SKATE_TRICK_WHEELIE,Wheelie du Hobbe
+SKATE_TRICK_WHEELIE,Cabrage du Hobbe
 SKATE_TRICK_RAIL_RIDER,Glisse-rampe
-SKATE_TRICK_GUILD_GRINDER,Grind de la Guilde
-SKATE_GUILD_GRINDER_CALLOUT,Grind de la Guilde !
+SKATE_TRICK_GUILD_GRINDER,Glissade de la Guilde
+SKATE_GUILD_GRINDER_CALLOUT,Glissade de la Guilde !
 SKATE_CRASH,Chute !
 SKATE_CLOSE_CALL,De justesse
 SKATE_CLOSE_CALL_POINTS,De justesse  +%1
