@@ -67,8 +67,9 @@ public class ModUiDispatchTests
 
         // Every field the game states is one the validator knows, and none is one that draws nothing.
         AssertThat(issues.Count(i => i.Message.Contains("is not a field here", StringComparison.Ordinal) ||
-                i.Message.Contains("draws nothing", StringComparison.Ordinal)))
-            .OverrideFailureMessage("the game's file states fields the validator rejects:\n" + Lines(issues)).IsEqual(0);
+                i.Message.Contains("draws nothing", StringComparison.Ordinal) ||
+                i.Message.Contains("is not a condition the game states", StringComparison.Ordinal)))
+            .OverrideFailureMessage("the game's file states fields or conditions the validator rejects:\n" + Lines(issues)).IsEqual(0);
     }
 
     [TestCase]
