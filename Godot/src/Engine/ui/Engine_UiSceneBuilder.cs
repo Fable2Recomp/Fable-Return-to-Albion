@@ -1180,24 +1180,34 @@ public sealed class Engine_UiSceneBuilder
 		return span == 0f ? (min + half, 0f) : (min, span);
 	}
 
-	private Transform3D BuildTransform(UiNode n)
+	/// <summary>Builds an element's local transform, optionally resolving slide overrides before
+	/// applying the same pivot and handedness conversion as the authored scene.</summary>
+	internal static Transform3D BuildTransform(UiNode n, System.Func<string, float, float>? resolve = null)
 	{
+		float Value(string attribute, float parsed) => resolve?.Invoke(attribute, parsed) ?? parsed;
+
 		var basis = Basis.Identity;
-		if (n.RotationX != 0f || n.RotationY != 0f || n.RotationZ != 0f)
+		float sx = Value("rotation.x", n.RotationX);
+		float sy = Value("rotation.y", n.RotationY);
+		float sz = Value("rotation.z", n.RotationZ);
+		if (sx != 0f || sy != 0f || sz != 0f)
 		{
-			float sx = n.RotationX, sy = n.RotationY, sz = n.RotationZ;
 			// Handedness, half one: conjugating a rotation by diag(1,1,-1) negates the
 			// angles about X and Y and leaves the one about Z alone.
 			basis = Basis.FromEuler(new Vector3(-sx, -sy, sz));
 		}
-		basis = basis.Scaled(new Vector3(n.ScaleX, n.ScaleY, n.ScaleZ));
+		basis = basis.Scaled(new Vector3(
+			Value("scale.x", n.ScaleX), Value("scale.y", n.ScaleY), Value("scale.z", n.ScaleZ)));
 
 		// The engine's local transform is ((p - pivot) * scale) * R + position — sub_8229E4B8
 		// seeds the matrix translation with -(scale * pivot) BEFORE concatenating the rotation,
 		// then adds position. In column-vector form T(position) * R * S * T(-pivot), so the
 		// origin carries an extra -(R*S)*pivot term; dropping it displaces by pivot*scale.
-		var pivot = new Vector3(n.PivotX, n.PivotY, ToGodotZ(n.PivotZ));
-		var origin = new Vector3(n.PositionX, n.PositionY, ToGodotZ(n.PositionZ)) - basis * pivot;
+		var pivot = new Vector3(
+			Value("pivot.x", n.PivotX), Value("pivot.y", n.PivotY), ToGodotZ(Value("pivot.z", n.PivotZ)));
+		var origin = new Vector3(
+			Value("position.x", n.PositionX), Value("position.y", n.PositionY),
+			ToGodotZ(Value("position.z", n.PositionZ))) - basis * pivot;
 		return new Transform3D(basis, origin);
 	}
 

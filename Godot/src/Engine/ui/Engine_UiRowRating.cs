@@ -22,19 +22,22 @@ public sealed class Engine_UiRowRating
 
 	public const string PipsPathPrefix = "Tab.Pips.Group.pips.pip";
 
-	/// <summary>Active-or-not per descendant of the star strip, indexed by slide then by the
-	/// descendant's position in the subtree walk.</summary>
-	private readonly Dictionary<int, Dictionary<string, bool>> _stars = new();
+	/// <summary>Visibility and placement per descendant of the star strip, indexed by slide then by the
+	/// descendant's relative path in the subtree.</summary>
+	private readonly Dictionary<int, Dictionary<string, ElementState>> _stars = new();
 
 	/// <summary>The same, per pip, for the three pip slides.</summary>
-	private readonly Dictionary<int, Dictionary<string, bool>>[] _pips =
-		new Dictionary<int, Dictionary<string, bool>>[Engine_UiMenuFormatter.PipCount];
+	private readonly Dictionary<int, Dictionary<string, ElementState>>[] _pips =
+		new Dictionary<int, Dictionary<string, ElementState>>[Engine_UiMenuFormatter.PipCount];
+
+	/// <summary>One descendant's resolved visibility and local pose.</summary>
+	private readonly record struct ElementState(bool Active, Transform3D Transform);
 
 	private Engine_UiRowRating()
 	{
 		for (int i = 0; i < _pips.Length; ++i)
 		{
-			_pips[i] = new Dictionary<int, Dictionary<string, bool>>();
+			_pips[i] = new Dictionary<int, Dictionary<string, ElementState>>();
 		}
 	}
 
@@ -94,7 +97,7 @@ public sealed class Engine_UiRowRating
 	public void Apply(Node3D frame, Engine_UiMenuFormatter.RowRating rating)
 	{
 		if (Engine_UiTheme.FindByPath(frame, StarsPath.Replace('.', '/')) is { } stars &&
-			_stars.TryGetValue(rating.StarSlide, out Dictionary<string, bool>? starState))
+			_stars.TryGetValue(rating.StarSlide, out Dictionary<string, ElementState>? starState))
 		{
 			Light(stars, starState);
 		}
@@ -103,7 +106,7 @@ public sealed class Engine_UiRowRating
 		{
 			if (Engine_UiTheme.FindByPath(
 					frame, $"{PipsPathPrefix}{i + 1}".Replace('.', '/')) is { } pip &&
-				_pips[i].TryGetValue(rating.PipSlides[i], out Dictionary<string, bool>? pipState))
+				_pips[i].TryGetValue(rating.PipSlides[i], out Dictionary<string, ElementState>? pipState))
 			{
 				Light(pip, pipState);
 			}
@@ -111,13 +114,13 @@ public sealed class Engine_UiRowRating
 	}
 
 	/// <summary>
-	/// Which descendants of one element are active when it sits on a given slide.
+	/// The visibility and local transforms of descendants on a given slide.
 	///
 	/// Slide 0 is the master, which `ComputeSlideState` already folds in as the baseline, so the
 	/// guest's numbering counts the rest from one — the same convention
 	/// <see cref="Engine_UiElementResolve"/> follows.
 	/// </summary>
-	private static System.Collections.Generic.Dictionary<string, bool> StateFor(
+	private static Dictionary<string, ElementState> StateFor(
 		Engine_UiScreen screen, UiNode root, int slide)
 	{
 		BgfSlideState state = screen.Document.ComputeSlideState((owner, owned) =>
@@ -143,7 +146,7 @@ public sealed class Engine_UiRowRating
 		// — the builder drops childless `Material`/`Texture` elements and the pass-throughs above
 		// them, drops `Behavior` elements, and the menu view deletes the row's authored `Text`.
 		// A path key cannot drift; a node the builder never emitted is never looked up.
-		var walk = new System.Collections.Generic.Dictionary<string, bool>(
+		var walk = new Dictionary<string, ElementState>(
 			System.StringComparer.Ordinal);
 		Collect(root, string.Empty);
 		return walk;
@@ -161,8 +164,10 @@ public sealed class Engine_UiRowRating
 				// scene walk below resolves the same collision the same way.
 				if (!walk.ContainsKey(path))
 				{
-					walk[path] = child.Ordinal >= 0 && child.Ordinal < state.Active.Length &&
-						state.Active[child.Ordinal];
+					walk[path] = new ElementState(
+						child.Ordinal >= 0 && child.Ordinal < state.Active.Length && state.Active[child.Ordinal],
+						Engine_UiSceneBuilder.BuildTransform(child,
+							(attribute, parsed) => screen.AttributeUnder(state, child.Ordinal, attribute, parsed)));
 				}
 
 				Collect(child, path);
@@ -170,9 +175,9 @@ public sealed class Engine_UiRowRating
 		}
 	}
 
-	/// <summary>Writes an active set onto a cloned subtree, joined by path. See
+	/// <summary>Writes a slide's visibility and placement onto a cloned subtree, joined by path. See
 	/// <see cref="StateFor"/> for why it is not joined by walk order.</summary>
-	private static void Light(Node3D root, System.Collections.Generic.Dictionary<string, bool> state)
+	private static void Light(Node3D root, Dictionary<string, ElementState> state)
 	{
 		Walk(root, string.Empty);
 
@@ -191,9 +196,10 @@ public sealed class Engine_UiRowRating
 
 				// A node the document does not account for is left alone, not hidden — the
 				// clone can carry nodes this slide's state says nothing about.
-				if (state.TryGetValue(path, out bool active))
+				if (state.TryGetValue(path, out ElementState element))
 				{
-					spatial.Visible = active;
+					spatial.Visible = element.Active;
+					spatial.Transform = element.Transform;
 				}
 
 				Walk(spatial, path);
