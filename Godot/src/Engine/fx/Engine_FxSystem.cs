@@ -74,6 +74,8 @@ public sealed partial class Engine_FxSystem
         public float Spin;
         public float SpinNext;
         public float Seed;
+        public float HueShift;
+        public float IntensityScale = 1f;
         public float FlickX = 1f;
         public float FlickY = 1f;
         public float[] TexFrame = new float[4];
@@ -323,9 +325,67 @@ public sealed partial class Engine_FxSystem
     private readonly List<InstanceState> _instances = new();
     private readonly List<(Vector3 Pos, Vector2 Uv, Color Col, Vector2 Off, Vector4 Motion)> _scratch = new();
     private uint _rng = 0x1234567u;
+    private bool _randomizePhase;
+    private bool _colorVariation;
+    private float _maxHueDegrees = Refii.Core.Engine_ColorVariation.DefaultFxMaxHueDegrees;
+    private float _maxNeutralChroma = Refii.Core.Engine_ColorVariation.DefaultFxMaxNeutralChroma;
+    private float _maxIntensityVariation = Refii.Core.Engine_ColorVariation.DefaultFxMaxIntensityVariation;
+    private float _instanceHueBias;
+    private float _instanceIntensityBias;
     private bool _loop = true;
     private bool _emitting = true;
     private float _intensity = 1f;
+
+    /// <summary>Avalanche-mixes a sequential instance id into an uncorrelated non-zero 32-bit LCG seed.</summary>
+    public static uint MixSeed(uint value)
+    {
+        value += 0x9E3779B9u;
+        value ^= value >> 16;
+        value *= 0x85EBCA6Bu;
+        value ^= value >> 13;
+        value *= 0xC2B2AE35u;
+        value ^= value >> 16;
+        return value != 0u ? value : 0x1234567u;
+    }
+
+    /// <summary>
+    /// Seeds this simulation's RNG and optionally staggers continuous spawn/step phases and
+    /// enables subtle per-particle HDR hue and intensity variation. Unseeded systems remain
+    /// deterministic for offline tools and unit tests.
+    /// </summary>
+    public void Seed(uint seed, bool randomizePhase = true, bool enableColorVariation = true)
+    {
+        _rng = MixSeed(seed);
+        _randomizePhase = randomizePhase;
+        _colorVariation = enableColorVariation;
+        _instanceHueBias = enableColorVariation ? Srand2() * 0.35f : 0f;
+        _instanceIntensityBias = enableColorVariation ? Srand2() * 0.35f : 0f;
+        if (randomizePhase)
+        {
+            _baseAccum = Frand() * FrameDt;
+        }
+    }
+
+    /// <summary>Configures subtle per-particle hue shift and intensity variation bounds.</summary>
+    public void SetColorVariation(
+        bool enabled,
+        float maxHueDegrees = Refii.Core.Engine_ColorVariation.DefaultFxMaxHueDegrees,
+        float maxNeutralChroma = Refii.Core.Engine_ColorVariation.DefaultFxMaxNeutralChroma,
+        float maxIntensityVariation = Refii.Core.Engine_ColorVariation.DefaultFxMaxIntensityVariation)
+    {
+        _colorVariation = enabled;
+        _maxHueDegrees = float.IsFinite(maxHueDegrees) ? MathF.Max(0f, maxHueDegrees) : 0f;
+        _maxNeutralChroma = float.IsFinite(maxNeutralChroma) ? MathF.Max(0f, maxNeutralChroma) : 0f;
+        _maxIntensityVariation = float.IsFinite(maxIntensityVariation) ? MathF.Max(0f, maxIntensityVariation) : 0f;
+    }
+
+    /// <summary>
+    /// Returns whether a visual batch should receive subtle per-particle hue/intensity variation
+    /// (glowing/additive and self-illuminated effects, excluding displacement, darken, sub, and
+    /// scene-lit smoke/dust).
+    /// </summary>
+    public static bool IsColorVariationEligible(string blendMode, float selfIllum) =>
+        blendMode is "addone" or "add" || (selfIllum >= 0.85f && blendMode is "mix" or "mixalpha");
 
     /// <summary>
     /// On, because the guest's particle vertex shaders fade every particle by its camera
@@ -1891,6 +1951,10 @@ public sealed partial class Engine_FxSystem
                 }
 
                 if (rt.Visuals.Count == 0) { chain.Add(node); continue; }
+                if (_randomizePhase && !em.UseLife && !rt.Ribbon && !rt.Beam && rt.Mode == 1)
+                {
+                    rt.Accum = MathF.Max(0f, em.InitialNum) + Frand();
+                }
                 Array.Copy(em.Fades, rt.Fade, 4);
                 if (p.MaxVisibilityDistance > 0f)
                 {
@@ -1978,6 +2042,10 @@ public sealed partial class Engine_FxSystem
         HasRibbon = hasRibbon;
         IsWeaponDoubleTrail = isWeaponDoubleTrail;
         BeamEmitterCount = beamCount;
+        if (_randomizePhase && _baseSteps == 0 && _baseAccum == 0f)
+        {
+            _baseAccum = Frand() * FrameDt;
+        }
     }
 
     private readonly float[] _dirScratch = new float[3];
@@ -2146,6 +2214,17 @@ public sealed partial class Engine_FxSystem
         pt.FlickY = 1f;
         for (int j = 0; j < 4; j++) pt.TexFrame[j] = 0f;
         pt.Seed = Frand();
+        if (_colorVariation && !rt.Ribbon && !rt.Beam)
+        {
+            pt.HueShift = Math.Clamp(_instanceHueBias + (Srand2() * 0.65f), -1f, 1f);
+            float intUnit = Math.Clamp(_instanceIntensityBias + (Srand2() * 0.65f), -1f, 1f);
+            pt.IntensityScale = Refii.Core.Engine_ColorVariation.ComputeIntensityScale(intUnit, _maxIntensityVariation);
+        }
+        else
+        {
+            pt.HueShift = 0f;
+            pt.IntensityScale = 1f;
+        }
         VisualRuntime? v0 = rt.Visuals.Count == 0 ? null : rt.Visuals[0];
         if (v0 is null) return;
         if (v0.IsMesh)
@@ -2429,6 +2508,8 @@ public sealed partial class Engine_FxSystem
         pt.Spin = 0f;
         pt.SpinNext = 0f;
         pt.Seed = 0f;
+        pt.HueShift = 0f;
+        pt.IntensityScale = 1f;
         pt.FlickX = 1f;
         pt.FlickY = 1f;
         pt.HistCount = 0;
@@ -2878,7 +2959,8 @@ public sealed partial class Engine_FxSystem
                 continue;
             }
 
-            if (windowOpen)
+            bool canSpawn = windowOpen && (rt.Ribbon || d.UseLife || _intensity > 0f);
+            if (canSpawn)
             {
                 float spread = d.Generic[3].EvalFrame(f) * (rt.Mode != 3 ? inst.AuthoredStep : step);
                 float r = Frand() * spread;
@@ -2904,7 +2986,11 @@ public sealed partial class Engine_FxSystem
             }
             else
             {
-                rt.Accum = 0f;
+                // Keep InitialNum ready when a continuous emitter is merely dark (_intensity <= 0f)
+                // so turning intensity back on spawns immediately without a burst backlog.
+                rt.Accum = windowOpen && !d.UseLife && !rt.Ribbon
+                    ? MathF.Max(0f, d.InitialNum) + (_randomizePhase && rt.Mode == 1 ? Frand() : 0f)
+                    : 0f;
             }
 
             rt.FirstFrame = false;
@@ -3006,7 +3092,7 @@ public sealed partial class Engine_FxSystem
             if (summarize) summary.Store(rt);
         }
 
-        if (_loop && _emitting && inst.Time > 1.5f)
+        if (_loop && _emitting && _intensity > 0f && inst.Time > 1.5f)
         {
             int alive = 0;
             foreach (EmitterRuntime rt in inst.Emitters) alive += rt.Particles.Count;
@@ -3818,6 +3904,16 @@ public sealed partial class Engine_FxSystem
                     col[0] *= _tint[0] * inst.Tint[0];
                     col[1] *= _tint[1] * inst.Tint[1];
                     col[2] *= _tint[2] * inst.Tint[2];
+                    if (_colorVariation && IsColorVariationEligible(va.BlendMode, si))
+                    {
+                        Refii.Core.Engine_ColorVariation.ApplySubtleChromaShift(
+                            col[0], col[1], col[2], pt.HueShift, _maxHueDegrees, _maxNeutralChroma,
+                            out col[0], out col[1], out col[2]);
+                        float intensityScale = pt.IntensityScale;
+                        col[0] *= intensityScale;
+                        col[1] *= intensityScale;
+                        col[2] *= intensityScale;
+                    }
                     if (!fast)
                     {
                         a = vb is not null ? Lerp(va.Alpha, vb.Alpha) : va.Alpha;
@@ -4558,18 +4654,6 @@ public sealed partial class Engine_FxSystem
         Engine_FxGroundConform.GroundContext? groundConform = null)
     {
         if (vis.Texture.Length == 0 || alpha <= 0.003f) return;
-        float c = MathF.Cos(pt.Rot), s = MathF.Sin(pt.Rot);
-        Vector3 right, up;
-        if (vis.Aligned)
-        {
-            right = ToGodot(vis.AxisR);
-            up = ToGodot(vis.AxisU);
-        }
-        else
-        {
-            right = (cameraRight * c) + (cameraUp * s);
-            up = (-cameraRight * s) + (cameraUp * c);
-        }
 
         int cols = Math.Max(1, vis.Cols), rows = Math.Max(1, vis.Rows), frames = cols * rows;
         float u0 = 0f, v0 = 0f, u1 = 1f, v1 = 1f;
@@ -4585,15 +4669,15 @@ public sealed partial class Engine_FxSystem
         var colr = new Color(col[0], col[1], col[2], alpha);
 
         // A camera-facing quad is emitted as its centre plus corner offsets, and the vertex
-        // shader (`fx_billboard.gdshaderinc`) does the facing. The offsets are in the camera's
-        // right/up axes, which the shader receives as instance uniforms in this node's space, so
-        // camera rotation does not change this geometry. Particle roll is folded in here because
-        // it does not depend on the camera.
+        // shader (`fx_billboard.gdshaderinc`) does the facing. Particle roll is folded in here
+        // because it does not depend on the camera.
         //
         // An axis-aligned visual is not camera-facing: its quad is built out here and carries a
         // zero offset.
         if (vis.Aligned)
         {
+            Vector3 right = ToGodot(vis.AxisR);
+            Vector3 up = ToGodot(vis.AxisU);
             if (groundConform is { } gc && MathF.Abs(right.Y) < 0.25f && MathF.Abs(up.Y) < 0.25f)
             {
                 EmitGroundConformingAlignedQuad(sink, centre, right, up, hx, hy, u0, v0, u1, v1, colr, motion, gc);
@@ -4613,11 +4697,23 @@ public sealed partial class Engine_FxSystem
         }
 
         // The same four corners, expressed in the rotated right/up frame: (±hx, ±hy) turned by
-        // the particle's own roll. `c` and `s` are that roll, already computed above.
-        var oA = new Vector2((-hx * c) + (hy * s), (-hx * s) - (hy * c));
-        var oB = new Vector2((hx * c) + (hy * s), (hx * s) - (hy * c));
-        var oC = new Vector2((-hx * c) - (hy * s), (-hx * s) + (hy * c));
-        var oD = new Vector2((hx * c) - (hy * s), (hx * s) + (hy * c));
+        // the particle's own roll.
+        Vector2 oA, oB, oC, oD;
+        if (pt.Rot == 0f)
+        {
+            oA = new Vector2(-hx, -hy);
+            oB = new Vector2(hx, -hy);
+            oC = new Vector2(-hx, hy);
+            oD = new Vector2(hx, hy);
+        }
+        else
+        {
+            float c = MathF.Cos(pt.Rot), s = MathF.Sin(pt.Rot);
+            oA = new Vector2((-hx * c) + (hy * s), (-hx * s) - (hy * c));
+            oB = new Vector2((hx * c) + (hy * s), (hx * s) - (hy * c));
+            oC = new Vector2((-hx * c) - (hy * s), (-hx * s) + (hy * c));
+            oD = new Vector2((hx * c) - (hy * s), (hx * s) + (hy * c));
+        }
         sink.Add((centre, new Vector2(u0, v1), colr, oA, motion));
         sink.Add((centre, new Vector2(u1, v0), colr, oD, motion));
         sink.Add((centre, new Vector2(u1, v1), colr, oB, motion));

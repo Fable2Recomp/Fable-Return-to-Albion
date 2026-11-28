@@ -1,9 +1,12 @@
 namespace Refii.Tests.Modding;
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using GdUnit4;
 using Godot;
+using Refii.Core;
 using Refii.Fx;
 using Refii.Models;
 using static GdUnit4.Assertions;
@@ -587,5 +590,414 @@ public class FxParticleAnimationTests
         AssertThat(place.Resolved).IsTrue();
         fx.Update(1f / 30f, Transform3D.Identity);
         AssertThat(fx.AliveCount()).IsGreater(0);
+    }
+
+    [TestCase]
+    public void ColorVariation_ShiftHueLinear_PreservesHdrScaleAchromaticAndNonNegativity()
+    {
+        // Zero rotation is exact identity (clamping only negative radiance).
+        Color identity = Engine_ColorVariation.ShiftHueLinear(new Color(2.5f, 1.25f, 0.5f, 0.7f), 0f);
+        AssertThat(identity.R).IsEqualApprox(2.5f, 1e-5f);
+        AssertThat(identity.G).IsEqualApprox(1.25f, 1e-5f);
+        AssertThat(identity.B).IsEqualApprox(0.5f, 1e-5f);
+        AssertThat(identity.A).IsEqualApprox(0.7f, 1e-5f);
+
+        // Achromatic colours stay achromatic under Rodrigues rotation around (1,1,1)/sqrt(3).
+        Color whiteShifted = Engine_ColorVariation.ShiftHueLinear(new Color(3f, 3f, 3f, 1f), 25f);
+        AssertThat(whiteShifted.R).IsEqualApprox(3f, 1e-4f);
+        AssertThat(whiteShifted.G).IsEqualApprox(3f, 1e-4f);
+        AssertThat(whiteShifted.B).IsEqualApprox(3f, 1e-4f);
+
+        // Unclamped HDR scaling invariance: ShiftHueLinear(5 * c) == 5 * ShiftHueLinear(c).
+        var baseHdr = new Color(1.0f, 0.81f, 0.25f, 0.9f);
+        Color s1 = Engine_ColorVariation.ShiftHueLinear(baseHdr, 12f);
+        Color s5 = Engine_ColorVariation.ShiftHueLinear(new Color(baseHdr.R * 5f, baseHdr.G * 5f, baseHdr.B * 5f, 0.9f), 12f);
+        AssertThat(s5.R).IsEqualApprox(s1.R * 5f, 1e-4f);
+        AssertThat(s5.G).IsEqualApprox(s1.G * 5f, 1e-4f);
+        AssertThat(s5.B).IsEqualApprox(s1.B * 5f, 1e-4f);
+        AssertThat(s5.R).IsGreater(1.0f);
+
+        // Saturated gold shifts hue cleanly between negative and positive signed samples.
+        Color goldWarm = Engine_ColorVariation.ApplySubtleChromaShift(baseHdr, -1f);
+        Color goldCool = Engine_ColorVariation.ApplySubtleChromaShift(baseHdr, 1f);
+        AssertThat(MathF.Abs(goldWarm.G - goldCool.G)).IsGreater(0.02f);
+        AssertThat(MathF.Abs(goldWarm.R - goldCool.R)).IsGreater(0.01f);
+
+        // Near-achromatic vertex colour receives subtle warm/cool chroma tilt while staying close to 1.0.
+        Color neutralWarm = Engine_ColorVariation.ApplySubtleChromaShift(Colors.White, 1f);
+        Color neutralCool = Engine_ColorVariation.ApplySubtleChromaShift(Colors.White, -1f);
+        AssertThat(neutralWarm.R).IsGreater(neutralWarm.B);
+        AssertThat(neutralCool.B).IsGreater(neutralCool.R);
+        AssertThat(neutralWarm.R).IsBetween(1.0f, 1.1f);
+        AssertThat(neutralWarm.B).IsBetween(0.9f, 1.0f);
+
+        // Intensity variation scales symmetrically around 1.0 and never goes negative.
+        AssertThat(Engine_ColorVariation.ComputeIntensityScale(0f)).IsEqualApprox(1.0f, 1e-6f);
+        AssertThat(Engine_ColorVariation.ComputeIntensityScale(1f, 0.14f)).IsEqualApprox(1.14f, 1e-5f);
+        AssertThat(Engine_ColorVariation.ComputeIntensityScale(-1f, 0.14f)).IsEqualApprox(0.86f, 1e-5f);
+        AssertThat(Engine_ColorVariation.ComputeIntensityScale(-5f, 0.14f)).IsEqualApprox(0.86f, 1e-5f);
+    }
+
+    private static FxBank BuildCircleLikeBank()
+    {
+        var bank = new FxBank { Ok = true };
+
+        // Part 0: White additive sparkles (sphere radius 0.81, InitialNum 0, continuous).
+        var emSparkle = new FxEmitter
+        {
+            TypeId = 0,
+            SubType = 1,
+            HasMotion = true,
+            AttachToRoot = true,
+            UseLife = false,
+            SpawnRadius = 0.81f,
+            MaxActive = -1f,
+            InitialNum = 0f,
+        };
+        emSparkle.Generic[2].DefaultValue = 0.10f;
+        emSparkle.Generic[3].DefaultValue = 0.0333f;
+        emSparkle.Generic[4].DefaultValue = 0.05f;
+        emSparkle.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+
+        var sysSparkle = new FxSystemDef { Mode = 1, ChildCount = 3, LastStartFrames = 30 };
+        sysSparkle.Visuals.Add(new FxVisual
+        {
+            HasTexture = true,
+            Texture = "art/fx/pfx_textures/fxt_sparkle_yellow_01.tex",
+            HasSize = true,
+            SizeX = 0.18f,
+            SizeY = 0.18f,
+            HasColor = true,
+            Color = new[] { 1f, 1f, 1f },
+            ColorSq = new[] { 1f, 1f, 1f },
+            HasAlpha = true,
+            Alpha = 1f,
+            SelfIllum = 1f,
+            SrcBlend = 1,
+            DstBlend = 1,
+        });
+
+        // Part 1: Golden additive glow puffs (disc radius 0.474, InitialNum 1, continuous).
+        var emGlow = new FxEmitter
+        {
+            TypeId = 0,
+            SubType = 2,
+            HasMotion = true,
+            AttachToRoot = true,
+            UseLife = false,
+            SpawnRadius = 0.474f,
+            MaxActive = -1f,
+            InitialNum = 1f,
+        };
+        emGlow.Generic[2].DefaultValue = 0.0667f;
+        emGlow.Generic[3].DefaultValue = 0.3333f;
+        emGlow.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+
+        var sysGlow = new FxSystemDef { Mode = 1, ChildCount = 3, LastStartFrames = 38 };
+        sysGlow.Visuals.Add(new FxVisual
+        {
+            HasTexture = true,
+            Texture = "art/fx/pfx_textures/fxt_pollen_green.tex",
+            HasSize = true,
+            SizeX = 1.0f,
+            SizeY = 0.5f,
+            HasColor = true,
+            Color = new[] { 1f, 0.9f, 0.5f },
+            ColorSq = new[] { 1f, 0.81f, 0.25f },
+            HasAlpha = true,
+            Alpha = 0.2f,
+            SelfIllum = 1f,
+            SrcBlend = 1,
+            DstBlend = 1,
+        });
+
+        // Part 2: Non-emissive mix smoke (SelfIllum 0.2) + displacement (should NOT hue-shift).
+        var emSmoke = new FxEmitter
+        {
+            TypeId = 0,
+            HasMotion = true,
+            AttachToRoot = true,
+            UseLife = false,
+            MaxActive = 8f,
+            InitialNum = 1f,
+        };
+        emSmoke.Generic[2].DefaultValue = 0.2f;
+        emSmoke.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+
+        var sysSmoke = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 20 };
+        sysSmoke.Visuals.Add(new FxVisual
+        {
+            HasTexture = true,
+            Texture = "art/fx/pfx_textures/fxt_smokepuff_long_01.tex",
+            HasSize = true,
+            SizeX = 0.5f,
+            SizeY = 0.5f,
+            HasColor = true,
+            Color = new[] { 1f, 1f, 1f },
+            ColorSq = new[] { 1f, 1f, 1f },
+            HasAlpha = true,
+            Alpha = 0.8f,
+            SelfIllum = 0.2f,
+            SrcBlend = 1,
+            DstBlend = 5,
+        });
+
+        var emLight = new FxEmitter { TypeId = 7, IsLight = true };
+        emLight.LightColour.DefaultValue = new[] { 1f, 0.8f, 0.4f };
+        emLight.LightRange.DefaultValue = 4f;
+        emLight.LightIntensity.DefaultValue = 1f;
+        emLight.Generic[20].DefaultValue = 0.1f;
+        emLight.Generic[21].DefaultValue = 0.25f;
+
+        var eff = new FxEffect { Name = "test_quest_circle", NameHash = FxBank.Fnv1Lower("test_quest_circle"), UpdateFrequency = 0 };
+        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+        eff.Parts.Add(new FxEffectPart(1, 1, 1, 1));
+        eff.Parts.Add(new FxEffectPart(2, 2, 1, 2));
+        eff.Parts.Add(new FxEffectPart(3, 3, 1, -1));
+
+        bank.Emitters.Add(emSparkle);
+        bank.Emitters.Add(emGlow);
+        bank.Emitters.Add(emSmoke);
+        bank.Emitters.Add(emLight);
+        bank.Systems.Add(sysSparkle);
+        bank.Systems.Add(sysGlow);
+        bank.Systems.Add(sysSmoke);
+        bank.Effects.Add(eff);
+        bank.Reindex();
+        return bank;
+    }
+
+    [TestCase]
+    public void SeededSystemsDivergeInSpawnCountsPositionsColorsAndLightFlicker()
+    {
+        FxBank bank = BuildCircleLikeBank();
+
+        // Unseeded systems remain bit-for-bit deterministic for unit tests and offline tools.
+        var detA = new Engine_FxSystem();
+        var detB = new Engine_FxSystem();
+        detA.Build(bank, new[] { new FxPlacement { EffectName = "test_quest_circle" } });
+        detB.Build(bank, new[] { new FxPlacement { EffectName = "test_quest_circle" } });
+        for (int i = 0; i < 40; i++)
+        {
+            detA.Update(1f / 30f, Transform3D.Identity);
+            detB.Update(1f / 30f, Transform3D.Identity);
+        }
+        AssertThat(detA.TotalSpawned).IsEqual(detB.TotalSpawned);
+        AssertThat(detA.ParticlePositions().ToArray()).IsEqual(detB.ParticlePositions().ToArray());
+
+        // Seeded systems diverge in spawn counts, positions, light flicker, and additive HDR colours.
+        var fxA = new Engine_FxSystem();
+        var fxB = new Engine_FxSystem();
+        fxA.Seed(1u);
+        fxB.Seed(2u);
+        fxA.Build(bank, new[] { new FxPlacement { EffectName = "test_quest_circle" } });
+        fxB.Build(bank, new[] { new FxPlacement { EffectName = "test_quest_circle" } });
+        for (int i = 0; i < 90; i++)
+        {
+            fxA.Update(1f / 30f, Transform3D.Identity);
+            fxB.Update(1f / 30f, Transform3D.Identity);
+        }
+
+        AssertThat(fxA.TotalSpawned).IsNotEqual(fxB.TotalSpawned);
+        Vector3[] posA = fxA.ParticlePositions().ToArray();
+        Vector3[] posB = fxB.ParticlePositions().ToArray();
+        AssertThat(posA.Length).IsGreater(0);
+        AssertThat(posA).IsNotEqual(posB);
+        AssertThat(fxA.LightAt(0).Energy).IsNotEqual(fxB.LightAt(0).Energy);
+
+        var meshesA = new Dictionary<string, Engine_FxSystem.MeshInstanceData>();
+        var meshesB = new Dictionary<string, Engine_FxSystem.MeshInstanceData>();
+        fxA.Assemble(new Vector3(0f, 1f, 4f), Vector3.Right, Vector3.Up, meshesA, sceneQuads: true, fast: false);
+        fxB.Assemble(new Vector3(0f, 1f, 4f), Vector3.Right, Vector3.Up, meshesB, sceneQuads: true, fast: false);
+
+        var batchesA = fxA.AssembledBatches().ToList();
+        var glowBatch = batchesA.Single(b => b.Key.Contains("fxt_pollen_green", StringComparison.Ordinal));
+        var distinctGlowColors = glowBatch.Vertices
+            .Select(v => (MathF.Round(v.Col.R, 4), MathF.Round(v.Col.G, 4), MathF.Round(v.Col.B, 4)))
+            .Distinct()
+            .Count();
+        AssertThat(distinctGlowColors).IsGreater(1);
+
+        // Non-emissive mix smoke (SelfIllum 0.2) must NOT receive hue shift or intensity jitter.
+        var smokeBatch = batchesA.Single(b => b.Key.Contains("fxt_smokepuff_long_01", StringComparison.Ordinal));
+        var smokeColors = smokeBatch.Vertices
+            .Select(v => (MathF.Round(v.Col.R, 4), MathF.Round(v.Col.G, 4), MathF.Round(v.Col.B, 4)))
+            .Distinct()
+            .ToList();
+        AssertThat(smokeColors.Count).IsEqual(1);
+    }
+
+    [TestCase]
+    public void SeededZeroSpreadContinuousEmittersStaggerSpawnTicks()
+    {
+        var bank = new FxBank { Ok = true };
+        var em = new FxEmitter
+        {
+            TypeId = 0,
+            HasMotion = true,
+            AttachToRoot = true,
+            UseLife = false,
+            MaxActive = -1f,
+            InitialNum = 0f,
+        };
+        em.Generic[2].DefaultValue = 0.1f; // Rate = 0.1/tick, Spread = 0
+        em.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+
+        var sys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 30 };
+        sys.Visuals.Add(new FxVisual { HasTexture = true, Texture = "spark.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
+
+        var eff = new FxEffect { Name = "test_zero_spread", NameHash = FxBank.Fnv1Lower("test_zero_spread"), UpdateFrequency = 1 };
+        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+        bank.Emitters.Add(em);
+        bank.Systems.Add(sys);
+        bank.Effects.Add(eff);
+        bank.Reindex();
+
+        var firstSpawnTicks = new HashSet<int>();
+        for (uint s = 1; s <= 16; s++)
+        {
+            var fx = new Engine_FxSystem();
+            fx.Seed(s, randomizePhase: true, enableColorVariation: false);
+            fx.Build(bank, new[] { new FxPlacement { EffectName = "test_zero_spread" } });
+            for (int tick = 1; tick <= 12; tick++)
+            {
+                fx.Update(1f / 30f, Transform3D.Identity);
+                if (fx.TotalSpawned > 0)
+                {
+                    firstSpawnTicks.Add(tick);
+                    break;
+                }
+            }
+        }
+
+        AssertThat(firstSpawnTicks.Count).IsGreater(3);
+    }
+
+    [TestCase]
+    public void SeededFiniteBurstEmittersPreserveFrameZeroBurstTiming()
+    {
+        var bank = new FxBank { Ok = true };
+        var em = new FxEmitter
+        {
+            TypeId = 0,
+            SubType = 1,
+            SpawnRadius = 1.0f,
+            HasMotion = true,
+            AttachToRoot = true,
+            UseLife = true,
+            LifetimeFrames = 10,
+            MaxActive = 16f,
+            InitialNum = 4f,
+        };
+        em.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+
+        var sys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 10 };
+        sys.Visuals.Add(new FxVisual { HasTexture = true, Texture = "burst.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
+
+        var eff = new FxEffect { Name = "test_finite_burst", NameHash = FxBank.Fnv1Lower("test_finite_burst"), UpdateFrequency = 1 };
+        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+        bank.Emitters.Add(em);
+        bank.Systems.Add(sys);
+        bank.Effects.Add(eff);
+        bank.Reindex();
+
+        var fx1 = new Engine_FxSystem();
+        var fx2 = new Engine_FxSystem();
+        fx1.Seed(1u, randomizePhase: true);
+        fx2.Seed(2u, randomizePhase: true);
+        fx1.Build(bank, new[] { new FxPlacement { EffectName = "test_finite_burst" } });
+        fx2.Build(bank, new[] { new FxPlacement { EffectName = "test_finite_burst" } });
+
+        // Step once cleanly (advance past any sub-frame phase offset).
+        fx1.Update(1f / 30f, Transform3D.Identity);
+        if (fx1.LastSteps == 0) fx1.Update(1f / 30f, Transform3D.Identity);
+        fx2.Update(1f / 30f, Transform3D.Identity);
+        if (fx2.LastSteps == 0) fx2.Update(1f / 30f, Transform3D.Identity);
+
+        AssertThat(fx1.TotalSpawned).IsEqual(4);
+        AssertThat(fx2.TotalSpawned).IsEqual(4);
+        AssertThat(fx1.ParticlePositions().ToArray()).IsNotEqual(fx2.ParticlePositions().ToArray());
+    }
+
+    [TestCase]
+    public void ZeroIntensityContinuousEmitterSkipsInvisibleSpawnsAndResumesCleanly()
+    {
+        var bank = new FxBank { Ok = true };
+        var em = new FxEmitter
+        {
+            TypeId = 0,
+            HasMotion = true,
+            AttachToRoot = true,
+            UseLife = false,
+            MaxActive = -1f,
+            InitialNum = 1f,
+        };
+        em.Generic[2].DefaultValue = 0.3333f;
+        em.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+
+        var sys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 15 };
+        sys.Visuals.Add(new FxVisual { HasTexture = true, Texture = "trail_spark.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
+
+        var eff = new FxEffect { Name = "test_dark_continuous", NameHash = FxBank.Fnv1Lower("test_dark_continuous"), UpdateFrequency = 1 };
+        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+        bank.Emitters.Add(em);
+        bank.Systems.Add(sys);
+        bank.Effects.Add(eff);
+        bank.Reindex();
+
+        var fx = new Engine_FxSystem();
+        fx.Build(bank, new[] { new FxPlacement { EffectName = "test_dark_continuous" } });
+        fx.SetIntensity(1f);
+        for (int i = 0; i < 15; i++) fx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(fx.AliveCount()).IsGreater(0);
+
+        // Drop intensity to 0: existing particles drain naturally and zero new invisible particles spawn.
+        int spawnedBeforeDark = fx.TotalSpawned;
+        fx.SetIntensity(0f);
+        for (int i = 0; i < 30; i++) fx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(fx.TotalSpawned).IsEqual(spawnedBeforeDark);
+        AssertThat(fx.AliveCount()).IsEqual(0);
+
+        // Restoring positive intensity spawns immediately from InitialNum.
+        fx.SetIntensity(1f);
+        fx.Update(1f / 30f, Transform3D.Identity);
+        AssertThat(fx.TotalSpawned).IsGreater(spawnedBeforeDark);
+        AssertThat(fx.AliveCount()).IsGreater(0);
+    }
+
+    [TestCase]
+    public void SeedStaggersBaseStepAccumulatorAcrossDisplayFrames()
+    {
+        var bank = new FxBank { Ok = true };
+        var em = new FxEmitter { TypeId = 0, HasMotion = true, AttachToRoot = true, MaxActive = 8f, InitialNum = 1f };
+        em.Vec1.DefaultValue = new[] { 1f, 1f, 1f };
+        var sys = new FxSystemDef { Mode = 1, ChildCount = 2, LastStartFrames = 15 };
+        sys.Visuals.Add(new FxVisual { HasTexture = true, Texture = "dot.tex", HasSize = true, SizeX = 0.2f, SizeY = 0.2f });
+        var eff = new FxEffect { Name = "test_step_stagger", NameHash = FxBank.Fnv1Lower("test_step_stagger"), UpdateFrequency = 1 };
+        eff.Parts.Add(new FxEffectPart(0, 0, 1, 0));
+        bank.Emitters.Add(em);
+        bank.Systems.Add(sys);
+        bank.Effects.Add(eff);
+        bank.Reindex();
+
+        int steppedFrame1 = 0;
+        int steppedFrame2 = 0;
+        for (uint s = 1; s <= 32; s++)
+        {
+            var fx = new Engine_FxSystem();
+            fx.Seed(s, randomizePhase: true, enableColorVariation: false);
+            fx.Build(bank, new[] { new FxPlacement { EffectName = "test_step_stagger" } });
+            fx.Update(1f / 60f, Transform3D.Identity);
+            if (fx.LastSteps > 0) steppedFrame1++;
+            else
+            {
+                fx.Update(1f / 60f, Transform3D.Identity);
+                if (fx.LastSteps > 0) steppedFrame2++;
+            }
+        }
+
+        AssertThat(steppedFrame1).IsGreater(0);
+        AssertThat(steppedFrame2).IsGreater(0);
+        AssertThat(steppedFrame1 + steppedFrame2).IsEqual(32);
     }
 }

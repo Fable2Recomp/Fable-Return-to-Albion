@@ -16,6 +16,8 @@ uniform float extinction = 0.0;
 uniform vec4 remap = vec4(1.0, 1.0, 0.0, 0.0);
 // tiling.xy, speed (per second).
 uniform vec3 motion = vec3(1.0, 1.0, 0.0);
+// Host-integrated noise scroll phase (replaces TIME * motion.z).
+uniform float noise_phase = 0.0;
 // The evolve pass's noise offset (c46.x): 1 is a flat texture.
 uniform float flatten = 0.0;
 
@@ -40,7 +42,7 @@ void fog() {
 	// Guest (x, y, z) is Godot (-x, z, y).
 	vec2 guest = vec2(-WORLD_POSITION.x, WORLD_POSITION.z);
 	vec2 uv = guest * remap.xy + remap.zw;
-	vec2 p = uv * motion.xy + vec2(TIME * motion.z);
+	vec2 p = uv * motion.xy + vec2(noise_phase);
 	float texel = 0.5 + noise(p) / 3.0 + noise(p * 2.0 + 17.0) / 6.0;
 	texel = flatten + (1.0 - flatten) * clamp(texel, 0.0, 1.0);
 	// Smooth 3D UVW boundary feathering so FogVolume boxes never stamp hard brick walls onto cliffs, trees, or coastlines.

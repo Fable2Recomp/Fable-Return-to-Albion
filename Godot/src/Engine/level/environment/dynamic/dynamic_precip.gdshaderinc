@@ -18,6 +18,7 @@ uniform float wind_scale = 1.0;
 uniform float size_jitter = 0.5;
 uniform float speed_jitter = 0.3;
 uniform float motion_time = 0.0;
+uniform float fall_offset = 0.0;
 uniform sampler2D scene_depth : hint_depth_texture, repeat_disable, filter_nearest;
 
 float precip_depth_fade(vec2 screen_uv, mat4 inverse_projection, float particle_depth) {
@@ -117,11 +118,12 @@ vec4 precip_place(
 		bool near = h3.x < near_fraction;
 		vec3 b = near ? box : box_far;
 
+		float fall_jitter = 1.0 - speed_jitter * 0.5 + h2.x * speed_jitter;
 		vec3 vel = vec3(wind.x * wind_scale,
-			-fall_speed * (1.0 - speed_jitter * 0.5 + h2.x * speed_jitter),
+			-fall_speed * fall_jitter,
 			wind.z * wind_scale);
 
-		vec3 raw = h * b + vec3(wind_offset.x * wind_scale, vel.y * t, wind_offset.y * wind_scale);
+		vec3 raw = h * b + vec3(wind_offset.x * wind_scale, -fall_offset * fall_jitter, wind_offset.y * wind_scale);
 		if (sway > 0.0) {
 			float flutter = t * (0.7 + h3.y * 1.9);
 			raw.xz += vec2(sin(flutter + h2.y * 6.283), cos(flutter * 0.73 + h2.z * 6.283)) * sway;

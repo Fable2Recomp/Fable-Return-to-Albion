@@ -11,9 +11,26 @@ public static class Engine_Weather
 
     public const int MaxSnow = 8000;
 
+    public static readonly Vector4 DefaultArea = new(30f, 24f, 22f, 18f);
+
+    public const float DefaultRainSpeed = 14.0f;
+
+    public const float MinRainSpeed = 1.0f;
+
+    public const float MinSnowSpeed = 0.15f;
+
+    public const float SnowWindDriftScale = 0.35f;
+
     private const float RainDensityToCount = 15000f;
 
     private const float SnowBaseCount = 4096f;
+
+    /// <summary>Held in a nested type so headless tests reading constants never trigger Godot StringName interop.</summary>
+    private static class ShaderNames
+    {
+        public static readonly StringName WindVec = "wind_vec";
+        public static readonly StringName Area = "area";
+    }
 
     /// <summary>
     /// The value at or below which the guest draws no weather at all — `flt_820992D8`, read as
@@ -94,9 +111,10 @@ public static class Engine_Weather
         var material = new ShaderMaterial { Shader = shader };
 
         float strength = Math.Clamp(windStrength, 0f, 40f);
-        material.SetShaderParameter("wind_vec", new Vector4(
-            MathF.Cos(windAzimuth) * strength, 0f, MathF.Sin(windAzimuth) * strength, 0f));
-        material.SetShaderParameter("area", new Vector4(30f, 24f, 22f, 18f));
+        float windX = MathF.Cos(windAzimuth) * strength;
+        float windZ = MathF.Sin(windAzimuth) * strength;
+        material.SetShaderParameter(ShaderNames.WindVec, new Vector4(windX, 0f, windZ, 0f));
+        material.SetShaderParameter(ShaderNames.Area, DefaultArea);
 
         var node = new Engine_WeatherNode
         {
@@ -106,6 +124,8 @@ public static class Engine_Weather
             ExtraCullMargin = 16384f,
             RainCapacity = rainCapacity,
             SnowCapacity = snowCapacity,
+            Area = DefaultArea,
+            Wind = new Vector2(windX, windZ),
         };
         node.Attach(material);
         node.Apply(rainDensity, rainSize, snowSpeed, snowSize, "level day set");
